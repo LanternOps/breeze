@@ -306,7 +306,7 @@ describe('consumeVerificationToken', () => {
     // email_verified_at stamp, then activatePartnerRow flips status + clears
     // the inactive banner (shared with partnerGuard).
     const partnerEmailUpdate = chainUpdateNoReturning();
-    const partnerActivateUpdate = chainUpdateNoReturning();
+    const partnerActivateUpdate = chainUpdateReturning([{ id: 'p-1' }]);
 
     vi.mocked(db.update)
       .mockReturnValueOnce(tokenUpdate as any)

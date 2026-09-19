@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { groupRoutes } from './groups';
-// The `../db/schema` module is vi.mock'd below; importing from it yields the
-// same mock objects the route passes to db.delete(), so identity comparison
-// works for the #3313 ordering assertion.
-import * as schema from '../db/schema';
 
 const GROUP_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GROUP_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -20,6 +16,19 @@ vi.mock('../services', () => ({}));
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
+
+const { schedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice,
+}));
+
+const { deleteDeviceGroup } = vi.hoisted(() => ({ deleteDeviceGroup: vi.fn() }));
+vi.mock('../services/deviceGroupDelete', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/deviceGroupDelete')>();
+  return { ...actual, deleteDeviceGroup };
+});
 
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
@@ -124,6 +133,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership, pruneGroupMembershipsOutsideSite } from '../services/groupMembership';
+import { DeviceGroupDeleteError } from '../services/deviceGroupDelete';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -217,6 +227,10 @@ describe('groups routes', () => {
           })
         })
       } as any);
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockResolvedValueOnce({
+        removed: 1,
+        deviceIds: [DEVICE_ID],
+      });
       // getDeviceCountForGroup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -373,7 +387,12 @@ describe('groups routes', () => {
         GROUP_ID,
         SITE_ID,
         ORG_ID,
-        expect.anything()
+        expect.anything(),
+        { deferPeripheralReconciliation: true },
+      );
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'dynamic_membership_changed',
       );
       expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
     });
@@ -458,26 +477,17 @@ describe('groups routes', () => {
       expect(db.delete).not.toHaveBeenCalled();
     });
     it('should delete a group', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([makeGroup()])
-            })
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
           })
-        } as any)
-        // Check for child groups
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 0 }])
-          })
-        } as any);
-
-      // Three deletes: memberships, membership log (#3313), then the group.
-      vi.mocked(db.delete)
-        .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
-        .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
-        .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any);
+        })
+      } as any);
+      deleteDeviceGroup.mockResolvedValueOnce({
+        group: { id: GROUP_ID, name: 'Test Group', orgId: ORG_ID },
+        affectedDeviceIds: [DEVICE_ID, DEVICE_ID_2],
+      });
 
       const res = await app.request(`/groups/${GROUP_ID}`, {
         method: 'DELETE',
@@ -488,16 +498,11 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe(GROUP_ID);
 
-      // group_membership_log FKs device_groups with no ON DELETE, so its rows
-      // must be cleared BEFORE the group or Postgres raises 23503 (#3313).
-      // This mock resolves every delete regardless, so the assertion is on the
-      // call order — the real FK is proven in
-      // __tests__/integration/groupDeleteMembershipLog.integration.test.ts.
-      const deletedTables = vi.mocked(db.delete).mock.calls.map(([table]) => table);
-      expect(deletedTables).toContain(schema.groupMembershipLog);
-      expect(deletedTables.indexOf(schema.groupMembershipLog)).toBeLessThan(
-        deletedTables.indexOf(schema.deviceGroups)
-      );
+      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_ID);
+      expect(schedulePeripheralPolicyDevice.mock.calls).toEqual([
+        [DEVICE_ID, 'group_deleted'],
+        [DEVICE_ID_2, 'group_deleted'],
+      ]);
     });
 
     it('should return 404 when deleting non-existent group', async () => {
@@ -518,19 +523,16 @@ describe('groups routes', () => {
     });
 
     it('should reject deleting group with child groups', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([makeGroup()])
-            })
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 2 }])
-          })
-        } as any);
+        })
+      } as any);
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('HAS_CHILDREN', 'Cannot delete group with child groups')
+      );
 
       const res = await app.request(`/groups/${GROUP_ID}`, {
         method: 'DELETE',
@@ -540,6 +542,152 @@ describe('groups routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('child groups');
+      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_ID);
+    });
+
+    it('returns 409 with contractCount only when the caller lacks contracts:read', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('BILLED_BY_CONTRACTS', 'billed', [{ id: 'c1', name: 'Acme', status: 'active' }])
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'billed',
+        code: 'GROUP_IN_USE_BY_CONTRACTS',
+        contractCount: 1,
+      });
+    });
+
+    it('includes the contracts when the caller has contracts:read', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        c.set('permissions', {
+          permissions: [{ resource: 'contracts', action: 'read' }],
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+        });
+        return next();
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      const contracts = [{ id: 'c1', name: 'Acme', status: 'active' }];
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('BILLED_BY_CONTRACTS', 'billed', contracts)
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'billed',
+        code: 'GROUP_IN_USE_BY_CONTRACTS',
+        contractCount: 1,
+        contracts,
+      });
+    });
+
+    it('returns quoteCount but omits quotes when the caller lacks quotes:read', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }];
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('QUOTED_BY_QUOTES', 'quoted', undefined, quotes)
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'quoted',
+        code: 'GROUP_IN_USE_BY_QUOTES',
+        quoteCount: 1,
+      });
+    });
+
+    it('includes quotes for a quotes reader and both counts for both refusals', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        c.set('permissions', {
+          permissions: [
+            { resource: 'contracts', action: 'read' },
+            { resource: 'quotes', action: 'read' },
+          ],
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+        });
+        return next();
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      const contracts = [{ id: 'c1', name: 'Acme', status: 'active' }];
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }];
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('BILLED_BY_CONTRACTS', 'billed and quoted', contracts, quotes)
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'billed and quoted',
+        code: 'GROUP_IN_USE_BY_CONTRACTS',
+        contractCount: 1,
+        quoteCount: 1,
+        contracts,
+        quotes,
+      });
     });
 
     it('should reject deleting group from another org (multi-tenant isolation)', async () => {

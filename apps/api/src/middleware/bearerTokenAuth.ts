@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
-import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
   OAUTH_ISSUER,
@@ -14,8 +14,9 @@ import {
   withDbAccessContext,
   withSystemDbAccessContext,
 } from '../db';
-import { oauthClientBlocks, organizations, partnerUsers, users } from '../db/schema';
+import { oauthClientBlocks, oauthGrants, organizations, partnerUsers, users } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
+import { activeGrantCondition } from '../oauth/grantStatus';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 interface OAuthApiKeyContext {
@@ -34,7 +35,19 @@ interface OAuthApiKeyContext {
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
 export type LiveOAuthUserResult =
-  | { ok: true; userId: string; authEpoch: number; legacyClaim: boolean }
+  | {
+      ok: true;
+      userId: string;
+      authEpoch: number;
+      legacyClaim: boolean;
+      /**
+       * Whether the `grant_id` passed in resolves to a live `oauth_grants`
+       * row. `null` when no grant id was supplied (nothing was asked).
+       * Resolved in the SAME query as the user so bearer admission stays a
+       * single system-context round-trip.
+       */
+      grantActive: boolean | null;
+    }
   | {
       ok: false;
       status: 401 | 503;
@@ -64,6 +77,7 @@ function recordLiveOAuthAuthorization(
 export async function assertLiveOAuthUser(
   payload: JWTPayload,
   now: Date,
+  opts: { grantId?: string | null } = {},
 ): Promise<LiveOAuthUserResult> {
   const userId = typeof payload.sub === 'string' && payload.sub.length > 0
     ? payload.sub
@@ -72,7 +86,17 @@ export async function assertLiveOAuthUser(
     return { ok: false, status: 401, reason: 'user_missing' };
   }
 
-  let liveUser: { id: string; status: string; authEpoch: number } | undefined;
+  const grantId = typeof opts.grantId === 'string' && opts.grantId.length > 0 ? opts.grantId : null;
+
+  // ONE system-context round-trip proves both live facts bearer admission
+  // needs: the user is still active at the claimed auth epoch, and the Grant
+  // the token was minted under is still durably live. They were two
+  // sequential queries; on an OAuth-heavy tenant that doubled the per-request
+  // pool pressure on an already hot path for no isolation benefit — both reads
+  // are in the same system context anyway. The LEFT JOIN keeps a missing or
+  // revoked Grant as a row with a NULL join side rather than no row at all, so
+  // "user gone" stays distinguishable from "grant dead".
+  let liveUser: { id: string; status: string; authEpoch: number; grantActive: boolean } | undefined;
   try {
     [liveUser] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
@@ -81,8 +105,13 @@ export async function assertLiveOAuthUser(
             id: users.id,
             status: users.status,
             authEpoch: users.authEpoch,
+            grantActive: sql<boolean>`${oauthGrants.id} IS NOT NULL`,
           })
           .from(users)
+          .leftJoin(
+            oauthGrants,
+            grantId ? activeGrantCondition(grantId, now) : sql`false`,
+          )
           .where(eq(users.id, userId))
           .limit(1),
       ),
@@ -111,6 +140,7 @@ export async function assertLiveOAuthUser(
       userId,
       authEpoch: liveUser.authEpoch,
       legacyClaim: true,
+      grantActive: grantId ? liveUser.grantActive : null,
     };
   }
 
@@ -127,6 +157,7 @@ export async function assertLiveOAuthUser(
     userId,
     authEpoch: liveUser.authEpoch,
     legacyClaim: false,
+    grantActive: grantId ? liveUser.grantActive : null,
   };
 }
 
@@ -360,7 +391,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'token missing required claims' });
   }
 
-  const liveUser = await assertLiveOAuthUser(payload, new Date());
+  // Read the claim now (not to reject on it yet — rejection order below is
+  // unchanged) so the Grant's durable state resolves in the same query.
+  const grantIdClaim = typeof payload.grant_id === 'string' && payload.grant_id.length > 0
+    ? payload.grant_id
+    : null;
+  const liveUser = await assertLiveOAuthUser(payload, new Date(), { grantId: grantIdClaim });
   if (!liveUser.ok) {
     recordLiveOAuthAuthorization(liveUser.reason, payload.auth_epoch === undefined);
     const message = liveUser.status === 503
@@ -376,7 +412,17 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   // Grant-wide revocation: when a refresh token is revoked or a connected app
   // is deleted, every access JWT minted from the same Grant must die. The
   // grant_id claim is set by buildExtraTokenClaims (see oauth/provider.ts).
-  if (typeof payload.grant_id === 'string' && await isGrantRevoked(payload.grant_id)) {
+  if (!grantIdClaim) {
+    throw new HTTPException(401, { message: 'token missing required claims' });
+  }
+  // Redis first (eager, cheap, covers the window before a durable sweep
+  // lands), then the durable answer already fetched alongside the user. A DB
+  // failure never reaches here as "active": assertLiveOAuthUser has already
+  // returned 503 for it, so uncertainty is fail-closed on both halves.
+  if (await isGrantRevoked(grantIdClaim)) {
+    throw new HTTPException(401, { message: 'token revoked' });
+  }
+  if (!liveUser.grantActive) {
     throw new HTTPException(401, { message: 'token revoked' });
   }
   const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
@@ -467,10 +513,14 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessiblePartnerIds: [],
           userId: payload.sub,
           // Own partner — enables read-only visibility of the partner's
-          // partner-wide CATALOG rows (scripts/alert_templates/script_categories/
-          // script_tags, which have an RLS `breeze_current_partner_id()` read
-          // branch). This is deliberately narrower than the partner-axis
-          // capability above: currentPartnerId feeds only that catalog branch.
+          // partner-wide rows on every table carrying a
+          // `breeze_current_partner_id()` RLS SELECT branch: the CATALOG tables
+          // (scripts/alert_templates/script_categories/script_tags),
+          // cis_baselines, tenant_variables, and as of #2468 the whole
+          // configuration-policy chain + backup_profiles. This is deliberately
+          // narrower than the partner-axis capability above: currentPartnerId
+          // grants READS only — every WRITE still goes through
+          // breeze_has_partner_access, which an org token never holds.
           currentPartnerId: payload.partner_id,
         }
       : {

@@ -3,7 +3,22 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { buildFallbackCspDirectives, relaxExistingCsp } from './middleware';
+import { buildFallbackCspDirectives, relaxExistingCsp, resolveLocaleFromCookie, onRequest } from './middleware';
+import { LOCALE_COOKIE_NAME } from './lib/appearance';
+
+type MockLocals = { locale?: string };
+
+function makeContext(cookieValue: string | undefined, acceptLanguage?: string) {
+  return {
+    cookies: {
+      get: (name: string) => (name === LOCALE_COOKIE_NAME && cookieValue !== undefined ? { value: cookieValue } : undefined),
+    },
+    request: {
+      headers: new Headers(acceptLanguage !== undefined ? { 'accept-language': acceptLanguage } : {}),
+    },
+    locals: {} as MockLocals,
+  };
+}
 
 // #1023: Monaco is now self-hosted from /monaco/vs, so cdn.jsdelivr.net — a
 // broad package-CDN gadget host — must no longer appear in any CSP directive.
@@ -70,5 +85,62 @@ describe('CSP directives drop the jsdelivr CDN (#1023)', () => {
     const frameSrcSet = source.match(/new Set\(\[[^\]]*docs\.breezermm\.com[^\]]*\]\)/);
     expect(frameSrcSet, 'frame-src source Set not found in astro.config.mjs').not.toBeNull();
     expect(frameSrcSet![0]).toContain("'blob:'");
+  });
+});
+
+describe('locale cookie -> context.locals.locale', () => {
+  it('accepts any of the 8 supported locales, not just en/pt-BR', () => {
+    for (const locale of ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR']) {
+      expect(resolveLocaleFromCookie(locale)).toBe(locale);
+    }
+  });
+
+  it('rejects unsupported or missing cookie values', () => {
+    expect(resolveLocaleFromCookie('fr')).toBeUndefined();
+    expect(resolveLocaleFromCookie('klingon')).toBeUndefined();
+    expect(resolveLocaleFromCookie(undefined)).toBeUndefined();
+  });
+
+  it('onRequest sets context.locals.locale from a valid breeze.locale cookie', async () => {
+    const context = makeContext('fr-CA');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('fr-CA');
+  });
+
+  it('onRequest leaves context.locals.locale undefined for a missing or invalid cookie', async () => {
+    const missing = makeContext(undefined);
+    await onRequest(missing as any, async () => new Response('ok'));
+    expect(missing.locals.locale).toBeUndefined();
+
+    const invalid = makeContext('klingon');
+    await onRequest(invalid as any, async () => new Response('ok'));
+    expect(invalid.locals.locale).toBeUndefined();
+  });
+
+  // Maintainer follow-up on #5041: a browser-only signal must not be
+  // invisible to the SSR shell just because the user never explicitly chose
+  // a locale (no cookie yet).
+  it('onRequest falls back to Accept-Language when there is no cookie', async () => {
+    const context = makeContext(undefined, 'pt-BR,pt;q=0.9,en;q=0.8');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('pt-BR');
+  });
+
+  it('onRequest prefers the explicit cookie over Accept-Language', async () => {
+    const context = makeContext('de-DE', 'pt-BR,pt;q=0.9');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('de-DE');
+  });
+
+  it('onRequest ignores an invalid cookie and still falls back to Accept-Language', async () => {
+    const context = makeContext('klingon', 'fr-FR');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('fr-FR');
+  });
+
+  it('onRequest leaves locale undefined when neither cookie nor Accept-Language resolve', async () => {
+    const context = makeContext(undefined, 'klingon,xx-XX');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBeUndefined();
   });
 });

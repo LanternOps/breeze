@@ -391,6 +391,174 @@
         "blocking": "Blocage...",
         "blockDevice": "Bloquer l’appareil"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "Catalogue des fournisseurs LLM",
+      "description": "Points de terminaison validés par la plateforme vers lesquels les partenaires peuvent router leur trafic IA.",
+      "totalEntries": "Total des entrées :",
+      "refresh": "Actualiser",
+      "addEntry": "Ajouter un fournisseur",
+      "loading": "Chargement du catalogue…",
+      "empty": "Aucune entrée de catalogue pour le moment.",
+      "dismiss": "Ignorer",
+      "platformAdmin": {
+        "title": "Accès administrateur plateforme requis",
+        "prefix": "Le catalogue des fournisseurs LLM est géré par les administrateurs de la plateforme Breeze. Votre compte",
+        "role": "un administrateur d'organisation/partenaire",
+        "suffix": "ne peut pas le consulter ni le modifier directement."
+      },
+      "errors": {
+        "load": "Échec du chargement du catalogue",
+        "generic": "Une erreur s'est produite",
+        "createEntry": "Échec de la création du fournisseur",
+        "createRevision": "Échec de la création de la révision",
+        "activate": "Échec de l'activation de la révision",
+        "setStatus": "Échec de la mise à jour du statut",
+        "verify": "La demande de vérification a échoué"
+      },
+      "notice": {
+        "entryCreated": "Fournisseur « {{name}} » créé.",
+        "revisionCreated": "Nouvelle révision créée pour « {{name}} ».",
+        "activated": "Révision activée.",
+        "statusUpdated": "Statut mis à jour vers {{status}}."
+      },
+      "status": {
+        "draft": "Brouillon",
+        "listed": "Répertorié",
+        "delisted": "Retiré"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Nom",
+        "status": "Statut",
+        "activeRevision": "Révision active",
+        "revisions": "Révisions",
+        "actions": "Actions"
+      },
+      "actions": {
+        "expand": "Afficher les révisions",
+        "collapse": "Masquer les révisions",
+        "addRevision": "Ajouter une révision",
+        "activate": "Activer",
+        "list": "Répertorier",
+        "delist": "Retirer",
+        "verify": "Lancer la vérification"
+      },
+      "confirmDelist": "Retirer « {{name}} » ? Les partenaires qui l'utilisent déjà continuent de fonctionner, mais il disparaît de la sélection pour les nouvelles configurations.",
+      "revision": {
+        "baseUrl": "URL de base",
+        "authMode": "Mode d'authentification",
+        "dataNote": "Note sur le traitement des données",
+        "createdAt": "Créée",
+        "notVerified": "Non vérifiée",
+        "verified": "Vérifiée",
+        "activateBlocked": "Chaque modèle mappé doit réussir sa vérification avant que cette révision puisse être activée.",
+        "listBlocked": "Chaque modèle mappé de la révision active doit réussir sa vérification avant que ce fournisseur puisse être répertorié."
+      },
+      "authModeOptions": {
+        "x-api-key": "En-tête de clé API",
+        "bearer": "Jeton porteur"
+      },
+      "entryForm": {
+        "title": "Ajouter un fournisseur",
+        "fields": {
+          "slug": "Slug",
+          "name": "Nom",
+          "notes": "Notes"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Notes internes sur ce fournisseur…"
+        },
+        "submit": "Créer le fournisseur",
+        "cancel": "Annuler"
+      },
+      "revisionForm": {
+        "title": "Ajouter une révision pour « {{name}} »",
+        "fields": {
+          "baseUrl": "URL de base",
+          "authMode": "Mode d'authentification",
+          "dataNote": "Note sur le traitement des données"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Ce que cet endpoint fait des données de la requête…"
+        },
+        "modelMap": {
+          "title": "Mappage des modèles et tarification",
+          "description": "Seuls les modèles mappés sont sélectionnables par les partenaires. Prix en cents par million de jetons.",
+          "included": "Inclure ce modèle",
+          "providerModel": "ID du modèle chez le fournisseur",
+          "inputPrice": "Entrée",
+          "outputPrice": "Sortie",
+          "cacheReadPrice": "Lecture cache",
+          "cacheWritePrice": "Écriture cache"
+        },
+        "submit": "Créer la révision",
+        "cancel": "Annuler",
+        "errors": {
+          "noModelsMapped": "Mappez au moins un modèle avant de créer une révision."
+        }
+      },
+      "verifyForm": {
+        "title": "Lancer la vérification — {{model}}",
+        "description": "La clé n'est utilisée que pour cette requête et n'est jamais stockée.",
+        "apiKeyLabel": "Clé API de test",
+        "apiKeyPlaceholder": "Collez une clé de test temporaire",
+        "submit": "Lancer",
+        "cancel": "Annuler",
+        "running": "En cours…",
+        "passed": "Réussie",
+        "failed": "Échouée"
+      }
+    },
+    "aiKillSwitch": {
+      "title": "Coupe-circuit IA",
+      "description": "Arrêt d'urgence à l'échelle de la plateforme pour l'activité non supervisée des agents IA. Le basculer affecte tous les partenaires à la fois — il s'agit d'une opération de plateforme, pas d'un paramètre par tenant.",
+      "refresh": "Actualiser",
+      "loading": "Chargement de l'état du coupe-circuit…",
+      "impactNote": "Activer le coupe-circuit arrête les actions IA non supervisées pour tous les partenaires en environ 5 secondes. Les actions déjà en cours ne sont pas interrompues.",
+      "platformAdmin": {
+        "title": "Accès administrateur de plateforme requis",
+        "description": "Le coupe-circuit IA est un contrôle à l'échelle de la plateforme géré par les administrateurs de plateforme Breeze. Votre compte ne peut pas le consulter ni le modifier."
+      },
+      "status": {
+        "active": "Actions IA actives",
+        "killed": "Actions IA arrêtées"
+      },
+      "fields": {
+        "epoch": "Époque",
+        "updatedBy": "Dernière modification par",
+        "updatedAt": "Dernière modification le",
+        "lastReason": "Dernier motif",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Arrêter les actions IA à l'échelle de la plateforme",
+        "restore": "Restaurer les actions IA"
+      },
+      "confirm": {
+        "killTitle": "Arrêter les actions IA à l'échelle de la plateforme ?",
+        "killDescription": "Cela arrête immédiatement l'activité non supervisée des agents IA pour tous les partenaires sur Breeze. À utiliser uniquement en cas d'incident actif.",
+        "restoreTitle": "Restaurer les actions IA ?",
+        "restoreDescription": "Cela réactive l'activité non supervisée des agents IA pour tous les partenaires sur Breeze.",
+        "reasonLabel": "Motif (obligatoire, pour le journal d'audit)",
+        "reasonPlaceholder": "Décrivez l'incident ou le motif de ce changement…",
+        "cancel": "Annuler",
+        "killSubmit": "Arrêter les actions IA",
+        "restoreSubmit": "Restaurer les actions IA"
+      },
+      "notice": {
+        "killed": "Actions IA arrêtées à l'échelle de la plateforme.",
+        "restored": "Actions IA restaurées à l'échelle de la plateforme."
+      },
+      "errors": {
+        "load": "Échec du chargement de l'état du coupe-circuit",
+        "generic": "Une erreur s'est produite",
+        "flip": "Échec de la mise à jour du coupe-circuit",
+        "mfaRequired": "Le basculement du coupe-circuit IA nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      }
     }
   },
   "audit": {
@@ -566,80 +734,6 @@
         "previous": "Précédent",
         "page": "Page {{page}}",
         "next": "Suivant"
-      }
-    },
-    "complianceReport": {
-      "title": "Rapport de conformité",
-      "description": "Générez des résumés prêts à l’audit, alignés sur les contrôles de conformité.",
-      "generateReport": "Générer un rapport",
-      "dataAccessAudit": "Audit d’accès aux données",
-      "sensitiveOperations": "Opérations sensibles",
-      "reviewRequired": "Révision requise",
-      "categories": {
-        "gdpr": {
-          "label": "RGPD"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Événements d’accès aux données",
-          "dsarRequests": "Demandes DSAR",
-          "retentionAlerts": "Alertes de rétention"
-        },
-        "soc2": {
-          "controlExceptions": "Exceptions de contrôle",
-          "privilegedActions": "Actions privilégiées",
-          "policyAttestations": "Attestations de politique"
-        },
-        "hipaa": {
-          "phiAccessEvents": "Événements d’accès PHI",
-          "roleChanges": "Changements de rôle",
-          "encryptionChecks": "Contrôles de chiffrement"
-        },
-        "helpers": {
-          "past30Days": "30 derniers jours",
-          "pending2": "en attente 2",
-          "overdue": "En retard",
-          "last7Days": "Les 7 derniers jours",
-          "withinScope": "Dans le cadre du champ d’application",
-          "complete": "Complet",
-          "past14Days": "14 derniers jours",
-          "requiresReview": "nécessite une révision",
-          "compliant": "Conforme"
-        }
-      },
-      "table": {
-        "user": "Utilisateur",
-        "data": "Données",
-        "purpose": "Objectif",
-        "time": "Temps"
-      },
-      "data": {
-        "customerRecords": "Dossiers clients",
-        "adminPortal": "Portail administratif",
-        "payrollRecords": "Dossiers de paie",
-        "deviceGroupVip": "Groupe d’appareils - VIP"
-      },
-      "purpose": {
-        "billingReview": "Révision de la facturation",
-        "securityAudit": "Audit de sécurité",
-        "complianceSampling": "Échantillonnage de conformité",
-        "accessProvisioning": "Provisionnement d’accès"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Jeu de données client exporté vers CSV",
-        "mfaWindowReduced": "MFA fenêtre réduite à 15 minutes",
-        "roleChangedExternalContractor": "Changement de rôle pour un prestataire externe"
-      },
-      "severity": {
-        "high": "Élevée",
-        "medium": "Moyenne"
       }
     },
     "userActivityReport": {

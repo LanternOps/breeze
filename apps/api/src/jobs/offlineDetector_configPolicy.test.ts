@@ -6,6 +6,13 @@ const { evaluateFromPolicyMock, selectMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
 }));
 
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => ['effect-id']),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = vi.fn();

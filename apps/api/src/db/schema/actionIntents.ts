@@ -1,4 +1,7 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
+import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   char,
   foreignKey,
@@ -9,14 +12,24 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@breeze/shared';
+import {
+  AI_APPROVAL_SCOPES,
+  type AiApprovalScope,
+  type AssuranceLevel,
+  type ScriptReviewerEvidence,
+} from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { aiInitiatorKindEnum } from './aiInitiator';
 import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
+import { devices } from './devices';
+import { pamActuations } from './elevations';
+import { tickets } from './portal';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -80,12 +93,23 @@ export type ActionIntentOriginPrincipalKind =
 // Widened in wave 2 (#3823): a DENIED or EXPIRED intent previously wrote no
 // outbox row at all, so a requester whose chat turn had ended could never be
 // told the outcome. Pinned by a CHECK in SQL — see
-// 2026-09-04-ai-agent-notifications.sql.
+// 2026-09-04-ai-agent-notifications.sql. Widened again for #4798: a
+// CANCELLED intent had the same gap — see
+// 2026-10-08-100300-intent-cancelled-outbox-event.sql. Widened again for
+// #5205 W05 (#5210, baseline §3.3): there was no way to say a task-linked
+// intent COMPLETED or FAILED — the release worker's `terminalizeIntent` and
+// the stale-executing reaper both published nothing at all, which would
+// strand a task in `waiting` until its deadline. See
+// 2026-10-14-100300-ai-operator-intent-terminal-events.sql.
 export const intentOutboxEventEnum = [
   'intent_created',
   'intent_approved',
   'intent_rejected',
   'intent_expired',
+  'intent_cancelled',
+  'intent_completed',
+  'intent_failed',
+  'pam.desired_state_changed',
 ] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
 
@@ -106,6 +130,30 @@ export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
  */
 export const actionIntentApprovalScopeEnum = AI_APPROVAL_SCOPES;
 export type ActionIntentApprovalScope = AiApprovalScope;
+
+/**
+ * Wave 5 Part A (#3827): the policy-decide lifecycle state. Every intent is
+ * created `human_required` in THIS PR — `resolvePolicyDecisionState` is a
+ * stub that always returns it (intentService.ts), so `unattempted` and
+ * `authorized` are declared but never written yet. Part B's real decision
+ * path stamps `unattempted` at creation instead and transitions it to
+ * `authorized` (policy satisfied, fanout skipped) or leaves it
+ * `human_required` (policy declined or inapplicable, fanout runs).
+ *
+ * DEFAULT on the column is 'human_required' — deliberately the BACKFILL
+ * value for pre-existing rows (they all went through human fanout), not the
+ * value Part B's INSERT stamps for a new row. See the migration header.
+ *
+ * Pinned to the SQL CHECK in 2026-09-16-ai-agents-policy-decide-foundations.sql
+ * by a test in actionIntents.test.ts.
+ */
+export const actionIntentPolicyDecisionStateEnum = [
+  'unattempted',
+  'authorized',
+  'human_required',
+] as const;
+export type ActionIntentPolicyDecisionState =
+  (typeof actionIntentPolicyDecisionStateEnum)[number];
 
 export const actionIntents = pgTable(
   'action_intents',
@@ -152,6 +200,101 @@ export const actionIntents = pgTable(
      * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
+    /** Creation-time cause, distinct from the initiator/execution lane.
+     * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+     * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+     * action_intents_block_content_update guards all three on action intents.
+     */
+    triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+    triggerRefId: uuid('trigger_ref_id'),
+    triggerKey: varchar('trigger_key', { length: 200 }),
+    // P2-2 typed target scope. `scopeKind` is immutable; `scopeDeviceId` may
+    // only tombstone (non-null -> NULL), never retarget — enforced by
+    // action_intents_block_content_update() (migrations/2026-09-23-ai-agents-
+    // scheduled-sweeps.sql). Column is NOT named device_id on purpose:
+    // cascadeDelete.test.ts keys on `device_id`, and this column's
+    // device-delete contract is the two events below, not a cascade list.
+    //
+    // Two device-lifecycle events produce the tombstone, both landing on the
+    // SAME non-null -> NULL transition the trigger permits:
+    //   - device DELETE: the FK's `ON DELETE SET NULL` fires automatically.
+    //   - device moveOrg: `routes/devices/moveOrg.ts`'s transaction runs an
+    //     explicit `UPDATE action_intents SET scope_device_id = NULL WHERE
+    //     scope_device_id = <movedDeviceId> AND status IN
+    //     ('pending_approval','approved','executing')` — scoped to LIVE
+    //     statuses only, since a terminal-status intent is a historical
+    //     record of an already-decided action, not something a future
+    //     release re-validates (same reasoning as ai_agent_runs' org_id
+    //     being left un-restamped by that same transaction).
+    // The release path (Task A3, `services/actionIntents/intentTargetScope.ts`)
+    // fails closed on either a tombstoned (NULL) scope_device_id or a device
+    // whose CURRENT org_id no longer matches the intent's org_id — the second
+    // case is what a moveOrg landing between decide and release, or a bug in
+    // the detach step above, would otherwise produce.
+    scopeKind: text('scope_kind').$type<'device' | 'ticket'>(),
+    scopeDeviceId: uuid('scope_device_id').references(() => devices.id, { onDelete: 'set null' }),
+    /**
+     * P2-4 (#4191) typed target scope for a ticket-triage intent.
+     * `scopeKind = 'ticket'` pairs with this column
+     * (action_intents_scope_ticket_chk), same shape as scopeDeviceId's
+     * pairing with `scopeKind = 'device'`.
+     *
+     * Deliberately a COMPOSITE (scope_ticket_id, org_id) FK ->
+     * tickets(id, org_id) in the table-options block below — stronger than
+     * scopeDeviceId's plain single-column FK to devices(id) (a Task-2
+     * design choice per the P2-4 plan): a forged cross-tenant ticket
+     * pointer is 23503 even under system context, not just an app-layer
+     * check. ON DELETE SET NULL (scope_ticket_id) tombstones only the
+     * ticket pointer, preserving the NOT NULL org_id. The
+     * immutability trigger (action_intents_block_content_update(),
+     * migrations/2026-09-25-ai-agents-ticket-triage.sql) permits only the
+     * same non-null -> NULL transition it already permits for
+     * scopeDeviceId, never a retarget.
+     */
+    scopeTicketId: uuid('scope_ticket_id'),
+    /**
+     * AI Operator operation identity, reserved ON the intent (spec §6.5,
+     * #5205 W03). All three are NULL for every legacy/non-task intent and all
+     * three are set for a task-linked one — `action_intents_task_link_chk`
+     * enforces all-or-none; the guarantee that a task-linked admission never
+     * yields a null `operation_key` comes from the single task-aware creation
+     * path added in W04, not from this CHECK.
+     *
+     * The composite `(task_id, org_id) -> ai_operator_tasks(id, org_id)` FK is
+     * SQL-ONLY (migrations/2026-10-14-100000-ai-operator-thin-slice.sql):
+     * `aiOperatorTasks.ts` imports THIS module for its own operation->intent
+     * FK, so declaring the reverse edge in Drizzle would be a module cycle.
+     * Postgres has the constraint either way. Same technique as
+     * `reports.sourceAiAgentScheduleId`.
+     *
+     * There is deliberately NO unique index on (org_id, task_id,
+     * operation_key). `createActionIntent`'s ON CONFLICT names
+     * (org_id, idempotency_key), and Postgres suppresses conflicts on the
+     * named inference target only — a second arbiter would turn an idempotent
+     * replay into a bare 23505 (baseline H1/C6). W04 derives the task-linked
+     * `idempotencyKey` from task identity so `action_intents_org_idem_uniq`
+     * stays the single arbiter; sequential replay is guarded by
+     * `ai_operator_operations_org_task_op_uq` instead.
+     */
+    taskId: uuid('task_id'),
+    taskStepKey: text('task_step_key'),
+    operationKey: text('operation_key'),
+    /**
+     * Tool catalog W01 PR B (#5216): the external (BYO MCP) tool this Tier-3
+     * intent releases through, bound to the exact `tool_source_tools` row and
+     * `revision` the approver saw. Both set or both NULL
+     * (`action_intents_external_tool_chk`); immutable (deny-listed in
+     * action_intents_block_content_update(), migrations/
+     * 2026-10-16-193700-action-intents-external-tool.sql).
+     *
+     * Bare uuid, NO FK — deliberately, like aiOriginSessionId: the row is
+     * immutable evidence and must never be blocked or tombstoned by a deleted
+     * tool row. Release revalidation reloads the live row by this id and
+     * fails closed (`external_tool_disabled` / `external_tool_drift` /
+     * `external_tool_source_unavailable`, revalidateRelease.ts).
+     */
+    toolSourceToolId: uuid('tool_source_tool_id'),
+    toolRevision: text('tool_revision'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -177,6 +320,15 @@ export const actionIntents = pgTable(
       .$type<ActionIntentOriginPrincipalKind>(),
     /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
     originPrincipalId: text('origin_principal_id'),
+    // --- AI origin attribution (#5022 W01) -------------------------------
+    // The serializable AiOriginRef, so a chat-minted origin survives
+    // intentReleaseWorker's from-scratch AuthContext rebuild. Distinct from
+    // originPrincipal*, which describes the REQUESTER, not the AI surface.
+    // Bare uuids: the row is immutable evidence and must never be blocked by a
+    // deleted session. Written at INSERT only.
+    aiOriginKind: aiInitiatorKindEnum('ai_origin_kind'),
+    aiOriginSessionId: uuid('ai_origin_session_id'),
+    aiOriginAgentRunId: uuid('ai_origin_agent_run_id'),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }),
 
     // Immutable action content (UPDATE-blocked by action_intents_immutable_trg
@@ -245,6 +397,14 @@ export const actionIntents = pgTable(
     // CHECK here; `.$type` keeps the inferred read type aligned.
     decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: text('decided_via'),
+    /**
+     * AI script authoring W04 (#5612): typed evidence for a
+     * decided_via = 'script_reviewer' intent (ScriptReviewerEvidence). Written
+     * once at INSERT and IMMUTABLE thereafter — named in
+     * action_intents_block_content_update()'s deny-list by
+     * migrations/2026-10-16-120300-action-intents-script-reviewer.sql.
+     */
+    scriptReviewerEvidence: jsonb('script_reviewer_evidence').$type<ScriptReviewerEvidence>(),
     // Stamped by the release worker when it CASes the intent
     // approved -> executing (Task 5). Stale-execution detection keys off
     // this (COALESCE'd to decidedAt for rows that predate the column or
@@ -254,6 +414,27 @@ export const actionIntents = pgTable(
     executedAt: timestamp('executed_at', { withTimezone: true }),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),
+
+    // Wave 5 Part A (#3827): policy-decide lifecycle + safe provenance.
+    // Migration: 2026-09-16-ai-agents-policy-decide-foundations.sql.
+    // Lifecycle (mutable, unlike the immutable content block above) — Part
+    // B's decision path is the only writer of the five nullable columns;
+    // this PR's createActionIntent stamps only policyDecisionState, always
+    // 'human_required' (resolvePolicyDecisionState stub).
+    policyDecisionState: text('policy_decision_state')
+      .notNull()
+      .default('human_required')
+      .$type<ActionIntentPolicyDecisionState>(),
+    /** Which POLICY_DECIDABLE_TIER3 entry authorized this intent. Part-B-written. */
+    policyAuthorizationKey: text('policy_authorization_key'),
+    /** Digest of the agent's policy snapshot the decision was made against. Part-B-written. */
+    policySnapshotDigest: text('policy_snapshot_digest'),
+    /** Version of POLICY_DECIDABLE_TIER3 that produced the decision. Part-B-written. */
+    policyClassificationVersion: integer('policy_classification_version'),
+    /** ai_unattended_exposure row reserved for this decision, if any. Part-B-written. */
+    policyReservationId: uuid('policy_reservation_id'),
+    /** ai_kill_state.epoch observed at decision time. Part-B-written. */
+    policyKillEpoch: bigint('policy_kill_epoch', { mode: 'number' }),
   },
   (table) => ({
     orgStatusIdx: index('action_intents_org_status_idx').on(
@@ -288,6 +469,48 @@ export const actionIntents = pgTable(
       foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
       name: 'action_intents_requesting_agent_run_id_org_id_fkey',
     }).onDelete('restrict'),
+    // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
+    // action_intents_scope_device_idx.
+    scopeDeviceIdx: index('action_intents_scope_device_idx')
+      .on(table.scopeDeviceId).where(sql`${table.scopeDeviceId} IS NOT NULL`),
+    // P2-4: composite-FK target for ticket_drafts.intent_id
+    // (ticketDrafts.ts) — action_intents had no unique(id, org_id) before
+    // this (ai_agent_runs already got one, as a named UNIQUE CONSTRAINT, in
+    // 2026-09-05-a-agent-originated-intents.sql). This one is a plain
+    // CREATE UNIQUE INDEX in the migration (not ADD CONSTRAINT), so it's
+    // modeled with `uniqueIndex()` here rather than `unique()` — either
+    // form satisfies Postgres's "FK needs a unique index over exactly its
+    // referenced columns" requirement identically; redundant with PRIMARY
+    // KEY(id) for lookups.
+    idOrgUq: uniqueIndex('action_intents_id_org_uq').on(table.id, table.orgId),
+    // P2-4: composite FK so a forged cross-tenant ticket pointer is 23503
+    // even under system context — see scopeTicketId's column comment above.
+    // The migration restricts SET NULL to scope_ticket_id (PG15+); Drizzle
+    // cannot model the column list. Bare SET NULL would also null org_id
+    // and fail with 23502 (#4872).
+    // Also DEFERRABLE INITIALLY IMMEDIATE in the migration (org-lifecycle
+    // contract) — drizzle-orm's foreignKey() builder has no deferrable
+    // option, so that detail lives in the migration only (same limitation as
+    // ticketDrafts.ts's composite FKs / deviceMtlsCertificates.ts).
+    scopeTicketOrgFk: foreignKey({
+      columns: [table.scopeTicketId, table.orgId],
+      foreignColumns: [tickets.id, tickets.orgId],
+      name: 'action_intents_scope_ticket_org_fk',
+    }).onDelete('set null'),
+    scopeTicketIdx: index('action_intents_scope_ticket_idx')
+      .on(table.scopeTicketId).where(sql`${table.scopeTicketId} IS NOT NULL`),
+    // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): the rollup's
+    // fixes_proposed/fixes_executed scans. orgStatusIdx above is
+    // (org_id, status, expires_at) — neither created_at nor executed_at is
+    // covered.
+    orgCreatedIdx: index('action_intents_org_created_idx').on(table.orgId, table.createdAt),
+    orgExecutedIdx: index('action_intents_org_executed_idx')
+      .on(table.orgId, table.executedAt).where(sql`${table.executedAt} IS NOT NULL`),
+    // NON-UNIQUE on purpose — see the taskId column comment. A lookup aid for
+    // "which intents belong to this task operation", never an ON CONFLICT
+    // arbiter.
+    taskOperationIdx: index('action_intents_task_operation_idx')
+      .on(table.orgId, table.taskId, table.operationKey).where(sql`${table.taskId} IS NOT NULL`),
   }),
 );
 
@@ -304,7 +527,10 @@ export const intentOutbox = pgTable(
   'intent_outbox',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    intentId: uuid('intent_id').notNull().references(() => actionIntents.id, {
+    intentId: uuid('intent_id').references(() => actionIntents.id, {
+      onDelete: 'cascade',
+    }),
+    pamActuationId: uuid('pam_actuation_id').references(() => pamActuations.id, {
       onDelete: 'cascade',
     }),
     eventType: text('event_type').notNull().$type<IntentOutboxEvent>(),
@@ -315,6 +541,11 @@ export const intentOutbox = pgTable(
   },
   (table) => ({
     intentIdIdx: index('intent_outbox_intent_id_idx').on(table.intentId),
+    pamActuationIdIdx: index('intent_outbox_pam_actuation_id_idx').on(table.pamActuationId),
+    // #4210 — supports intentOutboxRetention.ts's delivered-row cutoff scan
+    // (published_at < cutoff), the mirror image of the unpublished partial
+    // index below.
+    publishedAtIdx: index('intent_outbox_published_at_idx').on(table.publishedAt),
     // Note: the partial index intent_outbox_unpublished_idx (WHERE
     // published_at IS NULL) is declared in the SQL migration only — Drizzle's
     // index DSL doesn't model partial indexes cleanly (same precedent as

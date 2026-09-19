@@ -86,12 +86,11 @@ describe('event-loop monitor bootstrap wiring (index.ts)', () => {
     // Asserting absence (rather than deleting the test with the code) is the
     // point: the block reads as harmless diagnostics, so the obvious future
     // edit is to add it back.
-    const readyBlock = indexSource.slice(
-      indexSource.indexOf("app.get('/health/ready'"),
-      indexSource.indexOf("app.get('/ready'"),
-    );
+    const start = indexSource.indexOf('const readinessHandler = createReadinessHandler');
+    const readyBlock = indexSource.slice(start, indexSource.indexOf('// Metrics endpoint', start));
     expect(readyBlock.length).toBeGreaterThan(0);
-    expect(readyBlock).toContain('const allOk = Object.values(checks)');
+    expect(readyBlock).toContain("app.get('/ready', readinessHandler)");
+    expect(readyBlock).toContain("app.get('/health/ready', readinessHandler)");
     expect(readyBlock).not.toMatch(/getEventLoopLagStats/);
     expect(readyBlock).not.toMatch(/[eE]vent[lL]oop\s*[,:}]/);
     expect(readyBlock).not.toMatch(/starved/);

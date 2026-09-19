@@ -48,6 +48,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 **Workflow for a new tenant-scoped table:**
 1. Pick a shape; add policies in the same migration that creates the table — never defer.
+   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (one of the 8 shards — which one shifted when the job went 4→8 shards, so don't assume a specific shard number) — a unit-green PR still goes red there (#4585 did).
 2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
 3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
 4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.** Adding a **column** to an already-registered table is not exempt: see the export-policy row.
@@ -61,8 +62,11 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 | has an `org_id` column (**always**) | `CORE_ORG_CASCADE_DELETE_ORDER` in `services/tenantCascade.ts` — alphabetical, `organizations` last | `tenantCascade.integration.test.ts` (**Integration Tests**) |
 | has a `device_id` column | `CORE_DEVICE_CASCADE_DELETE_TABLES` in `routes/devices/core.ts` | `cascadeDelete.test.ts` (**Test API**) |
 | has `device_id` **and** a denormalized `org_id` | also `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (same file) | `moveOrg.coverage.test.ts` (**Test API**) |
+| has a `ticket_id` column **and** a denormalized `org_id` (ticket-linked child table, e.g. `ticket_attachments`) | `TICKET_ORG_DENORMALIZED_TABLES` in `services/ticketOrgMoveLockOrder.ts` **and** `CUSTOM_ORG_REWRITE_TABLES` in `routes/devices/core.ts`, in the same relative order on both | `ticketOrgMoveLockOrder.test.ts` (**Test API**) checks the two lists agree with each other, not with the schema — **runtime only (no completeness test) — fails on the admin move action, not in CI** |
 | is append-only (REVOKE DELETE + immutability trigger) | also `AUDIT_ADMIN_REQUIRED_TABLES` in `tenantCascade.ts` | runtime `permission denied` during erasure |
 | is in `CORE_ORG_CASCADE_DELETE_ORDER` — **including when you only add a COLUMN to one** | `CORE_TENANT_EXPORT_POLICY` in `services/tenantExportPolicyRegistry.ts` | `tenant-export-policy.integration.test.ts` + `tenantExportErasureRoundtrip.integration.test.ts` (**Integration Tests**) |
+
+A table registered here must sit at the same relative position in both lists, or a concurrent ticket-move and device-move over a row they both reach (e.g. a `ticket_alert_links` row) can deadlock with 40P01 (`services/ticketOrgMoveLockOrder.ts`). If it also carries a `DEFERRABLE INITIALLY IMMEDIATE` composite `(ticket_id, org_id) → tickets(id, org_id)` FK — as only `time_entries` and `ticket_parts` do today — that constraint's name must be added to both movers' `SET CONSTRAINTS … DEFERRED` statements too, or the org-move's own `UPDATE tickets` aborts with 23503 the instant it commits. Neither gap shows up in CI: it surfaces only when an admin runs the move.
 
 **The export-policy row is the only one that fires on a new column, not just a new table.** Every column of every org-cascade table must be classified, so `ADD COLUMN` on a long-registered table breaks it. Buckets, via `tablePolicy(orgKey, groups)`:
 
@@ -88,7 +92,7 @@ Breeze is an MSP tool: techs define one policy and apply it to ALL their orgs. *
 The playbook (copy a `2026-07-01-*-partner-ownership.sql` migration as the reference):
 1. **Migration**: `partner_id` FK + `org_id` nullable + `<table>_one_owner_chk` CHECK `((org_id IS NULL) <> (partner_id IS NULL))` + partner index + ONE dual-axis RLS policy (`system OR org-access OR partner-access`), replacing any per-command org-only policies.
 2. **Writes**: gate partner-wide create/update/delete on `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts` — the single source of truth). Create routes take an `ownerScope: 'organization' | 'partner'` field; update schemas derived via `.partial()` must `.omit({ ownerScope: true })`.
-3. **Reads**: app-layer dual-axis conditions (`orgCondition OR (org_id IS NULL AND partner_id = auth.partnerId)`) must be gated on `auth.scope === 'partner'` — org tokens carry a partnerId but never pass `breeze_has_partner_access`; RLS is stricter than the app layer, never claim parity. Readers running inside an org-scoped RLS context (agent paths!) cannot see partner-wide rows at all — move them to a system context (see the heartbeat probe-config pattern, #1105).
+3. **Reads**: app-layer dual-axis conditions (`orgCondition OR (org_id IS NULL AND partner_id = auth.partnerId)`) must be gated on `auth.scope === 'partner'` — org tokens carry a partnerId but never pass `breeze_has_partner_access`; RLS is stricter than the app layer, never claim parity. An org-scoped RLS context is otherwise blind to partner-wide rows (`breeze_has_org_access(NULL)` and `breeze_has_partner_access(P)` are both false for an org token) — give the table its own read branch instead of escalating: add a `FOR SELECT`-only policy `USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id())` (template: `apps/api/migrations/2026-10-05-110000-config-policy-partner-wide-select.sql`; helper shipped in `2026-06-13-catalog-partner-read-branch.sql`). Never append this branch to an existing `FOR ALL` policy — that would also widen UPDATE/DELETE row targeting to partner-wide rows; always a separate, additive, SELECT-only policy. `breeze_current_partner_id()` is populated on the agent-auth path too (`middleware/agentAuth.ts` sets `currentPartnerId: device.partnerId`, #4673 W02) — the branch is LOAD-BEARING there: dropping it silently stops partner-wide config (event-log, monitoring, PAM, patch-source, CIS baselines, …) from reaching agents at all, with no error. Reserve the old system-context escalation (`runOutsideDbContext(() => withSystemDbAccessContext(...))`, the heartbeat probe-config pattern, #1105) for partner-AXIS tables (`readWithPartnerAxisVisibility`, #2822) and genuine cross-org worker reads — for a plain org-XOR-partner config table it is no longer the sanctioned pattern: it double-holds a pooled connection under the request's own `withDbAccessContext` transaction (a hang at concurrency ≥ pool size) and bypasses RLS entirely (#2417 shipped a cross-tenant hole through exactly this path). `rls-coverage.integration.test.ts` asserts every `DUAL_AXIS_TENANT_TABLES` entry with an org_id-XOR-partner_id shape carries this branch, with `PARTNER_WIDE_SELECT_BRANCH_EXEMPT` as the allowlist for tables that don't have it yet (each entry there is a filed follow-up issue, not a design choice).
 4. **Config-policy linkage**: add the feature type to `PARTNER_LINKABLE_FEATURE_TYPES` and the dual-axis branch of `validateFeaturePolicyExists` (`services/configurationPolicy.ts`); remove it from the org-only `FEATURE_TABLE_MAP`.
 5. **Evaluation/enforcement**: if a worker/scheduler evaluates the table against devices, partner-wide rows MUST fan out by the device org's partner (never `eq(table.orgId, device.orgId)` alone — that silently no-ops on `org_id NULL`). Worker-created child rows (results, alerts, findings) always take the DEVICE's org. One integration test must prove the fan-out fires against real Postgres.
 6. **Tests + UI**: register in `DUAL_AXIS_TENANT_TABLES` (`rls-coverage.integration.test.ts`), add a `<table>PartnerRls.integration.test.ts` suite (cross-partner forge 42501, XOR 23514, org isolation, fan-out), create-only ownerScope selector + "All orgs" badge in the web UI (pattern: `apps/web/src/components/software/PolicyForm.tsx`).
@@ -135,6 +139,32 @@ if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401
 ```
 
 The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/web-ui/2026-05-15-ws-a-action-feedback-design.md`.
+
+### Settings — one concept, one home
+
+Rules from the 2026-09-17 billing/ticketing settings audit
+(`docs/superpowers/specs/web-ui/2026-09-17-billing-ticketing-settings-audit.md`),
+enforced going forward for every settings surface, not just billing/ticketing:
+
+1. **One concept, one home.** A setting is edited in exactly one place per level.
+2. **Settings live with their domain.** Billing settings under Billing, ticketing
+   under Ticketing. Actions and reports are not settings.
+3. **Two levels, one direction.** Partner default → org override → snapshotted on
+   the document. The org always wins; a stated exception must say so in the UI
+   where it applies.
+4. **One inheritance control.** Blank = inherit; the field always shows the
+   inherited *value* and where it comes from.
+5. **One resolver per concept**, used by draft, issue and render.
+6. **One snapshot moment.** Whatever prints on a customer document is frozen when
+   the document becomes customer-visible.
+7. **One save pattern per screen type.** Forms: page Save. Lists: row drawer Save.
+   Switches with immediate effect: autosave with a toast. Never mixed in a card.
+8. **Every screen is in the nav, at one URL.** Old URLs redirect. Enforced by
+   `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts`.
+9. **A PR that adds a setting states its home, level, resolver, and the number of
+   places the concept is configured before and after.** A count that goes up needs
+   a removal plan. Required in the PR description for any PR touching
+   `pages/settings/**` or a `*Settings*` component — see the PR template.
 
 ---
 
@@ -256,7 +286,7 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in the **`integration-test`** job (4 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
+- Integration tests run in the **`integration-test`** job (8 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
 
 ### Running Tests Locally
 ```bash
@@ -274,6 +304,9 @@ cd apps/api && npx vitest run src/routes/auth.test.ts
 # NOTE: `pnpm test` does NOT run the RLS/integration contract suites
 # (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
 # Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
+# They need real Postgres+Redis. Per-worktree copy (safe alongside other sessions):
+pnpm test-stack up       # private pg+redis for this worktree (docker-compose.test.yml under -p)
+pnpm test-stack down     # tear it down when finished — nothing does this for you
 
 # Go agent (with race detection)
 cd agent && go test -race ./...
@@ -292,9 +325,19 @@ cd e2e-tests && pnpm test
 
 ---
 
+## Model Routing (cost/speed strategy — benchmarked 2026-09-01)
+
+**Expensive models write contracts and verify claims; cheap models do everything in between; mechanical checks replace expensive review wherever the work is gradeable.** Basis: two head-to-head benchmarks (blind bug-hunt + blind spec→codegen) across Laguna, Codex gpt-5.6-sol med/high, Haiku, Sonnet, Opus — see memory `model-benchmark-codex-claude-laguna-2026-09-01`.
+
+1. **Spec-down (Fable/Opus in-session).** Spend top-tier tokens only on: resolving spec ambiguity, choosing contracts (tenancy shape, cascade lists, API surface), and cross-file reachability judgment. All six models aced a fully-resolved spec (39/39 each); 2 of 3 Claude PRIMARY bug claims died on a file the blind reviewer couldn't see. The orchestrator's value is the contract, not the typing.
+2. **Generate cheap — route by access needs, not quality.** Laguna (free, local, ~10× faster): any paste-in-shaped work — spec'd modules, co-located tests, migration drafts from a stated contract. Codex `medium` (flat sub, ~0 marginal): well-scoped repo-touching edits and single-file bug-hunts. Haiku subagents: mechanical repo chores needing tools, with explicit file lists.
+3. **Verify mechanically first.** tsc/tests/grep-the-contract before any model review — the cascade-list history is contract tests 5/5 vs human review 0/5. A hidden acceptance suite converts "needs expensive review" into "needs a script."
+4. **Review sized by blast radius.** Default: Laguna + Codex `medium` in parallel (~free, ~1 min), orchestrator arbitrates — disagreement is signal; Laguna's hallucinations die at verification (it misread code 2× in the bench — never trust its line-level claims unre-read). Reserve Sonnet (precision: 4/4 real findings, 0 hallucinations) or Opus (depth: found the billing bug nobody else saw) for tenancy/auth/billing/agent-shipped code.
+5. **Advisor quorum unchanged** — Fable + codex `xhigh` only for consequential, hard-to-reverse design (see Working Style).
+
 ## Codex Delegation
 
-This project uses OpenAI Codex CLI for **read-only analysis (bug-hunting, security review, design-from-plan — its strongest uses) and well-scoped single-file edits** (utilities, co-located tests, CRUD endpoints, mechanical renames). Keep with Claude: repo-wide sweeps/enumeration, cross-module refactors (codex misses existing canonical code), UI work, and the *architecture* of multi-tenant/auth changes — though codex may *execute* an RLS migration once Claude hands it the tenancy contract. Default to `high`; reserve `xhigh` for open-ended design. For commands, reasoning levels, and the benchmarked delegation matrix, use the **`delegating-to-codex`** skill.
+This project uses OpenAI Codex CLI for **read-only analysis (bug-hunting, security review, design-from-plan — its strongest uses) and well-scoped single-file edits** (utilities, co-located tests, CRUD endpoints, mechanical renames). Keep with Claude: repo-wide sweeps/enumeration, cross-module refactors (codex misses existing canonical code), UI work, and the *architecture* of multi-tenant/auth changes — though codex may *execute* an RLS migration once Claude hands it the tenancy contract. Default to `medium` (2026-09-01 bench: `medium` beat `high` on bug-hunts and tied on codegen); escalate to `high` only when medium comes back thin; reserve `xhigh` for open-ended design. Model is `gpt-6-astra` (GPT-6, switched 2026-09-06; `gpt-5.6-sol` is the fallback). For commands, reasoning levels, and the benchmarked delegation matrix, use the **`delegating-to-codex`** skill.
 
 ---
 
@@ -325,12 +368,13 @@ cd agent && make run
 ### Schema Migration Workflow
 1. Edit schema files in `apps/api/src/db/schema/`
 2. Write a hand-written SQL migration in `apps/api/migrations/`. The runner accepts any filename matching `^\d{4}-.*\.sql$` and applies them in `localeCompare` (lexicographic) order, so the prefix has to sort correctly.
-   - **Naming:** prefer `YYYY-MM-DD-HHMMSS-<slug>.sql` for new work. The time component orders same-day migrations natively, so it removes the need for the hand-assigned `-a-`/`-b-` infix below — whose letters are what produced the closed-block confusion. Plain `YYYY-MM-DD-<slug>.sql` remains valid. The legacy `NNNN-<slug>.sql` 4-digit form is still accepted but only for files predating the date-prefix switch — don't introduce new ones. **A Unix-epoch prefix does not work here**: `1787000000-…` sorts *before* every `2026-…` file under `localeCompare`, so it would replay ahead of the entire history.
+   - **Naming:** prefer `YYYY-MM-DD-HHMMSS-<slug>.sql` for new work. The time component orders same-day migrations natively, so it removes the need for the hand-assigned `-a-`/`-b-` infix below — whose letters are what produced the closed-block confusion. Plain `YYYY-MM-DD-<slug>.sql` remains valid. The legacy `NNNN-<slug>.sql` 4-digit form is still accepted but only for files predating the date-prefix switch — don't introduce new ones. **A Unix-epoch prefix does not work here**: `1787000000-…` sorts *before* every `2026-…` file under `localeCompare`, so it would replay ahead of the entire history. Before pushing, a branch's commit-time guard only knows about history reachable from its own HEAD — the pre-push hook re-checks against `origin/main` (`check-migration-naming.sh --against-ref origin/main`), so a migration that looked fine when committed can still fail at push time if `origin/main` gained a migration meanwhile that sorts after it; rename if it fails.
    - **Same-day ordering:** if two migrations on the same date depend on each other (e.g. one creates a table, the other adds constraints or policies on it), insert an explicit `-a-`/`-b-` infix between the date and the slug: `2026-04-19-a-installer-bootstrap-tokens.sql`, `2026-04-19-b-installer-bootstrap-tokens-constraints.sql`. Don't rely on the slug to sort the files for you — `-` (0x2D) < `.` (0x2E), so `foo-bar.sql` sorts *after* `foo-bar-extra.sql`, which has bitten us before (issue #506). The infix letters are **per-date and local to that date** — not a global sequence, and never continued across dates. The `apps/api/src/db/autoMigrate.test.ts` regression test will catch most ordering bugs.
    - **`2026-08-06` is a CLOSED date block — never add `2026-08-06-g-` (or `-h-`, `-i-`, …).** Its eight shipped files fill slots `-a-`…`-f-` (mostly the security-remediation waves, plus two same-day migrations from unrelated work); they are content-hash immutable and carry ordering dependencies on each other, so a file wedged into the block replays in the wrong order on a fresh DB. Three separate authors independently reached for `-g-` (#2995 merged and reddened main; #3008 caught on the PR; a plan doc instructed a third) because the same-day rule above reads as "take the next free letter" — correct in general, just not on a closed date. **If you need to sort after everything shipped, name the file to sort after the newest COMMITTED migration** — check it, do not assume today's date does the job. It does not: shipped filenames ran ahead of real time in a compounding ratchet (each author picked one day past the highest existing name to guarantee sort-last, raising the ceiling for the next), so 169 of 466 dated migrations are named ahead of the day they landed, the furthest by 16 days. As of 2026-08-26 the newest is `2026-09-10-…`, i.e. **more than two weeks ahead of today**, and a file named for today would replay before it. Shipped migrations are content-hash immutable so they cannot be renamed back; the ceiling stands until real time catches up. Enforced at commit time by rule 3 of the guard. Enforced by `scripts/check-migration-naming.sh` (pre-commit hook + CI) and `autoMigrate.test.ts`; full authoring reference in `apps/api/migrations/README.md`.
    - **Idempotent:** `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, `DO $$ BEGIN ... EXCEPTION`, `pg_policies` existence checks for policies. Re-applying must be a no-op.
    - **No inner `BEGIN;`/`COMMIT;`:** `autoMigrate` wraps each file in `client.begin(...)`. Adding your own transaction blocks emits `NOTICE: there is already a transaction in progress` and serves no purpose.
    - **Cleanup statements must report row counts:** a migration that UPDATEs/DELETEs suspect rows (e.g. before adding a constraint) should wrap the statement in `DO $$ ... GET DIAGNOSTICS n = ROW_COUNT; IF n > 0 THEN RAISE WARNING 'cleaned % <what>', n; END IF; END $$;` so the count lands in Postgres logs. Silently fixing bad data destroys the forensic trail — if those rows could evidence a tenant-isolation breach, you want a recorded count even when it's 0 (lesson from `2026-06-10-c`).
+   - **Any migration that writes rows must elect system scope FIRST.** Put `SELECT set_config('breeze.scope', 'system', true);` (or `PERFORM set_config('breeze.scope', 'system', true);` as the first statement inside a `DO` block) before the first `UPDATE`/`DELETE`/`INSERT`/`MERGE` in the file. `breeze_current_scope()` defaults to `'none'` and 425 of 442 tables are `FORCE ROW LEVEL SECURITY`, which binds the table **owner** — the role migrations run as. Without the wrapper, on any connection that does not bypass RLS the UPDATE/DELETE matches **zero rows silently** (the `RAISE WARNING` prints a truthful-looking `0`) and the INSERT aborts the migration with 42501. `is_local = true` scopes it to autoMigrate's per-file transaction; in a `-- @no-transaction` file statements are sent separately, so the elevation must be in the *same* statement as the write. Enforced by `apps/api/src/db/migrationRlsScope.test.ts` (**Test API**), which carries a frozen baseline of the 122 pre-existing offenders — **never add a new file to that baseline** (#4518).
    - **Never edit a shipped migration** — fix forward with a new migration. (Renaming is also editing for tracking purposes: `breeze_migrations` keys on filename, so a rename causes already-migrated DBs to re-apply under the new name. Only acceptable when the file is fully idempotent and re-application is a true no-op.) A rename must also **sweep every reference to the old path**: integration suites replay migrations by path (`readFileSync('../../../migrations/<file>.sql')`), so a missed one is an `ENOENT` minutes into Integration Tests, not a compile error. `autoMigrate.test.ts` asserts every such reference resolves, moving that failure into the unit job.
 3. Run `pnpm db:check-drift` to verify schema matches migrations
 4. Commit the migration file
@@ -364,12 +408,26 @@ ln -sf docker-compose.override.yml.dev docker-compose.override.yml
 docker compose up --build -d
 ```
 
+**Tear down when you're done — nothing reaps a local stack for you.** Every `up` (these modes, `pnpm wt-stack up`, `pnpm test-stack up`, an ad-hoc `docker run` Postgres) stays up until torn down, and each agent session tends to leave its own behind — five Breeze projects were found running on 2026-09-01. `pnpm wt-stack ls` and `pnpm test-stack ls` each see only their own prefix; the engine-wide truth is:
+
+```bash
+docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("breeze")) | "\(.Name)\t\(.Status)"'   # every Breeze project, all worktrees
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev down -v --remove-orphans   # this checkout (same -f files as up)
+pnpm wt-stack down            # a wt-stack, from the worktree+branch that created it
+pnpm test-stack down          # a per-worktree integration stack, from the same worktree (reads the project it recorded in .env.test)
+docker compose -p <name> down -v --remove-orphans   # anything else the first command listed (no -f needed)
+```
+
+Before ending a session, tear down what you brought up and say what you left running. Full checklist (bare containers, orphaned projects, the everything-Breeze reset): `.claude/skills/worktree-stack/SKILL.md` → "Tear down when done".
+
 **Deleting a config file? Sweep the Compose mounts in the same PR.** Docker creates a missing bind-mount source as an empty **directory** on the host, which then gets `COPY`d into dev images where Vite/PostCSS discovery dies on it (`EISDIR`) — `breeze-web` comes up permanently unhealthy on a fresh clone. `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) parses every tracked compose file and fails when a file-shaped, repo-relative bind-mount source doesn't exist — or has already become a phantom directory. Extensionless sources (`./agent/bin`) are exempt as intended build outputs; out-of-repo sources (`../breeze-billing/…`) can't be asserted and are skipped. Shipped three times before the guard existed: #1999 (postcss), #2208 (partial tailwind), #2012 (the mounts #2208 missed).
 
-### PR Merge Process
-- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
-- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
-- This is the normal workflow — do not wait for branch protection rules to be satisfied
+### PR Merge Process — merge queue (since 2026-09-07)
+- `main` uses GitHub's **merge queue**. Merge with `gh pr merge <N>` (no strategy flag, no `--admin`): the PR is enqueued, the queue rebuilds it on top of whatever is ahead of it, runs the full `CI Success` gate on that merge ref, and lands it serially. The queue owns the strategy (squash); passing `--squash` only prints a warning.
+- **Never `--admin`.** Admin bypass skips the queue and lands the commit directly, which is exactly what produced the 09-06/09-07 pile-ups: concurrent sessions each admin-merging cancelled 59 of 80 main CI runs in 48h, so main's true state was never evaluated, and sibling PRs went CONFLICTING mid-sweep. Reserve `--admin` for a genuine emergency (main red and the fix itself cannot pass the queue), say so in the PR, and immediately run `gh workflow run CI --ref main` — `ci.yml` no longer runs on pushes to main (queue landings were already evaluated on their merge-group ref), so a bypass merge is untested until you dispatch it.
+- No reviewer approval is required by the ruleset any more; the review round is the `/pr-review-toolkit:review-pr` pass recorded on the PR, not a GitHub approval. Required check is `CI Success` only. `ci.yml` runs on every PR; its `changes` job classifies the diff and a docs-only PR (`docs/**`, `apps/docs/**`, `*.md`, `*.mdx`) skips the code jobs, runs only the `docs-check` job (astro check + build, formerly `docs-ci.yml`), and still gets a passing `CI Success` so it can enter the queue (the queue then runs the full suite on the merge ref). Only `ci.yml` ever reports `CI Success` — never add a second workflow with that check name, two reporters race for the required-check slot.
+- Queue semantics to know: a PR must be green on its own head to be enqueued; the queue then runs `ci.yml` under the `merge_group` event with the smoke jobs blocking (they are non-blocking on `pull_request` only). The `changes` classifier runs there too (since #5863): a queue entry is classified from a `git diff` of `merge_group.base_sha...head_sha` with the same rules as a PR, so a docs-only entry skips the code jobs — and anything unresolvable falls back to the full suite. If the queue run fails, the PR is dequeued with a comment — fix and re-enqueue, do not bypass.
+- Any session may enqueue its own reviewed, green PR. Serialisation is the queue's job now, not a single-merger rule.
 
 ### Production Deploy (EU + US droplets)
 

@@ -9,12 +9,39 @@ import (
 
 func TestValidateDesktopStartRequest(t *testing.T) {
 	req := &ipc.DesktopStartRequest{
-		SessionID:    "desktop-1",
-		Offer:        "offer",
-		DisplayIndex: 1,
+		SessionID:       "desktop-1",
+		Offer:           "offer",
+		DisplayIndex:    1,
+		RevocationLease: &ipc.RevocationLease{Token: "t", ExpiresAtUnixMs: 1, RenewEverySec: 25},
 	}
 	if err := validateDesktopStartRequest(req); err != nil {
 		t.Fatalf("expected valid desktop start request, got %v", err)
+	}
+
+	// A start with no revocation lease is refused: without one the control
+	// plane could never end this session.
+	if err := validateDesktopStartRequest(&ipc.DesktopStartRequest{
+		SessionID:    "desktop-1",
+		Offer:        "offer",
+		DisplayIndex: 1,
+	}); err == nil {
+		t.Fatal("expected a start with no revocation lease to be rejected")
+	}
+
+	// An over-cap max duration is CLAMPED, not rejected — refusing the whole
+	// session over a stale policy value would be worse than capping it.
+	clamped := &ipc.DesktopStartRequest{
+		SessionID:               "desktop-1",
+		Offer:                   "offer",
+		DisplayIndex:            1,
+		MaxSessionDurationHours: 168,
+		RevocationLease:         &ipc.RevocationLease{Token: "t", ExpiresAtUnixMs: 1, RenewEverySec: 25},
+	}
+	if err := validateDesktopStartRequest(clamped); err != nil {
+		t.Fatalf("over-cap max duration must be clamped, not rejected: %v", err)
+	}
+	if clamped.MaxSessionDurationHours != maxSessionDurationHours {
+		t.Fatalf("MaxSessionDurationHours = %d, want %d", clamped.MaxSessionDurationHours, maxSessionDurationHours)
 	}
 
 	if err := validateDesktopStartRequest(&ipc.DesktopStartRequest{

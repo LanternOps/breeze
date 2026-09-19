@@ -57,6 +57,16 @@ export const alertTemplates = pgTable('alert_templates', {
   autoResolveConditions: jsonb('auto_resolve_conditions'),
   cooldownMinutes: integer('cooldown_minutes').notNull().default(5),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
+  // #5289: set only on rows COMPILED from a monitor definition. The compiler
+  // (services/monitors/monitorCompiler.ts) is the single writer; every other
+  // writer refuses a row carrying this with 409. Declared without .references()
+  // to avoid an import cycle with monitorDefinitions (which references the
+  // severity enum and escalation policies from this file); the FK itself is in
+  // the migration and drift detection compares columns, not FK declarations.
+  managedByMonitorId: uuid('managed_by_monitor_id'),
+  // Fleet Designer W03 (#5653): free-text "why" when a template is created
+  // from a design; NULL otherwise.
+  rationale: text('rationale'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -80,6 +90,9 @@ export const alertRules = pgTable('alert_rules', {
   targetId: uuid('target_id').notNull(),
   overrideSettings: jsonb('override_settings'),
   isActive: boolean('is_active').notNull().default(true),
+  // #5289 — see alertTemplates.managedByMonitorId. A compiled rule uses
+  // targetType 'monitor' with targetId = the monitor definition id.
+  managedByMonitorId: uuid('managed_by_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
@@ -108,6 +121,16 @@ export const alerts = pgTable('alerts', {
   suppressedUntil: timestamp('suppressed_until'),
   dismissedAt: timestamp('dismissed_at'),
   dismissedBy: uuid('dismissed_by').references(() => users.id),
+  // #5289: provenance for alerts raised by a compiled monitor rule, so the UI
+  // can link an alert back to the monitor that authored it. ON DELETE SET NULL
+  // in SQL — deleting a monitor must not delete its history.
+  monitorId: uuid('monitor_id'),
+  // #5290 — the breach episode this alert belongs to (null for non-monitor
+  // alerts). ON DELETE SET NULL in SQL.
+  episodeId: uuid('episode_id'),
+  // #5290 — a recurrence-escalation alert. NEVER auto-resolved, never
+  // auto-suppressed by an AI verdict, always its own correlation root.
+  requiresHuman: boolean('requires_human').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // Backs the `alerts.critical` device-filter field (#968).
@@ -231,12 +254,27 @@ export const escalationPolicies = pgTable('escalation_policies', {
   partnerIdIdx: index('escalation_policies_partner_id_idx').on(table.partnerId),
 }));
 
+// Send identity (wave 3.5c, #4085): a send is uniquely identified by
+// (alertId, channelId, escalationStep) — step 0 is the baseline fan-out, 1..N
+// are escalation waves (scheduleEscalation, notificationDispatcher.ts). The
+// unique index backs a claim-style state machine in processSendNotification:
+// insert-onConflictDoNothing on this triple, then either skip (already
+// 'sent') or reclaim the existing row for a retry. No org_id column — tenant
+// scope is derived transitively via alertId, so this table needs no cascade/
+// export registration of its own. It DOES have RLS: FORCE ROW LEVEL SECURITY
+// with EXISTS-join policies over alerts.org_id (migration
+// 2026-05-30-fk-child-tables-rls.sql), registered as an alert-join table in
+// rls-coverage.integration.test.ts — "no org_id column" is not "no RLS".
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
   alertId: uuid('alert_id').notNull().references(() => alerts.id),
   channelId: uuid('channel_id').notNull().references(() => notificationChannels.id),
+  escalationStep: integer('escalation_step').notNull().default(0),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   sentAt: timestamp('sent_at'),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  sendIdentityUniq: uniqueIndex('alert_notifications_send_identity_uq')
+    .on(table.alertId, table.channelId, table.escalationStep)
+}));

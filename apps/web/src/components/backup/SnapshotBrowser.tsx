@@ -66,6 +66,8 @@ type Snapshot = {
   requestedImmutabilityEnforcement: 'application' | 'provider' | null;
   immutabilityFallbackReason: string | null;
   retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
+  bareMetalRestorable?: boolean | null;
+  bareMetalReasons?: string[] | null;
   tree?: TreeNode;
   files?: SnapshotFile[];
 };
@@ -480,6 +482,20 @@ export default function SnapshotBrowser() {
                 {selectedSnapshot.backupType && selectedSnapshot.backupType !== 'file' && (
                   <span className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700">
                     {BACKUP_TYPE_LABELS[selectedSnapshot.backupType]}
+                  </span>
+                )}
+                {selectedSnapshot.bareMetalRestorable === true && (
+                  <span data-testid="snapshot-bare-metal-ok" className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                    {t('snapshotBrowser.bareMetalRestorable')}
+                  </span>
+                )}
+                {selectedSnapshot.bareMetalRestorable === false && (
+                  <span
+                    data-testid="snapshot-bare-metal-no"
+                    title={(selectedSnapshot.bareMetalReasons ?? []).join('; ')}
+                    className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700"
+                  >
+                    {t('snapshotBrowser.bareMetalNotRestorable')}
                   </span>
                 )}
                 {selectedSnapshot.legalHold && (

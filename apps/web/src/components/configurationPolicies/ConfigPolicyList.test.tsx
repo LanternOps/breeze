@@ -45,6 +45,22 @@ describe('ConfigPolicyList ownership badges', () => {
   });
 });
 
+describe('ConfigPolicyList inherits badge (#5080)', () => {
+  it('shows an "inherits" badge on rows with parentPolicyId', () => {
+    const child: ConfigPolicy = { ...orgOwned, parentPolicyId: 'parent-1' };
+    render(<ConfigPolicyList policies={[partnerWide, child]} />);
+
+    const badges = screen.getAllByTestId('config-policy-inherits-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('Inherits');
+  });
+
+  it('does not show the badge on a policy with no parent', () => {
+    render(<ConfigPolicyList policies={[orgOwned]} />);
+    expect(screen.queryByTestId('config-policy-inherits-badge')).not.toBeInTheDocument();
+  });
+});
+
 describe('ConfigPolicyList Features column (#2950)', () => {
   const withLinks: ConfigPolicy = {
     ...orgOwned,

@@ -44,6 +44,26 @@ export interface SecretCryptoOptions {
   strict?: boolean;
 }
 
+interface SecretEncryptionKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+interface SecretEncryptionKeyMaterials {
+  active: SecretEncryptionKeyMaterial;
+  retained: SecretEncryptionKeyMaterial[];
+}
+
+export interface SecretDerivedKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+export interface SecretDerivedKeyMaterials {
+  active: SecretDerivedKeyMaterial;
+  retained: SecretDerivedKeyMaterial[];
+}
+
 let cachedEncryptionKey: Buffer | null = null;
 let cachedLegacyKeys: Buffer[] | null = null;
 let cachedKeyringRaw: string | undefined;
@@ -207,6 +227,43 @@ function getV2EncryptionKey(keyId: string): Buffer {
   }
 
   throw new SecretKeyMaterialError('Unknown encrypted secret key ID');
+}
+
+/** Assemble copy-isolated master material for the public derivation boundary. */
+function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials {
+  const activeKeyId = getActiveKeyId();
+  const activeKey = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
+  const retained: SecretEncryptionKeyMaterial[] = [...getEncryptionKeyring().entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([keyId, key]) => ({ keyId, key: Buffer.from(key) }));
+
+  if (!retained.some(({ keyId }) => keyId === activeKeyId)) {
+    retained.push({ keyId: activeKeyId, key: Buffer.from(activeKey) });
+  }
+
+  return {
+    active: { keyId: activeKeyId, key: Buffer.from(activeKey) },
+    retained,
+  };
+}
+
+/**
+ * Derive service-scoped HMAC keys without exposing encryption-at-rest keys.
+ * Different domains are cryptographically independent namespaces.
+ */
+export function getSecretDerivedKeyMaterials(domain: string): SecretDerivedKeyMaterials {
+  if (!domain) throw new Error('Secret derived-key domain is required');
+  const materials = getSecretEncryptionKeyMaterials();
+  const derive = ({ keyId, key }: SecretEncryptionKeyMaterial): SecretDerivedKeyMaterial => ({
+    keyId,
+    key: createHmac('sha256', key)
+      .update(`breeze-secret-derived-key:v1\0${domain}`)
+      .digest(),
+  });
+  return {
+    active: derive(materials.active),
+    retained: materials.retained.map(derive),
+  };
 }
 
 function parseEncryptedPayload(encoded: string): {

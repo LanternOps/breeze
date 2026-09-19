@@ -3,6 +3,7 @@ import type { FilterConditionGroup } from './filterEngine';
 import { db, getCurrentDbAccessContext, hasDbAccessContext } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
 import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './filterEngine';
+import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 
 type MembershipAction = 'added' | 'removed';
 type MembershipReason = 'manual' | 'filter_match' | 'filter_unmatch' | 'pinned' | 'unpinned';
@@ -26,6 +27,19 @@ export interface MembershipUpdateSummary {
   materialized?: number;
 }
 
+async function schedulePeripheralMembershipChanges(
+  deviceIds: readonly string[],
+  reason: 'dynamic_membership_changed' | 'manual_membership_changed' | 'membership_pin_changed',
+): Promise<void> {
+  await Promise.all([...new Set(deviceIds)].map(async (deviceId) => {
+    try {
+      await schedulePeripheralPolicyDevice(deviceId, reason);
+    } catch (error) {
+      console.error(`[groupMembership] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    }
+  }));
+}
+
 /**
  * Short description of the RLS access context the current call is running in,
  * for diagnostics only. `none` is the dangerous one: under the forced-RLS
@@ -44,6 +58,144 @@ function isFilterConditionGroup(value: unknown): value is FilterConditionGroup {
   if (!value || typeof value !== 'object') return false;
   const maybeGroup = value as FilterConditionGroup;
   return Array.isArray(maybeGroup.conditions) && typeof maybeGroup.operator === 'string';
+}
+
+export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId' | 'type' | 'siteId' | 'filterConditions'>;
+
+/** Thrown by resolveEffectiveGroupMembers when a dynamic group cannot be evaluated.
+ *  Billing maps it to GROUP_EVALUATION_FAILED; never to a zero count. */
+export class GroupEvaluationError extends Error {
+  constructor(
+    public readonly groupId: string,
+    public readonly reason: 'invalid_filter' | 'engine_error',
+    cause?: unknown,
+  ) {
+    super(`device group ${groupId}: ${reason}`, cause === undefined ? undefined : { cause });
+    this.name = 'GroupEvaluationError';
+  }
+}
+
+export interface EffectiveGroupMembers {
+  /** What the group's definition selects: live filter matches (dynamic) or every row (static). */
+  matched: ReadonlySet<string>;
+  /** Pinned rows of a dynamic group (empty for static). The evaluator keeps them even when the filter no longer matches. */
+  pinned: ReadonlySet<string>;
+}
+
+const SLOW_GROUP_EVALUATION_MS = 250;
+
+/**
+ * The one read-only definition of "who is in this group" (#3205 W02). Used by
+ * evaluateGroupMembership (which then diffs and writes) and by contract billing
+ * (which never writes). Every membership read predicates on group_id AND the
+ * group's own org_id: the membership table's RLS is org-only, so a forged row
+ * carrying another org_id and this group's id is visible to the system context.
+ *
+ * - static: matched = all rows, pinned = ∅
+ * - dynamic, filter_conditions NULL: matched = ∅, pinned = pinned rows
+ * - dynamic, malformed non-null filter: throws GroupEvaluationError('invalid_filter')
+ * - dynamic, valid filter: matched = live evaluateFilter within the group's site,
+ *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
+ */
+export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
+  const filterConditions = group.filterConditions;
+  let dynamicFilter: FilterConditionGroup | null = null;
+  if (group.type === 'dynamic' && filterConditions !== null && filterConditions !== undefined) {
+    if (!isFilterConditionGroup(filterConditions)) {
+      throw new GroupEvaluationError(group.id, 'invalid_filter');
+    }
+    dynamicFilter = filterConditions;
+  }
+
+  const rows = await db
+    .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
+    .from(deviceGroupMemberships)
+    .where(and(eq(deviceGroupMemberships.groupId, group.id), eq(deviceGroupMemberships.orgId, group.orgId)));
+
+  if (group.type !== 'dynamic') {
+    return { matched: new Set(rows.map((r) => r.deviceId)), pinned: new Set() };
+  }
+  const pinned = new Set(rows.filter((r) => r.isPinned).map((r) => r.deviceId));
+  if (dynamicFilter === null) {
+    return { matched: new Set(), pinned };
+  }
+  const started = Date.now();
+  let matched: Set<string>;
+  try {
+    const result = await evaluateFilter(dynamicFilter, {
+      orgId: group.orgId,
+      allowedSiteIds: group.siteId ? [group.siteId] : null,
+    });
+    matched = new Set(result.deviceIds);
+  } catch (err) {
+    throw new GroupEvaluationError(group.id, 'engine_error', err);
+  }
+  const ms = Date.now() - started;
+  if (ms > SLOW_GROUP_EVALUATION_MS) {
+    console.warn(`[groupMembership] slow filter evaluation for group ${group.id} (org ${group.orgId}): ${ms}ms`);
+  }
+  return { matched, pinned };
+}
+
+export type DeviceForMembership = {
+  id: string;
+  orgId: string;
+  siteId: string | null;
+  isEphemeral: boolean;
+};
+
+/**
+ * Is this ONE device in this group, as billing defines membership (#3205 W06)?
+ * The single-device twin of resolveEffectiveGroupMembers: returns
+ * `deviceId ∈ (matched ∪ pinned)` for billing-eligible devices (same org, not
+ * ephemeral). Other-org and ephemeral devices are refused up front. Proved by
+ * groupMembership.parity.integration.test.ts.
+ *
+ * The site clause on the filter branch is PARITY, not an optimization:
+ * evaluateFilter narrows by allowedSiteIds inside its SQL, deviceMatchesFilter
+ * (filterEngine.ts:668) takes no site argument. The pinned branch carries no
+ * site clause because `pinned` carries none either — a site-bound group's
+ * off-site pinned member IS in memberIds and is narrowed out later, by
+ * coverageMatch's group branch.
+ *
+ * Tenant/ephemeral eligibility runs before all queries. For eligible devices,
+ * filter-shape validation runs BEFORE the pinned short-circuit: an unevaluable
+ * group throws, exactly as resolveEffectiveGroupMembers does.
+ * The shape check is a pure in-memory test, so the pinned row still skips the
+ * expensive half (deviceMatchesFilter, a compiled filter under a 500 ms timeout).
+ *
+ * Every membership read predicates on group_id AND the group's own org_id: the
+ * membership table's RLS is org-only, so a forged row carrying another tenant's
+ * org_id and this group's id is visible to a system context.
+ */
+export async function groupIncludesDevice(group: GroupForResolution, device: DeviceForMembership): Promise<boolean> {
+  if (device.orgId !== group.orgId || device.isEphemeral) return false;
+
+  const filter = group.filterConditions;
+  const hasFilter = filter !== null && filter !== undefined;
+  if (group.type === 'dynamic' && hasFilter && !isFilterConditionGroup(filter)) {
+    throw new GroupEvaluationError(group.id, 'invalid_filter');
+  }
+
+  const [membership] = await db
+    .select({ isPinned: deviceGroupMemberships.isPinned })
+    .from(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.groupId, group.id),
+      eq(deviceGroupMemberships.orgId, group.orgId),
+      eq(deviceGroupMemberships.deviceId, device.id),
+    ))
+    .limit(1);
+
+  if (group.type !== 'dynamic') return membership !== undefined;
+  if (membership?.isPinned) return true;
+  if (!hasFilter) return false;
+  if (group.siteId !== null && group.siteId !== device.siteId) return false;
+  try {
+    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup);
+  } catch (err) {
+    throw new GroupEvaluationError(group.id, 'engine_error', err);
+  }
 }
 
 function uniqueFields(fields: string[]): string[] {
@@ -170,6 +322,7 @@ export async function evaluateDeviceMembershipForGroup(
         eq(deviceGroupMemberships.deviceId, deviceId),
       ));
       await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
+      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
       return { evaluatedGroups: 1, added: 0, removed: 1 };
     }
     return { evaluatedGroups: 1, added: 0, removed: 0 };
@@ -202,6 +355,7 @@ export async function evaluateDeviceMembershipForGroup(
         })
         .onConflictDoNothing();
       await logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId);
+      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
       return { evaluatedGroups: 1, added: 1, removed: 0 };
     }
     return { evaluatedGroups: 1, added: 0, removed: 0 };
@@ -217,6 +371,7 @@ export async function evaluateDeviceMembershipForGroup(
         )
       );
     await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
+    await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
     return { evaluatedGroups: 1, added: 0, removed: 1 };
   }
 
@@ -250,19 +405,12 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
-  const filterResults = await evaluateFilter(filter, {
-    orgId: group.orgId,
-    allowedSiteIds: group.siteId ? [group.siteId] : null,
-  });
-  const matchingIds = new Set<string>(filterResults.deviceIds);
+  const { matched: matchingIds, pinned: pinnedIds } = await resolveEffectiveGroupMembers(group);
 
   const currentMemberships = await db
-    .select({
-      deviceId: deviceGroupMemberships.deviceId,
-      isPinned: deviceGroupMemberships.isPinned
-    })
+    .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
     .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.groupId, groupId));
+    .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, group.orgId)));
 
   const currentIds = new Set(currentMemberships.map(row => row.deviceId));
   const toAdd: string[] = [];
@@ -307,6 +455,13 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     await logMembershipChanges(groupId, toRemove, 'removed', 'filter_unmatch', group.orgId);
   }
 
+  if (toAdd.length > 0 || toRemove.length > 0) {
+    await schedulePeripheralMembershipChanges(
+      [...toAdd, ...toRemove],
+      'dynamic_membership_changed',
+    );
+  }
+
   // Verify what actually landed whenever we wrote something. `matched` is the
   // same number the server-side preview endpoint reports for this filter, so a
   // shortfall is precisely the "preview says 3, membership says 0" symptom —
@@ -316,9 +471,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   let materialized: number | undefined;
   if (toAdd.length > 0 || toRemove.length > 0) {
     const expected = new Set(matchingIds);
-    for (const membership of currentMemberships) {
-      if (membership.isPinned) expected.add(membership.deviceId);
-    }
+    for (const id of pinnedIds) expected.add(id);
     materialized = await countGroupMemberships(groupId);
     if (materialized < expected.size) {
       console.error(
@@ -350,7 +503,8 @@ export async function pruneGroupMembershipsOutsideSite(
   siteId: string,
   orgId: string,
   database: GroupMembershipDatabase = db,
-): Promise<{ removed: number }> {
+  options: { deferPeripheralReconciliation?: boolean } = {},
+): Promise<{ removed: number; deviceIds?: string[] }> {
   const memberships = await database
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -365,7 +519,9 @@ export async function pruneGroupMembershipsOutsideSite(
       .filter((membership) => membership.siteId !== siteId)
       .map((membership) => membership.deviceId),
   )];
-  if (deviceIds.length === 0) return { removed: 0 };
+  if (deviceIds.length === 0) {
+    return options.deferPeripheralReconciliation ? { removed: 0, deviceIds: [] } : { removed: 0 };
+  }
 
   await database
     .delete(deviceGroupMemberships)
@@ -377,8 +533,13 @@ export async function pruneGroupMembershipsOutsideSite(
     deviceIds.map((deviceId) =>
       logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', orgId, database)),
   );
+  if (!options.deferPeripheralReconciliation) {
+    await schedulePeripheralMembershipChanges(deviceIds, 'dynamic_membership_changed');
+  }
 
-  return { removed: deviceIds.length };
+  return options.deferPeripheralReconciliation
+    ? { removed: deviceIds.length, deviceIds }
+    : { removed: deviceIds.length };
 }
 
 export async function updateDeviceMembership(
@@ -403,6 +564,14 @@ export async function updateDeviceMembership(
     resolvedOrgId = device.orgId;
   }
 
+  // ORDER BY id is a LOCK-ORDER contract, not cosmetics. Both
+  // `ensureFilterFieldsUsed` (below) and `evaluateDeviceMembershipForGroup`
+  // UPDATE `device_groups`, so two concurrent re-evaluations for two devices in
+  // the same org that walk the org's groups in different orders can take the
+  // group row locks in opposite orders and deadlock (40P01 — the #3911 shape).
+  // An unordered SELECT gives no ordering guarantee whatsoever; sorting by the
+  // primary key makes every evaluator lock the same groups in the same
+  // sequence, which is the standard deadlock-free discipline.
   const groups = await db
     .select({
       id: deviceGroups.id,
@@ -414,7 +583,8 @@ export async function updateDeviceMembership(
       sql`${deviceGroups.orgId} = ${resolvedOrgId}
         AND ${deviceGroups.type} = 'dynamic'
         AND ${deviceGroups.filterConditions} IS NOT NULL`
-    );
+    )
+    .orderBy(deviceGroups.id);
 
   let summary: MembershipUpdateSummary = { evaluatedGroups: 0, added: 0, removed: 0 };
 
@@ -491,6 +661,7 @@ export async function pinDeviceToGroup(
     }
 
     await logMembershipChange(groupId, deviceId, 'added', 'pinned', orgId);
+    await schedulePeripheralMembershipChanges([deviceId], 'membership_pin_changed');
     return;
   }
 
@@ -528,6 +699,7 @@ export async function pinDeviceToGroup(
       await logMembershipChange(groupId, deviceId, 'removed', 'unpinned', orgId);
     }
   }
+  await schedulePeripheralMembershipChanges([deviceId], 'membership_pin_changed');
 }
 
 export async function updateDeviceMemberships(
@@ -580,12 +752,12 @@ export async function validateManualMembershipDevices(params: {
   deviceIds: readonly string[];
   orgId: string;
   siteId: string | null;
-}): Promise<ManualMembershipValidation> {
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipValidation> {
   const { orgId, siteId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { ok: true };
 
-  const deviceRows = await db
+  const deviceRows = await database
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(inArray(devices.id, requested));
@@ -631,12 +803,12 @@ export async function addManualGroupMemberships(params: {
   groupId: string;
   orgId: string;
   deviceIds: readonly string[];
-}): Promise<ManualMembershipWrite> {
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipWrite> {
   const { groupId, orgId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { added: [], skipped: 0 };
 
-  const existing = await db
+  const existing = await database
     .select({ deviceId: deviceGroupMemberships.deviceId })
     .from(deviceGroupMemberships)
     .where(
@@ -650,7 +822,7 @@ export async function addManualGroupMemberships(params: {
   const added = requested.filter((deviceId) => !existingSet.has(deviceId));
 
   if (added.length > 0) {
-    await db.insert(deviceGroupMemberships).values(
+    await database.insert(deviceGroupMemberships).values(
       added.map((deviceId) => ({
         deviceId,
         groupId,
@@ -658,6 +830,7 @@ export async function addManualGroupMemberships(params: {
         addedBy: 'manual' as const
       }))
     );
+    await schedulePeripheralMembershipChanges(added, 'manual_membership_changed');
   }
 
   return { added, skipped: existingSet.size };

@@ -11,10 +11,16 @@ import { backupJobs, devices, hypervVms } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from './backupProviderConfig';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -110,8 +116,14 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to host devices in the caller's allowed sites.
       const vmsOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && vmsOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(vmsOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = vmsOrgId
+          ? await resolveSiteAllowedDeviceIds(vmsOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ vms: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ vms: [], showing: 0 });
         conditions.push(inArray(hypervVms.deviceId, allowed));
@@ -246,7 +258,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_vm',
         vm.deviceId,
         CommandTypes.HYPERV_VM_STATE,
         { vmName: vm.vmName, targetState: action },
@@ -302,6 +316,18 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'A provider-backed backup configuration is required on this device' });
       }
 
+      // D20b follow-up: the helper only builds a manager from the command
+      // payload when it has no agent.yaml backup config (mgr == nil — the
+      // normal state for every policy-managed device); without
+      // provider/providerConfig here the helper fails every AI-dispatched
+      // hyperv_backup with "backup not configured on this device", exactly
+      // like the REST route did before D20b item A.
+      const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, vm.orgId);
+      if (!destinationResult.ok) {
+        return JSON.stringify({ error: destinationResult.message });
+      }
+      const { destination } = destinationResult;
+
       const [backupJob] = await db
         .insert(backupJobs)
         .values({
@@ -317,11 +343,17 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_hyperv_backup',
         vm.deviceId,
         CommandTypes.HYPERV_BACKUP,
         {
           backupJobId: backupJob?.id,
+          configId: resolvedConfig.configId,
+          provider: destination.provider,
+          providerConfig: destination.providerConfig,
+          storageEncryption: destination.storageEncryption,
           vmName: vm.vmName,
           consistencyType,
         },
@@ -391,7 +423,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under org AND site scope (source device site gated),
       // so a site-restricted caller cannot import a cross-site snapshot onto a
@@ -407,7 +439,22 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Snapshot is not a Hyper-V export artifact' });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      // D20b follow-up: the helper builds its read provider from THIS
+      // command's own payload (restoreProviderForCommand), the same way the
+      // REST /hyperv/restore route does — mirroring the destination the
+      // BACKUP command wrote this snapshot to, not whatever the device's
+      // CURRENT config happens to be.
+      const backupProviderConfig = snapshot.configId
+        ? await resolveBackupProviderConfig(snapshot.configId, snapshot.orgId)
+        : null;
+      if (!backupProviderConfig) {
+        const { message } = resolveBackupDestinationError(snapshot.configId);
+        return JSON.stringify({ error: message });
+      }
+
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_hyperv_vm',
         deviceId,
         CommandTypes.HYPERV_RESTORE,
         {
@@ -417,6 +464,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
             typeof input.generateNewId === 'boolean'
               ? input.generateNewId
               : true,
+          provider: backupProviderConfig.provider,
+          providerConfig: backupProviderConfig.providerConfig,
         },
         { userId: auth.user?.id }
       );
@@ -465,7 +514,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_checkpoints',
         vm.deviceId,
         CommandTypes.HYPERV_CHECKPOINT,
         {

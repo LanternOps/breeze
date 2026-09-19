@@ -27,9 +27,18 @@ vi.mock('../db/schema', () => ({
     detectionClasses: 'detectionClasses',
     schedule: 'schedule',
     isActive: 'isActive',
+    executionAuthorityVersion: 'executionAuthorityVersion',
+    executionAuthorityKind: 'executionAuthorityKind',
+    executionAuthoritySiteIds: 'executionAuthoritySiteIds',
+    executionAuthorityUserId: 'executionAuthorityUserId',
+    executionAuthorityPrincipalKind: 'executionAuthorityPrincipalKind',
+    executionAuthorityFingerprint: 'executionAuthorityFingerprint',
+    executionAuthorityCapturedAt: 'executionAuthorityCapturedAt',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt'
-  }
+  },
+  organizations: { id: 'orgId', partnerId: 'partnerId', type: 'type' },
+  users: {},
 }));
 
 // authMiddleware is a vi.fn() so individual tests can override the auth
@@ -49,7 +58,8 @@ vi.mock('../middleware/auth', () => ({
       partnerOrgAccess: null,
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       orgCondition: () => undefined,
-      canAccessOrg: () => true
+      canAccessOrg: () => true,
+      allowedSiteIds: c.req.header('x-restrict-site') ? [c.req.header('x-restrict-site')] : undefined,
     });
     return next();
   }),
@@ -58,9 +68,14 @@ vi.mock('../middleware/auth', () => ({
     // Mirror the real middleware: populate permissions.allowedSiteIds when the
     // caller is site-restricted (signalled here via the x-restrict-site header).
     const restrict = c.req.header('x-restrict-site');
-    if (restrict) {
-      c.set('permissions', { allowedSiteIds: [restrict] });
-    }
+    c.set('permissions', {
+      permissions: c.req.header('x-can-execute')
+        ? [{ resource: 'devices', action: 'execute' }]
+        : [],
+      allowedSiteIds: restrict ? [restrict] : undefined,
+      scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111',
+      partnerId: null, roleId: 'role-1',
+    });
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
@@ -173,7 +188,8 @@ describe('sensitive data routes', () => {
         partnerOrgAccess: null,
         accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
         orgCondition: () => undefined,
-        canAccessOrg: () => true
+        canAccessOrg: () => true,
+        allowedSiteIds: c.req.header('x-restrict-site') ? [c.req.header('x-restrict-site')] : undefined,
       });
       return next();
     });
@@ -592,6 +608,135 @@ describe('sensitive data routes', () => {
         resourceName: 'My Policy'
       })
     );
+  });
+
+  it('denies an active recurring policy without devices:execute before insert or audit', async () => {
+    const res = await app.request('/sensitive-data/policies', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Nightly credential scan',
+        detectionClasses: ['credential'],
+        schedule: { type: 'interval', intervalMinutes: 60 },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('binds an execute-authorized recurring policy to the caller selected site', async () => {
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{
+        id: policyId, orgId, partnerId: null, name: 'Scoped scan', scope: {},
+        detectionClasses: ['credential'], schedule: { type: 'interval', intervalMinutes: 60 },
+        isActive: true, createdBy: 'user-1', createdAt: new Date(), updatedAt: new Date(),
+        executionAuthorityVersion: 1,
+        executionAuthorityKind: 'organization_restricted',
+        executionAuthoritySiteIds: ['22222222-2222-2222-2222-222222222222'],
+        executionAuthorityUserId: 'user-1', executionAuthorityPrincipalKind: 'user',
+        executionAuthorityFingerprint: 'a'.repeat(64), executionAuthorityCapturedAt: new Date(),
+      }]),
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+    const res = await app.request('/sensitive-data/policies', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer token', 'Content-Type': 'application/json',
+        'x-can-execute': '1', 'x-restrict-site': '22222222-2222-2222-2222-222222222222',
+      },
+      body: JSON.stringify({
+        name: 'Scoped scan', detectionClasses: ['credential'],
+        schedule: { type: 'interval', intervalMinutes: 60 },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      executionAuthorityVersion: 1,
+      executionAuthorityKind: 'organization_restricted',
+      executionAuthoritySiteIds: ['22222222-2222-2222-2222-222222222222'],
+      executionAuthorityUserId: 'user-1',
+    }));
+    expect(JSON.stringify(await res.json())).not.toContain('executionAuthority');
+  });
+
+  it('rejects an explicit hidden-device schedule opaquely before policy insertion', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+    const res = await app.request('/sensitive-data/policies', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer token', 'Content-Type': 'application/json',
+        'x-can-execute': '1', 'x-restrict-site': '22222222-2222-2222-2222-222222222222',
+      },
+      body: JSON.stringify({
+        name: 'Hidden target', detectionClasses: ['credential'],
+        schedule: {
+          type: 'interval', intervalMinutes: 60,
+          deviceIds: ['33333333-3333-3333-3333-333333333333'],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Scheduled scan target is outside authorized scope' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('denies modification of an active recurring policy without execute authority', async () => {
+    mockSelectFromWhereLimit([{
+      id: policyId, orgId, partnerId: null, name: 'Recurring', scope: {},
+      detectionClasses: ['credential'], schedule: { type: 'cron', cron: '0 2 * * *' },
+      isActive: true,
+    }]);
+
+    const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Changed payload authority' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('lets a writer disable a recurring policy and clears its execution envelope', async () => {
+    mockSelectFromWhereLimit([{
+      id: policyId, orgId, partnerId: null, name: 'Recurring', scope: {},
+      detectionClasses: ['credential'], schedule: { type: 'cron', cron: '0 2 * * *' },
+      isActive: true,
+    }]);
+    const set = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: policyId, orgId, partnerId: null, name: 'Recurring', scope: {},
+          detectionClasses: ['credential'], schedule: { type: 'cron', cron: '0 2 * * *' },
+          isActive: false, createdAt: new Date(), updatedAt: new Date(),
+        }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+    const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      isActive: false,
+      executionAuthorityVersion: null,
+      executionAuthorityFingerprint: null,
+    }));
   });
 
   it('audits policy update with changedFields', async () => {

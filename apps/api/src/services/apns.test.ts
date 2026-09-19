@@ -112,6 +112,22 @@ describe('apns — provider JWT', () => {
 });
 
 describe('apns — buildApnsRequest', () => {
+  it('emits aps.thread-id and aps.category only when set', async () => {
+    mockConfig(CONFIGURED);
+    const { buildApnsRequest } = await import('./apns');
+    const req = buildApnsRequest('tok', { title: 'T', body: 'B', threadId: 'ticket:t-1', category: 'BREEZE_TICKET' }, 'jwt');
+    const body = JSON.parse(req.body);
+    expect(body.aps['thread-id']).toBe('ticket:t-1');
+    expect(body.aps.category).toBe('BREEZE_TICKET');
+  });
+
+  it('keeps the approval request byte-identical when threadId/category are absent', async () => {
+    mockConfig(CONFIGURED);
+    const { buildApnsRequest } = await import('./apns');
+    const before = JSON.parse(buildApnsRequest('tok', { title: 'T', body: 'B', data: { type: 'approval' } }, 'jwt').body);
+    expect(Object.keys(before.aps).sort()).toEqual(['alert', 'sound']);
+  });
+
   beforeEach(() => vi.resetModules());
   afterEach(() => {
     vi.resetModules();
@@ -167,6 +183,32 @@ describe('apns — buildApnsRequest', () => {
       type: 'approval',
       approvalId: 'a1',
     });
+  });
+
+  /**
+   * REGRESSION (#4281 review, critical): APNs rejects an `apns-collapse-id`
+   * longer than 64 BYTES with 400 `BadCollapseId`, and nothing on the path
+   * bounded it. The wire layer is the last place that can guarantee the
+   * contract regardless of what a caller builds.
+   */
+  it('clamps an over-long collapse id to 64 bytes, deterministically and injectively', async () => {
+    mockConfig(CONFIGURED);
+    const { buildApnsRequest } = await import('./apns');
+
+    const long = `ticket:${'a'.repeat(80)}:sla_breached:resolution`;
+    const got = buildApnsRequest('tok', { title: 'T', body: 'B', collapseId: long }, 'JWT')
+      .headers['apns-collapse-id']!;
+
+    expect(Buffer.byteLength(got, 'utf8')).toBeLessThanOrEqual(64);
+    // Same input -> same header (coalescing still works across sends).
+    expect(buildApnsRequest('tok', { title: 'T', body: 'B', collapseId: long }, 'JWT')
+      .headers['apns-collapse-id']).toBe(got);
+    // Different input -> different header (distinct notifications never merge).
+    expect(buildApnsRequest('tok', { title: 'T', body: 'B', collapseId: `${long}x` }, 'JWT')
+      .headers['apns-collapse-id']).not.toBe(got);
+    // A value already inside the limit is passed through untouched.
+    expect(buildApnsRequest('tok', { title: 'T', body: 'B', collapseId: 'grp-1' }, 'JWT')
+      .headers['apns-collapse-id']).toBe('grp-1');
   });
 
   it('never lets a caller-supplied aps key in data clobber the notification payload', async () => {

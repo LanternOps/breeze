@@ -40,6 +40,15 @@ export const COLUMN_IDS = [
   'desktopAccess',
   'reliability',
   'vpn',
+  // Manual-asset inventory fields (#4622 W04). `serial` is opt-in for agent
+  // rows too (via device_hardware); `assetTag`/`location` are manual-only.
+  'serial',
+  'assetTag',
+  'location',
+  // #5213 — provenance of a network row (scan | unifi | manual). Opt-in: agent
+  // rows have no source, so default-on would show a column of dashes for the
+  // common agent-only fleet (same reasoning as 'type' above).
+  'source',
 ] as const;
 
 export type ColumnId = (typeof COLUMN_IDS)[number];
@@ -78,6 +87,10 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   desktopAccess: 'Desktop Access',
   reliability: 'Reliability',
   vpn: 'VPN',
+  serial: 'Serial',
+  assetTag: 'Asset Tag',
+  location: 'Location',
+  source: 'Source',
 };
 
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [

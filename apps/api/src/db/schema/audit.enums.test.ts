@@ -114,7 +114,7 @@ describe('actor_type enum parity (shared ↔ DB schema ↔ validators ↔ OpenAP
   });
 
   it('audit_result parity stays intact alongside', () => {
-    expect([...auditResultEnum.enumValues].sort()).toEqual(['denied', 'failure', 'success']);
+    expect([...auditResultEnum.enumValues].sort()).toEqual(['denied', 'dispatched', 'failure', 'success']);
     expect([...AUDIT_RESULTS].sort()).toEqual([...auditResultEnum.enumValues].sort());
     const zodOptions = auditQuerySchema.shape.result.unwrap().options;
     expect([...zodOptions].sort()).toEqual([...auditResultEnum.enumValues].sort());

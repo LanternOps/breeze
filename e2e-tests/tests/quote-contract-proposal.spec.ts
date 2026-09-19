@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
+import { AgreementsPage } from '../pages/AgreementsPage';
 
 // Every page in this flow is a single `client:load` Astro island (ContractsTabs,
 // QuotesPage, QuoteWorkspace, ContractWorkspace, PublicQuoteView) — Astro SSRs
@@ -42,13 +43,15 @@ test.describe('quote + contract proposal lifecycle', () => {
     // Six real UI surfaces (contracts, quote editor, quote send, public
     // portal, accept, contract detail) chained serially against a live stack.
     test.setTimeout(240_000);
+    const agreements = new AgreementsPage(page);
 
-    // ── 1. Admin: author + publish a partner-wide contract template ─────
+    // ── 1. Admin: author + publish a partner-wide agreement template ────
+    // W03 moved the library out of /contracts into its own area; the spec
+    // navigates there the way a technician does, through the sidebar.
     await page.goto('/contracts');
     await page.getByTestId('contracts-tabs').waitFor();
     await waitForHydration(page, 'contracts-tabs');
-    await page.getByTestId('contracts-tab-templates').click();
-    await page.getByTestId('contract-templates-tab').waitFor();
+    await agreements.gotoTemplatesViaSidebar();
 
     await page.getByTestId('contract-templates-create-btn').click();
     await page.getByTestId('contract-template-create-dialog').waitFor();
@@ -81,8 +84,13 @@ test.describe('quote + contract proposal lifecycle', () => {
     const templateId = createdTemplate.data.id;
     expect(templateId).toBeTruthy();
 
-    // Creating swaps straight into TemplateEditor for the new template.
-    await page.getByTestId('contract-template-editor').waitFor({ timeout: 15_000 });
+    // Creating navigates straight to the new template's own route (W03).
+    await page.getByTestId('agreement-template-editor').waitFor({ timeout: 15_000 });
+
+    // W03 spec §6: the editor states what the template is used by. A brand-new
+    // template is used by nothing, so this asserts the LINE renders (with
+    // zeros) — the counts themselves are unit-tested.
+    await expect(agreements.usage()).toBeVisible({ timeout: 15_000 });
 
     // Author the body via the TipTap toolbar: a bold auto variable
     // ({{client.name}}) plus a bulleted manual variable ({{governing_state}})
@@ -155,7 +163,10 @@ test.describe('quote + contract proposal lifecycle', () => {
     // executed contract_document to it, which step 5 below depends on.
     await page.getByTestId('quote-add-block-type-line_items').click();
     await page.getByTestId('quote-add-block-submit').click();
-    const addLineForm = page.locator('[data-testid^="quote-block-add-line-"]');
+    const addLineToggle = page.locator('[data-testid^="quote-block-add-line-toggle-"]');
+    await addLineToggle.waitFor({ timeout: 15_000 });
+    await addLineToggle.click();
+    const addLineForm = page.locator('[data-testid^="quote-block-add-line-"]:not([data-testid^="quote-block-add-line-toggle-"])');
     await addLineForm.waitFor({ timeout: 15_000 });
     const addLineTestId = await addLineForm.getAttribute('data-testid');
     const lineBlockId = addLineTestId!.replace('quote-block-add-line-', '');
@@ -201,11 +212,20 @@ test.describe('quote + contract proposal lifecycle', () => {
     // token (the admin UI never surfaces the link itself).
     await page.getByTestId('quote-send').click();
     await page.getByTestId('quote-send-confirm').waitFor();
+    await page.getByTestId('quote-send-to').fill('e2e-recipient@example.com');
+    const [scheduleResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/schedule-send$/.test(new URL(r.url()).pathname),
+      ),
+      page.getByTestId('quote-send-confirm').click(),
+    ]);
+    expect(scheduleResponse.ok()).toBeTruthy();
     const [sendResponse] = await Promise.all([
       page.waitForResponse(
         (r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/send$/.test(new URL(r.url()).pathname),
+        { timeout: 20_000 },
       ),
-      page.getByTestId('quote-send-confirm').click(),
+      page.getByTestId('quote-send-now').click(),
     ]);
     expect(sendResponse.ok()).toBeTruthy();
     const sendBody = (await sendResponse.json()) as {
@@ -244,23 +264,26 @@ test.describe('quote + contract proposal lifecycle', () => {
       await expect(publicPage.getByTestId('public-quote-signer')).toBeVisible();
       await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
+      // Hydration guard (#3906): the portal dev server used to emit the Astro/
+      // Vite module URLs these `client:load` islands fetch (e.g.
+      // `/src/components/portal/PublicQuoteView.tsx`) without the `/portal`
+      // prefix, so the worktree stack's path-routed Caddy sent them to the web
+      // catch-all — the hydration module 404'd and PublicQuoteView never
+      // mounted. The SSR'd markup above looked correct while every button on
+      // the page was inert. The portal dev server now serves its whole module
+      // graph under the base path (apps/portal/astro.config.mjs +
+      // src/middleware.ts), so this island MUST hydrate; if that (or the
+      // island) regresses, fail loud here instead of only being caught by the
+      // console 404 nobody reads.
+      await waitForHydration(publicPage, 'public-quote-accept');
+
       // Accept via the same public endpoint the "Accept & sign" button calls
-      // (POST /quotes/public/:token/accept, { signerName }), NOT by clicking
-      // it: PublicQuoteView is a `client:load` island served under the
-      // portal's `/portal` base path, and Astro dev-mode has a documented
-      // base-path-in-dev gotcha where the island's hydration module 404s
-      // (browser requests `/src/components/portal/PublicQuoteView.tsx`,
-      // missing the `/portal` prefix — confirmed via console/network capture:
-      // "[astro-island] Error hydrating ... Failed to fetch dynamically
-      // imported module"). See project memory
-      // portal_dev_island_hydration_404.md: dev-only, already known, and
-      // CI's smoke-test job builds the portal from a production bundle
-      // (serves islands under /portal/_astro/*) where hydration is expected
-      // to work. Every button on this page is therefore inert in THIS stack
-      // regardless of selector/timing — calling the endpoint directly
-      // exercises the real accept path (quoteAcceptService: converts the
-      // quote, auto-creates the recurring billing Contract, snapshots the
-      // executed contract_documents row) without depending on hydration.
+      // (POST /quotes/public/:token/accept, { signerName }) rather than by
+      // clicking it, so this assertion stays deterministic regardless of the
+      // signer-name input's exact UI validation: exercises the real accept
+      // path (quoteAcceptService: converts the quote, auto-creates the
+      // recurring billing Contract, snapshots the executed
+      // contract_documents row) independent of form-fill timing.
       const acceptResponse = await publicPage.request.post(
         `${origin}/api/v1/quotes/public/${token}/accept`,
         { data: { signerName: 'Jordan Rivers' } },
@@ -288,9 +311,9 @@ test.describe('quote + contract proposal lifecycle', () => {
     // Contracts tab is the default — filter to the org used above so the
     // auto-created "<quoteNumber> — Monthly" contract from acceptQuote's
     // Phase 4 is easy to isolate even if other contracts exist for the org.
-    const contractsOrgFilter = page.getByTestId('contracts-filter-org');
-    await contractsOrgFilter.waitFor();
-    await contractsOrgFilter.selectOption(orgId);
+    const contractsSearch = page.getByTestId('contracts-search');
+    await contractsSearch.waitFor();
+    await contractsSearch.fill(quoteNumber!);
 
     const contractLinks = page.locator('[data-testid^="contract-row-link-"]');
     await expect(contractLinks.first()).toBeVisible({ timeout: 20_000 });

@@ -1,6 +1,12 @@
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
 
+// `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
+// way `HomeScreen`'s live SSE handler does before it lands on a `ToolEvent`.
+function toolInputRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
 // Convert server-side aiMessages rows back into the slice's ChatMessage
 // shape. The server flattens role into 5 enum values (user / assistant /
 // system / tool_use / tool_result); the slice models user + assistant
@@ -55,6 +61,7 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
         toolUseId: row.toolUseId ?? row.id,
         toolName: row.toolName ?? 'tool',
         state: 'started',
+        input: toolInputRecord(row.toolInput),
       };
       target.toolEvents.push(evt);
     } else if (row.role === 'tool_result') {
@@ -72,6 +79,11 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
           toolName: row.toolName ?? 'tool',
           state: 'completed',
           output: row.toolOutput ?? undefined,
+          // A synthesized tool_result-only row (its tool_use sibling wasn't
+          // in this page of history) still carries its own toolInput on the
+          // server row — reuse it so `aiToolLabel` sees `input.action` here
+          // too (#5170).
+          input: toolInputRecord(row.toolInput),
         });
       }
     }

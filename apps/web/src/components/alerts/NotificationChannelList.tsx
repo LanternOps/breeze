@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import {
@@ -195,16 +195,38 @@ export default function NotificationChannelList({
   // UNFILTERED list plus the search and type controls being at rest, so a
   // search that matches nothing still gets the adjust-your-search message.
   //
-  // Deliberately NOT a claim that the tenant is new: a zero-length page can
-  // also come from a retained `currentPage` after the row count shrinks, which
-  // this predicate does not cover and which pre-dates this change (see #4008).
-  // It only distinguishes "the list is empty and the filters are untouched".
+  // Deliberately NOT a claim that the tenant is new: the list can be
+  // org-scoped, and a malformed HTTP 200 is coerced to [] upstream. It only
+  // distinguishes "the list is empty and the filters are untouched".
   const hasNoChannelsAtAll =
     channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
 
-  const totalPages = Math.ceil(filteredChannels.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
+  // Floor of 1 so an empty list reads as page 1 of 1 rather than page 1 of 0,
+  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
+  // page of 0 produces is harmless against an empty array — it is the page
+  // COUNT that would be wrong, and it is what the pager renders.)
+  const totalPages = Math.max(1, Math.ceil(filteredChannels.length / pageSize));
+
+  // Render from a clamped page rather than trusting the stored one. Search and
+  // type changes reset the page, but nothing reconciled it with the row count,
+  // so deleting the only row on the last page (parent refetches and hands down
+  // a shorter array) left the user on a page that no longer exists: no rows,
+  // the adjust-your-search copy over an untouched search box, and — because
+  // `totalPages` had dropped below the stored page — no pager to get back
+  // (#4008). Clamping during render rather than in an effect means the dead
+  // page never paints.
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
   const paginatedChannels = filteredChannels.slice(startIndex, startIndex + pageSize);
+
+  // Retire the out-of-range value so it cannot come back. Without this the
+  // clamp above is purely cosmetic: a later create + refetch that grows the
+  // list past the stored page would teleport the user forward to a page they
+  // had already been bounced off. Renders the same output either way, so it
+  // costs a state write and no visible frame.
+  useEffect(() => {
+    if (currentPage !== safePage) setCurrentPage(safePage);
+  }, [currentPage, safePage]);
 
   const handleTest = async (channel: NotificationChannel) => {
     setTestingChannelId(channel.id);
@@ -445,25 +467,41 @@ export default function NotificationChannelList({
             {t('notificationChannelList.showing')} {startIndex + 1} {t('notificationChannelList.to')} {Math.min(startIndex + pageSize, filteredChannels.length)}{' '}
             {t('notificationChannelList.of')} {filteredChannels.length}
           </p>
+          {/* The pager buttons hold only a lucide icon, and lucide-react
+              stamps aria-hidden="true" on an icon with no children and no
+              aria-, role or title prop (the mechanism recorded in #3697). The
+              buttons themselves stay in the accessibility tree — they are
+              native button elements — but the hidden icon was their only
+              naming source, so they had no accessible name at all:
+              unreachable by an accessible-name query, and announced as a bare
+              "button". `common:actions.previousPage`/`nextPage` are pager
+              nouns rather than the navigation verbs in actions.back/next,
+              which is what a pager should announce (#4008). */}
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
+              onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+              disabled={safePage === 1}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common:actions.previousPage')}
+              aria-label={t('common:actions.previousPage')}
+              data-testid="notification-channel-prev-page"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
             </button>
             <span className="text-sm">
-              {t('notificationChannelList.page')} {currentPage} {t('notificationChannelList.of')} {totalPages}
+              {t('notificationChannelList.page')} {safePage} {t('notificationChannelList.of')} {totalPages}
             </span>
             <button
               type="button"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
+              onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
+              disabled={safePage === totalPages}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common:actions.nextPage')}
+              aria-label={t('common:actions.nextPage')}
+              data-testid="notification-channel-next-page"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

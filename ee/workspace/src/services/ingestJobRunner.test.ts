@@ -282,6 +282,46 @@ describe('ingestJobRunner.advance', () => {
     });
   });
 
+  it('records WHY the enrich phase drained when AI is unavailable for the org', async () => {
+    // The drained-AI path used to be indistinguishable from a genuinely empty
+    // queue: enrichment.run reports remaining 0, the phase completes, and the
+    // job's stats say nothing at all. An operator looking at a fleet where no
+    // file ever gets enriched had no signal to follow — so mirror the
+    // enrichSkipped precedent and leave both a log line and a stats crumb.
+    const deps = baseDeps();
+    deps.jobs.claimDue.mockResolvedValueOnce(makeJob({ phase: 'enrich' }));
+    deps.enrichment.run.mockResolvedValueOnce({
+      processed: 0, remaining: 0, errors: [], aiUnavailable: true,
+    });
+    const runner = createIngestJobRunner(deps as never);
+
+    const res = await runner.advance(ORG);
+
+    expect(res.advanced).toBe(true);
+    expect(deps.jobs.recordProgress).toHaveBeenCalledWith(ORG, JOB, {
+      statsPatch: { enrichSkippedReason: 'ai_unavailable' },
+    });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('ai_unavailable'));
+    // Still drains: the job must advance to crosswalk, not stall.
+    expect(deps.jobs.release).toHaveBeenCalledWith(ORG, JOB, {
+      kind: 'phase_complete', nextPhase: 'crosswalk',
+    });
+  });
+
+  it('records nothing extra when the enrich phase drains normally', async () => {
+    const deps = baseDeps();
+    deps.jobs.claimDue.mockResolvedValueOnce(makeJob({ phase: 'enrich' }));
+    deps.enrichment.run.mockResolvedValueOnce({ processed: 4, remaining: 0, errors: [] });
+    const runner = createIngestJobRunner(deps as never);
+
+    await runner.advance(ORG);
+
+    expect(deps.jobs.recordProgress).not.toHaveBeenCalled();
+    expect(deps.jobs.release).toHaveBeenCalledWith(ORG, JOB, {
+      kind: 'phase_complete', nextPhase: 'crosswalk',
+    });
+  });
+
   it('releases fatal_error and does not throw on an unexpected failure', async () => {
     const deps = baseDeps();
     deps.jobs.claimDue.mockResolvedValueOnce(makeJob({ phase: 'ingest' }));

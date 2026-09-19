@@ -181,6 +181,7 @@
     "title": "Title",
     "severity": "Severity",
     "status": "Status",
+    "aiVerdict": "AI Verdict",
     "triggered": "Triggered",
     "actions": "Actions",
     "noAlertsMatchYourFilters": "No alerts match your filters.",
@@ -521,6 +522,25 @@
     "deleteFailed": "Could not delete template.",
     "deleted": "Template deleted"
   },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Actionable",
+      "transient_self_healed": "Self-healed",
+      "recurring_pattern": "Recurring pattern",
+      "duplicate_of_group": "Duplicate",
+      "needs_human": "Needs human review"
+    },
+    "confidence": "{{pct}}% confidence",
+    "feedbackUp": "This verdict was helpful",
+    "feedbackDown": "This verdict was not helpful",
+    "feedbackThanks": "Thanks for the feedback",
+    "feedbackTaken": "Someone already gave feedback on this verdict",
+    "feedbackFailed": "Failed to record feedback",
+    "feedbackBy": "Feedback by {{name}}",
+    "hideNoise": "Hide AI-flagged noise",
+    "suggestionPending": "AI suggested an action — review in Approvals",
+    "none": "No AI verdict yet"
+  },
   "alertsPage": {
     "loadingAlerts": "Loading alerts...",
     "tryAgain": "Try again",
@@ -598,6 +618,7 @@
     "tabs": {
       "alerts": "Alerts",
       "correlations": "Correlations",
+      "monitors": "Monitors",
       "rules": "Rules",
       "channels": "Channels"
     }

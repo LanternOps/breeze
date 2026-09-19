@@ -1,6 +1,8 @@
 # Test Docker Compose - Ephemeral services for integration testing
 # Usage: docker compose -f docker-compose.test.yml up -d
 # Cleanup: docker compose -f docker-compose.test.yml down -v
+#          (per-worktree copy: `pnpm test-stack down`). Nothing tears these down
+#          for you — `docker compose ls -a` lists every copy still running.
 #
 # Concurrent worktrees (#3066): the BREEZE_TEST_* variables below let
 # `pnpm test-stack up` (scripts/dev/test-stack) run a PRIVATE copy of this

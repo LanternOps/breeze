@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { getErrorMessage } from '@/lib/errorMessages';
+import { cn } from '@/lib/utils';
 import SegmentedBar from './SegmentedBar';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { PatchCompliance } from './types';
@@ -81,6 +82,16 @@ export default function PatchComplianceCard({
           {data.criticalSummary.pending > 0 && (
             <p className="mt-3 border-t border-border/60 pt-3 text-xs font-medium text-destructive">
               {t('dashboard.patch.criticalPending', { count: data.criticalSummary.pending })}
+            </p>
+          )}
+          {data.unratedSummary.pending > 0 && (
+            <p
+              className={cn(
+                'text-xs font-medium text-muted-foreground',
+                data.criticalSummary.pending > 0 ? 'mt-1' : 'mt-3 border-t border-border/60 pt-3'
+              )}
+            >
+              {t('dashboard.patch.unratedPending', { count: data.unratedSummary.pending })}
             </p>
           )}
         </>

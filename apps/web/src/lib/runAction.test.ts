@@ -3,7 +3,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const showToast = vi.fn();
 vi.mock('../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
+// Force the translated path for the validation envelope: with i18n uninitialized
+// (as in the other runAction tests) exists() is false and the envelope no-ops,
+// so we stub it to assert the Step-4 behavior explicitly.
+vi.mock('./i18n', () => ({
+  i18n: {
+    exists: (key: string) => key === 'errors:VALIDATION_FAILED',
+    t: (key: string) => (key === 'errors:VALIDATION_FAILED' ? 'Check the highlighted fields' : key),
+  },
+}));
+
 import { runAction, ActionError } from './runAction';
+import { TRUST_DENIED_EVENT } from './trustProbation';
 
 function res(body: unknown, status = 200): Response {
   return new Response(body === undefined ? '' : JSON.stringify(body), {
@@ -139,6 +150,83 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Use Touch ID to approve', type: 'error' });
   });
 
+  it('dispatches trust denials and suppresses the generic error toast when a listener claims it', async () => {
+    const denial = {
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    };
+    // Mirrors TrustProbationBanner's handler: claims the event so runAction
+    // doesn't also show a generic toast on top of the banner.
+    const listener = vi.fn((event: Event) => event.preventDefault());
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+
+    await expect(runAction({
+      request: async () => res(denial, 403),
+      errorFallback: 'Remote control failed',
+    })).rejects.toMatchObject({ status: 403, body: denial });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual(denial);
+    expect(showToast).not.toHaveBeenCalled();
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
+
+  it('falls back to the generic error toast when nothing handles the trust-denied event', async () => {
+    const denial = {
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    };
+    // No listener at all — simulates a page where TrustProbationBanner isn't
+    // mounted. The failure must not be silently swallowed.
+    await expect(runAction({
+      request: async () => res(denial, 403),
+      errorFallback: 'Remote control failed',
+    })).rejects.toMatchObject({ status: 403, body: denial });
+
+    expect(showToast).toHaveBeenCalledWith({ message: expect.any(String), type: 'error' });
+  });
+
+  it('falls back to the generic error toast when a listener observes but does not claim the trust-denied event', async () => {
+    const denial = {
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    };
+    const listener = vi.fn();
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+
+    await expect(runAction({
+      request: async () => res(denial, 403),
+      errorFallback: 'Remote control failed',
+    })).rejects.toMatchObject({ status: 403, body: denial });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith({ message: expect.any(String), type: 'error' });
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
+
+  it('still shows the generic error toast for other 403 responses', async () => {
+    const listener = vi.fn();
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+
+    await expect(runAction({
+      request: async () => res({ error: 'Forbidden' }, 403),
+      errorFallback: 'Action failed',
+    })).rejects.toMatchObject({ status: 403, message: 'Forbidden' });
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith({ message: 'Forbidden', type: 'error' });
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
+
   it('parseSuccess throws -> toasted failure with errorFallback', async () => {
     await expect(runAction({
       request: async () => res({ val: 1 }, 200),
@@ -183,5 +271,96 @@ describe('runAction', () => {
     expect(caught).toBeInstanceOf(ActionError);
     expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ message: 'boom', type: 'error' });
+  });
+  it('Zod validation 400 without code: keeps specific field text as message, translated headline as detail (Step 4 of #3859, #1976 contract)', async () => {
+    const specific =
+      'Template must include the {id} placeholder for the per-device value';
+
+    await expect(
+      runAction({
+        request: async () =>
+          res(
+            {
+              success: false,
+              error: {
+                name: 'ZodError',
+                message: JSON.stringify([
+                  {
+                    code: 'custom',
+                    path: ['settings', 'remoteAccessProviders', 0, 'urlTemplate'],
+                    message: specific,
+                  },
+                ]),
+              },
+            },
+            400
+          ),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: specific,
+      detail: 'Check the highlighted fields',
+      type: 'error',
+    });
+  });
+
+  it('Zod validation 400 with no specific field text: translated headline becomes the message', async () => {
+    await expect(
+      runAction({
+        request: async () =>
+          res(
+            {
+              details: {
+                formErrors: [],
+                fieldErrors: {},
+              },
+            },
+            400
+          ),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Check the highlighted fields',
+      type: 'error',
+    });
+  });
+
+  it('ordinary non-Zod 400 without code does not get the validation headline', async () => {
+    await expect(
+      runAction({
+        request: async () => res({ error: 'Incorrect password.' }, 400),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Incorrect password.',
+      type: 'error',
+    });
+  });
+
+  it('validation envelope does NOT fire when a code is present (code path wins)', async () => {
+    await expect(runAction({
+      request: async () =>
+        res(
+          {
+            error: 'name is required',
+            details: {
+              formErrors: ['name is required'],
+              fieldErrors: {},
+            },
+            code: 'SOME_CODE',
+          },
+          400
+        ),
+      errorFallback: 'fb',
+    })).rejects.toBeInstanceOf(ActionError);
+    // code present -> envelope skipped; detail stays undefined
+    const call = showToast.mock.calls.at(-1)?.[0];
+    expect(call.detail).toBeUndefined();
   });
 });

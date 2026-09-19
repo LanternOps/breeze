@@ -349,7 +349,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
         <a
-          href="/settings/organizations"
+          href="/organizations"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('siteDetailPage.backToOrganizations')}
@@ -363,7 +363,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{t('siteDetailPage.errors.notFound')}</p>
         <a
-          href="/settings/organizations"
+          href="/organizations"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('siteDetailPage.backToOrganizations')}
@@ -384,8 +384,8 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <Breadcrumbs
         items={[
           { label: t('siteDetailPage.breadcrumbs.settings'), href: '/settings' },
-          { label: t('siteDetailPage.breadcrumbs.organizations'), href: '/settings/organizations' },
-          ...(org ? [{ label: org.name, href: `/settings/organizations#${org.id}` }] : []),
+          { label: t('siteDetailPage.breadcrumbs.organizations'), href: '/organizations' },
+          ...(org ? [{ label: org.name, href: `/organizations/${org.id}` }] : []),
           { label: site.name },
         ]}
       />
@@ -394,7 +394,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-4">
           <a
-            href={org ? `/settings/organizations#${org.id}` : '/settings/organizations'}
+            href={org ? `/organizations/${org.id}` : '/organizations'}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -554,7 +554,23 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               </section>
 
               <section className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">{t('siteForm.primaryContact')}</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">{t('siteForm.primaryContact')}</h2>
+                  {/* This editor still writes the site's single primary contact
+                      (server-side it lands through the compatibility
+                      projection). Everyone ELSE at this customer lives on the
+                      organization's Contacts tab, so point there rather than
+                      growing a second contact list here. */}
+                  {site?.orgId && (
+                    <a
+                      data-testid="site-detail-all-contacts-link"
+                      href={`/settings/organizations/${site.orgId}#contacts`}
+                      className="text-sm text-primary underline hover:opacity-80"
+                    >
+                      {t('siteDetailPage.allContactsLink')}
+                    </a>
+                  )}
+                </div>
                 <div className="mt-4 grid gap-4 md:grid-cols-3">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t('common:labels.name')}</label>

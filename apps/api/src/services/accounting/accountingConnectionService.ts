@@ -1,7 +1,13 @@
-import { and, eq } from 'drizzle-orm';
-import { accountingConnections } from '../../db/schema';
-import { decryptSecret, encryptSecret } from '../secretCrypto';
+import { and, eq, isNotNull, isNull, like, or, type SQL } from 'drizzle-orm';
+import { accountingConnections, accountingEntityMappings } from '../../db/schema';
+import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
+import { db, withSystemDbAccessContext } from '../../db';
+import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
+import { getAccountingProvider } from './providerRegistry';
+import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingProviderId } from './types';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { captureException } from '../sentry';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
 export type AccountingPushMode = 'auto' | 'manual';
@@ -18,6 +24,8 @@ export interface AccountingConnection {
   refreshTokenExpiresAt: Date | null;
   environment: AccountingEnvironment;
   homeCurrency: string | null;
+  /** Nullable = unknown (never captured, or the capture failed). Multi-currency §11. */
+  multiCurrencyEnabled: boolean | null;
   defaultIncomeAccountRef: string | null;
   defaultTaxCodeRef: string | null;
   pushMode: AccountingPushMode;
@@ -25,6 +33,16 @@ export interface AccountingConnection {
   createdAt: Date | null;
   updatedAt: Date | null;
   lastError: string | null;
+  /** hmacFingerprint(realmId): `fp1:<keyId|legacy>:<hex>`. Null until backfilled. */
+  realmIdFingerprint: string | null;
+  /** Per-connection QBO -> Breeze payment pull-back switch. DB default true. */
+  pullPayments: boolean;
+  /** Per-connection Breeze -> QBO payment push switch. DB default true. */
+  pushPayments: boolean;
+  /** Stamped only after a CDC run in which no item failed. */
+  lastReconcileAt: Date | null;
+  /** CDC watermark. Column already existed (2026-06-23 migration); now read/written. */
+  cdcCursor: Date | null;
 }
 
 export interface UpsertConnectionFields {
@@ -42,6 +60,8 @@ export interface UpsertConnectionFields {
   status?: AccountingConnectionStatus;
   lastError?: string | null;
   connectedBy?: string | null;
+  pullPayments?: boolean;
+  pushPayments?: boolean;
 }
 
 export interface AccountingTokenUpdate {
@@ -83,6 +103,20 @@ function encryptedField(value: string | null | undefined): string | null | undef
   return encryptSecret(value);
 }
 
+/** Mirrors encryptedField but for the queryable HMAC fingerprint column. */
+function fingerprintField(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return hmacFingerprint(value);
+}
+
+/** `fp1:<keyId>:<hex>` -> `<keyId>`; null for a malformed/absent fingerprint. */
+export function fingerprintKeyGeneration(fingerprint: string | null): string | null {
+  if (!fingerprint) return null;
+  const match = /^fp1:([^:]+):[0-9a-f]+$/.exec(fingerprint);
+  return match?.[1] ?? null;
+}
+
 function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }
@@ -99,6 +133,7 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     refreshTokenExpiresAt: row.refreshTokenExpiresAt ?? null,
     environment: row.environment as AccountingEnvironment,
     homeCurrency: row.homeCurrency ?? null,
+    multiCurrencyEnabled: row.multiCurrencyEnabled ?? null,
     defaultIncomeAccountRef: row.defaultIncomeAccountRef ?? null,
     defaultTaxCodeRef: row.defaultTaxCodeRef ?? null,
     pushMode: row.pushMode as AccountingPushMode,
@@ -106,6 +141,11 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     createdAt: row.createdAt ?? null,
     updatedAt: row.updatedAt ?? null,
     lastError: row.lastError ?? null,
+    realmIdFingerprint: row.realmIdFingerprint ?? null,
+    pullPayments: row.pullPayments,
+    pushPayments: row.pushPayments,
+    lastReconcileAt: row.lastReconcileAt ?? null,
+    cdcCursor: row.cdcCursor ?? null,
   };
 }
 
@@ -147,6 +187,18 @@ export async function upsertConnection(
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     pushMode: fields.pushMode ?? 'auto',
     webhookVerifierTokenEncrypted: encryptedField(fields.webhookVerifierToken),
+    realmIdFingerprint: fingerprintField(fields.realmId),
+    // Insert default true: an existing connected realm should start
+    // reconciling once the sweep ships, rather than silently opting out.
+    pullPayments: fields.pullPayments ?? true,
+    // Same rationale as pullPayments above (Phase D2).
+    pushPayments: fields.pushPayments ?? true,
+    // INSERT ONLY, deliberately absent from `updateSet` below. It is the horizon
+    // this connection pushes payments FROM, so a token-only reconnect (the OAuth
+    // callback) must not move it — that would re-open the whole history the
+    // horizon exists to exclude. The settings route re-stamps it when the
+    // operator turns `push_payments` back on.
+    pushPaymentsSince: now,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -171,6 +223,11 @@ export async function upsertConnection(
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     pushMode: fields.pushMode,
     webhookVerifierTokenEncrypted: values.webhookVerifierTokenEncrypted,
+    realmIdFingerprint: values.realmIdFingerprint,
+    // Same "do not reset settings on a token-only reconnect" rule as pushMode
+    // above: only present when the caller explicitly supplies it.
+    pullPayments: fields.pullPayments,
+    pushPayments: fields.pushPayments,
     status: fields.status,
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -191,6 +248,379 @@ export async function upsertConnection(
   }
 
   return mapConnection(row);
+}
+
+/**
+ * Webhook realm routing (Phase D). The Intuit CDC webhook carries only a
+ * realmId, so this is how an inbound event finds the owning connection
+ * without a linear decrypt-and-compare scan. Exactly one row can match by
+ * construction: `accounting_connections_provider_realm_fp_idx` is a unique
+ * partial index on (provider, realm_id_fingerprint).
+ */
+export async function findConnectionByRealmFingerprint(
+  dbc: DbExecutor,
+  provider: AccountingProviderId,
+  realmIdFingerprint: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(and(
+      eq(accountingConnections.provider, provider),
+      eq(accountingConnections.realmIdFingerprint, realmIdFingerprint),
+    ))
+    .limit(1);
+
+  return row ? mapConnection(row) : null;
+}
+
+/**
+ * Idempotent boot step. Re-fingerprints every row whose fingerprint is NULL
+ * (pre-Phase-D rows, or a fresh realm captured before this boot step ran) or
+ * was computed under a different encryption-key generation (self-heals a key
+ * rotation — the HMAC key follows APP_ENCRYPTION_KEY(_ID), so a rotation
+ * invalidates every previously stamped fingerprint).
+ *
+ * Opens its own system context; must be called with none open (mirrors the
+ * "no DB context across external work" contract other Phase D entry points
+ * follow, even though this one never leaves the process).
+ */
+export async function backfillRealmFingerprints(): Promise<{ scanned: number; updated: number; skipped: number }> {
+  assertNoAmbientDbContext('backfillRealmFingerprints');
+
+  // The LIST is one short context; each WRITE gets its own (finding E).
+  // Postgres leaves a transaction ABORTED after a constraint violation, so the
+  // caught unique violation below used to poison every later row in the sweep
+  // with 25P02 and roll back every earlier one — a single shared realm could
+  // leave the entire fleet unfingerprinted, and therefore invisible to webhooks.
+  const rows = await withSystemDbAccessContext(() => db
+    .select({
+      id: accountingConnections.id,
+      partnerId: accountingConnections.partnerId,
+      realmIdEncrypted: accountingConnections.realmIdEncrypted,
+      realmIdFingerprint: accountingConnections.realmIdFingerprint,
+    })
+    .from(accountingConnections)
+    .where(isNotNull(accountingConnections.realmIdEncrypted)),
+  'backfillRealmFingerprints.list');
+
+  const activeGen = getActiveSecretEncryptionKeyId() ?? 'legacy';
+  let updated = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    if (row.realmIdFingerprint !== null && fingerprintKeyGeneration(row.realmIdFingerprint) === activeGen) {
+      continue;
+    }
+
+    const realmId = decryptSecret(row.realmIdEncrypted);
+    // Guarded by the isNotNull(realmIdEncrypted) filter above; decryptSecret
+    // only returns null for a falsy/empty input, which that filter excludes.
+    if (realmId === null) continue;
+    const fingerprint = hmacFingerprint(realmId);
+
+    try {
+      // Zero-row-throw discipline (see other writes in this file) doesn't
+      // fit a multi-row backfill loop verbatim — aborting the whole sweep
+      // over one row deleted concurrently would strand every later row
+      // unprocessed. Guard against MISCOUNTING instead: only bump `updated`
+      // when a row actually matched.
+      const written = await withSystemDbAccessContext(() => db
+        .update(accountingConnections)
+        .set({ realmIdFingerprint: fingerprint })
+        .where(and(
+          eq(accountingConnections.id, row.id),
+          eq(accountingConnections.partnerId, row.partnerId),
+        ))
+        .returning({ id: accountingConnections.id }),
+      'backfillRealmFingerprints.write');
+      if (written.length > 0) updated++;
+    } catch (err) {
+      // Two partners' realms hashing to the same fingerprint is a real data
+      // conflict an operator must see (a stolen/shared realm, or a bug in a
+      // migration), not a crash that blocks boot for every other partner.
+      // Its transaction is now its own, so the abort dies with it.
+      if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
+        skipped++;
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          // #5193: `module` and `op` have no allowlisted equivalent (no
+          // existing tag distinguishes a backfill step within a service), so
+          // dropped rather than inventing new allowlist entries — `service`
+          // already identifies the file, and `accounting_connection_id`
+          // (this backfill's own connection id) is what actually triages a
+          // fingerprint collision.
+          service: 'accountingConnectionService',
+          accounting_connection_id: row.id,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return { scanned: rows.length, updated, skipped };
+}
+
+/**
+ * Connections the 15-minute sweep should reconcile: 'connected' AND at least one
+ * direction switched on. Phase D2 (spec decision 6): with pull OFF and push ON
+ * the CDC pass still has to run — it is what adopts a Breeze-created Payment
+ * whose phase 2 never landed, and what notices a Breeze-origin Payment someone
+ * deleted in QuickBooks. In that window it touches Breeze-origin rows ONLY:
+ * every QuickBooks-origin line is suppressed (a new import, an edit of one
+ * already imported, a deletion) and the run holds its CDC cursor, so turning
+ * pull back on can still import the window it was switched off in.
+ */
+export async function listReconcilableConnections(
+  dbc: DbExecutor,
+  provider: AccountingProviderId,
+): Promise<Array<{ id: string; partnerId: string }>> {
+  return dbc
+    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId })
+    .from(accountingConnections)
+    .where(and(
+      eq(accountingConnections.provider, provider),
+      eq(accountingConnections.status, 'connected'),
+      or(
+        eq(accountingConnections.pullPayments, true),
+        eq(accountingConnections.pushPayments, true),
+      ),
+    ));
+}
+
+/**
+ * Advance the CDC watermark and stamp last_reconcile_at, COMPARE-AND-SET on the
+ * realm fingerprint the run started against (finding C).
+ *
+ * A reconnect to a DIFFERENT QuickBooks realm can land while a reconcile job is
+ * mid-flight. Without the CAS, that job's final write would stamp a cursor
+ * derived from the OLD realm's CDC window onto the NEW realm's connection row,
+ * and the new realm's first 30 days would then be skipped as "already read".
+ *
+ * Returns whether the write landed. Zero rows is NOT a throw here: the realm
+ * legitimately moved on, the caller logs and skips, and the next sweep
+ * reconciles the new realm from the null cursor `resetConnectionForRealmChange`
+ * left behind. A wrong DB context surfaces the same way, one sweep later,
+ * rather than as a job that retries forever against a connection that no longer
+ * matches.
+ */
+/**
+ * Record that a reconcile run HAPPENED without moving the CDC watermark.
+ *
+ * `advanceReconcileCursor` is the only other writer of `last_reconcile_at`, and
+ * the pull-off freeze branch deliberately does not call it — so the integration
+ * card's "Last reconciled" froze at the moment `pull_payments` was switched off
+ * and a perfectly healthy connection read as permanently stalled (review wave 3,
+ * finding D4).
+ *
+ * No realm-fingerprint CAS, unlike the cursor write: this claims nothing and
+ * carries no watermark, so a realm that changed mid-run cannot be given a stale
+ * one. Zero rows is tolerated (the connection may have been deleted) — this is
+ * a freshness stamp, never a correctness signal.
+ */
+export async function stampReconcileRunAt(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  reconciledAt: Date,
+): Promise<void> {
+  await dbc
+    .update(accountingConnections)
+    .set({ lastReconcileAt: reconciledAt, updatedAt: new Date() })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+}
+
+export async function advanceReconcileCursor(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  expectedRealmFingerprint: string | null,
+  cursor: Date,
+  reconciledAt: Date,
+): Promise<boolean> {
+  const updated = await dbc
+    .update(accountingConnections)
+    .set({
+      cdcCursor: cursor,
+      lastReconcileAt: reconciledAt,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+      // `eq(col, null)` compiles to `= NULL`, which is never true. A connection
+      // whose fingerprint has not been backfilled yet must still be able to
+      // advance its cursor.
+      expectedRealmFingerprint === null
+        ? isNull(accountingConnections.realmIdFingerprint)
+        : eq(accountingConnections.realmIdFingerprint, expectedRealmFingerprint),
+    ))
+    .returning({ id: accountingConnections.id });
+
+  return updated.length > 0;
+}
+
+/**
+ * Prefix on the `accounting_connections.last_error` messages the RECONCILE
+ * WORKER writes (final-review finding H). That column is shared with connection
+ * lifecycle errors — a failed refresh writes "reauthorization required" there —
+ * so a reconcile run must be able to clear its OWN message without wiping one
+ * an operator still has to act on. Same convention (and same literal prefix) as
+ * `accountingPaymentPull.PAYMENT_PULL_ERROR_PREFIX` uses on mapping rows;
+ * duplicated rather than imported to keep this module free of a dependency on
+ * the applier. Contains no LIKE metacharacters.
+ */
+export const RECONCILE_RUN_ERROR_PREFIX = 'Payment pull: ';
+
+/**
+ * Surface a reconcile run's outcome on the connection itself (finding H).
+ *
+ * Before this, a run that ended with failed items or an un-drained CDC window
+ * left NOTHING an operator could see: the job retried and eventually gave up in
+ * BullMQ, `last_reconcile_at` simply stopped advancing, and the integration
+ * panel still read "connected". Pass a sanitized one-liner (counts only — never
+ * a QuickBooks response body) to stamp, or `null` after a clean run to clear.
+ *
+ * The clear is prefix-scoped so it can never erase a `reauth_required` message.
+ */
+export async function stampReconcileRunError(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  message: string | null,
+): Promise<void> {
+  const scope = [
+    eq(accountingConnections.id, connectionId),
+    eq(accountingConnections.partnerId, partnerId),
+  ];
+  await dbc
+    .update(accountingConnections)
+    .set({
+      lastError: message === null ? null : `${RECONCILE_RUN_ERROR_PREFIX}${message}`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      ...scope,
+      ...(message === null
+        ? [like(accountingConnections.lastError, `${RECONCILE_RUN_ERROR_PREFIX}%`)]
+        : []),
+    ))
+    .returning({ id: accountingConnections.id });
+}
+
+/**
+ * QuickBooks payment deletions this connection still OWES, about to be lost.
+ *
+ * `accounting_entity_mappings_connection_partner_fk` is ON DELETE CASCADE and
+ * `resetConnectionForRealmChange` deletes the mappings outright, so both paths
+ * take every `pending_op = 'delete'` row with them. Each of those means Breeze
+ * created a Payment in the partner's QuickBooks and has not removed it — the
+ * same debt `tenantCascade` and `orgMerge` now preserve. Here it CANNOT be
+ * preserved: the mapping is meaningless without its connection (a realm change
+ * makes the remote ids point at a different company file entirely), and a
+ * disconnect the operator asked for must never be blocked.
+ *
+ * So the debt is reported instead of retained — warning, Sentry, and an audit
+ * entry written by the route — naming the remote ids, which is the only thing
+ * that lets a human find those Payments in QuickBooks afterwards.
+ */
+export interface OwedPaymentDeletes {
+  count: number;
+  /** `<PaymentId>/<InvoiceId>` composites, capped so one pathological
+   *  connection cannot write an unbounded audit detail or Sentry message. */
+  remoteEntityIds: string[];
+}
+
+const OWED_DELETE_REPORT_CAP = 50;
+
+async function collectOwedPaymentDeletes(
+  dbc: DbExecutor,
+  where: SQL | undefined,
+  context: Record<string, unknown>,
+): Promise<OwedPaymentDeletes> {
+  const rows = await dbc
+    .select({
+      id: accountingEntityMappings.id,
+      remoteEntityId: accountingEntityMappings.remoteEntityId,
+    })
+    .from(accountingEntityMappings)
+    .where(where) as Array<{ id: string; remoteEntityId: string | null }>;
+
+  const remoteEntityIds = rows
+    .map((r) => r.remoteEntityId)
+    .filter((v): v is string => typeof v === 'string')
+    .slice(0, OWED_DELETE_REPORT_CAP);
+  const owed: OwedPaymentDeletes = { count: rows.length, remoteEntityIds };
+  if (owed.count === 0) return owed;
+
+  console.warn(
+    '[accountingConnectionService] discarding owed QuickBooks payment delete(s) — '
+    + 'Breeze created these Payments and will no longer remove them',
+    { ...context, count: owed.count, remoteEntityIds },
+  );
+  captureException(
+    new Error(
+      `accountingConnectionService: discarded ${owed.count} owed QuickBooks payment delete(s) — `
+      + 'the Payments Breeze created stay in the customer books and need manual reconciliation',
+    ),
+    undefined,
+    { service: 'accountingConnectionService', accounting_connection_id: String(context.connectionId ?? 'unknown') },
+  );
+  return owed;
+}
+
+/**
+ * DISCONNECT SEMANTICS for a reconnect that lands on a DIFFERENT realm
+ * (finding C).
+ *
+ * `upsertConnection` keys on `(partner_id, provider)`, so re-authorising
+ * against another QuickBooks company REUSES the same connection row — and every
+ * `accounting_entity_mappings` row hanging off it still points at the OLD
+ * realm's Customer/Item/Invoice/Payment ids. Left in place, the next push would
+ * "update" a stranger's invoice and the next CDC pull would apply the new
+ * realm's payments against mappings that mean nothing there. The stored cursor
+ * is equally poisoned: it is a watermark in the old realm's change stream.
+ *
+ * So a realm change wipes the mappings and the watermark — the same state a
+ * disconnect/reconnect leaves — and the new realm re-imports and re-maps from
+ * scratch. Deliberately NOT called when the prior realm could not be read: the
+ * cost of guessing wrong is destroying a healthy connection's whole mapping set.
+ */
+export async function resetConnectionForRealmChange(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<{ mappingsDeleted: number; owedPaymentDeletes: OwedPaymentDeletes }> {
+  // BEFORE the delete: after it there is nothing left to count.
+  const owedPaymentDeletes = await collectOwedPaymentDeletes(dbc, and(
+    eq(accountingEntityMappings.integrationId, connectionId),
+    eq(accountingEntityMappings.partnerId, partnerId),
+    eq(accountingEntityMappings.breezeEntityType, 'payment'),
+    eq(accountingEntityMappings.pendingOp, 'delete'),
+  ), { connectionId, partnerId, reason: 'realm_changed' });
+
+  const deleted = await dbc
+    .delete(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.integrationId, connectionId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+    ))
+    .returning({ id: accountingEntityMappings.id });
+
+  await dbc
+    .update(accountingConnections)
+    .set({ cdcCursor: null, lastReconcileAt: null, updatedAt: new Date() })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+
+  return { mappingsDeleted: deleted.length, owedPaymentDeletes };
 }
 
 export async function updateTokens(
@@ -266,19 +696,26 @@ export function isHomeCurrencyCasAbort(err: unknown): boolean {
     && (err as { code?: unknown }).code === ACCOUNTING_HOME_CURRENCY_CAS_ABORT;
 }
 
+/**
+ * Compare-and-set the realm's home currency. Returns the NEW `updated_at`
+ * generation the row is now at, so a caller writing a second realm-derived
+ * field (`updateMultiCurrencyEnabled`) can chain its own CAS onto the
+ * generation this write produced instead of the pre-write one it captured —
+ * which would abort every time, since this write bumps `updated_at`.
+ */
 export async function updateHomeCurrency(
   db: DbTransactor,
   connectionId: string,
   partnerId: string,
   expected: { updatedAt: Date; realmId: string | null },
   homeCurrency: string
-): Promise<void> {
+): Promise<Date> {
   const normalized = homeCurrency.trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(normalized)) {
     throw new Error(`Refusing to persist a malformed accounting home currency: ${JSON.stringify(homeCurrency)}`);
   }
 
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const [row] = await tx
       .select()
       .from(accountingConnections)
@@ -304,11 +741,12 @@ export async function updateHomeCurrency(
       throw new AccountingHomeCurrencyCasAbortError(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) at the expected generation; the connection changed underneath the capture`);
     }
 
+    const writtenAt = new Date();
     const updated = await tx
       .update(accountingConnections)
       .set({
         homeCurrency: normalized,
-        updatedAt: new Date(),
+        updatedAt: writtenAt,
       })
       .where(and(
         eq(accountingConnections.id, connectionId),
@@ -318,6 +756,7 @@ export async function updateHomeCurrency(
     if (updated.length === 0) {
       throw new Error(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) on write; the DB context is wrong`);
     }
+    return writtenAt;
   });
 }
 
@@ -345,12 +784,214 @@ export async function markStatus(
   }
 }
 
-/** Returns true if a connection row was deleted, false if none matched. */
+/**
+ * Persists the provider-reported multi-currency flag (multi-currency §11)
+ * under the SAME `updatedAt` + `realmId` compare-and-set as
+ * `updateHomeCurrency`.
+ *
+ * It was originally a plain guarded UPDATE, on the reasoning that a boolean
+ * flag carries no per-realm identity the way a cached currency VALUE does.
+ * That is wrong: the flag is read straight off a specific realm's
+ * `fetchRealmSettings` response, and `refreshRealmSettings` captures its
+ * generation BEFORE a multi-second QuickBooks round trip. A reconnect to a
+ * DIFFERENT realm landing inside that window would be stamped with the old
+ * realm's flag — and `accountingInvoicePush`'s currency guard keys its
+ * remediation copy off exactly that flag. Same CAS, same abort error, so
+ * `refreshRealmSettings` treats a lost race the same way for both writes.
+ */
+export async function updateMultiCurrencyEnabled(
+  db: DbTransactor,
+  connectionId: string,
+  partnerId: string,
+  expected: { updatedAt: Date; realmId: string | null },
+  multiCurrencyEnabled: boolean | null,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(accountingConnections)
+      .where(and(
+        eq(accountingConnections.id, connectionId),
+        eq(accountingConnections.partnerId, partnerId)
+      ))
+      .limit(1)
+      .for('update');
+
+    if (!row) {
+      throw new Error(`updateMultiCurrencyEnabled matched no accounting_connections row (id=${connectionId}); it was deleted underneath the capture or the DB context is wrong`);
+    }
+
+    if (decryptNullable(row.realmIdEncrypted) !== expected.realmId) {
+      throw new AccountingHomeCurrencyCasAbortError(`updateMultiCurrencyEnabled aborted: connection ${connectionId} now points at a different realm than the capture started for`);
+    }
+
+    if (row.updatedAt === null || row.updatedAt.getTime() !== expected.updatedAt.getTime()) {
+      throw new AccountingHomeCurrencyCasAbortError(`updateMultiCurrencyEnabled matched no accounting_connections row (id=${connectionId}) at the expected generation; the connection changed underneath the capture`);
+    }
+
+    const updated = await tx
+      .update(accountingConnections)
+      .set({
+        multiCurrencyEnabled,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(accountingConnections.id, connectionId),
+        eq(accountingConnections.partnerId, partnerId)
+      ))
+      .returning({ id: accountingConnections.id });
+    if (updated.length === 0) {
+      throw new Error(`updateMultiCurrencyEnabled matched no accounting_connections row (id=${connectionId}) on write; the DB context is wrong`);
+    }
+  });
+}
+
+export type AccountingConnectionErrorCode = 'not_connected' | 'reauth_required';
+
+/** Typed failure the route translates straight to an HTTP status (mirrors AccountingMappingError). */
+export class AccountingConnectionError extends Error {
+  constructor(
+    public readonly code: AccountingConnectionErrorCode,
+    public readonly status: 404 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AccountingConnectionError';
+  }
+}
+
+/**
+ * Re-fetches the connected realm's settings (home currency + multi-currency
+ * flag) on demand — the "Refresh settings" action, distinct from the OAuth
+ * callback's connect-time capture. Resolves the connection and a live access
+ * token itself (mirrors `resolveConnectionAndToken` in
+ * accountingMappingService.ts), so the route stays a thin pass-through.
+ *
+ * `getValidAccessToken` may ROTATE the connection's tokens (`updateTokens`),
+ * which bumps `updated_at` on the row. Re-reading the connection AFTER
+ * obtaining the token — rather than reusing the pre-token generation — is
+ * deliberate: `updateHomeCurrency`'s compare-and-set below stakes its claim on
+ * `updatedAt`, so comparing against a stale pre-refresh snapshot would make
+ * the write lose the race on every call that also happened to rotate a token,
+ * misreading an ordinary refresh as a concurrent reconnect.
+ *
+ * Both writes are best-effort against a value the realm reports as unknown
+ * (null): a null is never written over a previously captured non-null value,
+ * mirroring the OAuth callback's "never blank on an ordinary external
+ * condition" rule for home currency.
+ */
+export async function refreshRealmSettings(
+  partnerId: string,
+  provider: AccountingProviderId,
+  runInDbContext: DbContextRunner,
+): Promise<{ homeCurrency: string | null; multiCurrencyEnabled: boolean | null }> {
+  assertNoAmbientDbContext('refreshRealmSettings');
+
+  const conn = await runInDbContext(async () => {
+    const conn = await getConnection(db, partnerId, provider);
+    if (!conn) {
+      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+    }
+    if (conn.status === 'reauth_required') {
+      throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+    }
+    if (conn.status !== 'connected') {
+      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+    }
+    return conn;
+  });
+
+  let accessToken: string;
+  try {
+    // No context held: getValidAccessToken opens its own short system
+    // transactions around the refresh fetch and asserts exactly that.
+    accessToken = await getValidAccessToken(db, conn);
+  } catch (err) {
+    if (err instanceof ReauthRequiredError) {
+      throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+    }
+    throw err;
+  }
+
+  // See the doc comment above: re-read to capture the generation the row will
+  // actually be at when we write, not the pre-token-refresh snapshot.
+  const freshConn = await runInDbContext(async () => {
+    const freshConn = await getConnection(db, partnerId, provider);
+    if (!freshConn) {
+      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+    }
+    return freshConn;
+  });
+
+  const liveConn: AccountingConnection = { ...freshConn, accessToken };
+  const providerImpl = getAccountingProvider(provider);
+  const settings = await providerImpl.fetchRealmSettings(liveConn);
+
+  // BOTH writes are compare-and-set against the same (updatedAt, realmId)
+  // generation, and each one BUMPS `updated_at` — so the second must stake its
+  // claim on the generation the FIRST produced, not on the pre-write snapshot.
+  // `updateHomeCurrency` returns its new generation for exactly that; losing
+  // the home-currency CAS means the generation we hold is stale, so the flag
+  // write is skipped rather than issued against a claim we know has expired.
+  let generation: Date | null = freshConn.updatedAt;
+
+  if (settings.homeCurrency && generation) {
+    try {
+      generation = await withSystemDbAccessContext(() => updateHomeCurrency(
+        db,
+        freshConn.id,
+        partnerId,
+        { updatedAt: generation as Date, realmId: freshConn.realmId },
+        settings.homeCurrency as string,
+      ));
+    } catch (err) {
+      // A lost compare-and-set is an EXPECTED race (a concurrent reconnect or
+      // another refresh call already advanced the generation) — the winning
+      // write already captured a currency for the generation that survived,
+      // so this is not a defect. Any OTHER failure is genuine and propagates.
+      if (!isHomeCurrencyCasAbort(err)) throw err;
+      generation = null;
+    }
+  }
+
+  if (typeof settings.multiCurrencyEnabled === 'boolean' && generation) {
+    try {
+      await withSystemDbAccessContext(() => updateMultiCurrencyEnabled(
+        db,
+        freshConn.id,
+        partnerId,
+        { updatedAt: generation as Date, realmId: freshConn.realmId },
+        settings.multiCurrencyEnabled,
+      ));
+    } catch (err) {
+      if (!isHomeCurrencyCasAbort(err)) throw err;
+    }
+  }
+
+  return { homeCurrency: settings.homeCurrency, multiCurrencyEnabled: settings.multiCurrencyEnabled };
+}
+
+/**
+ * Drop the connection. `removed` is false when no row matched.
+ *
+ * `connectionId` is the id of the row it removed (null when none matched).
+ *
+ * Also reports the QuickBooks payment deletions the cascade is about to discard
+ * — see `OwedPaymentDeletes`. Counted BEFORE the delete (afterwards there is
+ * nothing left to count) and never blocking: a disconnect the operator asked
+ * for must always succeed.
+ */
 export async function deleteConnection(
   db: DbExecutor,
   partnerId: string,
   provider: AccountingProviderId
-): Promise<boolean> {
+): Promise<{ removed: boolean; connectionId: string | null; owedPaymentDeletes: OwedPaymentDeletes }> {
+  const owedPaymentDeletes = await collectOwedPaymentDeletes(db, and(
+    eq(accountingEntityMappings.partnerId, partnerId),
+    eq(accountingEntityMappings.breezeEntityType, 'payment'),
+    eq(accountingEntityMappings.pendingOp, 'delete'),
+  ), { partnerId, provider, reason: 'disconnect' });
+
   const deleted = await db
     .delete(accountingConnections)
     .where(and(
@@ -358,5 +999,12 @@ export async function deleteConnection(
       eq(accountingConnections.provider, provider)
     ))
     .returning({ id: accountingConnections.id });
-  return deleted.length > 0;
+  // The id is returned so the caller can identify the connection in an audit
+  // entry AFTER the row is gone — the disconnect's owed-delete record has to
+  // name the same subject as its realm-change twin (review wave 3, finding D3).
+  return {
+    removed: deleted.length > 0,
+    connectionId: (deleted as Array<{ id: string }>)[0]?.id ?? null,
+    owedPaymentDeletes,
+  };
 }

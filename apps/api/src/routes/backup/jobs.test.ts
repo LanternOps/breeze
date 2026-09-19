@@ -98,6 +98,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/backupJobCreation', () => ({
   createManualBackupJobIfIdle: vi.fn(),
+  deviceHelperQueues: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../../services/featureConfigResolver', () => ({

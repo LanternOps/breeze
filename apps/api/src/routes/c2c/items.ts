@@ -13,6 +13,7 @@ import { enqueueC2cRestore } from '../../jobs/c2cEnqueue';
 import { c2cItemSearchSchema, c2cRestoreSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
+import { captureRecoveryAuthorizationSubject } from '../../services/recoveryAuthorizationSubject';
 
 export const c2cItemsRoutes = new Hono();
 const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -118,6 +119,11 @@ c2cItemsRoutes.post(
       return c.json({ error: 'All restore items must belong to the same backup configuration' }, 400);
     }
     const firstItem = matchedItems[0]!;
+    const authorizationSubject = await captureRecoveryAuthorizationSubject(
+      auth,
+      orgId,
+      { operation: 'c2c_restore', requiredAiTool: 'restore_c2c_items' },
+    );
 
     const [restoreJob] = await db
       .insert(c2cBackupJobs)
@@ -125,6 +131,8 @@ c2cItemsRoutes.post(
         orgId,
         configId: firstItem.configId,
         status: 'pending',
+        operationKind: 'restore',
+        ...authorizationSubject,
         createdAt: now,
         updatedAt: now,
       })

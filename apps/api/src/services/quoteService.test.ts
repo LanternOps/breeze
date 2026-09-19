@@ -29,8 +29,22 @@ vi.mock('../db', () => {
   };
 });
 
+// Tax resolution moved into the shared taxRateResolver service (settings
+// consolidation W02-API): quoteService.resolveQuoteTaxRate is now a thin
+// wrapper, so its two db.select calls are no longer visible to this file's db
+// mock. Mock the resolver directly instead of queueing raw rows for it.
+vi.mock('./taxRateResolver', () => ({
+  resolveOrgTaxRate: vi.fn(async () => null),
+  OrgNotVisibleForTaxError: class OrgNotVisibleForTaxError extends Error {
+    constructor(public readonly orgId: string) {
+      super(`not visible: ${orgId}`);
+      this.name = 'OrgNotVisibleForTaxError';
+    }
+  },
+}));
+
 // Multi-currency wave 3 (#3775): addCatalogLine prices the line through the
-// catalog price-book resolver, never from catalog_items.unit_price. Mock the
+// catalog price-book resolver (catalog_item_prices). Mock the
 // resolver only; CatalogServiceError stays real so the code-mapping path is
 // exercised.
 vi.mock('./catalogService', async (importOriginal) => {
@@ -41,6 +55,7 @@ vi.mock('./catalogService', async (importOriginal) => {
 import * as svc from './quoteService';
 import { db } from '../db';
 import { resolvePrice, CatalogServiceError } from './catalogService';
+import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 const resolvedUsd = (over: Partial<Awaited<ReturnType<typeof resolvePrice>>> = {}) => ({
@@ -52,8 +67,28 @@ type Chain = { set: { mock: { calls: unknown[][] } }; values: { mock: { calls: u
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
+describe('customer quote-line projection (#3205 W05)', () => {
+  it('carries descriptor prose and billing fields but omits internal descriptor ids', () => {
+    const [line] = svc.toCustomerLines([{
+      id: 'l1', name: 'Managed servers', contractLineType: 'per_device_role',
+      deviceRoles: ['server'], deviceGroupId: 'group-internal', deviceGroupName: 'VIP Servers',
+      siteId: 'site-internal', siteName: 'Denver', includedQuantity: '25.00',
+      overageMode: 'bill', overageUnitPrice: '4.50', unitCost: '2.00',
+    }]);
+
+    expect(line).toMatchObject({
+      contractLineType: 'per_device_role', deviceRoles: ['server'],
+      deviceGroupName: 'VIP Servers', siteName: 'Denver', includedQuantity: '25.00',
+      overageMode: 'bill', overageUnitPrice: '4.50',
+    });
+    expect(line).not.toHaveProperty('deviceGroupId');
+    expect(line).not.toHaveProperty('siteId');
+    expect(line).not.toHaveProperty('unitCost');
+  });
+});
+
 describe('quoteService deposits', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); vi.mocked(resolveOrgTaxRate).mockResolvedValue(null); });
 
   it('updateQuote persists deposit config and recompute stores deposit_amount', async () => {
     // Every awaited db call consumes one queued result, whether or not the
@@ -116,14 +151,16 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: 's1', billToName: 'Old Co', taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // target org same-partner membership check (currency matches the draft stamp)
     // resolveQuoteTaxRate for the NEW org: 5% org rate, no partner default
-    queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
-    queueResult([{ defaultTaxRate: null }]);
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue('0.05000');
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([]); // SET CONSTRAINTS quote_lines_quote_org_fk DEFERRED
     queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
-    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: scoped lines clear + org move
+    queueResult([]); // tx: remaining lines org move
     queueResult([]); // tx: images org move
+    queueResult([]); // tx: unscoped descriptor lines
     // recomputeAndPersist: header select (new rate), lines, own update
     queueResult([{ taxRate: '0.05000', depositType: 'none', depositPercent: null }]);
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]);
@@ -138,10 +175,27 @@ describe('quoteService deposits', () => {
     // Call 0: the header update moves the org, clears the old customer's site +
     // bill-to override, and applies the new org's resolved tax rate.
     expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2', siteId: null, billToName: null, taxRate: '0.05000' });
-    // Calls 1-3: denormalized org_id moves on blocks, lines, and images.
+    // The ONE resolver (settings audit rule 5) is what produced that rate — the
+    // service no longer re-derives the precedence chain locally.
+    expect(resolveOrgTaxRate).toHaveBeenCalledWith({ orgId: 'org2', partnerId: 'p1' });
+    // Calls 1-4: denormalized org_id moves on blocks, scoped lines, remaining
+    // lines, and images.
     expect(setMock.mock.calls[1]![0]).toEqual({ orgId: 'org2' });
-    expect(setMock.mock.calls[2]![0]).toEqual({ orgId: 'org2' });
+    expect(setMock.mock.calls[2]![0]).toEqual({ orgId: 'org2', deviceGroupId: null, siteId: null });
     expect(setMock.mock.calls[3]![0]).toEqual({ orgId: 'org2' });
+    expect(setMock.mock.calls[4]![0]).toEqual({ orgId: 'org2' });
+  });
+
+  it('maps the resolver\'s fail-closed OrgNotVisibleForTaxError to QuoteServiceError(404, ORG_NOT_FOUND)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check passes — the org becomes invisible only at the tax read
+    vi.mocked(resolveOrgTaxRate).mockRejectedValue(new OrgNotVisibleForTaxError('org2'));
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor)).rejects.toMatchObject({
+      status: 404,
+      code: 'ORG_NOT_FOUND',
+    });
   });
 
   it('updateQuote org change with an explicit taxRate in the same patch skips re-resolution and keeps the explicit rate', async () => {
@@ -150,11 +204,14 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp) — NO resolveQuoteTaxRate selects follow
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([]); // SET CONSTRAINTS
     queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
-    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: scoped lines clear + org move
+    queueResult([]); // tx: remaining lines org move
     queueResult([]); // tx: images org move
+    queueResult([]); // tx: unscoped descriptor lines
     queueResult([{ taxRate: '0.20000', depositType: 'none', depositPercent: null }]); // recompute header
     queueResult([]); // recompute lines
     queueResult([]); // recompute update
@@ -173,14 +230,16 @@ describe('quoteService deposits', () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: 'Old Co', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
-    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
-    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    // resolveQuoteTaxRate -> shared resolver (mocked): no tax at either level
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([]); // SET CONSTRAINTS
     queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
-    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: scoped lines clear + org move
+    queueResult([]); // tx: remaining lines org move
     queueResult([]); // tx: images org move
+    queueResult([]); // tx: unscoped descriptor lines
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
     queueResult([]); // recompute lines
     queueResult([]); // recompute update
@@ -224,9 +283,9 @@ describe('quoteService deposits', () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
-    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
-    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    // resolveQuoteTaxRate -> shared resolver (mocked): no tax at either level
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
+    queueResult([]); // SET CONSTRAINTS
     queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     // assertContractBlockValid inside the tx: version published, template OWNED BY org1 (invalid for org2)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]);
@@ -243,16 +302,18 @@ describe('quoteService deposits', () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
-    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
-    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    // resolveQuoteTaxRate -> shared resolver (mocked): no tax at either level
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch
+    queueResult([]); // SET CONSTRAINTS
     queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]); // version published
     queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]); // PARTNER-WIDE — visible to every org of the partner
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
-    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: scoped lines clear + org move
+    queueResult([]); // tx: remaining lines org move
     queueResult([]); // tx: images org move
+    queueResult([]); // tx: unscoped descriptor lines
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
     queueResult([]); // recompute lines
     queueResult([]); // recompute update
@@ -399,7 +460,7 @@ describe('quoteService deposits', () => {
   function queueCloneReads(blocks: unknown[], lines: unknown[]) {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null, billToName: null, billToAddress: null, billToTaxId: null }]); // getQuote: quote
     queueResult(blocks); // getQuote: blocks
-    queueResult(lines); // getQuote: lines
+    queueResult(lines.map((line) => ({ line, deviceGroup: null, site: null }))); // getQuote: joined lines
     queueResult([]); // getQuote: no staged Pax8 order
     queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -512,7 +573,11 @@ describe('quoteService deposits', () => {
   it('getQuote returns depositDueTotal and categoryBreakdown', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.10000', depositType: 'percent', depositPercent: '30.00' }]); // quote
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
+    queueResult([{
+      line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' },
+      deviceGroup: null,
+      site: null,
+    }]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
@@ -969,7 +1034,7 @@ describe('sanitizeBlockContentForWrite loss reporting (#3520)', () => {
 });
 
 describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); vi.mocked(resolveOrgTaxRate).mockResolvedValue(null); });
 
   it('rejects a non-draft quote with NOT_A_DRAFT (409)', async () => {
     queueResult([{ id: 'q1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
@@ -997,6 +1062,7 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
   it('restamps a line-less draft and returns the new currency', async () => {
     queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
     queueResult([]); // no lines
+    queueResult([]); // no stamped overage price
     queueResult([]); // header currency update
     // recomputeAndPersist: header select, lines select, totals update
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]);
@@ -1012,6 +1078,7 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
   it('clearLines: true deletes the lines, restamps, and re-totals atomically', async () => {
     queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'EUR' }]);
     queueResult([{ id: 'l1' }, { id: 'l2' }]); // two monetary lines
+    // clearLines skips the stamped-overage lookup: the lines are deleted anyway.
     queueResult([]); // delete
     queueResult([]); // header currency update
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'JPY' }]);
@@ -1020,6 +1087,22 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
     queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'JPY', total: '0.00' }]);
     const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'JPY', clearLines: true }, actor);
     expect(updated.currencyCode).toBe('JPY');
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(1);
+  });
+
+  // #3205 W05 (Task 7 review): the hand-entered overage lock must not block
+  // clearLines — the stamped line is one of the lines being deleted.
+  it('clearLines: true is not blocked by a stamped overage price (no CURRENCY_LOCKED)', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'EUR' }]);
+    queueResult([{ id: 'l1' }]); // the line carrying overageUnitPrice
+    queueResult([]); // delete
+    queueResult([]); // header currency update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'USD' }]);
+    queueResult([]); // recompute lines select (now empty)
+    queueResult([]); // recompute totals update
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'USD', total: '0.00' }]);
+    const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'USD', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('USD');
     expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(1);
   });
 
@@ -1040,12 +1123,36 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
 });
 
 describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #3775)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); vi.mocked(resolveOrgTaxRate).mockResolvedValue(null); });
   const draft = { id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' };
+
+  it('locks currency when any line has a stamped overage rate and proceeds after it is cleared', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '2.00' }]);
+    queueResult([{ id: 'l1' }]); // stamped overage price
+    await expect(svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor))
+      .rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '2.00' }]);
+    queueResult([]); // overage price cleared
+    resolvePriceMock.mockResolvedValueOnce(resolvedUsd({ unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'EUR' }));
+    queueResult([]); // line reprice
+    queueResult([]); // quote restamp
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]);
+    queueResult([{ quantity: '2.00', unitPrice: '20.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: null }]);
+    queueResult([]); // totals update
+    queueResult([{ ...draft, currencyCode: 'EUR' }]);
+
+    await expect(svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor))
+      .resolves.toMatchObject({ currencyCode: 'EUR' });
+  });
 
   it('reprices a catalog line from the price book, restamps, and re-totals — no delete, no CURRENCY_LOCKED', async () => {
     queueResult([draft]);
     queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '2.00' }]);
+    queueResult([]); // no stamped overage price
     resolvePriceMock.mockResolvedValueOnce(resolvedUsd({ unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'EUR', marginAvailable: true }));
     queueResult([]); // line update
     queueResult([]); // header currency update
@@ -1069,6 +1176,7 @@ describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #377
   it('nulls unitCost when the resolved cost is in another currency (margin unavailable)', async () => {
     queueResult([draft]);
     queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' }]);
+    queueResult([]); // no stamped overage price
     resolvePriceMock.mockResolvedValueOnce(resolvedUsd({ unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'USD', marginAvailable: false }));
     queueResult([]); queueResult([]);
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]);
@@ -1087,7 +1195,7 @@ describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #377
     ]);
     await expect(
       svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor)
-    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency') });
     expect(resolvePriceMock).not.toHaveBeenCalled();
     expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
     expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
@@ -1119,7 +1227,7 @@ describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #377
 // changeQuoteCurrency uses, so a restamp can never interleave between a
 // writer's currency read and its line write.
 describe('quote line writers lock the quote row first (#3774)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); vi.mocked(resolveOrgTaxRate).mockResolvedValue(null); });
 
   type LockChain = Chain & {
     for: { mock: { calls: unknown[][] } };
@@ -1223,7 +1331,7 @@ describe('quote line writers lock the quote row first (#3774)', () => {
 // Wave-6 release gate (W6-G2-1): hand-entered money on a quote line is validated
 // against the QUOTE's stamped currency under the same row lock that produced it.
 describe('quoteService currency representability guard (W6-G2-1)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); vi.mocked(resolveOrgTaxRate).mockResolvedValue(null); });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
   const draft = (currencyCode: string) => ({ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode });

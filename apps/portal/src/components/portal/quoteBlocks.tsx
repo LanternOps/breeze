@@ -6,6 +6,7 @@
 // lines (no blockId) fall into a trailing default pricing table — same as the
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
+import { DEVICE_ROLE_NOUNS, type BillableDeviceRole } from '@breeze/shared';
 import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
 import { money } from '@/lib/format';
@@ -41,6 +42,27 @@ function lineBlurb(l: QuoteLine): string | null {
   return b || null;
 }
 
+function deviceSetCustomerText(raw: QuoteLine, currency: string): string[] {
+  const line = raw;
+  if (!line.contractLineType) return [];
+  let set = 'devices';
+  if (line.contractLineType === 'per_device_role') {
+    set = (line.deviceRoles ?? []).map((r) => DEVICE_ROLE_NOUNS[r as BillableDeviceRole] ?? r).join(', ') || 'devices';
+  } else if (line.contractLineType === 'per_device_group') {
+    set = `devices in “${line.deviceGroupName ?? ''}”`;
+  } else if (line.contractLineType === 'per_seat') {
+    set = 'seats';
+  }
+  if (line.siteName) set = `${set} at ${line.siteName}`;
+  const result = [`Estimated quantity — billed at the actual number of ${set} each billing period.`];
+  if (line.includedQuantity != null && line.overageMode === 'bill' && line.overageUnitPrice != null) {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units billed at ${money(line.overageUnitPrice, currency)} each.`);
+  } else if (line.includedQuantity != null && line.overageMode === 'flag') {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units are reported for review, not billed automatically.`);
+  }
+  return result;
+}
+
 function PricingTable({
   lines,
   currency,
@@ -48,6 +70,7 @@ function PricingTable({
   testId,
   taxRate,
   showTax,
+  showSubtotal = false,
   buildUrl,
 }: {
   lines: QuoteLine[];
@@ -56,6 +79,9 @@ function PricingTable({
   testId: string;
   taxRate: number;
   showTax: boolean;
+  /** The block's "Show subtotal" toggle. The technician preview and the PDF
+   *  honour it; the customer must see the same document. */
+  showSubtotal?: boolean;
   /** Resolves a server-built relative line-image path into a fetchable URL. */
   buildUrl: (path: string) => PublicApiPath;
 }) {
@@ -66,6 +92,12 @@ function PricingTable({
     rows: lines.filter((l) => (l.recurrence || 'one_time') === g.key),
   })).filter((g) => g.rows.length > 0);
   const groupColSpan = showTax ? 5 : 4;
+  // Opt-in per-table subtotal, summed from THIS table's rows and split by
+  // recurrence, joined with " + " — the same shape as the document footer
+  // (apps/web QuoteDocument.tsx PricingTable).
+  const subtotalParts = showSubtotal
+    ? grouped.map((g) => `${money(g.rows.reduce((sum, l) => sum + Number(l.lineTotal), 0), currency)}${g.suffix}`)
+    : [];
 
   return (
     <div className="overflow-hidden rounded-lg border bg-card" data-testid={testId}>
@@ -97,6 +129,7 @@ function PricingTable({
                 )}
                 {g.rows.map((l) => {
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                  const descriptor = deviceSetCustomerText(l, currency);
                   return (
                   <tr key={l.id} data-testid={`quote-line-${l.id}`} className="border-b align-top last:border-0">
                     <td className="w-full px-4 py-3 text-foreground sm:px-5">
@@ -119,6 +152,11 @@ function PricingTable({
                           {lineBlurb(l) && (
                             <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
                           )}
+                          {descriptor.length > 0 && (
+                            <div className="mt-0.5 space-y-0.5 text-xs text-muted-foreground" data-testid={`quote-line-device-set-${l.id}`}>
+                              {descriptor.map((text, i) => <p key={i}>{text}</p>)}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -140,6 +178,18 @@ function PricingTable({
               </Fragment>
             ))}
           </tbody>
+          {subtotalParts.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 bg-muted/20" data-testid={`quote-table-subtotal-${testId.replace(/^quote-lines-/, '')}`}>
+                <td className="px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5" colSpan={groupColSpan - 1}>
+                  Subtotal
+                </td>
+                <td className="text-figures whitespace-nowrap px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5">
+                  {subtotalParts.join(' + ')}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>
@@ -251,7 +301,7 @@ export function QuoteBlocks({
       // component already leans on for `content` itself.
       const c = content as unknown as QuoteContractBlockContent;
       const label = typeof c.label === 'string' ? c.label : '';
-      const templateName = typeof c.templateName === 'string' ? c.templateName : 'Contract';
+      const templateName = typeof c.templateName === 'string' ? c.templateName : (label || 'Agreement');
       const versionNumber = Number(c.versionNumber ?? 0);
       const sourceType = c.sourceType === 'uploaded' ? 'uploaded' : 'authored';
       const renderedHtml = typeof c.renderedHtml === 'string' ? c.renderedHtml : null;
@@ -266,17 +316,17 @@ export function QuoteBlocks({
               // blocks (see the rich_text case above), safe to render as-is.
               <div className="quote-rich-text text-sm leading-relaxed text-foreground" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
             ) : (
-              <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Contract content unavailable</div>
+              <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Agreement content unavailable</div>
             )
           ) : fileUrl ? (
             <div className="space-y-2">
               <iframe src={buildUrl(fileUrl)} title={templateName} className="h-[32rem] w-full rounded-lg border" />
               <a href={buildUrl(fileUrl)} target="_blank" rel="noreferrer" data-testid="contract-block-download" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline">
-                Download contract
+                Download agreement
               </a>
             </div>
           ) : (
-            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Contract file unavailable</div>
+            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Agreement file unavailable</div>
           )}
           <p className="text-xs text-muted-foreground">{templateName} — v{versionNumber}</p>
         </div>
@@ -355,6 +405,7 @@ export function QuoteBlocks({
           testId={`quote-lines-${block.id}`}
           taxRate={taxRate}
           showTax={showTax}
+          showSubtotal={content.showSubtotal === true}
           buildUrl={buildUrl}
         />
       );

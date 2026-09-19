@@ -9,7 +9,15 @@ vi.mock('./configurationPolicy', async (importOriginal) => {
 });
 
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
-import { resolveRemoteAccessForDevice, invalidateRemoteAccessCache } from './remoteAccessPolicy';
+import {
+  checkRemoteAccess,
+  resolveRemoteAccessForDevice,
+  invalidateRemoteAccessCache,
+  clampSettings,
+  resetRemoteAccessClampWarningsForTests,
+  MIN_MAX_SESSION_DURATION_HOURS,
+  MAX_MAX_SESSION_DURATION_HOURS,
+} from './remoteAccessPolicy';
 import { resolveEffectiveConfig } from './configurationPolicy';
 
 // Guards the security-sensitive default: Remote Desktop / VNC / Remote Tools
@@ -50,5 +58,121 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
     expect(result.settings.remoteTools).toBe(true);
     expect(result.policyName).toBeNull();
     expect(result.policyId).toBeNull();
+  });
+
+  it('bypasses a stale allowed cache entry for live continuation checks', async () => {
+    const deviceId = `test-device-policy-transition-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig)
+      .mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] })
+      .mockResolvedValueOnce({
+        deviceId,
+        features: {
+          remote_access: {
+            inlineSettings: { webrtcDesktop: false },
+            sourcePolicyName: 'Disabled now',
+            sourcePolicyId: 'policy-disabled',
+          },
+        },
+        inheritanceChain: [],
+      } as any);
+
+    await expect(checkRemoteAccess(deviceId, 'webrtcDesktop')).resolves.toEqual({ allowed: true });
+    await expect(checkRemoteAccess(deviceId, 'webrtcDesktop', { bypassCache: true }))
+      .resolves.toMatchObject({ allowed: false, policyId: 'policy-disabled' });
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12 h hard cap — "0 = unlimited" is gone
+// ---------------------------------------------------------------------------
+
+describe('maxSessionDurationHours clamp [1, 12]', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateRemoteAccessCache();
+    resetRemoteAccessClampWarningsForTests();
+  });
+
+  it('exposes the supported policy range', () => {
+    expect(MIN_MAX_SESSION_DURATION_HOURS).toBe(1);
+    expect(MAX_MAX_SESSION_DURATION_HOURS).toBe(12);
+  });
+
+  it('resolves a stored 0 ("unlimited") to the 12 h cap instead of no limit', () => {
+    const clamped = clampSettings({
+      ...getRemoteAccessBaseline(),
+      maxSessionDurationHours: 0,
+    });
+    expect(clamped.maxSessionDurationHours).toBe(12);
+  });
+
+  it('clamps a stored value above 12 down to 12', () => {
+    expect(
+      clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: 168 })
+        .maxSessionDurationHours,
+    ).toBe(12);
+  });
+
+  it('lets policy shorten the cap', () => {
+    expect(
+      clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: 4 })
+        .maxSessionDurationHours,
+    ).toBe(4);
+  });
+
+  it('treats a negative or non-finite stored value as the cap, never as "disabled"', () => {
+    expect(
+      clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: -1 })
+        .maxSessionDurationHours,
+    ).toBe(12);
+    expect(
+      clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: Number.NaN })
+        .maxSessionDurationHours,
+    ).toBe(12);
+  });
+
+  it('keeps idleTimeoutMinutes = 0 meaning "disabled" (unchanged)', () => {
+    expect(
+      clampSettings({ ...getRemoteAccessBaseline(), idleTimeoutMinutes: 0 }).idleTimeoutMinutes,
+    ).toBe(0);
+  });
+
+  it('logs the reconciliation warning once per policy, not on every resolve', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const settings = { ...getRemoteAccessBaseline(), maxSessionDurationHours: 0 };
+    clampSettings(settings, { policyId: 'policy-a' });
+    clampSettings(settings, { policyId: 'policy-a' });
+    clampSettings(settings, { policyId: 'policy-b' });
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('keys the warning on the policy id alone, so many devices on one policy warn once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const settings = { ...getRemoteAccessBaseline(), maxSessionDurationHours: 0 };
+    for (let i = 0; i < 50; i++) {
+      clampSettings(settings, { policyId: 'policy-a', deviceId: `device-${i}` });
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('warns at most once per process for policy-less resolves, never once per device', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const settings = { ...getRemoteAccessBaseline(), maxSessionDurationHours: 0 };
+    clampSettings(settings, { deviceId: 'device-1' });
+    clampSettings(settings, { deviceId: 'device-2' });
+    clampSettings(settings, { policyId: null, deviceId: 'device-3' });
+    clampSettings(settings);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('does not warn for an in-range value', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: 8 }, { policyId: 'p' });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

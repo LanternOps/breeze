@@ -83,6 +83,10 @@ function makeApp(overrides: Partial<ContentRouteDeps> = {}, auth?: object | null
       c.set('auth', (auth ?? {
         user: { id: 'admin-1' }, scope: 'partner', accessibleOrgIds: [ORG_ID],
       }) as WorkspaceRouteEnv['Variables']['auth']);
+      c.set('extensionAuthorization', {
+        hasPermission: () => true,
+        mfaSatisfied: true,
+      });
     }
     await next();
   });
@@ -224,6 +228,39 @@ describe('content routes — behavior (content enabled)', () => {
     // A transient cap is not a successful run — nothing is audited as success.
     expect(deps.audit).not.toHaveBeenCalledWith(expect.objectContaining({
       action: 'workspace.content.enrich_run',
+    }));
+  });
+
+  it('enrich-run answers 503 (not 200) when the run degraded because AI is unavailable', async () => {
+    // The degraded run returns a NORMAL-looking body — processed 0, remaining
+    // 0, no errors — so without the aiUnavailable flag an admin who explicitly
+    // asked to enrich would be told "0 files, all done" about an org whose AI
+    // provider is missing or switched off.
+    const enrichment = {
+      run: vi.fn(async () => ({
+        processed: 0, remaining: 0, errors: [], aiUnavailable: true as const,
+      })),
+    };
+    const { app, deps } = makeApp({
+      enrichmentService: enrichment as unknown as ContentRouteDeps['enrichmentService'],
+    });
+
+    const res = await app.request(`/content/enrich-run?orgId=${ORG_ID}`, { method: 'POST' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'enrichment unavailable (no model credentials configured)',
+    });
+    // Audited as a FAILURE, like ingest-run's failure path — an admin action
+    // that produced nothing must still leave a trail.
+    expect(deps.audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'workspace.content.enrich_run',
+      result: 'failure',
+    }));
+    // ...and never as a success.
+    expect(deps.audit).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: 'workspace.content.enrich_run',
+      result: 'success',
     }));
   });
 

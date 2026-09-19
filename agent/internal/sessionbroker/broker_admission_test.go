@@ -164,7 +164,7 @@ func TestWindowsAdmissionIdentityAndRateBucketsAreRoleAware(t *testing.T) {
 }
 
 func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T) {
-	roles := []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup}
+	roles := []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog}
 	for _, role := range roles {
 		t.Run(string(role), func(t *testing.T) {
 			b := New("test", nil)
@@ -182,7 +182,7 @@ func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T)
 				clients = append(clients, client)
 				session.HelperRole = role
 				session.WinSessionID = "7"
-				if err := b.registerNonLifecycleSession(base, role, session); err != nil {
+				if err := b.registerNonLifecycleSession(base, role, session, nil); err != nil {
 					t.Fatalf("register %d: %v", i, err)
 				}
 			}
@@ -198,7 +198,7 @@ func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T)
 			clients = append(clients, client)
 			overLimit.HelperRole = role
 			overLimit.WinSessionID = "7"
-			if err := b.registerNonLifecycleSession(base, role, overLimit); !errors.Is(err, errMaxConnectionsPerIdentity) {
+			if err := b.registerNonLifecycleSession(base, role, overLimit, nil); !errors.Is(err, errMaxConnectionsPerIdentity) {
 				t.Fatalf("over-limit registration err=%v, want errMaxConnectionsPerIdentity", err)
 			}
 		})

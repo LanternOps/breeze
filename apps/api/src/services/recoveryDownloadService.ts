@@ -5,7 +5,9 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
-import { recoveryTokens } from '../db/schema';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../db';
+import { backupSnapshots, recoveryTokens } from '../db/schema';
 import {
   asRecord,
   computeRecoveryDownloadExpiry,
@@ -15,7 +17,7 @@ import {
 
 type RecoveryDownloadRow = Pick<
   typeof recoveryTokens.$inferSelect,
-  'id' | 'snapshotId' | 'status' | 'authenticatedAt' | 'expiresAt'
+  'id' | 'orgId' | 'deviceId' | 'snapshotId' | 'status' | 'authenticatedAt' | 'expiresAt'
 >;
 
 function isDownloadEligibleStatus(status: string, authenticatedAt: Date | null): boolean {
@@ -112,7 +114,28 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     return { unavailable: true, reason: 'Recovery session has expired. Re-authenticate to continue.' } as const;
   }
 
-  const resolved = await resolveSnapshotProviderConfig(tokenRow.snapshotId);
+  // D17 (2026-10-15-140004): recovery_tokens.snapshot_id is now ON DELETE SET
+  // NULL, so a still-eligible-for-download token can point at a snapshot
+  // retention already deleted. Nothing is downloadable in that case — same
+  // "unavailable" shape every other guard in this function returns.
+  const snapshotDbId = tokenRow.snapshotId;
+  if (!snapshotDbId) {
+    return { unavailable: true, reason: 'Recovery snapshot lineage is unavailable.' } as const;
+  }
+
+  const [lineage] = await db
+    .select({ orgId: backupSnapshots.orgId, deviceId: backupSnapshots.deviceId })
+    .from(backupSnapshots)
+    .where(and(
+      eq(backupSnapshots.id, snapshotDbId),
+      eq(backupSnapshots.orgId, tokenRow.orgId),
+    ))
+    .limit(1);
+  if (!lineage || lineage.orgId !== tokenRow.orgId || lineage.deviceId !== tokenRow.deviceId) {
+    return { unavailable: true, reason: 'Recovery snapshot lineage is unavailable.' } as const;
+  }
+
+  const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
   if (!resolved?.snapshot || !resolved.providerType || !resolved.providerConfig) {
     return { unavailable: true, reason: 'Recovery snapshot storage is unavailable.' } as const;
   }

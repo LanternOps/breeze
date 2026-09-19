@@ -89,7 +89,7 @@ describe('scheduleAbuseSignalsJobs', () => {
     expect(queueAdd).toHaveBeenCalledWith(
       'abuse-sweep',
       expect.anything(),
-      expect.objectContaining({ jobId: 'abuse-sweep-repeat', repeat: { pattern: '22 * * * *' } }),
+      expect.objectContaining({ jobId: 'abuse-sweep-repeat', repeat: { pattern: '22,37,52,7 * * * *' } }),
     );
     expect(queueAdd).toHaveBeenCalledWith(
       'abuse-digest',
@@ -148,7 +148,7 @@ describe('initializeAbuseSignalsWorker gating', () => {
     process.env.IS_HOSTED = 'true';
     await initializeAbuseSignalsWorker();
     expect(WorkerMockCtor).toHaveBeenCalledTimes(1);
-    expect(queueAdd).toHaveBeenCalledTimes(2);
+    expect(queueAdd).toHaveBeenCalledTimes(3);
   });
 
   it('does not start a worker or schedule anything when self-hosted', async () => {
@@ -172,12 +172,17 @@ describe('initializeAbuseSignalsWorker gating', () => {
     expect(queueAdd).toHaveBeenCalledTimes(2);
   });
 
-  it('lets a hosted deployment opt out explicitly', async () => {
+  it('lets a hosted deployment opt out of abuse sweeps while partner-trust jobs stay active', async () => {
     process.env.IS_HOSTED = 'true';
     process.env.ABUSE_SIGNALS_ENABLED = 'false';
     await initializeAbuseSignalsWorker();
-    expect(WorkerMockCtor).not.toHaveBeenCalled();
-    expect(queueAdd).not.toHaveBeenCalled();
+    expect(WorkerMockCtor).toHaveBeenCalledTimes(1);
+    expect(queueAdd).toHaveBeenCalledTimes(1);
+    expect(queueAdd).toHaveBeenCalledWith(
+      'partner-trust-promote',
+      expect.anything(),
+      expect.objectContaining({ repeat: { pattern: '*/15 * * * *' } }),
+    );
   });
 
   it('names the values it actually read instead of blaming a self-hosted default', async () => {

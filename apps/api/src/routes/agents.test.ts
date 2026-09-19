@@ -33,6 +33,15 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
 }));
+vi.mock('../services/partnerDeviceCapacity', () => ({
+  admitPartnerDeviceCapacity: vi.fn(async (_tx: unknown, input: { expectedPartnerId: string }) => ({
+    allowed: true,
+    partnerId: input.expectedPartnerId,
+    maxDevices: null,
+    activeCount: null,
+  })),
+  PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
+}));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
@@ -74,6 +83,16 @@ const defaultUpdateChain = () => ({
     }))
   }))
 });
+
+function mockResolvedEnrollmentPartner(partnerId = 'partner-123') {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ partnerId }]),
+      }),
+    }),
+  } as any);
+}
 
 vi.mock('../db', () => ({
   db: {
@@ -150,6 +169,10 @@ vi.mock('../db/schema', () => ({
     'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
     'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
   ] },
+  // unifiTelemetryService.ts builds a canonical-MAC sql fragment from
+  // discoveredAssets.macAddress at module load (#5087), and this suite reaches
+  // it transitively, so the partial mock must expose the column too.
+  discoveredAssets: { id: 'id', macAddress: 'mac_address' },
 }));
 
 vi.mock('../services/enrollmentKeySecurity', async () => {
@@ -193,6 +216,10 @@ vi.mock('../services/vaultSyncPersistence', () => ({
 
 vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
+}));
+
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: vi.fn(),
 }));
 
 vi.mock('../services/commandQueue', () => ({
@@ -352,6 +379,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Then checks for colliding devices:
       // db.select().from(devices).where(...).orderBy(devices.createdAt) — every
       // match, oldest first, no `.limit` (#2764).
@@ -482,6 +511,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Colliding-device lookup: `.orderBy(devices.createdAt)`, no `.limit` (#2764).
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -594,6 +625,8 @@ describe('agent routes', () => {
           })
         })
       } as any);
+
+      mockResolvedEnrollmentPartner();
 
       const tx = {
         insert: vi.fn().mockReturnValue({
@@ -930,6 +963,9 @@ describe('agent routes', () => {
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
         ],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        // #5511 W02: a resolved absent warranty policy delivers an explicit
+        // false (the revoke-on-unassign contract), exactly like patch_source.
+        warranty_settings: { hp_cmsl_enabled: false },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1049,6 +1085,7 @@ describe('agent routes', () => {
         policy_registry_state_probes: [],
         policy_config_state_probes: [],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        warranty_settings: { hp_cmsl_enabled: false },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(
@@ -1061,6 +1098,64 @@ describe('agent routes', () => {
           })
         })
       );
+    });
+  });
+
+  describe('POST /agents/:id/commands/:commandId/pam-observations', () => {
+    const receivedBody = {
+      protocolVersion: 1,
+      observation: {
+        protocolVersion: 2,
+        observationId: '10000000-0000-4000-8000-000000000001',
+        actuationId: '20000000-0000-4000-8000-000000000001',
+        generation: 1,
+        state: 'received',
+        observedAt: '2026-08-27T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      },
+    };
+
+    it('requires a valid agent credential through the real agent router', async () => {
+      vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any) =>
+        c.json({ error: 'Invalid agent token' }, 401));
+
+      const res = await app.request(
+        '/agents/agent-123/commands/60000000-0000-4000-8000-000000000001/pam-observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(receivedBody),
+        },
+      );
+
+      expect(res.status).toBe(401);
+      expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a watchdog credential through the primary-agent role gate', async () => {
+      vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('agent', {
+          deviceId: 'device-123',
+          agentId: 'agent-123',
+          orgId: 'org-123',
+          siteId: 'site-123',
+          role: 'watchdog',
+        });
+        return next();
+      });
+
+      const res = await app.request(
+        '/agents/agent-123/commands/60000000-0000-4000-8000-000000000001/pam-observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(receivedBody),
+        },
+      );
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 
@@ -1383,6 +1478,17 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue(undefined)
+          })
+        }),
+        // No existing device_patches row for this device+patch — the
+        // installed-path version-aware flip (#2736) falls back to the global
+        // patches.version, which this fixture (installedAt-null handling) does
+        // not otherwise exercise.
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
           })
         }),
         insert: vi.fn()

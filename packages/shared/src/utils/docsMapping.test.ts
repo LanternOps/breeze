@@ -9,6 +9,52 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/`);
     });
 
+    it('/ai-script-proposals/:id maps to the AI script authoring docs', () => {
+      const result = getDocsForPath('/ai-script-proposals/abc-123');
+      expect(result.label).toBe('AI Script Proposal');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-script-authoring/`);
+    });
+
+    it('/settings/ai-agents maps to AI Agents docs (not the generic AI page)', () => {
+      const result = getDocsForPath('/settings/ai-agents');
+      expect(result.label).toBe('AI Agents');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/approvals maps to AI Agents docs', () => {
+      const result = getDocsForPath('/approvals');
+      expect(result.label).toBe('Approvals');
+      expect(result.url).toContain('/features/ai-agents/');
+    });
+
+    it('/ai-agents/runs maps to AI Agents docs', () => {
+      const result = getDocsForPath('/ai-agents/runs');
+      expect(result.label).toBe('AI Agents');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/ai-agents/runs/:id maps to AI Agents docs', () => {
+      const result = getDocsForPath('/ai-agents/runs/abc-123');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/ai-agents/impact beats the generic /ai-agents entry', () => {
+      const result = getDocsForPath('/ai-agents/impact');
+      expect(result.label).toBe('AI Impact');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-impact/`);
+    });
+
+    it('/admin/llm-provider-catalog beats the generic /admin entry', () => {
+      const result = getDocsForPath('/admin/llm-provider-catalog');
+      expect(result.label).toBe('LLM Provider Catalog');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/bring-your-own-llm-key/`);
+    });
+
+    it('/admin still falls back to partner management', () => {
+      const result = getDocsForPath('/admin');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/reference/partner-management/`);
+    });
+
     it('/alerts maps to alerts docs', () => {
       const result = getDocsForPath('/alerts');
       expect(result.label).toBe('Alerts');
@@ -54,6 +100,28 @@ describe('getDocsForPath', () => {
       const result = getDocsForPath('/timesheet');
       expect(result.label).toBe('Timesheet');
       expect(result.url).toContain('/features/ticketing/');
+    });
+
+    it('/jobs maps to automations docs (v0.113.0 nav rename)', () => {
+      const result = getDocsForPath('/jobs');
+      expect(result.label).toBe('Jobs');
+      expect(result.url).toContain('/features/automations/');
+    });
+
+    it('/monitoring maps to the Monitors hub, not the observability stack', () => {
+      const result = getDocsForPath('/monitoring');
+      expect(result.label).toBe('Monitoring');
+      expect(result.url).toContain('/features/monitors/');
+    });
+
+    it('/monitoring/network maps to network monitors docs', () => {
+      const result = getDocsForPath('/monitoring/network');
+      expect(result.url).toContain('/features/network-monitors/');
+    });
+
+    it('/settings/deliverable-templates maps to service deliverables docs', () => {
+      const result = getDocsForPath('/settings/deliverable-templates');
+      expect(result.url).toContain('/features/contracts/#service-deliverables');
     });
 
     it('/contracts maps to recurring contracts docs', () => {
@@ -368,6 +436,31 @@ describe('getDocsForPath', () => {
       const result = getDocsForPath('/dns-security');
       expect(result.label).toBe('DNS Security');
       expect(result.url).toContain('/features/dns-security/');
+    });
+  });
+
+  describe('v0.111.0 mappings', () => {
+    it('/organizations/:id maps to the organisation record page section', () => {
+      const result = getDocsForPath('/organizations/9f1c0c8e-0000-4000-8000-000000000000');
+      expect(result.label).toBe('Organization Record');
+      expect(result.url).toContain('/reference/organizations-and-sites/#the-organisation-record-page');
+    });
+
+    it('/settings/organizations still wins over /organizations', () => {
+      const result = getDocsForPath('/settings/organizations');
+      expect(result.label).toBe('Organizations');
+    });
+
+    it('/operator/tasks/:id maps to the AI Operator section', () => {
+      const result = getDocsForPath('/operator/tasks/9f1c0c8e-0000-4000-8000-000000000000');
+      expect(result.label).toBe('AI Operator Tasks');
+      expect(result.url).toContain('/features/ai-agents/#ai-operator-preview');
+    });
+
+    it('/operator maps to the AI Operator section', () => {
+      const result = getDocsForPath('/operator');
+      expect(result.label).toBe('AI Operator');
+      expect(result.url).toContain('/features/ai-agents/#ai-operator-preview');
     });
   });
 });

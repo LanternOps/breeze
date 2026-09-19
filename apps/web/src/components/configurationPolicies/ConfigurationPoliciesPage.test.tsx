@@ -129,3 +129,67 @@ describe('ConfigurationPoliciesPage delete flow (#2950)', () => {
     );
   });
 });
+
+describe('ConfigurationPoliciesPage delete blocked by children (#5080)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue({ ok: true, json: async () => ({ data: [POLICY] }) });
+  });
+
+  it('delete 409 POLICY_HAS_CHILDREN renders the children inside the confirm modal and keeps it open', async () => {
+    const user = userEvent.setup();
+    render(<ConfigurationPoliciesPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('config-policy-delete-button')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId('config-policy-delete-button'));
+
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: 'POLICY_HAS_CHILDREN',
+        children: [
+          { id: 'child-1', name: 'Child A' },
+          { id: 'child-2', name: 'Child B' },
+        ],
+      }),
+    });
+    await user.click(screen.getByTestId('config-policy-delete-confirm'));
+
+    const list = await screen.findByTestId('config-policy-delete-children');
+    expect(list).toHaveTextContent('Child A');
+    expect(list).toHaveTextContent('Child B');
+    // Stays open — a blocked delete is not silently closed like a success.
+    expect(screen.getByTestId('config-policy-delete-modal')).toBeInTheDocument();
+    // A DELETE was actually attempted (not a client-side short-circuit).
+    expect(
+      fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'DELETE'),
+    ).toBe(true);
+  });
+
+  it('clears the blocked-children state when the modal is cancelled', async () => {
+    const user = userEvent.setup();
+    render(<ConfigurationPoliciesPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('config-policy-delete-button')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId('config-policy-delete-button'));
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'POLICY_HAS_CHILDREN', children: [{ id: 'child-1', name: 'Child A' }] }),
+    });
+    await user.click(screen.getByTestId('config-policy-delete-confirm'));
+    await screen.findByTestId('config-policy-delete-children');
+
+    await user.click(screen.getByTestId('config-policy-delete-cancel'));
+    expect(screen.queryByTestId('config-policy-delete-modal')).toBeNull();
+
+    // Reopening the modal (even on the same policy) must not show stale state.
+    await user.click(screen.getByTestId('config-policy-delete-button'));
+    expect(screen.queryByTestId('config-policy-delete-children')).toBeNull();
+  });
+});

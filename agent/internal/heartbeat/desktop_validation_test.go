@@ -123,3 +123,56 @@ func TestNormalizeDesktopInputEventRejectsInvalidFields(t *testing.T) {
 		}
 	}
 }
+
+// The WebSocket fallback transport rebuilds desktop.InputEvent field by field
+// from the raw map, so a field that is not explicitly copied is silently
+// dropped. Caps Lock state has to survive that relay or issue #3595 stays
+// broken on every session that falls back off WebRTC.
+func TestNormalizeDesktopInputEventCarriesCapsLockState(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []bool{true, false} {
+		event, err := normalizeDesktopInputEvent(map[string]any{
+			"type":     "key_down",
+			"key":      "a",
+			"capsLock": want,
+		})
+		if err != nil {
+			t.Fatalf("normalizeDesktopInputEvent error = %v", err)
+		}
+		if event.CapsLock == nil {
+			t.Fatalf("capsLock=%v was dropped by the relay", want)
+		}
+		if *event.CapsLock != want {
+			t.Fatalf("capsLock = %v, want %v", *event.CapsLock, want)
+		}
+	}
+}
+
+// Absent means "this viewer does not state Caps Lock state", which the agent
+// must be able to tell apart from an explicit false — hence a *bool.
+func TestNormalizeDesktopInputEventLeavesCapsLockUnsetWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	event, err := normalizeDesktopInputEvent(map[string]any{"type": "key_down", "key": "a"})
+	if err != nil {
+		t.Fatalf("normalizeDesktopInputEvent error = %v", err)
+	}
+	if event.CapsLock != nil {
+		t.Fatalf("capsLock = %v, want nil for a viewer that did not state it", *event.CapsLock)
+	}
+}
+
+func TestNormalizeDesktopInputEventRejectsNonBooleanCapsLock(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range []any{"true", float64(1), []any{true}} {
+		if _, err := normalizeDesktopInputEvent(map[string]any{
+			"type":     "key_down",
+			"key":      "a",
+			"capsLock": bad,
+		}); err == nil {
+			t.Fatalf("expected capsLock=%#v (%T) to be rejected", bad, bad)
+		}
+	}
+}

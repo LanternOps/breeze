@@ -12,7 +12,8 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getDeviceByAgentWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS } from '../services/permissions';
+import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../services/deviceSiteAccess';
 
 const TEMP_DIR = join(tmpdir(), 'breeze-dev-push');
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -60,12 +61,12 @@ const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB
 async function getDeviceByAgentWithAccess(
   agentId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
-  permissions?: UserPermissions,
+  permissions: DeviceSitePermissions | undefined,
 ) {
   const device = await getDeviceByAgentWithOrgCheck(agentId, auth);
   if (!device) return null;
 
-  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+  if (!canAccessDeviceSite(permissions, device.siteId)) {
     return 'SITE_ACCESS_DENIED' as const;
   }
 
@@ -133,8 +134,9 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
     return c.json({ error: `Binary too large (max ${MAX_BINARY_SIZE / 1024 / 1024}MB)` }, 413);
   }
 
-  // Verify device access. The request field is named `agentId`, not `deviceId`.
-  const device = await getDeviceByAgentWithAccess(agentId, auth, c.get('permissions') as UserPermissions | undefined);
+  // agentId comes from multipart parsing. Authorize before copying the parsed
+  // binary into a buffer, writing files, registering a download or dispatching.
+  const device = await getDeviceByAgentWithAccess(agentId, auth, resolvePrincipalSitePermissions(c));
   if (device === 'SITE_ACCESS_DENIED') {
     return c.json({ error: 'Access to this site denied' }, 403);
   }

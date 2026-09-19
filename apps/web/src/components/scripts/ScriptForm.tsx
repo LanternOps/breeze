@@ -22,9 +22,12 @@ import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES, scriptSecretEn
 import ScriptAiPanel from './ScriptAiPanel';
 import ScriptTestRunner from './ScriptTestRunner';
 import CollapsibleSection from './CollapsibleSection';
+import ScriptSecurityReview from './ScriptSecurityReview';
 import ScriptVariablePicker from './ScriptVariablePicker';
 import TenantVariableMenu from './TenantVariableMenu';
 import { findUnknownVariableKeys, useTenantVariables, type TenantVariableEntry } from '@/lib/tenantVariableTokens';
+import HelpTooltip from '../shared/HelpTooltip';
+import CustomFieldHelp from './CustomFieldHelp';
 import { cn } from '@/lib/utils';
 import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
@@ -825,6 +828,12 @@ export default function ScriptForm({
           {panelOpen && <ScriptAiPanel bridge={bridge} />}
         </div>
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
+        <CustomFieldHelp
+          language={watchLanguage}
+          editorRef={editorInstanceRef}
+          content={watchContent ?? ''}
+          onInsert={next => setValue('content', next, { shouldDirty: true })}
+        />
         {unknownVariableKeys.length > 0 && (
           <p
             data-testid="script-variable-warning"
@@ -845,8 +854,21 @@ export default function ScriptForm({
           onSaveChanges={saveForTestRun}
           onTestDeviceChange={(deviceId) => { testDeviceIdRef.current = deviceId; }}
           onExecutionChange={(executionId) => { lastTestExecutionIdRef.current = executionId; }}
+          scriptRunAs={watch('runAs')}
         />
       </div>
+
+      {/* #5129 — Strict security patterns matched by the content above. Renders
+          nothing unless the script actually matches one, and sits directly
+          under the editor because it is a statement about what was just
+          typed. */}
+      <ScriptSecurityReview
+        content={watchContent ?? ''}
+        value={watch('acknowledgedSecurityPatterns') ?? []}
+        onChange={next =>
+          setValue('acknowledgedSecurityPatterns', next, { shouldDirty: true })
+        }
+      />
 
       {/* Parameters */}
       <CollapsibleSection
@@ -919,7 +941,15 @@ export default function ScriptForm({
                   )}
                   {source === 'deviceCustomField' && (
                     <div className="space-y-1 sm:col-span-2">
-                      <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.parameterBinding.fieldLabel')}</label>
+                      <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                        {t('scriptForm.parameterBinding.fieldLabel')}
+                        <HelpTooltip
+                          // Literal `{{paramName}}` in the copy; passed as a value so i18next
+                          // does not treat it as an interpolation slot.
+                          text={t('scriptForm.parameterBinding.fieldHelp', { paramName: '{{paramName}}' })}
+                          ariaLabel={t('scriptForm.parameterBinding.fieldHelpAriaLabel')}
+                        />
+                      </label>
                       <input
                         placeholder={t('scriptForm.parameterBinding.fieldPlaceholder')}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

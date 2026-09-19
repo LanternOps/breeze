@@ -16,9 +16,13 @@ import {
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
+import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { requestPamCleanup } from '../services/pamActuationLifecycle';
 
 export const softwarePoliciesRoutes = new Hono();
 const requireSoftwarePolicyRead = requirePermission(
@@ -74,8 +78,13 @@ export const softwareRulesSchema = z.object({
   { message: 'rules must include at least one software[] or executable[] entry' }
 );
 
-const remediationOptionsSchema = z.object({
+// NOTE: a non-strict z.object STRIPS unknown keys silently rather than
+// rejecting them, so a field is invisible to the API until it is declared
+// here. Both createPolicySchema and updatePolicySchema reference this one
+// object, so a field added here covers the create and update surfaces alike.
+export const remediationOptionsSchema = z.object({
   autoUninstall: z.boolean().optional(),
+  autoInstall: z.boolean().optional(), // #5505 — see SoftwarePolicyRemediationOptions
   notifyUser: z.boolean().optional(),
   gracePeriod: z.number().int().min(0).max(24 * 90).optional(), // hours; max 90 days
   cooldownMinutes: z.number().int().min(1).max(24 * 90 * 60).optional(),
@@ -176,6 +185,40 @@ function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
   return orgCond;
 }
 
+type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export async function cleanupSoftwarePolicyElevations(
+  tx: SoftwarePolicyTx,
+  policyId: string,
+): Promise<number> {
+  const result = await tx.execute<{ id: string }>(sql`
+    WITH matching AS (
+      SELECT id
+      FROM elevation_requests
+      WHERE metadata->>'software_policy_match_id' = ${policyId}
+        AND status IN ('approved', 'auto_approved', 'actuating')
+      FOR UPDATE
+    )
+    UPDATE elevation_requests AS request
+    SET status = 'revoked',
+        revoked_at = now(),
+        revision = request.revision + 1,
+        updated_at = now()
+    FROM matching
+    WHERE request.id = matching.id
+      AND request.status IN ('approved', 'auto_approved', 'actuating')
+    RETURNING request.id
+  `);
+  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
+  for (const row of rows) {
+    await requestPamCleanup(tx, {
+      elevationRequestId: row.id,
+      cause: 'policy_removed',
+    });
+  }
+  return rows.length;
+}
+
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(softwarePolicies.id, policyId)];
   const accessCondition = softwarePolicyAccessCondition(auth);
@@ -259,7 +302,22 @@ softwarePoliciesRoutes.post(
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
+
+    // #5505 D3: arming remediationOptions.autoInstall installs software on
+    // managed devices, so it needs deployment-grade authorization
+    // (devices.execute + MFA) on top of the devices:write + requireMfa() this
+    // route already carries. `stored` is null — nothing exists yet — so the
+    // merged state is the body alone.
+    const armDenied = await assertMayArmInstall(c, null, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
 
     // Ownership axis (#2126). Partner-wide templates push rules to devices in
     // ALL orgs under the partner (including orgs created later), so creation is
@@ -355,10 +413,17 @@ softwarePoliciesRoutes.post(
 
 softwarePoliciesRoutes.get('/compliance/overview', requireSoftwarePolicyRead, async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
 
   const conditions: SQL[] = [];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
+  if (perms?.allowedSiteIds && auth.orgId) {
+    if (perms.allowedSiteIds.length === 0) {
+      return c.json({ total: 0, compliant: 0, violations: 0, unknown: 0 });
+    }
+    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  }
 
   const worstStatusSq = db
     .select({
@@ -439,6 +504,9 @@ softwarePoliciesRoutes.get(
           violations: softwareComplianceStatus.violations,
           lastChecked: softwareComplianceStatus.lastChecked,
           remediationStatus: softwareComplianceStatus.remediationStatus,
+          installRemediationStatus: softwareComplianceStatus.installRemediationStatus,
+          lastInstallRemediationAttempt: softwareComplianceStatus.lastInstallRemediationAttempt,
+          installRemediationAttempts: softwareComplianceStatus.installRemediationAttempts,
         },
       })
       .from(softwareComplianceStatus)
@@ -468,6 +536,71 @@ softwarePoliciesRoutes.get(
   }
 );
 
+// #5505 W06 — the pre-arm dry run behind PolicyForm's "this will install
+// missing software on ~N device(s)" warning (spec Risks §2, "Fleet-wide first
+// run"). Read-only: same auth gate and site-ceiling narrowing as its GET
+// siblings, arms nothing, needs no MFA and no canMutateOrgWideGovernance
+// (those gates exist only on writes).
+//
+// Response contract is exactly `{ eligibleDeviceCount: number }` and must stay
+// that way: W04 (#5509) is specified to consume that shape and degrade any
+// non-2xx to "unavailable". That UI has NOT landed — as of this wave nothing
+// under apps/web references install-preview — so the contract is owed to W04's
+// plan, not to shipped code.
+//
+// Known limitation the bare number cannot express: the count reflects
+// violations the compliance worker recorded on its last pass, and policy
+// create/update only ENQUEUE a recheck. A never-evaluated policy therefore
+// previews as 0. The service logs that case rather than returning a
+// distinguishable value; giving the operator an explicit "not measured yet"
+// state is W04's call, because it would change this contract.
+softwarePoliciesRoutes.get(
+  '/:id/install-preview',
+  requireSoftwarePolicyRead,
+  zValidator('param', policyIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { id } = c.req.valid('param');
+
+    // Tenancy is the existing getPolicyWithAccess 404, unchanged: a
+    // nonexistent id and a cross-tenant id both match zero rows and produce
+    // the byte-identical body, so this route leaks neither case.
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    // `missing` violations — the only kind autoInstall ever acts on — are only
+    // ever emitted for allowlist policies (evaluateSoftwareInventory's
+    // blocklist/audit branches only ever emit `unauthorized`). Short-circuit
+    // before resolving a single device.
+    if (policy.mode !== 'allowlist') {
+      return c.json({ eligibleDeviceCount: 0 });
+    }
+
+    // Site-ceiling gate (app-layer only — Postgres RLS does not defend it),
+    // mirroring GET /violations, so a site-restricted caller previews the same
+    // device set they are actually allowed to act on.
+    let siteAllowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ eligibleDeviceCount: 0 });
+      }
+      siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    }
+
+    const rules = normalizeSoftwarePolicyRules(policy.rules);
+    const eligibleDeviceCount = await computeInstallPreviewEligibleDeviceCount({
+      policyId: policy.id,
+      rules,
+      siteAllowedDeviceIds,
+    });
+
+    return c.json({ eligibleDeviceCount });
+  }
+);
+
 softwarePoliciesRoutes.patch(
   '/:id',
   requireSoftwarePolicyWrite,
@@ -476,6 +609,9 @@ softwarePoliciesRoutes.patch(
   zValidator('json', updatePolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
@@ -491,8 +627,23 @@ softwarePoliciesRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const updates: Partial<typeof softwarePolicies.$inferInsert> = {
+    // #5505 D3: evaluated over the POST-WRITE merged state — the stored row
+    // overlaid with this body — so editing an ALREADY-armed policy is gated
+    // too. Adding a catalogId to an armed policy installs new software, and
+    // that must not be reachable with a weaker credential than arming was.
+    const armDenied = await assertMayArmInstall(c, policy, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
+
+    const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // compliance/remediation job carrying the OLD generation can tell it
+      // has been superseded and skip acting on stale config.
+      approvalGeneration: sql`${softwarePolicies.approvalGeneration} + 1`,
     };
 
     if (payload.name !== undefined) updates.name = payload.name;
@@ -510,15 +661,28 @@ softwarePoliciesRoutes.patch(
       updates.rules = normalizedRules;
     }
 
-    const [updated] = await db
-      .update(softwarePolicies)
-      .set(updates)
-      .where(eq(softwarePolicies.id, policy.id))
-      .returning();
+    let updated: typeof policy | undefined;
+    try {
+      updated = await db.transaction(async (tx) => {
+        const [next] = await tx
+          .update(softwarePolicies)
+          .set(updates)
+          .where(eq(softwarePolicies.id, policy.id))
+          .returning();
+        if (policy.isActive && payload.isActive === false) {
+          await cleanupSoftwarePolicyElevations(tx, policy.id);
+        }
+        return next;
+      });
+    } catch (error) {
+      console.error(`[softwarePolicies] Failed to update policy ${id}:`, error);
+      captureException(error);
+      return c.json({ error: 'Failed to update policy' }, 500);
+    }
 
     let scheduleWarning: string | undefined;
     try {
-      await scheduleSoftwareComplianceCheck(policy.id);
+      await scheduleSoftwareComplianceCheck(policy.id, undefined, updated?.approvalGeneration);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
       console.error(`[softwarePolicies] Failed to schedule compliance check for policy ${policy.id}:`, error);
@@ -563,6 +727,9 @@ softwarePoliciesRoutes.delete(
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
 
     const policy = await getPolicyWithAccess(id, auth);
@@ -582,6 +749,7 @@ softwarePoliciesRoutes.delete(
           .update(softwarePolicies)
           .set({ isActive: false, updatedAt: new Date() })
           .where(eq(softwarePolicies.id, id));
+        await cleanupSoftwarePolicyElevations(tx, id);
         await tx
           .delete(softwareComplianceStatus)
           .where(eq(softwareComplianceStatus.policyId, id));

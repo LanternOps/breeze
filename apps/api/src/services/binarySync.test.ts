@@ -14,6 +14,28 @@ const dbMocks = vi.hoisted(() => {
   // reaches db.select — see the "ensureCurrentVersionRegistered companion
   // check" describe block below for the tests that configure it).
   const select = vi.fn();
+
+  // #6098 — models the real AsyncLocalStorage nesting semantics enough for a
+  // unit test to prove a call happened "inside" vs. "outside" a DB access
+  // context, without a real Postgres connection. `contextDepth` tracks how
+  // many context-opening calls are currently on the stack; `heldDuring` records
+  // every label passed to `assertOutsideHeldDbContext` while depth > 0 — the
+  // exact shape of a #1105 violation (a network call reached while a
+  // transaction the caller opened is still open).
+  let contextDepth = 0;
+  const heldDuring: string[] = [];
+  const withSystemDbAccessContext = vi.fn(async (fn: () => Promise<unknown>) => {
+    contextDepth++;
+    try {
+      return await fn();
+    } finally {
+      contextDepth--;
+    }
+  });
+  const assertOutsideHeldDbContext = vi.fn((label: string) => {
+    if (contextDepth > 0) heldDuring.push(label);
+  });
+
   return {
     updateWhere,
     updateSet,
@@ -23,6 +45,10 @@ const dbMocks = vi.hoisted(() => {
     txInsert,
     tx,
     select,
+    withSystemDbAccessContext,
+    assertOutsideHeldDbContext,
+    heldDuring,
+    getContextDepth: () => contextDepth,
     transaction: vi.fn(async (fn: (tx: any) => Promise<void>) => fn(tx)),
   };
 });
@@ -32,6 +58,36 @@ vi.mock("../db", () => ({
     transaction: dbMocks.transaction,
     select: dbMocks.select,
   },
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext,
+  // urlSafety's safeFetch calls this (#1105 tripwire); the real `../db` is
+  // mocked away, so the named export has to exist or the import fails.
+  assertOutsideHeldDbContext: dbMocks.assertOutsideHeldDbContext,
+}));
+
+// binarySync's outbound calls now go through the SSRF-guarded
+// `safeFetchFollowingRedirects` (#4262), which dials Node's http/https directly
+// so it can DNS-resolve and IP-pin each hop — it never touches global `fetch`.
+// Without this bridge every `vi.stubGlobal("fetch", …)` below would stop
+// intercepting and these cases would make REAL network calls (that is exactly
+// how PR #4255's installerBuilder cases went unhooked). Route the helper back
+// to the stubbed global; the guard's real redirect/SSRF semantics are covered
+// by `binarySync.redirect.test.ts` and `urlSafety.test.ts`, and that binarySync
+// actually adopts it by the source scan in `binarySync.redirect.test.ts`.
+vi.mock("./urlSafety", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlSafety")>()),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  // #6098: the real safeFetch calls assertOutsideHeldDbContext('safeFetch')
+  // before any network work (see urlSafety.tripwire.test.ts) — mirror that
+  // contract here so a test can detect a fetch that happened while the mocked
+  // `withSystemDbAccessContext` context was still open.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("./urlSafety").SafeFetchInit) => {
+      dbMocks.assertOutsideHeldDbContext("safeFetch");
+      return globalThis.fetch(url, init as RequestInit);
+    },
+  ),
 }));
 
 // Capture eq/and so a test can inspect the WHERE built for the per-component
@@ -209,6 +265,7 @@ describe("binarySync", () => {
     delete process.env.BINARY_GITHUB_REPOSITORY;
     delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
+    dbMocks.heldDuring.length = 0;
     // Clear the per-(component/assetName) refused-manifest-asset capture
     // dedup so a prior test's Sentry assertion doesn't suppress this one's.
     __resetRefusedManifestAssetWarnCache();
@@ -649,6 +706,78 @@ describe("binarySync", () => {
     );
   });
 
+  // #6098 — boot wraps `syncBinaries()` (which calls `syncFromGitHub`) in a
+  // single ambient `withSystemDbAccessContext`, so the GitHub fetch phase runs
+  // with a pooled connection pinned idle-in-transaction (verified: 2.7s hold,
+  // safeFetch's #1105 tripwire fired x10). The fix is for the DB WRITES to open
+  // their own short system-scoped contexts instead of relying on an ambient one
+  // — so the caller no longer needs to (and must not) wrap the whole call.
+  // This suite calls `syncFromGitHub` with NO ambient context at all (the
+  // shape the fixed boot call site produces) and asserts the writes still
+  // happen (under an explicit system context) and the fetch is never reached
+  // while any context this module opened is still held.
+  it("writes go through their own system-scoped DB context, and the GitHub fetch never runs while one is held (#6098)", async () => {
+    const assetName = "breeze-agent-linux-amd64";
+    const asset = Buffer.from("trusted linux agent");
+    const signed = makeSignedReleaseManifest(assetName, asset);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "release notes",
+              assets: [
+                {
+                  name: assetName,
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${assetName}`,
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url:
+                    "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                  size: signed.manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url:
+                    "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                  size: signed.signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      }),
+    );
+
+    // No ambient withSystemDbAccessContext wrap around this call — matching
+    // the fixed boot call site, which no longer wraps `syncBinaries()`.
+    const result = await syncFromGitHub();
+    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"], failed: [] });
+
+    // The write still happened...
+    expect(dbMocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ version: "1.2.3", component: "agent" }),
+    );
+    // ...because upsertVersion opened its OWN system-scoped context around it,
+    // not because it inherited one from the (now absent) caller wrap.
+    expect(dbMocks.withSystemDbAccessContext).toHaveBeenCalled();
+    // And the fetch itself never ran while that (or any) context this module
+    // opened was still held — the #1105 class this issue reports.
+    expect(dbMocks.heldDuring).toEqual([]);
+    expect(dbMocks.getContextDepth()).toBe(0);
+  });
+
   it("populates releaseManifest, manifestSignature, signingKeyId in local-binary mode (closes: #625)", async () => {
     // v0.65.8 broke self-host updates by hard-rejecting null manifest fields
     // in /agent-versions/:v/download. The local-binary path now signs every
@@ -762,6 +891,124 @@ describe("binarySync", () => {
 
       await expect(syncBinaries()).resolves.toBeUndefined();
       expect(fetchSpy).toHaveBeenCalled();
+    });
+  });
+
+  // #4682: local mode must register the Windows interactive-session helper
+  // just as the GitHub release path does. Without this row, the helper binary
+  // can exist on disk and be served by the download route while the verified
+  // updater still has no component version to resolve.
+  describe("local-binary user-helper registration (#4682)", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      mockReadFileVersionOnly("0.65.9");
+    }
+
+    it("registers a component=user-helper row alongside the agent when the binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-user-helper-windows-amd64.exe",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+
+      const userHelperInsert = insertCalls.find(
+        (v) => v.component === "user-helper",
+      );
+      expect(userHelperInsert).toMatchObject({
+        version: "0.65.9",
+        platform: "windows",
+        architecture: "amd64",
+        component: "user-helper",
+        isLatest: true,
+        downloadUrl:
+          "http://localhost:3001/api/v1/agents/download/user-helper/windows/amd64",
+      });
+      expect(JSON.parse(userHelperInsert!.releaseManifest as string)).toMatchObject({
+        version: "0.65.9",
+        component: "user-helper",
+        platform: "windows",
+        arch: "amd64",
+      });
+    });
+
+    it("succeeds without user-helper row when the binary is missing (pre-#816 release backward-compat)", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+      ] as any);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      // The agent still registers, while an older volume without the helper
+      // remains a silent no-op just like the GitHub release path.
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      expect(insertCalls.some((v) => v.component === "user-helper")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes("user-helper"),
+        ),
+      ).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it("isolates user-helper registration failures after the agent succeeds", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-user-helper-windows-amd64.exe",
+      ] as any);
+      const defaultTxImpl = async (fn: (tx: any) => Promise<void>) =>
+        fn(dbMocks.tx);
+      dbMocks.transaction.mockImplementation(
+        async (fn: (tx: any) => Promise<void>) => {
+          const insertWrap = vi.fn((row: Record<string, unknown>) => {
+            if (row.component === "user-helper") {
+              throw new Error("simulated local user-helper upsert failure");
+            }
+            return (dbMocks.insertValues as any)(row);
+          });
+          return fn({
+            update: dbMocks.tx.update,
+            insert: vi.fn(() => ({ values: insertWrap })),
+          });
+        },
+      );
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await expect(syncBinaries()).resolves.toBeUndefined();
+
+        const insertCalls = dbMocks.insertValues.mock.calls.map(
+          (call: any[]) => call[0] as Record<string, unknown>,
+        );
+        expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+        expect(insertCalls.some((v) => v.component === "user-helper")).toBe(false);
+        expect(
+          errorSpy.mock.calls.some((args) =>
+            String(args[0] ?? "").includes(
+              "Failed to register local user-helper binaries",
+            ),
+          ),
+        ).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+        dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
     });
   });
 
@@ -2581,8 +2828,14 @@ describe("unpublished pinned release is loud, not a /releases/latest fallback (#
 
     await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
 
+    // The remedy wording changed with #3499: a failed sync no longer leaves the
+    // download redirect disagreeing with agent_versions (the redirect follows
+    // the promoted row now), so the hint says the fleet simply will not advance
+    // rather than promising that setting BINARY_VERSION realigns the redirect.
+    // It must still name BINARY_VERSION as the lever and still refuse the
+    // /releases/latest fallback.
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to a PUBLISHED release/s),
     );
     expect(fetchSpy).not.toHaveBeenCalledWith(
       `${apiBase}/releases/latest`,

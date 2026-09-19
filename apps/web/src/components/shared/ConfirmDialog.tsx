@@ -12,8 +12,23 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   variant?: 'destructive' | 'warning';
   isLoading?: boolean;
+  /**
+   * Blocks Confirm on a call-site precondition that is not "a request is in
+   * flight" — e.g. BulkPurgeDialog's type-the-device-count gate. Kept separate
+   * from `isLoading` because they differ in what they mean to the user (and in
+   * the label: a disabled-but-idle button must not read "Processing…").
+   */
+  confirmDisabled?: boolean;
   /** data-testid for the confirm button (e2e suites are testid-only). */
   confirmTestId?: string;
+  /**
+   * data-testid for the dialog body. A call site cannot get this by wrapping
+   * <ConfirmDialog> — Dialog renders through createPortal into document.body,
+   * so a wrapper element ends up empty. Needed when a test or e2e spec must
+   * assert on the dialog's TEXT (e.g. the agreement-template archive confirm,
+   * which repeats the usage counts) rather than just click Confirm.
+   */
+  dialogTestId?: string;
   /** Optional extra content (e.g. a note field) rendered under the message. */
   children?: ReactNode;
 }
@@ -27,7 +42,9 @@ export function ConfirmDialog({
   confirmLabel,
   variant = 'destructive',
   isLoading = false,
+  confirmDisabled = false,
   confirmTestId,
+  dialogTestId,
   children,
 }: ConfirmDialogProps) {
   const { t } = useTranslation('common');
@@ -51,6 +68,10 @@ export function ConfirmDialog({
     if (!open || !isLoading) confirmLatchRef.current = false;
   }, [open, isLoading]);
 
+  // While `isLoading` the buttons stay focusable (`aria-disabled`, not
+  // `disabled`): a disabled element loses focus to <body>, which lets Tab
+  // escape the dialog's own trap mid-request and leaves the Drawer beneath
+  // with nothing to restore focus to when the action settles.
   const handleConfirm = useCallback(() => {
     if (confirmLatchRef.current) {
       // The latch releasing depends on the call site either closing the dialog
@@ -90,7 +111,7 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onClose={onClose} title={title} maxWidth="md" className="p-6">
-      <div className="flex gap-4">
+      <div className="flex gap-4" data-testid={dialogTestId}>
         <div
           className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
             variant === 'destructive' ? 'bg-destructive/10' : 'bg-warning/10'
@@ -112,18 +133,19 @@ export function ConfirmDialog({
       <div className="mt-6 flex justify-end gap-3">
         <button
           type="button"
-          onClick={onClose}
-          disabled={isLoading}
-          className="rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+          onClick={isLoading ? undefined : onClose}
+          aria-disabled={isLoading}
+          className="rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
           {t('actions.cancel')}
         </button>
         <button
           type="button"
-          onClick={handleConfirm}
-          disabled={isLoading}
+          onClick={isLoading || confirmDisabled ? undefined : handleConfirm}
+          aria-disabled={isLoading || confirmDisabled}
+          aria-busy={isLoading}
           data-testid={confirmTestId}
-          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
             variant === 'destructive'
               ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
               : 'bg-warning text-warning-foreground hover:bg-warning/90'

@@ -252,6 +252,63 @@ groups:
           description: "{{ $value }} commands dispatched in 5m for tenant {{ $labels.tenant }} — possible compromised account fanning out commands"
           runbook_url: "https://docs.breeze.local/runbooks/command-dispatch-spike"
 
+      # #1374 / #5162 (W07 Task 3): after W05/W06 ship, a mobile approver device
+      # is expected to hold an L4-trusted attestation basis. A SUSTAINED
+      # non-zero denial rate means technicians are stuck unable to approve
+      # critical-tier requests (PAM elevation, destructive/blocklist overrides)
+      # from mobile — most likely because they haven't re-enrolled on an
+      # attested app build yet. `basis` distinguishes which non-trusted basis is
+      # driving it (`unattested`, `legacy_unattested`, `ios_keychain_rsa_app_attest`).
+      - alert: AuthenticatorL4BasisDenied
+        expr: |
+          breeze:authenticator_l4_basis:rate15m{outcome="denied"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Critical-tier approvals denied on platform_bound_basis={{ $labels.basis }}"
+          description: "A sustained non-zero rate of L4 (critical-tier) approval denials on basis {{ $labels.basis }} over the last 15m. Technicians on this basis cannot approve privileged access / destructive actions from mobile until re-enrolled on an attested app build (#1374)."
+          runbook_url: "https://docs.breeze.local/runbooks/authenticator-l4-basis-denied"
+
+  - name: breeze-backup-alerts
+    interval: 60s
+    rules:
+      # Emitted by internal/ops/restore-test-encrypted.sh via node_exporter's
+      # textfile collector after every weekly restore drill. A 0 means the last
+      # drill could not prove the off-region backup restorable. Before this rule
+      # existed a failed drill on 2026-08-30 sat unnoticed for four days.
+      - alert: BackupRestoreTestFailed
+        expr: breeze_db_restore_test_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Off-region backup restore drill failed ({{ $labels.region }})"
+          description: "The last restore test for bucket {{ $labels.bucket }} failed. The backup is not proven restorable. See /var/log/breeze-restore-test.log on the region host."
+
+      # Dead-man: the drill runs weekly. If the last *successful* drill is more
+      # than 8 days old — or the metric is absent because the cron, the host, or
+      # the textfile collector died — nobody is proving restorability.
+      - alert: BackupRestoreTestStale
+        expr: |
+          (time() - breeze_db_restore_test_last_success_timestamp_seconds) > 8 * 86400
+          or breeze_db_restore_test_last_success_timestamp_seconds == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful backup restore drill in 8+ days ({{ $labels.region }})"
+          description: "Last successful restore drill for {{ $labels.bucket }} is older than 8 days. Check the Sunday cron and the restore-test log."
+
+      - alert: BackupRestoreTestMetricsMissing
+        expr: absent(breeze_db_restore_test_success)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "breeze_db_restore_test_success metric is absent"
+          description: "No region host is publishing restore-drill metrics. Either the textfile collector directory is missing or node_exporter is not scraped."
+
   - name: breeze-recording-rules
     interval: 30s
     rules:
@@ -318,3 +375,11 @@ groups:
 
       - record: breeze:commands_dispatched:increase5m
         expr: sum(increase(breeze_commands_dispatched_total{job=~"breeze-api.*"}[5m])) by (type, actor, tenant)
+
+      # #1374 / #5162 (W07 Task 3): backs both AuthenticatorL4BasisDenied above
+      # and the Grafana "L4 basis outcomes" panel — `denied` for what's actually
+      # blocking approvals today, `would_deny` for the SAME signal on a fleet
+      # where BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED is (or is ever reverted
+      # to) false, so the blast radius of the flag stays visible either way.
+      - record: breeze:authenticator_l4_basis:rate15m
+        expr: sum(rate(breeze_authenticator_l4_basis_total[15m])) by (basis, outcome)

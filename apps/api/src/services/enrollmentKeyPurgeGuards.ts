@@ -34,8 +34,8 @@ import { CAPACITY_USAGE_KIND } from '../db/schema/installerBootstrapTokens';
 /**
  * Single definition of the correlated subquery every exported guard wraps: the
  * `installer_bootstrap_tokens` rows pointing at the outer `enrollmentKeys` row
- * that are still redeemable — `expires_at` in the future AND
- * `consumed_count < max_usage`.
+ * that are still redeemable — derived from the parent's current credential
+ * generation, `expires_at` in the future, AND `consumed_count < max_usage`.
  *
  * `capacityOnly` additionally restricts to `usage_kind = 'capacity'` (#3034).
  * The two scopes are NOT interchangeable, and which one a caller wants follows
@@ -79,6 +79,10 @@ const liveUnexhaustedBootstrapTokenSubquery = (capacityOnly: boolean) =>
     .where(
       and(
         eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
+        eq(
+          installerBootstrapTokens.parentCredentialGeneration,
+          enrollmentKeys.credentialGeneration,
+        ),
         gt(installerBootstrapTokens.expiresAt, new Date()),
         lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
         ...(capacityOnly
@@ -91,10 +95,12 @@ const liveUnexhaustedBootstrapTokenSubquery = (capacityOnly: boolean) =>
  * Correlated NOT EXISTS guard (#2775, #2832): evaluates true — i.e. the outer
  * `enrollmentKeys` row is eligible for the purge — only when NO
  * `installer_bootstrap_tokens` row still points at it with both `expires_at`
- * in the future AND `consumed_count < max_usage` (a "live, unexhausted"
- * token). When such a token does exist this evaluates false, the AND'd outer
- * WHERE excludes the key, and it survives to a later purge once its last token
- * has expired or been fully consumed.
+ * in the current credential generation, `expires_at` in the future, AND
+ * `consumed_count < max_usage` (a "live, unexhausted" token). When such a
+ * token exists this evaluates false, the AND'd outer WHERE excludes the key,
+ * and it survives to a later purge once its last current-generation token has
+ * expired or been fully consumed. Tokens invalidated by rotation no longer
+ * keep an expired parent alive.
  *
  * Why the guard is needed at all: the Add Device modal's parent enrollment key
  * is a deliberately transient 60-minute container (PR #739 review finding #1),

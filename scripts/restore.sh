@@ -25,6 +25,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/pg-connect-env.sh
+source "${SCRIPT_DIR}/lib/pg-connect-env.sh"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -158,8 +162,17 @@ restore_database() {
 
   log "Starting database restore..."
 
+  # Split DATABASE_URL into PG* environment variables rather than passing it
+  # as an argument — pg_restore/psql argv is visible to any local user via
+  # `ps` for the whole duration of the restore (#4497). -d/-c still take the
+  # bare database name (not a secret); host/user/password come from the
+  # environment.
+  if ! pg_url_to_env "${DATABASE_URL}"; then
+    return 1
+  fi
+
   local exit_code=0
-  pg_restore --clean --if-exists -d "${DATABASE_URL}" "${DB_FILE}" 2>&1 || exit_code=$?
+  pg_restore --clean --if-exists -d "${PGDATABASE}" "${DB_FILE}" 2>&1 || exit_code=$?
 
   if [ $exit_code -eq 0 ]; then
     log "pg_restore completed successfully"
@@ -167,6 +180,7 @@ restore_database() {
     # Exit code 1 = non-fatal warnings only (e.g., "role does not exist")
     log "WARNING: pg_restore completed with non-fatal warnings"
   else
+    pg_url_unset_env
     log "ERROR: pg_restore failed with exit code ${exit_code}"
     return 1
   fi
@@ -174,7 +188,8 @@ restore_database() {
   # Verification: count devices as a sanity check
   log "Verifying restore..."
   local count
-  count=$(psql "${DATABASE_URL}" -t -A -c "SELECT count(*) FROM devices;" 2>/dev/null || echo "ERROR")
+  count=$(psql -d "${PGDATABASE}" -t -A -c "SELECT count(*) FROM devices;" 2>/dev/null || echo "ERROR")
+  pg_url_unset_env
 
   if [ "$count" = "ERROR" ]; then
     log "ERROR: Verification query failed. The database may be in a bad state."

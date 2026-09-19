@@ -1,11 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getApprovalAssertion = vi.fn();
+const getBatchApprovalAssertion = vi.fn();
 const runAction = vi.fn();
 const fetchWithAuth = vi.fn();
 const showToast = vi.fn();
-vi.mock('../stores/authenticator', () => ({
+// Spreads the ACTUAL module so `AssertionChallengeError` is the real class:
+// `decideIntentApprovalBatch` narrows a refused challenge with `instanceof`,
+// and a bare object mock leaves that export undefined, so the branch could
+// never be reached and its tests would pass for the wrong reason.
+vi.mock('../stores/authenticator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../stores/authenticator')>()),
   getApprovalAssertion: (...args: unknown[]) => getApprovalAssertion(...args),
+  getBatchApprovalAssertion: (...args: unknown[]) => getBatchApprovalAssertion(...args),
 }));
 vi.mock('./runAction', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./runAction')>();
@@ -18,7 +25,12 @@ vi.mock('../components/shared/Toast', () => ({
   showToast: (...args: unknown[]) => showToast(...args),
 }));
 
-import { CeremonyError, decideIntentApproval } from './intentApprovals';
+import {
+  CeremonyError,
+  decideIntentApproval,
+  decideIntentApprovalBatch,
+} from './intentApprovals';
+import { AssertionChallengeError } from '../stores/authenticator';
 import { ActionError } from './runAction';
 
 // The un-mocked implementation, used by the server-rejection tests below so the
@@ -45,6 +57,7 @@ async function invokeCapturedRequest(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   runAction.mockResolvedValue(undefined);
+  getBatchApprovalAssertion.mockResolvedValue(PROOF);
   fetchWithAuth.mockResolvedValue(new Response('{}', { status: 200 }));
 });
 
@@ -113,6 +126,110 @@ describe('decideIntentApproval', () => {
   });
 });
 
+describe('decideIntentApproval — supervised scope skips the ceremony (#5600)', () => {
+  it('supervised approve: no WebAuthn ceremony, no proof in the body', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/mobile/approvals/ap-1/approve');
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+
+  it('four_eyes approve: still runs the ceremony and POSTs the proof', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes');
+    expect(getApprovalAssertion).toHaveBeenCalledWith('/mobile/approvals', 'ap-1');
+
+    await invokeCapturedRequest();
+    const [, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ proof: PROOF });
+  });
+
+  it('an unknown/absent scope keeps the always-ceremony behaviour', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    await decideIntentApproval('ap-1', 'approve');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised + 403 step_up_required: retries EXACTLY once with the ceremony', async () => {
+    // An enforcing partner authenticator policy still demands the step-up.
+    // The proofless attempt is the optimistic path, not a decision to bypass.
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    const [, retryInit] = fetchWithAuth.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(retryInit.body as string)).toEqual({ proof: PROOF });
+    // The first, proofless attempt is an internal retry step — the user must
+    // not be told their approval failed when it is about to succeed.
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('supervised + 403 step_up_required + no approver device: needs_device, no second POST', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    const err = new Error('No registered approver device');
+    err.name = 'NoApproverDeviceError';
+    getApprovalAssertion.mockRejectedValue(err);
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('needs_device');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised + a non-step-up rejection is surfaced, not retried', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'not_sole_approver' }), { status: 403 }),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('not_sole_approver');
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised: a transport failure on the optimistic POST is toasted, not silent', async () => {
+    // The optimistic attempt runs outside runAction, which is what guarantees
+    // a toast on a thrown request everywhere else in this helper. Without its
+    // own catch the user would get inline card text only — and the POST must
+    // never be retried, since the server may well have received it.
+    fetchWithAuth.mockRejectedValue(new TypeError('Failed to fetch'));
+    const rejection = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised').catch(
+      (e: unknown) => e,
+    );
+    expect(rejection).toBeInstanceOf(ActionError);
+    expect((rejection as ActionError).status).toBe(0);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    expect(runAction).not.toHaveBeenCalled();
+  });
+
+  it('supervised deny: unchanged — no ceremony, reason carried', async () => {
+    await decideIntentApproval('ap-1', 'deny', ' too risky ', 'supervised');
+    await invokeCapturedRequest();
+    const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/mobile/approvals/ap-1/deny');
+    expect(JSON.parse(init.body as string)).toEqual({ reason: 'too risky' });
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+  });
+});
+
 describe('decideIntentApproval server rejections', () => {
   beforeEach(() => {
     runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
@@ -156,5 +273,270 @@ describe('decideIntentApproval server rejections', () => {
     expect(toasted.message).not.toBe('not_sole_approver');
     expect(toasted.message).not.toMatch(/failed to submit the decision/i);
     expect(toasted.message).toMatch(/another approver is now required/i);
+  });
+
+  // Review finding #2: a 403 `site_ceiling` used to toast the generic
+  // "Failed to submit the decision" fallback (no mapping existed), which is
+  // wrong for a refusal that tells the caller exactly why and that retrying
+  // will never help.
+  it('maps a 403 site_ceiling to translated copy, not the raw token or decideFailed', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'site_ceiling' }), { status: 403 }),
+    );
+    const rejection = await decideIntentApproval('ap-1', 'approve').catch((e: unknown) => e);
+    expect(rejection).toBeInstanceOf(ActionError);
+    expect((rejection as ActionError).status).toBe(403);
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).not.toBe('site_ceiling');
+    expect(toasted.message).not.toMatch(/failed to submit the decision/i);
+    expect(toasted.message).toMatch(/organization-wide/i);
+  });
+});
+
+/**
+ * The batch client runs the REAL runAction throughout: every case here turns on
+ * how a specific status/token is classified, and a stubbed runAction would
+ * assert the stub rather than the classification.
+ */
+describe('decideIntentApprovalBatch', () => {
+  const IDS = ['ap-1', 'ap-2'];
+
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) =>
+      actualRunAction(opts),
+    );
+  });
+
+  const batchPosts = () =>
+    fetchWithAuth.mock.calls.filter(([url]) => String(url).includes('/batch/decide'));
+
+  const respond = (payload: unknown, status = 200) =>
+    fetchWithAuth.mockResolvedValue(new Response(JSON.stringify(payload), { status }));
+
+  const toastMessages = () =>
+    showToast.mock.calls.map(([toast]) => toast as { type: string; message: string });
+
+  it('approve: one ceremony, one POST to /batch/decide, per-row outcomes back', async () => {
+    const results = [
+      { id: 'ap-1', httpStatus: 200, body: { status: 'approved' } },
+      { id: 'ap-2', httpStatus: 409, body: { error: 'already_decided' } },
+    ];
+    respond({ results });
+
+    const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+    expect(outcome).toEqual({ outcome: 'decided', results });
+    // ONE ceremony for the whole set — the entire point of batching.
+    expect(getBatchApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(getBatchApprovalAssertion).toHaveBeenCalledWith('/mobile/approvals', IDS, 'approved');
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+
+    expect(batchPosts()).toHaveLength(1);
+    const [url, init] = batchPosts()[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(url).toBe('/mobile/approvals/batch/decide');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      approvalRequestIds: IDS,
+      decision: 'approved',
+      proof: PROOF,
+    });
+    // The batch assertion is single-use, exactly like the single-card one.
+    expect(init.skipUnauthorizedRetry).toBe(true);
+  });
+
+  it('approve: a PARTIAL result never toasts success', async () => {
+    respond({
+      results: [
+        { id: 'ap-1', httpStatus: 200, body: {} },
+        { id: 'ap-2', httpStatus: 410, body: { error: 'expired' } },
+      ],
+    });
+
+    await decideIntentApprovalBatch(IDS, 'approve');
+
+    expect(toastMessages().filter((toast) => toast.type === 'success')).toEqual([]);
+  });
+
+  it('approve: a FULLY successful batch does toast', async () => {
+    respond({
+      results: [
+        { id: 'ap-1', httpStatus: 200, body: {} },
+        { id: 'ap-2', httpStatus: 200, body: {} },
+      ],
+    });
+
+    await decideIntentApprovalBatch(IDS, 'approve');
+
+    expect(toastMessages().filter((toast) => toast.type === 'success')).toHaveLength(1);
+  });
+
+  // Paper cut from the pre-release sweep: this toast used to read the
+  // singular "Action denied"/"Action approved" no matter how many cards the
+  // batch decided.
+  it('deny: a fully successful batch of 3 toasts a message naming the count', async () => {
+    respond({
+      results: [
+        { id: 'ap-1', httpStatus: 200, body: {} },
+        { id: 'ap-2', httpStatus: 200, body: {} },
+        { id: 'ap-3', httpStatus: 200, body: {} },
+      ],
+    });
+
+    await decideIntentApprovalBatch(['ap-1', 'ap-2', 'ap-3'], 'deny', 'Wrong window');
+
+    const toasts = toastMessages().filter((toast) => toast.type === 'success');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('3');
+  });
+
+  it('deny: no ceremony, and the group’s single trimmed reason rides along', async () => {
+    respond({ results: [{ id: 'ap-1', httpStatus: 200, body: {} }] });
+
+    await decideIntentApprovalBatch(IDS, 'deny', '  Wrong maintenance window  ');
+
+    expect(getBatchApprovalAssertion).not.toHaveBeenCalled();
+    expect(JSON.parse(batchPosts()[0][1].body as string)).toEqual({
+      approvalRequestIds: IDS,
+      decision: 'denied',
+      reason: 'Wrong maintenance window',
+    });
+  });
+
+  it('returns needs_device with NO POST when no approver device is registered', async () => {
+    const err = new Error('No registered approver device');
+    err.name = 'NoApproverDeviceError';
+    getBatchApprovalAssertion.mockRejectedValue(err);
+
+    const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+    expect(outcome).toEqual({ outcome: 'needs_device' });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  describe('refused at the CHALLENGE, before anything is minted', () => {
+    it('maps a 422 batch_not_homogeneous to its own outcome, not a ceremony failure', async () => {
+      // The batch challenge route re-validates the set before minting, so a
+      // set that drifted is refused HERE. Reporting it as CeremonyError would
+      // tell the approver their fingerprint scan failed when the cards moved.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_not_homogeneous', 422, 'batch_not_homogeneous'),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      // No `offending` on the error itself (defensive fallback) -> empty.
+      expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: [] });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
+    it('issue #4459 — carries the challenge route\'s offending ids through, not just the token', async () => {
+      // The challenge route is where an APPROVE's drift is usually caught
+      // (before proof, before the decide POST), so this is the common path
+      // for the inbox to learn which cards to deselect — not the decide-time
+      // 422 tested below.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_not_homogeneous', 422, 'batch_not_homogeneous', ['ap-2']),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: ['ap-2'] });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
+    it('maps a 403 step_up_required to batch_step_up', async () => {
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('step_up_required', 403, 'step_up_required'),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_step_up' });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
+    it('maps a 400 batch_too_large to its own outcome, not a ceremony failure', async () => {
+      // #4460: ApprovalsInbox's client-side APPROVAL_BATCH_MAX guard refuses
+      // an oversized group before this ever runs, so this only fires on a
+      // stale bundle or a group that grew between render and submit — but it
+      // must still be reported honestly rather than as a fingerprint failure.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_too_large', 400, 'batch_too_large'),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_too_large' });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
+    it('still throws CeremonyError for any OTHER challenge failure', async () => {
+      // The two branches above must be narrow: a 500 is a real outage and has
+      // to stay a ceremony failure, not be laundered into a tidy outcome.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('Could not start verification (500).', 500),
+      );
+
+      const rejection = await decideIntentApprovalBatch(IDS, 'approve').catch((e: unknown) => e);
+
+      expect(rejection).toBeInstanceOf(CeremonyError);
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refused at the DECIDE', () => {
+    it('maps a 401 reauth_required to batch_step_up with "one at a time" copy', async () => {
+      // decideApprovalBatch deliberately does not plumb reauthVerified, so a
+      // set demanding re-auth can NEVER clear the ladder in a batch. Treating
+      // it as a proof rejection ("Verification was canceled or failed. Try
+      // again.") blamed the user for a permanent dead end.
+      respond({ error: 'reauth_required' }, 401);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_step_up' });
+      const toasted = toastMessages()[0];
+      expect(toasted.message).not.toBe('reauth_required');
+      expect(toasted.message).toMatch(/one at a time/i);
+    });
+
+    it('maps a 403 step_up_required to batch_step_up, not the single-card copy', async () => {
+      respond({ error: 'step_up_required', requiredLevel: 4 }, 403);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_step_up' });
+      const toasted = toastMessages()[0];
+      // The single-card remedy ("register a device") is the WRONG advice here.
+      expect(toasted.message).toMatch(/one at a time/i);
+      expect(toasted.message).not.toMatch(/Touch ID/i);
+    });
+
+    it('maps a 422 batch_not_homogeneous and reports the offending ids', async () => {
+      respond({ error: 'batch_not_homogeneous', offending: ['ap-2'] }, 422);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: ['ap-2'] });
+      expect(toastMessages()[0].message).toMatch(/no longer be decided together/i);
+    });
+
+    it('maps a 400 batch_too_large to its own outcome with actionable copy', async () => {
+      respond({ error: 'batch_too_large', max: 50 }, 400);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_too_large' });
+      expect(toastMessages()[0].message).toMatch(/too many/i);
+    });
+
+    it('rethrows a 401 assertion_failed — a real proof rejection is not a step-up', async () => {
+      respond({ error: 'assertion_failed' }, 401);
+
+      const rejection = await decideIntentApprovalBatch(IDS, 'approve').catch((e: unknown) => e);
+
+      expect(rejection).toBeInstanceOf(ActionError);
+      expect((rejection as ActionError).status).toBe(401);
+    });
   });
 });

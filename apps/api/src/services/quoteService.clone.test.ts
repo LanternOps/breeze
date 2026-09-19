@@ -10,8 +10,10 @@ vi.mock('../db', () => {
   const makeSelectChain = () => {
     const chain: Record<string, unknown> = {};
     // `.for('share'|'update')` terminates the chain the same way — the org SHARE
-    // barrier (readOrgStampingDefaults, #3778) ends on it.
-    for (const method of ['from', 'where', 'limit', 'orderBy', 'for']) {
+    // barrier (readOrgStampingDefaults, #3778) ends on it. `.leftJoin` chains
+    // back to itself so getQuote's device-group/site join reads the next
+    // queued result exactly like every other select.
+    for (const method of ['from', 'where', 'limit', 'orderBy', 'for', 'leftJoin']) {
       chain[method] = vi.fn(() => chain);
     }
     (chain as { then: unknown }).then = (resolve: (value: unknown) => unknown) =>
@@ -47,12 +49,26 @@ vi.mock('../db', () => {
   };
 });
 
+// Tax resolution moved into the shared taxRateResolver service (settings
+// consolidation W02-API): quoteService.resolveQuoteTaxRate is a thin wrapper,
+// so its db.select calls are no longer visible to this file's db mock.
+vi.mock('./taxRateResolver', () => ({
+  resolveOrgTaxRate: vi.fn(async () => null),
+  OrgNotVisibleForTaxError: class OrgNotVisibleForTaxError extends Error {
+    constructor(public readonly orgId: string) {
+      super(`not visible: ${orgId}`);
+      this.name = 'OrgNotVisibleForTaxError';
+    }
+  },
+}));
+
 vi.mock('./quoteNumbers', () => ({
   allocateQuoteCounter: vi.fn().mockResolvedValue(42),
   formatQuoteNumber: vi.fn().mockReturnValue('Q-2026-000042'),
 }));
 
 import { cloneQuote } from './quoteService';
+import { resolveOrgTaxRate } from './taxRateResolver';
 
 const actor = { userId: 'user-1', partnerId: 'partner-1', accessibleOrgIds: ['org-1'] };
 // For retarget tests: may clone INTO org-2 (source stays org-1).
@@ -83,6 +99,7 @@ describe('cloneQuote', () => {
     state.insertedValues.length = 0;
     state.transactionCalls = 0;
     vi.clearAllMocks();
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue(null);
   });
 
   it('copies quote content and remaps aggregate IDs into a fresh draft', async () => {
@@ -93,8 +110,8 @@ describe('cloneQuote', () => {
         { id: 'block-lines', quoteId: 'quote-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 1, createdAt: new Date() },
       ],
       [
-        { id: 'line-parent', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: '50.00', depositEligible: true, itemType: 'hardware', sku: 'SKU-1', partNumber: 'PN-1', imageId: 'image-1', sortOrder: 0, createdAt: new Date() },
-        { id: 'line-child', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: 'line-parent', name: 'Setup', description: null, quantity: '1.00', unitPrice: '0.00', taxable: false, customerVisible: true, lineTotal: '0.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: false, itemType: 'service', sku: null, partNumber: null, imageId: null, sortOrder: 1, createdAt: new Date() },
+        { line: { id: 'line-parent', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: '50.00', depositEligible: true, itemType: 'hardware', sku: 'SKU-1', partNumber: 'PN-1', imageId: 'image-1', sortOrder: 0, createdAt: new Date() }, deviceGroup: null, site: null },
+        { line: { id: 'line-child', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: 'line-parent', name: 'Setup', description: null, quantity: '1.00', unitPrice: '0.00', taxable: false, customerVisible: true, lineTotal: '0.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: false, itemType: 'service', sku: null, partNumber: null, imageId: null, sortOrder: 1, createdAt: new Date() }, deviceGroup: null, site: null },
       ],
       // getQuote() also looks up a staged Pax8 order for this quote (#2501); empty
       // here means "no staged order", which short-circuits the pax8OrderLineSummary
@@ -141,18 +158,17 @@ describe('cloneQuote', () => {
     state.selectResults.push(
       [sourceQuote()],
       [{ id: 'block-lines', quoteId: 'quote-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: new Date() }],
-      [{ id: 'line-1', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: true, itemType: 'hardware', sku: null, partNumber: null, imageId: 'image-1', sortOrder: 0, createdAt: new Date() }],
+      [{ line: { id: 'line-1', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: true, itemType: 'hardware', sku: null, partNumber: null, imageId: 'image-1', sortOrder: 0, createdAt: new Date() }, deviceGroup: null, site: null }],
       [], // no staged Pax8 order
       [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
       [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
-      // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
-      [{ taxExempt: false, taxRate: '0.08000' }],
-      [{ defaultTaxRate: null }],
       [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
+    // resolveQuoteTaxRate for the NEW org: 8% (shared resolver, mocked)
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue('0.08000');
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2', title: 'Beta rollout' });
 
@@ -319,11 +335,10 @@ describe('cloneQuote', () => {
       [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
       [{ templateId: 'tpl-1', status: 'published' }], // version published
       [{ status: 'active', orgId: null, partnerId: 'partner-1' }], // PARTNER-WIDE template — visible to every org of the partner
-      // resolveQuoteTaxRate for the new org
-      [{ taxExempt: false, taxRate: '0.08000' }],
-      [{ defaultTaxRate: null }],
       [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
+    // resolveQuoteTaxRate for the new org (shared resolver, mocked)
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue('0.08000');
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2' });
 

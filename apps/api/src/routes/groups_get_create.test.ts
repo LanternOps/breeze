@@ -18,6 +18,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 1,
@@ -96,6 +100,19 @@ vi.mock('../db/schema', () => ({
   sites: {
     id: 'id',
     orgId: 'orgId'
+  },
+  configPolicyAssignments: {
+    id: 'id',
+    configPolicyId: 'configPolicyId',
+    level: 'level',
+    targetId: 'targetId',
+    priority: 'priority',
+    createdAt: 'createdAt',
+  },
+  configurationPolicies: {
+    id: 'id',
+    name: 'name',
+    status: 'status',
   },
   groupMembershipLog: {
     id: 'id',
@@ -200,6 +217,17 @@ describe('groups routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 5 }])
           })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([])
+                })
+              })
+            })
+          })
         } as any);
 
       const res = await app.request(`/groups/${GROUP_ID}`, {
@@ -211,6 +239,46 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe(GROUP_ID);
       expect(body.data.name).toBe('Test Group');
+      expect(body.data.policy).toBeUndefined();
+    });
+
+    it('should return group with assigned policy when policy assignment exists', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeGroup()])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 5 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    { policyId: 'policy-123', policyName: 'Standard Workstation' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.id).toBe(GROUP_ID);
+      expect(body.data.policy).toEqual({ id: 'policy-123', name: 'Standard Workstation' });
     });
 
     it('should return 404 when group not found', async () => {

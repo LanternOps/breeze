@@ -383,3 +383,29 @@ describe('configPolicyDeviceIdParamSchema', () => {
     ).toBe(false);
   });
 });
+
+// ============================================
+// Config Policy Inheritance (#5080 W01)
+// ============================================
+
+describe('config policy inheritance validators', () => {
+  it('accepts an optional uuid parentPolicyId on create', () => {
+    const ok = createConfigPolicySchema.safeParse({ name: 'child', parentPolicyId: VALID_UUID });
+    expect(ok.success).toBe(true);
+    expect(
+      createConfigPolicySchema.safeParse({ name: 'child', parentPolicyId: 'nope' }).success
+    ).toBe(false);
+  });
+
+  it('accepts create without parentPolicyId (optional)', () => {
+    expect(createConfigPolicySchema.safeParse({ name: 'root' }).success).toBe(true);
+  });
+
+  // parent_policy_id is immutable after create (enforced by the DB constraint
+  // trigger configuration_policies_parent_immutable). The update schema must
+  // never carry it through to the service.
+  it('update schema strips parentPolicyId (immutable)', () => {
+    const parsed = updateConfigPolicySchema.parse({ name: 'x', parentPolicyId: VALID_UUID } as never);
+    expect('parentPolicyId' in parsed).toBe(false);
+  });
+});

@@ -117,7 +117,14 @@ describe('software report with linked vuln findings (real FK + RLS, BREEZE-3)', 
       { name: 'google chrome', vendor: 'Google LLC', version: '127.0' },
     ]);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, count: 1 });
+    expect(await res.json()).toEqual({
+      success: true,
+      acceptedForInventory: true,
+      absenceResolutionEligible: false,
+      observationId: expect.any(String),
+      reasonCode: 'accepted_legacy',
+      visibleItemCount: 1,
+    });
 
     const inventoryRows = await withSystemDbAccessContext(() =>
       db.select().from(softwareInventory).where(eq(softwareInventory.deviceId, dev.id)));

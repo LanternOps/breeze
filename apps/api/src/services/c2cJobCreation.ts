@@ -1,12 +1,15 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { c2cBackupJobs } from '../db/schema';
+import type { AuthContext } from '../middleware/auth';
+import { captureRecoveryAuthorizationSubject } from './recoveryAuthorizationSubject';
 
 export const ACTIVE_C2C_SYNC_JOB_STATUSES = ['pending', 'running'] as const;
 
 type CreateC2cSyncJobInput = {
   orgId: string;
   configId: string;
+  auth: AuthContext;
   createdAt?: Date;
 };
 
@@ -27,6 +30,8 @@ export async function createC2cSyncJobIfIdle(
         and(
           eq(c2cBackupJobs.orgId, input.orgId),
           eq(c2cBackupJobs.configId, input.configId),
+          eq(c2cBackupJobs.operationKind, 'sync'),
+          inArray(c2cBackupJobs.authorizationState, ['pending', 'authorized']),
           inArray(c2cBackupJobs.status, ACTIVE_C2C_SYNC_JOB_STATUSES),
         ),
       )
@@ -36,12 +41,20 @@ export async function createC2cSyncJobIfIdle(
       return { job: existing, created: false };
     }
 
+    const authorizationSubject = await captureRecoveryAuthorizationSubject(
+      input.auth,
+      input.orgId,
+      { operation: 'c2c_sync', requiredAiTool: 'trigger_c2c_sync' },
+    );
+
     const [created] = await tx
       .insert(c2cBackupJobs)
       .values({
         orgId: input.orgId,
         configId: input.configId,
         status: 'pending',
+        operationKind: 'sync',
+        ...authorizationSubject,
         createdAt,
         updatedAt: createdAt,
       })

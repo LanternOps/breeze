@@ -1,11 +1,21 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import type { CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
+import {
+  allowedModesForKind,
+  type AiAgentActAssets,
+  type AiAgentKind,
+  type AiAgentRecipients,
+  type AiAgentTriggers,
+  type CreateAiAgentInput,
+  type UpdateAiAgentInput,
+} from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
+import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
+import { ACT_ELIGIBLE_TOOL_NAMES, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -14,7 +24,9 @@ import {
   setManagedAutomationEnabled,
   syncManagedAutomation,
 } from './managedAutomation';
-import { validateAgentRecipients } from './recipients';
+import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
+import { assertScriptIdsAuthorizable } from './scriptAuthorization';
+import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -22,6 +34,26 @@ export class UnsupportedAgentModeError extends Error {
   constructor(mode: string) {
     super(`mode_not_supported: ${mode}`);
     this.name = 'UnsupportedAgentModeError';
+  }
+}
+
+/**
+ * Fleet Designer (W01) — distinct from `UnsupportedAgentModeError` above:
+ * `shadow` IS a generally-supported mode (`isSupportedAgentMode` passes it),
+ * it is just not available for a `designer` agent specifically
+ * (`allowedModesForKind`, packages/shared/types/aiAgents.ts). `kind` cannot
+ * be patched, so the only place this can be checked is against the
+ * EXISTING row's kind — `updateAgent` below is that one place. Same
+ * `createAiAgentSchema`/`allowedModesForKind` single source of truth the
+ * create route's zod `superRefine` uses, so create and update can never
+ * disagree about which modes a kind allows.
+ */
+export class ModeNotAllowedForKindError extends Error {
+  readonly code = 'mode_not_allowed_for_kind';
+
+  constructor(mode: string, kind: string) {
+    super(`mode ${mode} is not available for a ${kind} agent`);
+    this.name = 'ModeNotAllowedForKindError';
   }
 }
 
@@ -48,6 +80,168 @@ export class AgentKindConflictError extends Error {
     super(`agent_kind_exists: ${kind}`);
     this.name = 'AgentKindConflictError';
   }
+}
+
+/**
+ * Wave 5 Part B (#3827). `actAssets.supervisedActionKeys` is the operator's
+ * explicit per-agent authorization for `attemptPolicyDecision` to resolve a
+ * matching Tier-3 intent WITHOUT human fanout — so an unknown, four_eyes,
+ * Tier-4/blocked, or secret-bearing key must never be persisted here. `rejected`
+ * names exactly which keys failed and why (validateAuthorizationKeys,
+ * policyDecidable.ts) so the client (Task 5's editor) can render an actionable
+ * message rather than a bare 422.
+ */
+export class InvalidSupervisedActionKeysError extends Error {
+  readonly code = 'invalid_supervised_action_keys';
+
+  constructor(public rejected: RejectedAuthorizationKey[]) {
+    super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'InvalidSupervisedActionKeysError';
+  }
+}
+
+/**
+ * Spec §4.4. A pre-authorized key goes live on an ORG row only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, a direct `.update(aiAgents)`
+ * under an advisory lock) — never through create/update, no matter how the
+ * caller got here. `rejected` names exactly which keys the write tried to
+ * add so the client can render an actionable message rather than a bare 422.
+ */
+export class SupervisedKeysGrantOnlyError extends Error {
+  readonly code = 'supervised_keys_grant_only';
+
+  constructor(public rejected: Array<{ key: string; reason: 'grant_only' }>) {
+    super(`supervised_keys_grant_only: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'SupervisedKeysGrantOnlyError';
+  }
+}
+
+/**
+ * Spec §4.4: on an ORG row a pre-authorized key goes live only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, direct UPDATE under an
+ * advisory lock) — never through create/update. Removals stay open so manual
+ * revoke and auto-demotion keep working. Partner rows are the CEILING and are
+ * edited directly, so this is a no-op for them.
+ */
+export function assertOrgRowSupervisedKeysGrantOnly(
+  owner: AgentOwner,
+  existing: readonly string[],
+  next: readonly string[] | undefined,
+): void {
+  if (next === undefined || owner.orgId === null) return;
+  const added = next.filter((key) => !existing.includes(key));
+  if (added.length > 0) {
+    throw new SupervisedKeysGrantOnlyError(added.map((key) => ({ key, reason: 'grant_only' as const })));
+  }
+}
+
+/**
+ * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
+ * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
+ * at least one recipient that currently resolves to a real user (an
+ * unattended agent nobody can be notified about is worse than no agent), and
+ * at least one act-eligible allowlisted surface (an act-mode agent that can
+ * never actually reach the manifest is a mode flag with no effect — the
+ * operator almost certainly meant something else). `missing` names exactly
+ * which ones failed so the client can render an actionable message rather
+ * than a bare "not met".
+ */
+export class ActPrerequisitesNotMetError extends Error {
+  readonly code = 'act_prerequisites_not_met';
+
+  constructor(public missing: Array<'recipient' | 'act_eligible_tool'>) {
+    super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    this.name = 'ActPrerequisitesNotMetError';
+  }
+}
+
+/**
+ * Task 6's second prerequisite: the allowlist must intersect the manifest's
+ * real tool names, and `run_script` only counts when at least one script is
+ * actually authorized (`actAssets.scriptIds`) — an allowlist admitting
+ * run_script with an empty actAssets is exactly "never act-eligible" (Global
+ * Constraints, plan header), not a real surface.
+ *
+ * Allowlist entries are matched by BASE tool name, not exact string.
+ * checkAgentGuardrails (aiGuardrails.ts) admits an allowlist entry in either
+ * the bare `toolName` form or the scoped `toolName:action` form for
+ * action-multiplexed tools (manage_services, disk_cleanup, ...) — the guardrail
+ * is authoritative, so this prerequisite must recognize the same scoped form.
+ * Without this, the tightest and repo-documented act config
+ * (`['manage_services:restart']`, packages/shared/src/validators/aiAgents.test.ts)
+ * would be refused with a 422 even though it is a real act-eligible surface.
+ */
+function hasActEligibleSurface(
+  toolAllowlist: string[],
+  actAssets: Partial<AiAgentActAssets>,
+): boolean {
+  // Wave 5 Part B (#3827): a non-empty supervisedActionKeys set is ITSELF a
+  // real act-eligible surface — exactly what makes the agent act unattended
+  // for those keys — independent of the wave-4 ACT_MANIFEST/toolAllowlist
+  // check below. Without this branch, an agent configured ONLY for
+  // policy-decide on a tool ACT_MANIFEST doesn't cover (security_scan,
+  // manage_startup_items, manage_scheduled_tasks all qualify;
+  // manage_services happens to overlap both lanes) could never satisfy this
+  // prerequisite and so could never enter act mode at all — the write-time
+  // key validation (assertSupervisedActionKeysValid) already guarantees any
+  // non-empty value here is genuine POLICY_DECIDABLE_TIER3 membership, so
+  // trusting length alone is safe.
+  if ((actAssets.supervisedActionKeys?.length ?? 0) > 0) return true;
+
+  const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
+  const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
+  const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
+  if (intersecting.some((entry) => !SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return true;
+  if (!intersecting.some((entry) => SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return false;
+  return (actAssets.scriptIds?.length ?? 0) > 0;
+}
+
+/**
+ * Wave 5 Part B (#3827) write-time gate. Validates exactly the keys THIS
+ * write is setting — never the merged/stored value — so a key the registry
+ * has since dropped stays stored-but-inert (Design authority, plan header:
+ * "stored authorization keys tolerated-but-inert when the registry drops
+ * them") rather than retroactively blocking an unrelated future edit that
+ * never touches actAssets.supervisedActionKeys at all. No-op on an absent or
+ * empty array.
+ */
+function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  const { rejected } = validateAuthorizationKeys(keys);
+  if (rejected.length > 0) throw new InvalidSupervisedActionKeysError(rejected);
+}
+
+/**
+ * Throws ActPrerequisitesNotMetError unless the write's RESULTING mode is
+ * something other than 'act', or both prerequisites are met by what will
+ * actually be persisted — never by the caller's raw patch alone, which is
+ * how an update that patches only `mode: 'act'` onto an agent with existing
+ * recipients/allowlist correctly passes.
+ */
+async function assertActPrerequisites(
+  owner: AgentOwner,
+  resolved: {
+    kind: AiAgentKind;
+    mode: string;
+    toolAllowlist: string[];
+    actAssets: Partial<AiAgentActAssets>;
+    recipients: Partial<AiAgentRecipients>;
+  },
+): Promise<void> {
+  if (resolved.mode !== 'act') return;
+
+  const missing: Array<'recipient' | 'act_eligible_tool'> = [];
+  const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
+  if (!hasRecipient) missing.push('recipient');
+  // Fleet Designer (W01): `act` for a designer means "run and write reports" —
+  // the profile has no mutating surface by construction (designProfile.ts, a
+  // floor of read-only tools plus submit_fleet_design), so requiring an
+  // act-eligible tool would make the kind unreachable. The recipient
+  // requirement stays: the finished design is delivered to someone.
+  if (resolved.kind !== 'designer' && !hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
+    missing.push('act_eligible_tool');
+  }
+  if (missing.length > 0) throw new ActPrerequisitesNotMetError(missing);
 }
 
 export interface AgentOwner {
@@ -88,7 +282,25 @@ function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents
     limits: input.limits,
     triggers: input.triggers,
     recipients: input.recipients,
+    actAssets: input.actAssets,
   };
+}
+
+/**
+ * AI patch agent W04 (#5750): the shallow trigger merge, plus the one
+ * clear-to-unrestricted sentinel — `alertCategories: null` DELETES the stored
+ * key (an absent key keeps it; `[]` never parses). A stored row never carries
+ * the null.
+ */
+function mergeTriggers(
+  stored: AiAgentTriggers,
+  patch: NonNullable<UpdateAiAgentInput['triggers']>,
+): AiAgentTriggers {
+  const { alertCategories, ...rest } = patch;
+  const merged: AiAgentTriggers = { ...stored, ...rest };
+  if (alertCategories === null) delete merged.alertCategories;
+  else if (alertCategories !== undefined) merged.alertCategories = alertCategories;
+  return merged;
 }
 
 function updatePolicyColumns(
@@ -106,19 +318,30 @@ function updatePolicyColumns(
       : { limits: { ...stored.limits, ...input.limits } }),
     ...(input.triggers === undefined
       ? {}
-      : { triggers: { ...stored.triggers, ...input.triggers } }),
+      : { triggers: mergeTriggers(stored.triggers, input.triggers) }),
     ...(input.recipients === undefined
       ? {}
       : { recipients: { ...stored.recipients, ...input.recipients } }),
+    ...(input.actAssets === undefined
+      ? {}
+      : { actAssets: { ...stored.actAssets, ...input.actAssets } }),
   };
 }
 
-type AgentChange = 'created' | 'updated' | 'disabled';
+/**
+ * `enabled` is the un-archive in `POST /:id/enable` (routes/aiAgents.ts) — the
+ * inverse of `disabled`, and the reason this union is not private to this file:
+ * that route owns the write but must record it through the SAME pair of side
+ * effects, or the one agent mutation implemented outside this service silently
+ * skips the `ai.agent.policy_changed` broadcast every other one publishes.
+ */
+type AgentChange = 'created' | 'updated' | 'disabled' | 'enabled';
 
 async function recordAgentAudit(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await createAuditLog({
     orgId: row.orgId,
@@ -128,11 +351,13 @@ async function recordAgentAudit(
     action: `ai.agent.${change}`,
     resourceType: 'ai_agent',
     resourceId: row.id,
+    resourceName: row.name,
     details: {
       agentId: row.id,
       kind: row.kind,
       ownerScope: row.partnerId === null ? 'organization' : 'partner',
       partnerId: row.partnerId,
+      ...extraDetails,
     },
     result: 'success',
   });
@@ -200,22 +425,55 @@ async function publishPolicyChanged(
   }
 }
 
-async function recordMutation(
+/**
+ * The two side effects EVERY agent mutation owes: an awaited `ai.agent.<change>`
+ * audit row and the `ai.agent.policy_changed` broadcast in-flight runners read.
+ *
+ * Exported because `POST /:id/enable` writes its row in the route layer (the
+ * lock, the tenancy predicate and the conflict pre-check are reused there, but
+ * the write itself never moved into this service). It used to audit through
+ * `writeRouteAudit` — the fire-and-forget variant — and publish nothing at all,
+ * so un-archiving an agent was the one mutation whose policy change no runner
+ * ever heard about. Route-layer writers call THIS, not the two halves.
+ *
+ * @param extraDetails merged into the audit `details` after the standard keys,
+ *   for facts only the caller knows (e.g. that an un-archive deliberately
+ *   leaves `enabled` false).
+ */
+export async function recordAgentMutation(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await Promise.all([
-    recordAgentAudit(row, auth, change),
+    recordAgentAudit(row, auth, change, extraDetails),
     publishPolicyChanged(row, auth.user.id, change),
   ]);
 }
 
 /**
  * The set of agents this caller may see, on either ownership axis. Partner-wide
- * rows are added only for partner-scoped callers: an org token carries a
- * partnerId but never passes breeze_has_partner_access, so RLS would hide those
- * rows from it regardless — the app layer must not be looser than RLS.
+ * rows are added only for PARTNER-scoped callers.
+ *
+ * LOAD-BEARING, and no longer merely mirroring RLS. It used to be both: an org
+ * token carries a partnerId but never passes breeze_has_partner_access, so RLS
+ * hid partner-wide rows from it regardless and this predicate only avoided being
+ * looser than the database. Since
+ * migrations/2026-10-11-150000-ai-partner-wide-select.sql, ai_agents carries a
+ * separate FOR SELECT policy `org_id IS NULL AND partner_id =
+ * breeze_current_partner_id()`, and an org token DOES populate that GUC — so RLS
+ * now permits an org-scoped SELECT of the caller's own partner's partner-wide
+ * agents. This `auth.scope === 'partner'` gate is what still keeps them out of
+ * org-scoped listings and, crucially, out of `getAgent` — which is what
+ * `POST /ai/agents/:id/runs` (routes/aiAgents.ts) resolves the agent through
+ * before enqueuing a run. An org token cannot resolve a partner-wide agent id,
+ * so it cannot execute the MSP's shared agent. That containment is now an
+ * APP-LAYER property, not an RLS one. Do not "simplify" this to a bare
+ * orgCondition-plus-partner OR on the grounds that RLS will catch it — RLS will
+ * not. (Writes are unaffected either way: the new policy is SELECT-only, so
+ * UPDATE/DELETE targeting of partner-wide rows still requires
+ * breeze_has_partner_access.)
  */
 function accessibleAgentCondition(auth: AuthContext) {
   return auth.scope === 'partner' && auth.partnerId
@@ -234,11 +492,13 @@ export async function listAgents(
   // version of this comment claimed the opposite — that contextless meant a
   // full bypass — which inverted the failure mode on a multi-tenant surface.
   //
-  // The app-layer predicate stays anyway, for two reasons that are real: the
-  // unit-test path mocks the db and has no RLS at all, and the old signature
-  // (_auth, ignored) made an unfiltered read look authorized to the next caller.
-  // Partner-wide rows are only added for partner-scoped callers: an org token
-  // carries a partnerId but never passes breeze_has_partner_access.
+  // The app-layer predicate stays anyway, for three reasons that are real: the
+  // unit-test path mocks the db and has no RLS at all; the old signature
+  // (_auth, ignored) made an unfiltered read look authorized to the next caller;
+  // and since 2026-10-11-150000-ai-partner-wide-select.sql it is STRICTER than
+  // RLS rather than a mirror of it — see accessibleAgentCondition above for why
+  // the `auth.scope === 'partner'` gate is now the only thing keeping
+  // partner-wide agents out of org-scoped listings and org-triggered runs.
   const ownerScope = accessibleAgentCondition(auth);
 
   return db
@@ -267,6 +527,101 @@ export async function getAgent(
   return row ?? null;
 }
 
+/**
+ * Task 8 (#4192). `actAssets` is a jsonb column every writer merges into
+ * read-modify-write (`{ ...stored.actAssets, ...patch }`, same shape as
+ * recipients above) — without a row lock, two concurrent writers (an
+ * operator PATCH racing a scheduler's promote/demote CAS) can each read the
+ * same starting object and each commit an UPDATE that silently drops the
+ * other's key. `withAgentRowLocked` is the one place every such writer is
+ * meant to route through: it takes a `SELECT … FOR UPDATE` on exactly one
+ * row, bound by the SAME predicate `getAgent` uses, then runs `fn` with the
+ * locked row inside the caller's ambient transaction (routes/aiAgents.ts
+ * already opens `withDbAccessContext` per request, so no new transaction is
+ * started here — the lock is held for the rest of that transaction, same
+ * mechanic as `recordVerdictFeedback`'s `.for('update')` on `ai_alert_verdicts`,
+ * alertVerdicts.ts:637).
+ *
+ * `auth: null` is the system-caller shape A2's promote/demote executors
+ * (not in this PR) are expected to use, run from a scheduler with no HTTP
+ * request or AuthContext — the same SYSTEM-context case `getAgent`'s own
+ * comment documents. Fix round 1/5: this branch previously dropped the
+ * tenancy predicate to `id` alone, reasoning that RLS passes unconditionally
+ * under a system DB context so an app-layer predicate could only narrow an
+ * already-trusted caller. That reasoning is exactly what this repo's
+ * tenancy invariant rejects (CLAUDE.md: "every new loader predicates by
+ * org_id explicitly under the system context") — a forged or mismatched
+ * agent id would lock and return another tenant's row. The system branch
+ * now REQUIRES `opts.orgId` (enforced both by the overload below and at
+ * runtime) and predicates by `id + org_id`, never `id` alone.
+ *
+ * Callers must not re-check "not found" — a predicate miss is reported as
+ * `AgentAccessDeniedError` from here, before `fn` ever runs. Anything else
+ * (disabled row, write-scope denial) is the caller's job, checked inside
+ * `fn` against the row this function handed it, never against a second
+ * unlocked read.
+ */
+export async function withAgentRowLocked<T>(
+  auth: AuthContext,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+): Promise<T>;
+export async function withAgentRowLocked<T>(
+  auth: null,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+  opts: { orgId: string },
+): Promise<T>;
+export async function withAgentRowLocked<T>(
+  auth: AuthContext | null,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+  opts?: { orgId: string },
+): Promise<T> {
+  if (auth === null && !opts?.orgId) {
+    // Programmer error, not a tenancy denial — a system caller that forgot
+    // to bind an org would otherwise fall through to an id-only predicate,
+    // which is the exact cross-tenant hole this overload exists to close.
+    throw new AgentInvariantError('withAgentRowLocked: system caller (auth: null) requires opts.orgId');
+  }
+  const condition = auth === null
+    ? and(eq(aiAgents.id, id), eq(aiAgents.orgId, opts!.orgId))
+    : and(eq(aiAgents.id, id), accessibleAgentCondition(auth));
+
+  const [row] = await db
+    .select()
+    .from(aiAgents)
+    .where(condition)
+    .limit(1)
+    .for('update');
+  if (!row) throw new AgentAccessDeniedError('Agent not found');
+
+  return fn(row);
+}
+
+/**
+ * AI patch agent W01 (#5747, OD-9 A) — give an enabled partner-wide patch
+ * agent its default 02:00 schedule. Best effort by design: a failure here
+ * must NEVER fail the create/enable, so it runs in its own SAVEPOINT
+ * (`db.transaction`) with the savepoint's `tx` as the executor — a plain
+ * try/catch around an ambient-`db` statement would not be enough, because
+ * postgres-js rethrows a failed statement when the enclosing request
+ * transaction ends even if the caller caught it (see `fixWatch.ts`'s
+ * `demoteRecurredKeys`). `ensureDefaultPatchSchedule` itself decides
+ * applicability (partner-wide, enabled, not deleted) and idempotency.
+ */
+async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> {
+  if (row.kind !== 'patch') return;
+  try {
+    await db.transaction(async (tx) => ensureDefaultPatchSchedule(row, tx));
+  } catch (error) {
+    console.warn('[aiAgents] could not create the default patch schedule — the agent change still stands', {
+      agentId: row.id, error,
+    });
+    captureException(error, undefined, { service: 'aiAgents', operation: 'ensureDefaultPatchSchedule', agentId: row.id });
+  }
+}
+
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
@@ -280,6 +635,37 @@ export async function createAgent(
   // recipients.ts) — an invalid entry stored here would be a recipient that
   // silently never hears anything.
   await validateAgentRecipients(owner, input.recipients ?? {});
+
+  // Wave 5 Part B (#3827): a create-supplied supervisedActionKeys set is
+  // validated against POLICY_DECIDABLE_TIER3 before anything is written, same
+  // reason as recipients above — a rejected key must never be persisted.
+  assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+  // Spec §4.4: a brand-new ORG row starts with no granted keys, so any create
+  // that supplies a non-empty supervisedActionKeys is trying to add one —
+  // grant-only, refused here regardless of value-validity above.
+  assertOrgRowSupervisedKeysGrantOnly(owner, [], input.actAssets.supervisedActionKeys);
+
+  // #5065: every script a create authorizes for unattended run_script must be
+  // one the OWNER can see and — for an org row — one the partner baseline
+  // also lists (scriptAuthorization.ts). A rejected id is never persisted.
+  await assertScriptIdsAuthorizable(owner, input.kind, {
+    existing: [],
+    next: input.actAssets.scriptIds,
+    toolAllowlist: input.toolAllowlist,
+  });
+
+  // Task 6 (#3826): a create that would land with mode: 'act' must already
+  // have a resolvable recipient and an act-eligible surface — checked against
+  // exactly what THIS create will persist (input's own fields are already
+  // complete: createAiAgentSchema materializes every nested default).
+  await assertActPrerequisites(owner, {
+    kind: input.kind,
+    mode: input.mode,
+    toolAllowlist: input.toolAllowlist,
+    actAssets: input.actAssets,
+    recipients: input.recipients,
+  });
 
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
@@ -320,7 +706,8 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
-  await recordMutation(row, auth, 'created');
+  await ensureDefaultPatchScheduleSafely(row);
+  await recordAgentMutation(row, auth, 'created');
   return row;
 }
 
@@ -329,44 +716,111 @@ export async function updateAgent(
   id: string,
   input: UpdateAiAgentInput,
 ): Promise<AiAgentRow> {
-  const existing = await getAgent(auth, id);
-  if (!existing || existing.disabledAt) {
-    throw new AgentAccessDeniedError('Agent not found');
-  }
-  assertAgentWriteAllowed(auth, existing);
+  // Task 8 (#4192): the whole read-validate-write below now runs against a
+  // row `withAgentRowLocked` has already SELECT … FOR UPDATE'd, so a
+  // concurrent writer of `actAssets` (A2's promote/demote executors) blocks
+  // on this transaction rather than racing it. The disabled/write-scope
+  // checks move inside the callback so they read the LOCKED row, not a
+  // separate unlocked `getAgent` — `withAgentRowLocked` itself only reports
+  // "not found" for a predicate miss; everything else is this callback's job.
+  return withAgentRowLocked(auth, id, async (existing) => {
+    if (existing.disabledAt) {
+      throw new AgentAccessDeniedError('Agent not found');
+    }
+    assertAgentWriteAllowed(auth, existing);
 
-  // Validate the MERGED recipients — the exact object updatePolicyColumns
-  // persists ({ ...stored, ...patch }), so what is checked is what is stored.
-  if (input.recipients !== undefined) {
+    // Fleet Designer (W01): `kind` is immutable on PATCH, so this is the
+    // only place a mode-vs-kind mismatch can be caught for an update — the
+    // create route's zod schema handles it there via `allowedModesForKind`
+    // in its `superRefine`, but that never runs for a PATCH body. Gated on
+    // `isSupportedAgentMode` first so an outright-bogus mode (never a real
+    // `AiAgentMode` at all) still surfaces as `UnsupportedAgentModeError`
+    // from `scalarPolicyColumns` below, not this kind-specific error — the
+    // two checks answer different questions and must not race for which one
+    // throws first.
+    if (input.mode !== undefined && isSupportedAgentMode(input.mode) && !allowedModesForKind(existing.kind).includes(input.mode)) {
+      throw new ModeNotAllowedForKindError(input.mode, existing.kind);
+    }
+
     const stored = normalizeAgentPolicy(existing);
-    await validateAgentRecipients(
-      { orgId: existing.orgId, partnerId: existing.partnerId },
-      { ...stored.recipients, ...input.recipients },
-    );
-  }
+    const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
 
-  const [row] = await db
-    .update(aiAgents)
-    .set({
-      ...(input.name === undefined ? {} : { name: input.name }),
-      ...updatePolicyColumns(existing, input),
-      lastUpdatedBy: auth.user.id,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(aiAgents.id, id), isNull(aiAgents.disabledAt)))
-    .returning();
-  if (!row) throw new AgentAccessDeniedError('Agent not found');
+    // Validate the MERGED recipients — the exact object updatePolicyColumns
+    // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+    const mergedRecipients = input.recipients === undefined
+      ? stored.recipients
+      : { ...stored.recipients, ...input.recipients };
+    if (input.recipients !== undefined) {
+      await validateAgentRecipients(owner, mergedRecipients);
+    }
 
-  // Mirroring the disable direction too is deliberate symmetry: one switch
-  // updates both the agent policy and its managed wiring before audit.
-  const managedPatch: { name?: string; enabled?: boolean } = {};
-  if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
-  if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
-  if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
-    await syncManagedAutomation(row.id, managedPatch);
-  }
-  await recordMutation(row, auth, 'updated');
-  return row;
+    // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
+    // the merged/stored value — see assertSupervisedActionKeysValid's doc.
+    if (input.actAssets?.supervisedActionKeys !== undefined) {
+      assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+      // Spec §4.4: same grant-only rule as createAgent — a patch may keep or
+      // remove an ORG row's already-granted keys, but adding one outside the
+      // four-eyes grant executor is refused before the UPDATE runs.
+      assertOrgRowSupervisedKeysGrantOnly(
+        owner,
+        stored.actAssets.supervisedActionKeys ?? [],
+        input.actAssets.supervisedActionKeys,
+      );
+    }
+
+    // #5065: validate only the script ids THIS patch ADDS, against the
+    // allowlist the row will have after the patch — removals and untouched
+    // stored ids pass (stored-but-inert if they no longer resolve).
+    if (input.actAssets?.scriptIds !== undefined) {
+      await assertScriptIdsAuthorizable(owner, existing.kind, {
+        existing: stored.actAssets.scriptIds ?? [],
+        next: input.actAssets.scriptIds,
+        toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+      });
+    }
+
+    // Task 6 (#3826): prerequisites are checked against what the update will
+    // actually PERSIST (merged, same as recipients above) — never just the raw
+    // patch. A PATCH touching only `mode: 'act'` on an already-equipped agent
+    // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
+    // under an existing act-mode agent is refused before the UPDATE runs.
+    await assertActPrerequisites(owner, {
+      kind: existing.kind,
+      mode: input.mode ?? stored.mode,
+      toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+      actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
+      recipients: mergedRecipients,
+    });
+
+    const [row] = await db
+      .update(aiAgents)
+      .set({
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...updatePolicyColumns(existing, input),
+        lastUpdatedBy: auth.user.id,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(aiAgents.id, id), isNull(aiAgents.disabledAt)))
+      .returning();
+    if (!row) throw new AgentAccessDeniedError('Agent not found');
+
+    // Mirroring the disable direction too is deliberate symmetry: one switch
+    // updates both the agent policy and its managed wiring before audit.
+    const managedPatch: { name?: string; enabled?: boolean } = {};
+    if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
+    if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
+    if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
+      await syncManagedAutomation(row.id, managedPatch);
+    }
+    // AI patch agent W01: the enabled false -> true transition is the moment
+    // a patch agent should start working — see ensureDefaultPatchScheduleSafely.
+    if (!existing.enabled && row.enabled) {
+      await ensureDefaultPatchScheduleSafely(row);
+    }
+    await recordAgentMutation(row, auth, 'updated');
+    return row;
+  });
 }
 
 export async function disableAgent(auth: AuthContext, id: string): Promise<AiAgentRow> {
@@ -392,6 +846,6 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
   // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
   // so soft-disable must also stop the wiring from generating queue traffic.
   await setManagedAutomationEnabled(row.id, false);
-  await recordMutation(row, auth, 'disabled');
+  await recordAgentMutation(row, auth, 'disabled');
   return row;
 }

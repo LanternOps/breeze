@@ -134,6 +134,22 @@ export function collectProbeSecrets(auth: StockHostProbeAuth): readonly string[]
   return [...secrets].sort((a, b) => b.length - a.length);
 }
 
+/** The literal path segment that introduces the signed asset token in an asset
+ *  URL: `/api/v1/extensions/assets/t/<token>/<name>/<digest>/<member...>`.
+ *  Mirrors `ASSET_TOKEN_SEGMENT` in apps/api/src/extensions/webRegistry.ts. */
+const ASSET_TOKEN_SEGMENT = 't';
+
+const ASSET_URL_PATTERN = new RegExp(
+  `/api/v1/extensions/assets/${ASSET_TOKEN_SEGMENT}/([^/]+)/`,
+);
+
+/** Pull the signed token out of a registry-advertised `moduleUrl`, or null if
+ *  the URL is not in the signed shape (an unpatched host, or a forged entry). */
+function extractAssetToken(moduleUrl: string): string | null {
+  const match = ASSET_URL_PATTERN.exec(moduleUrl);
+  return match?.[1] ?? null;
+}
+
 /**
  * Black-box HTTP conformance probes against a running stock host. Verifies the
  * health route, admin state (lists the extension), the runtime registry, the
@@ -178,12 +194,23 @@ export async function probeStockHost(options: StockHostProbeOptions): Promise<Ho
   const authedInit: RequestInit = { headers: authedHeaders };
   const member = options.assetMember ?? 'index.html';
 
-  // Never let ANY supplied secret — cookie or header value — escape into a
-  // detail string or error message.
+  // The asset route is no longer bearer-gated: it takes the short-lived signed
+  // token that the AUTHENTICATED registry response embeds in `moduleUrl`
+  // (issue #4164 — a browser's dynamic `import()` cannot send an Authorization
+  // header). The registry probe harvests that token for the asset probe below.
+  // It is a live credential, so it is declared HERE, ahead of `redact`, and
+  // folded into the redaction set: the success paths never put it in a detail
+  // string, but a `fetchImpl` rejection can carry the request URL in its
+  // message, and that message goes through `redact` in the `probe()` wrapper.
+  let assetToken: string | null = null;
+
+  // Never let ANY supplied secret — cookie or header value, or the harvested
+  // asset token — escape into a detail string or error message.
   const secrets = collectProbeSecrets(options.auth);
   const redact = (text: string): string => {
     let out = text;
     for (const secret of secrets) out = out.split(secret).join('[redacted]');
+    if (assetToken) out = out.split(assetToken).join('[redacted]');
     return out;
   };
 
@@ -221,19 +248,50 @@ export async function probeStockHost(options: StockHostProbeOptions): Promise<Ho
 
   await probe('registry', async () => {
     const res = await fetchImpl(`${base}/api/v1/extensions/registry`, authedInit);
-    return { name: 'registry', ok: res.ok, status: res.status, detail: redact(`GET /api/v1/extensions/registry -> ${res.status}`) };
+    let advertised = false;
+    try {
+      const body = (await res.json()) as { extensions?: Array<{ name?: unknown; moduleUrl?: unknown }> };
+      const entry = body?.extensions?.find((row) => row?.name === options.extensionName);
+      if (entry && typeof entry.moduleUrl === 'string') {
+        assetToken = extractAssetToken(entry.moduleUrl);
+        advertised = assetToken !== null;
+      }
+    } catch {
+      assetToken = null;
+    }
+    return {
+      name: 'registry',
+      ok: res.ok && advertised,
+      status: res.status,
+      detail: redact(
+        `GET /api/v1/extensions/registry -> ${res.status}`
+        + `${advertised ? `, advertises a signed moduleUrl for "${options.extensionName}"` : ', no signed moduleUrl advertised'}`,
+      ),
+    };
   });
 
   await probe('assetImmutable', async () => {
-    const url = `${base}/api/v1/extensions/assets/${options.extensionName}/${options.expectedDigest}/${member}`;
-    const res = await fetchImpl(url, authedInit);
+    if (assetToken === null) {
+      return {
+        name: 'assetImmutable',
+        ok: false,
+        status: null,
+        detail: 'skipped: the registry advertised no signed asset URL to derive a token from',
+      };
+    }
+    const url = `${base}/api/v1/extensions/assets/${ASSET_TOKEN_SEGMENT}/${assetToken}`
+      + `/${options.extensionName}/${options.expectedDigest}/${member}`;
+    // DELIBERATELY unauthenticated: the signed token IS the credential here,
+    // and a browser module fetch carries nothing else. Sending auth headers
+    // would hide a regression that re-gates the route on a bearer.
+    const res = await fetchImpl(url, {});
     const cacheControl = res.headers.get('cache-control') ?? '';
     const immutable = cacheControl.includes('immutable');
     return {
       name: 'assetImmutable',
       ok: res.ok && immutable,
       status: res.status,
-      detail: redact(`GET assets/${options.extensionName}/${options.expectedDigest}/${member} -> ${res.status}, Cache-Control="${cacheControl}"`),
+      detail: redact(`GET assets/${options.extensionName}/${options.expectedDigest}/${member} (signed, unauthenticated) -> ${res.status}, Cache-Control="${cacheControl}"`),
     };
   });
 

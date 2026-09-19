@@ -51,6 +51,9 @@ func TestExecBackupRestoreWithProgressNilManager(t *testing.T) {
 }
 
 func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
+	originalWorkRoot := backupRestoreWorkRoot
+	backupRestoreWorkRoot = func() string { return t.TempDir() }
+	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
 	baseDir := t.TempDir()
 	provider := providers.NewLocalProvider(baseDir)
 	snapshotID := "restore-progress-1"
@@ -262,19 +265,26 @@ func TestDefaultVSS(t *testing.T) {
 		name        string
 		goos        string
 		systemImage bool
+		hasPaths    bool
 		want        bool
 	}{
-		{"windows file backup defaults VSS on", "windows", false, true},
-		{"windows system_image defaults VSS off", "windows", true, false},
-		{"linux file backup defaults VSS off", "linux", false, false},
-		{"linux system_image defaults VSS off", "linux", true, false},
-		{"darwin file backup defaults VSS off", "darwin", false, false},
-		{"darwin system_image defaults VSS off", "darwin", true, false},
+		{"windows file backup defaults VSS on", "windows", false, false, true},
+		{"windows system_image without paths defaults VSS off", "windows", true, false, false},
+		// #5493: a wholeMachine system_image run (systemImage=true, paths
+		// present) walks the OS root the same as a file-mode run, so it
+		// needs VSS on Windows the same as file mode — VSS must not stay
+		// off just because SystemImage is also true.
+		{"windows system_image WITH paths (wholeMachine) defaults VSS on", "windows", true, true, true},
+		{"linux file backup defaults VSS off", "linux", false, false, false},
+		{"linux system_image without paths defaults VSS off", "linux", true, false, false},
+		{"linux system_image with paths defaults VSS off (non-windows)", "linux", true, true, false},
+		{"darwin file backup defaults VSS off", "darwin", false, false, false},
+		{"darwin system_image defaults VSS off", "darwin", true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := defaultVSS(tt.goos, tt.systemImage); got != tt.want {
-				t.Fatalf("defaultVSS(%q, %v) = %v, want %v", tt.goos, tt.systemImage, got, tt.want)
+			if got := defaultVSS(tt.goos, tt.systemImage, tt.hasPaths); got != tt.want {
+				t.Fatalf("defaultVSS(%q, %v, %v) = %v, want %v", tt.goos, tt.systemImage, tt.hasPaths, got, tt.want)
 			}
 		})
 	}
@@ -290,8 +300,12 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantBucket      string   // for s3
 		wantBasePath    string   // for local
 		wantPaths       []string // expected manager paths
+		wantExcludes    []string // expected manager excludes (nil unless set)
 		wantSystemImage bool     // expected SystemStateEnabled
 		wantVSS         bool     // expected VSSEnabled
+
+		wantBaseSnapshotID        *string
+		wantPublishLeaseExpiresAt time.Time
 	}{
 		{
 			name:    "empty payload falls back to agent.yaml manager",
@@ -360,6 +374,31 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantVSS:         true,
 		},
 		{
+			// #5493: a wholeMachine profile fans out systemImage:true WITH
+			// paths + excludes (backupWorker.ts resolveBackupTargets), so ONE
+			// run must walk the OS root AND collect system state — instead
+			// of the pre-#5493 files-less system_image-only snapshot.
+			name:            "systemImage with paths (wholeMachine) sets Paths + Excludes and keeps SystemStateEnabled",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true,"wholeMachine":true,"paths":["/"],"excludes":["/proc/**","/sys/**"]}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantPaths:       []string{"/"},
+			wantExcludes:    []string{"/proc/**", "/sys/**"},
+			wantSystemImage: true,
+			wantVSS:         runtime.GOOS == "windows",
+		},
+		{
+			// Without paths, system_image stays exactly as before: Paths nil,
+			// VSS off (its own consistency mechanism is system state, not VSS).
+			name:            "systemImage without paths leaves Paths nil and VSS off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantPaths:       nil,
+			wantSystemImage: true,
+			wantVSS:         false,
+		},
+		{
 			name:    "unsupported provider errors",
 			payload: `{"provider":"dropbox","providerConfig":{"bucket":"b"},"paths":["/data"]}`,
 			wantErr: true,
@@ -385,6 +424,35 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantBucket:      "my-bucket",
 			wantSystemImage: true,
 			wantVSS:         false,
+		},
+		{
+			name:                      "server-owned mode: non-empty baseSnapshotId with a lease",
+			payload:                   `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-123","publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`,
+			wantProvider:              "local",
+			wantBasePath:              filepath.Clean("/var/backups"),
+			wantPaths:                 []string{"/data"},
+			wantVSS:                   runtime.GOOS == "windows",
+			wantBaseSnapshotID:        strPtr("snap-123"),
+			wantPublishLeaseExpiresAt: time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:                      "server-owned mode: empty baseSnapshotId means full run, lease still set",
+			payload:                   `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"","publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`,
+			wantProvider:              "local",
+			wantBasePath:              filepath.Clean("/var/backups"),
+			wantPaths:                 []string{"/data"},
+			wantVSS:                   runtime.GOOS == "windows",
+			wantBaseSnapshotID:        strPtr(""),
+			wantPublishLeaseExpiresAt: time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:         "legacy payload: no baseSnapshotId field at all",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"]}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      runtime.GOOS == "windows",
+			// wantBaseSnapshotID left nil (legacy mode), wantPublishLeaseExpiresAt left zero.
 		},
 	}
 
@@ -426,12 +494,33 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 				}
 			}
 
+			gotExcludes := mgr.GetExcludes()
+			if len(gotExcludes) != len(tt.wantExcludes) {
+				t.Fatalf("excludes = %v, want %v", gotExcludes, tt.wantExcludes)
+			}
+			for i := range tt.wantExcludes {
+				if gotExcludes[i] != tt.wantExcludes[i] {
+					t.Errorf("excludes[%d] = %q, want %q", i, gotExcludes[i], tt.wantExcludes[i])
+				}
+			}
+
 			if got := mgr.GetSystemStateEnabled(); got != tt.wantSystemImage {
 				t.Fatalf("SystemStateEnabled = %v, want %v", got, tt.wantSystemImage)
 			}
 
 			if got := mgr.GetVSSEnabled(); got != tt.wantVSS {
 				t.Fatalf("VSSEnabled = %v, want %v", got, tt.wantVSS)
+			}
+
+			gotBase := mgr.GetBaseSnapshotID()
+			if (gotBase == nil) != (tt.wantBaseSnapshotID == nil) {
+				t.Fatalf("GetBaseSnapshotID() = %v, want %v", gotBase, tt.wantBaseSnapshotID)
+			}
+			if gotBase != nil && tt.wantBaseSnapshotID != nil && *gotBase != *tt.wantBaseSnapshotID {
+				t.Fatalf("GetBaseSnapshotID() = %q, want %q", *gotBase, *tt.wantBaseSnapshotID)
+			}
+			if !mgr.GetPublishLeaseExpiresAt().Equal(tt.wantPublishLeaseExpiresAt) {
+				t.Fatalf("GetPublishLeaseExpiresAt() = %v, want %v", mgr.GetPublishLeaseExpiresAt(), tt.wantPublishLeaseExpiresAt)
 			}
 
 			provider := mgr.GetProvider()
@@ -590,5 +679,83 @@ func TestBackupStopCancelsPayloadDispatchedBackupRun(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("backup_run did not unwind after backup_stop cancelled it")
+	}
+}
+
+// The incremental dedupe base is selected by BackupIdentity, which includes
+// the device's agent id (D6: without it, previousManifest fails open to a full
+// backup every run — or, before the identity existed, deduped against ANY
+// device's newest manifest in the bucket). Both payload-built managers must
+// carry the helper's agent id.
+func TestManagerFromBackupRunPayload_CarriesHelperAgentID(t *testing.T) {
+	prev := helperAgentID
+	helperAgentID = "agent-abc123"
+	t.Cleanup(func() { helperAgentID = prev })
+	for name, payload := range map[string]string{
+		"file":         `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/srv/data"]}`,
+		"system_image": `{"provider":"local","providerConfig":{"path":"/var/backups"},"systemImage":true}`,
+	} {
+		mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+		if err != nil || mgr == nil {
+			t.Fatalf("%s: mgr=%v err=%v", name, mgr, err)
+		}
+		if got := mgr.GetAgentID(); got != "agent-abc123" {
+			t.Fatalf("%s: AgentID = %q, want agent-abc123", name, got)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease is the
+// D18 §3.1 P1 fix: a present baseSnapshotId (server-owned mode is ON, even
+// when it points at an explicit full run "") with a missing/empty/zero
+// publishLeaseExpiresAt is a protocol violation by the dispatching server —
+// reject the whole payload rather than silently running ungated.
+func TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt entirely absent",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1"}`,
+		},
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt empty string",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1","publishLeaseExpiresAt":""}`,
+		},
+		{
+			name:    "baseSnapshotId is an explicit full-run empty string, lease still required",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":""}`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, err := managerFromBackupRunPayload(json.RawMessage(tt.payload))
+			if err == nil {
+				t.Fatal("expected an error rejecting a server-owned-mode payload with no publish lease")
+			}
+			if mgr != nil {
+				t.Fatal("expected a nil manager on rejection")
+			}
+		})
+	}
+}
+
+// TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID is the
+// symmetric case of TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease
+// (review finding, D18 §3.1): a payload carrying publishLeaseExpiresAt but
+// no baseSnapshotId field at all would otherwise silently fall back to
+// legacy (fully unfenced) mode instead of getting the publish-lease gate
+// its own lease implies it wants.
+func TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID(t *testing.T) {
+	payload := `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting a lease with no baseSnapshotId")
+	}
+	if mgr != nil {
+		t.Fatal("expected a nil manager on rejection")
 	}
 }

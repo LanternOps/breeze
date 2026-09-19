@@ -6,9 +6,10 @@ import { sql } from 'drizzle-orm';
 // request time — the route registers `requireMfa()` / `requirePermission()`
 // once at import time, so the returned middleware must re-check a gate on
 // every invocation rather than baking in a decision at registration.
-const { mfaGate, permissionGate } = vi.hoisted(() => ({
+const { mfaGate, permissionGate, siteScope } = vi.hoisted(() => ({
   mfaGate: { deny: false },
   permissionGate: { deny: false },
+  siteScope: { allowedSiteIds: undefined as string[] | undefined },
 }));
 
 // `db.transaction` is mocked to invoke its callback with the SAME object, so a
@@ -39,6 +40,8 @@ vi.mock('../db/schema', () => ({
     siteId: 'enrollmentKeys.siteId',
     name: 'enrollmentKeys.name',
     key: 'enrollmentKeys.key',
+    credentialGeneration: 'enrollmentKeys.credentialGeneration',
+    bootstrapTokenId: 'enrollmentKeys.bootstrapTokenId',
     maxUsage: 'enrollmentKeys.maxUsage',
     usageCount: 'enrollmentKeys.usageCount',
     expiresAt: 'enrollmentKeys.expiresAt',
@@ -51,13 +54,15 @@ vi.mock('../db/schema', () => ({
   installerBootstrapTokens: {
     id: 'installerBootstrapTokens.id',
     parentEnrollmentKeyId: 'installerBootstrapTokens.parentEnrollmentKeyId',
+    parentCredentialGeneration: 'installerBootstrapTokens.parentCredentialGeneration',
     expiresAt: 'installerBootstrapTokens.expiresAt',
     consumedCount: 'installerBootstrapTokens.consumedCount',
     maxUsage: 'installerBootstrapTokens.maxUsage',
   },
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async () => ({
+  ...(await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
@@ -65,6 +70,7 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
+      allowedSiteIds: siteScope.allowedSiteIds,
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
@@ -147,6 +153,7 @@ function makeEnrollmentKey(overrides: Record<string, any> = {}) {
     siteId: null,
     name: 'Test Key',
     key: 'hashed_abc123',
+    credentialGeneration: 1,
     maxUsage: 10,
     usageCount: 0,
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -188,6 +195,15 @@ function mockUpdateSetWhereReturning(rows: any[]) {
       where: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue(rows),
       }),
+    }),
+  } as any);
+}
+
+/** Mock the post-rotation deletion of unused children from old epochs. */
+function mockRevokedDerivedKeys(rows: any[] = []) {
+  vi.mocked(db.delete).mockReturnValueOnce({
+    where: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(rows),
     }),
   } as any);
 }
@@ -277,6 +293,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
     assertTtlWithinCapMock.mockImplementation(async () => null);
     mfaGate.deny = false;
     permissionGate.deny = false;
+    siteScope.allowedSiteIds = undefined;
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
   });
@@ -407,28 +424,116 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns 403 when accessing key from different org', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
+    it('returns an opaque 404 when accessing a key from a different org', async () => {
+      // The organization predicate is part of the initial lookup, so a real
+      // database returns no row and never exposes that the id exists.
+      mockSelectFromWhereLimit([]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
     });
+
+    it('returns an opaque 404 without database or capacity work for an empty site ceiling', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          allowedSiteIds: [],
+          canAccessOrg: (id: string) => id === ORG_ID,
+        });
+        return next();
+      });
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    });
+
+    it.each(['partner', 'system'] as const)(
+      'keeps site-null detail visible for an unrestricted %s caller',
+      async (scope) => {
+        const { authMiddleware } = await import('../middleware/auth');
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-1', email: 'test@example.com' },
+            scope,
+            orgId: null,
+            accessibleOrgIds: scope === 'system' ? null : [ORG_ID],
+            canAccessOrg: () => true,
+          });
+          return next();
+        });
+        mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: null })]);
+        mockSelectFromWhereGroupBy([]);
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).id).toBe(KEY_ID);
+      },
+    );
   });
 
   // ============================================
   // POST /:id/rotate — Rotate enrollment key
   // ============================================
   describe('POST /enrollment-keys/:id/rotate', () => {
+    it('denies a restricted organization caller before rotating a hidden-site key', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-hidden' })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
+    });
+    it('allows a restricted organization caller to rotate a key in its allowed site', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-visible' })]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ siteId: 'site-visible', credentialGeneration: 2 })]);
+      mockRevokedDerivedKeys();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalledOnce();
+      expect(db.delete).toHaveBeenCalledOnce();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'enrollment_key.rotate',
+        details: expect.objectContaining({
+          previousCredentialGeneration: 1,
+          nextCredentialGeneration: 2,
+          revokedUnusedDerivedKeys: 0,
+        }),
+      }));
+    });
     it('rotates key material and resets usage count', async () => {
       const existing = makeEnrollmentKey({ usageCount: 5 });
       mockSelectFromWhereLimit([existing]);
       mockUpdateSetWhereReturning([
-        makeEnrollmentKey({ usageCount: 0, key: 'hashed_newkey' }),
+        makeEnrollmentKey({ usageCount: 0, key: 'hashed_newkey', credentialGeneration: 2 }),
       ]);
+      mockRevokedDerivedKeys();
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
         method: 'POST',
@@ -447,7 +552,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
     it('allows updating maxUsage during rotation', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockUpdateSetWhereReturning([makeEnrollmentKey({ maxUsage: 50 })]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ maxUsage: 50, credentialGeneration: 2 })]);
+      mockRevokedDerivedKeys();
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
         method: 'POST',
@@ -517,7 +623,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
     it('allows rotating with an expiresAt at or under the partner cap', async () => {
       mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey' })]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey', credentialGeneration: 2 })]);
+      mockRevokedDerivedKeys();
 
       // Exactly at the 1440-minute cap.
       const expiresAt = new Date(Date.now() + 1440 * 60 * 1000).toISOString();
@@ -533,7 +640,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
     it('does not consult the cap when expiresAt is omitted (preserves the existing key\'s own expiry, not a new choice)', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey' })]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey', credentialGeneration: 2 })]);
+      mockRevokedDerivedKeys();
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
         method: 'POST',
@@ -550,6 +658,25 @@ describe('enrollment key routes — get, rotate, delete', () => {
   // DELETE /:id — Delete enrollment key
   // ============================================
   describe('DELETE /enrollment-keys/:id', () => {
+    it('denies a restricted organization caller before deleting a hidden-site key', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-hidden' })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
+    });
+    it('denies a restricted organization caller before deleting a null-site legacy key', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: null })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
     it('deletes an enrollment key', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
       mockDeleteWhere();
@@ -644,6 +771,28 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(createAuditLogAsync).toHaveBeenCalledWith(
         expect.objectContaining({ details: { deletedCount: 0 } }),
       );
+    });
+
+    it('adds the explicit site ceiling to an organization purge', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      const getCaptured = mockDeleteWhereReturningCapture([]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const conditionJson = JSON.stringify(getCaptured());
+      expect(conditionJson).toContain('enrollmentKeys.siteId');
+      expect(conditionJson).toContain('site-visible');
+    });
+
+    it('uses an always-false predicate for an empty organization site ceiling', async () => {
+      siteScope.allowedSiteIds = [];
+      const getCaptured = mockDeleteWhereReturningCapture([]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(sqlText(getCaptured())).toContain('false');
     });
 
     it('returns 403 when org-scoped caller has no orgId', async () => {

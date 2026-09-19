@@ -237,3 +237,28 @@ describe('AutomationTab — schedule timezone picker', () => {
     expect(payload.inlineSettings.items[0].timezone).toBe('UTC');
   });
 });
+
+// #5080: `featurePolicyId` means a standalone entity id (update ring, backup
+// profile, ...) — Automation is inline settings, so it must never carry the
+// parent CONFIG policy's own id.
+describe('AutomationTab — featurePolicyId payload (#5080)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(
+      <AutomationTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId="parent-1"
+        onLinkChanged={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const payload = saveMock.mock.calls[0][1];
+    expect(payload.featurePolicyId).toBeNull();
+  });
+});

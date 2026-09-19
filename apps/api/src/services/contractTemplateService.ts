@@ -9,7 +9,7 @@ import type {
 } from '@breeze/shared';
 import { AUTO_CONTRACT_VARIABLES } from '@breeze/shared';
 import { db } from '../db';
-import { contractTemplates, contractTemplateVersions } from '../db/schema';
+import { contractTemplates, contractTemplateVersions, contractDocuments, quoteBlocks } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import {
   sanitizeRichTextHtmlWithReport,
@@ -26,6 +26,9 @@ import {
 // configurationPolicy.ts — routes and AI tools can import the capability gate
 // straight from here without also reaching into partnerWideAccess.ts.
 export { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError };
+
+/** Spec §6: what a template is used by — the editor header and the archive confirm. */
+export interface TemplateUsage { quoteCount: number; signedCount: number }
 
 export type TemplateRow = typeof contractTemplates.$inferSelect;
 export type VersionRow = typeof contractTemplateVersions.$inferSelect;
@@ -362,6 +365,53 @@ export async function archiveTemplate(auth: AuthContext, id: string): Promise<vo
   const template = await getTemplateOr404(id);
   assertTemplateWriteAccess(auth, template);
   await db.update(contractTemplates).set({ status: 'archived', updatedAt: new Date() }).where(eq(contractTemplates.id, id));
+}
+
+/** Spec §6 reciprocal link: what this agreement template is actually used by.
+ *
+ *  `quoteCount` — DISTINCT quotes carrying a `contract` block pinned to ANY
+ *  version of this template. A contract block has no FK: its pin lives in the
+ *  jsonb `quote_blocks.content` as `{templateId, templateVersionId}` (the shape
+ *  contractTemplateRender.ts parses), so the match is a jsonb text extraction
+ *  against this template's version ids. Going through the version table rather
+ *  than content->>'templateId' is what makes it "any version", and
+ *  count(distinct quote_id) is what stops a quote with two blocks on two
+ *  versions of the same template from being counted twice.
+ *
+ *  `signedCount` — contract_documents rows stamped with this template.
+ *
+ *  Runs under the request's ambient withDbAccessContext (a plain route-handler
+ *  path — never escalate here). Both aggregates carry the caller's org
+ *  condition, so a partner-wide template reports only the orgs this caller can
+ *  read, and the 404 above fires first so the counts are never an existence
+ *  oracle for an invisible template. */
+export async function getTemplateUsage(auth: AuthContext, templateId: string): Promise<TemplateUsage> {
+  const template = await getTemplateOr404(templateId);
+  assertTemplateReadAccess(auth, template);
+
+  const quoteConds: SQL[] = [
+    eq(quoteBlocks.blockType, 'contract'),
+    // `->>` yields text, so the subquery casts id::text — comparing text to
+    // uuid raises 42883.
+    sql`${quoteBlocks.content}->>'templateVersionId' IN (SELECT id::text FROM contract_template_versions WHERE template_id = ${templateId})`,
+  ];
+  const quoteOrgCond = auth.orgCondition(quoteBlocks.orgId);
+  if (quoteOrgCond) quoteConds.push(quoteOrgCond);
+
+  const docConds: SQL[] = [eq(contractDocuments.templateId, templateId)];
+  const docOrgCond = auth.orgCondition(contractDocuments.orgId);
+  if (docOrgCond) docConds.push(docOrgCond);
+
+  const [quoteRow] = await db
+    .select({ n: sql<number>`count(distinct ${quoteBlocks.quoteId})::int` })
+    .from(quoteBlocks)
+    .where(and(...quoteConds));
+  const [docRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(contractDocuments)
+    .where(and(...docConds));
+
+  return { quoteCount: quoteRow?.n ?? 0, signedCount: docRow?.n ?? 0 };
 }
 
 // ---------------------------------------------------------------------------

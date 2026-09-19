@@ -42,7 +42,9 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     select: vi.fn(() => ({
       from: (table: unknown) => new SelectQuery(table),
     })),
-    execute: vi.fn(async (_query?: { strings?: TemplateStringsArray; values?: unknown[] }) => [{ id: '99999999-9999-4999-8999-999999999999' }]),
+    execute: vi.fn(async (_query?: { strings?: TemplateStringsArray; values?: unknown[] }) => [
+      { id: '99999999-9999-4999-8999-999999999999', created: true },
+    ]),
   };
 
   return { dbMock, state, tables };
@@ -92,7 +94,12 @@ describe('alert correlation group materializer', () => {
       alertIds: [ALERT_1, ALERT_2, ALERT_3],
     });
 
-    expect(result).toEqual({ scanned: 2, groupsWritten: 1, membersWritten: 2 });
+    expect(result).toEqual({
+      scanned: 2,
+      groupsWritten: 1,
+      membersWritten: 2,
+      createdGroupIds: ['99999999-9999-4999-8999-999999999999'],
+    });
     expect(dbMock.execute).toHaveBeenCalledTimes(3);
     expect(JSON.stringify(dbMock.execute.mock.calls)).toContain('ON CONFLICT');
   });
@@ -114,7 +121,12 @@ describe('alert correlation group materializer', () => {
       alertIds: [ALERT_1, ALERT_2, ALERT_4],
     });
 
-    expect(result).toEqual({ scanned: 3, groupsWritten: 1, membersWritten: 3 });
+    expect(result).toEqual({
+      scanned: 3,
+      groupsWritten: 1,
+      membersWritten: 3,
+      createdGroupIds: ['99999999-9999-4999-8999-999999999999'],
+    });
     // The group upsert is the first execute call; its bound values carry noiseReductionPercent.
     const groupInsert = dbMock.execute.mock.calls.find((call) =>
       JSON.stringify(call[0]?.strings ?? []).includes('noise_reduction_percent')
@@ -168,7 +180,45 @@ describe('alert correlation group materializer', () => {
       alertIds: [ALERT_1],
     });
 
-    expect(result).toEqual({ scanned: 1, groupsWritten: 0, membersWritten: 0 });
+    expect(result).toEqual({ scanned: 1, groupsWritten: 0, membersWritten: 0, createdGroupIds: [] });
     expect(dbMock.execute).not.toHaveBeenCalled();
+  });
+
+  it('reports newly created group ids (xmax = 0) and not re-upserted ones', async () => {
+    // Two disjoint correlated pairs => two separate components => two upsertGroup
+    // calls. The mock resolves the first alert_correlation_groups upsert as newly
+    // created (xmax = 0) and the second as a re-upsert of an existing row.
+    const ALERT_4 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    state.alerts = [
+      { id: ALERT_1, orgId: ORG_1, deviceId: 'device-1', ruleId: 'rule-1', status: 'active', severity: 'critical', title: 'CPU high', triggeredAt: new Date('2026-06-18T12:00:00Z'), createdAt: new Date('2026-06-18T12:00:00Z') },
+      { id: ALERT_2, orgId: ORG_1, deviceId: 'device-1', ruleId: 'rule-2', status: 'active', severity: 'high', title: 'Memory high', triggeredAt: new Date('2026-06-18T12:01:00Z'), createdAt: new Date('2026-06-18T12:01:00Z') },
+      { id: ALERT_3, orgId: ORG_1, deviceId: 'device-2', ruleId: 'rule-3', status: 'active', severity: 'medium', title: 'Disk high', triggeredAt: new Date('2026-06-18T12:02:00Z'), createdAt: new Date('2026-06-18T12:02:00Z') },
+      { id: ALERT_4, orgId: ORG_1, deviceId: 'device-2', ruleId: 'rule-4', status: 'active', severity: 'low', title: 'Network high', triggeredAt: new Date('2026-06-18T12:03:00Z'), createdAt: new Date('2026-06-18T12:03:00Z') },
+    ];
+    state.correlations = [
+      { parentAlertId: ALERT_1, childAlertId: ALERT_2, correlationType: 'same_device_temporal', confidence: '0.9', createdAt: new Date('2026-06-18T12:03:00Z') },
+      { parentAlertId: ALERT_3, childAlertId: ALERT_4, correlationType: 'same_device_temporal', confidence: '0.9', createdAt: new Date('2026-06-18T12:04:00Z') },
+    ];
+
+    let groupUpsertCalls = 0;
+    dbMock.execute.mockImplementation(async (query?: { strings?: TemplateStringsArray }) => {
+      const text = (query?.strings ?? []).join('');
+      if (text.includes('alert_correlation_groups')) {
+        groupUpsertCalls += 1;
+        return groupUpsertCalls === 1
+          ? [{ id: 'g1', created: true }]
+          : [{ id: 'g2', created: false }];
+      }
+      // Member upserts don't use RETURNING; the shape is irrelevant beyond `created`
+      // being present so this branch matches the mock's inferred execute() signature.
+      return [{ id: 'member-row', created: false }];
+    });
+
+    const r = await persistAlertCorrelationGroupsForAlerts({
+      orgId: ORG_1,
+      alertIds: [ALERT_1, ALERT_2, ALERT_3, ALERT_4],
+    });
+
+    expect(r.createdGroupIds).toEqual(['g1']);
   });
 });

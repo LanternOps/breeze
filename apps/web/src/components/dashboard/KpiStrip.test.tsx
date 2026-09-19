@@ -39,9 +39,20 @@ const patchData: PatchCompliance = {
   totalDevices: 42,
   compliantDevices: 38,
   criticalSummary: { total: 5, patched: 4, pending: 1 },
+  importantSummary: { total: 0, patched: 0, pending: 0 },
+  unratedSummary: { total: 0, patched: 0, pending: 0 },
 };
 
 describe('KpiStrip', () => {
+  it('omits alert links and load-failure copy when alert summary is denied', () => {
+    render(<KpiStrip devices={loaded(deviceStats)} alerts={unavailable<AlertsSummary>()} tickets={unavailable<TicketStats>()} patch={unavailable<PatchCompliance>()} onRetry={() => {}} />);
+    for (const id of ['dashboard-critical-card', 'dashboard-warnings-card']) {
+      const tile = screen.getByTestId(id);
+      expect(tile).toHaveTextContent('—');
+      expect(tile).not.toHaveAttribute('href');
+      expect(tile).not.toHaveTextContent('dashboard.stats.loadFailed');
+    }
+  });
   it('renders all six tiles with accurate values when every source is available', () => {
     render(
       <KpiStrip

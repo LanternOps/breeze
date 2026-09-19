@@ -8,6 +8,7 @@ import { conditionPayloadsFrom, evaluateConditions, retiredConditionTypeError } 
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 import {
   listAlertRulesSchema,
   createAlertRuleSchema,
@@ -421,7 +422,8 @@ rulesRoutes.post(
     if (!isPartnerWide) {
       const createNotificationBindingError = await validateAlertRuleNotificationBindings(
         owner.orgId!,
-        getOverrides(baseOverrides)
+        getOverrides(baseOverrides),
+        auth.scope
       );
       if (createNotificationBindingError) {
         return c.json({ error: createNotificationBindingError }, 400);
@@ -504,6 +506,13 @@ rulesRoutes.put(
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
       return c.json({ error: 'Alert rule not found' }, 404);
+    }
+
+    // #5289 — a rule compiled from a monitor definition must be edited only
+    // by the compiler; a side edit here would silently drift from the
+    // definition until the next compile pass overwrote it.
+    if (rule.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'alert_rules', rule.managedByMonitorId);
     }
 
     // Partner-wide rules are READABLE by any member of the partner but
@@ -624,7 +633,8 @@ rulesRoutes.put(
       }
       const updateNotificationBindingError = await validateAlertRuleNotificationBindings(
         rule.orgId!,
-        getOverrides(baseOverrides)
+        getOverrides(baseOverrides),
+        auth.scope
       );
       if (updateNotificationBindingError) {
         return c.json({ error: updateNotificationBindingError }, 400);
@@ -730,6 +740,11 @@ rulesRoutes.delete(
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
       return c.json({ error: 'Alert rule not found' }, 404);
+    }
+
+    // #5289 — see the guard in PUT above.
+    if (rule.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'alert_rules', rule.managedByMonitorId);
     }
 
     // Same partner-wide administration gate as PUT (#2128).

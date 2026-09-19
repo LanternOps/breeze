@@ -1,15 +1,18 @@
 import '@/lib/i18n';
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DiscoveredAssetList, { mapAsset, toDetail, type ApiDiscoveryAsset } from './DiscoveredAssetList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const navigateMock = vi.mocked(navigateTo);
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const jsonResponse = (payload: unknown, ok = true): Response =>
@@ -121,7 +124,9 @@ describe('DiscoveredAssetList — "Same device as" badge (#3261)', () => {
     // the same row (one hidden via CSS, not the DOM) — assert on the first.
     const badges = await screen.findAllByTestId('discovered-asset-same-device-badge');
     expect(badges.length).toBeGreaterThan(0);
-    expect(badges[0]).toHaveTextContent('Same device as WS-FRONTDESK');
+    expect(badges[0]).toHaveTextContent(/^Agent$/);
+    expect(badges[0]).not.toHaveTextContent('Same device as');
+    expect(badges[0]!.getAttribute('title')).toBe('WS-FRONTDESK');
     expect(badges[0]!.getAttribute('href')).toBe('/devices/dev-1');
   });
 
@@ -156,4 +161,75 @@ describe('DiscoveredAssetList — "Same device as" badge (#3261)', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(fetchMock.mock.calls.some(([url]) => url === '/devices')).toBe(false);
   });
+});
+
+
+
+describe('DiscoveredAssetList — settings hand-off and hook-routed triage (W04)', () => {
+  const listAsset: ApiDiscoveryAsset = {
+    ...apiAsset,
+    id: 'asset-7',
+    approvalStatus: 'pending',
+  };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    navigateMock.mockReset();
+    fetchMock.mockResolvedValue(jsonResponse({ data: [listAsset] }));
+  });
+
+  it('opens the device page on the Monitoring section from the row action', async () => {
+    render(<DiscoveredAssetList />);
+    const button = (await screen.findAllByTestId('discovered-asset-settings-asset-7'))[0]!;
+
+    fireEvent.click(button);
+
+    expect(navigateMock).toHaveBeenCalledWith('/devices/network/asset-7#overview/settings/monitoring');
+  });
+
+  it('does not open the peek modal when the settings action is clicked', async () => {
+    render(<DiscoveredAssetList />);
+    fireEvent.click((await screen.findAllByTestId('discovered-asset-settings-asset-7'))[0]!);
+
+    expect(screen.queryByTestId('asset-modal-open-device-page')).not.toBeInTheDocument();
+  });
+
+  it('approves through the mutation hook and refetches the list', async () => {
+    render(<DiscoveredAssetList />);
+    fireEvent.click((await screen.findAllByTestId('discovered-asset-approve-asset-7'))[0]!);
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url, init]) =>
+        url === '/discovery/assets/asset-7/approve' && (init as RequestInit)?.method === 'PATCH')).toBe(true),
+    );
+    // One list load on mount, the PATCH, then the reload.
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/discovery/assets').length).toBe(2),
+    );
+  });
+
+  it('dismisses through the mutation hook', async () => {
+    render(<DiscoveredAssetList />);
+    fireEvent.click((await screen.findAllByTestId('discovered-asset-dismiss-asset-7'))[0]!);
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url, init]) =>
+        url === '/discovery/assets/asset-7/dismiss' && (init as RequestInit)?.method === 'PATCH')).toBe(true),
+    );
+  });
+
+  it('still bulk-approves through the list-level endpoint (deliberately not the hook)', async () => {
+    render(<DiscoveredAssetList />);
+    fireEvent.click(await screen.findByLabelText('Select all visible assets'));
+    fireEvent.click(screen.getByRole('button', { name: /Approve selected/ }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => url === '/discovery/assets/bulk-approve')).toBe(true),
+    );
+  });
+});
+
+it('preserves API reachability through the list-to-peek transform', () => {
+  const reachability = { state: 'responding', source: 'snmp', observedAt: '2026-09-15T10:00:00Z', lastKnown: null } as const;
+  expect(toDetail(mapAsset({ ...apiAsset, reachability })).reachability).toEqual(reachability);
 });

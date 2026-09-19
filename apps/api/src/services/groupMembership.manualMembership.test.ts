@@ -10,9 +10,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSelect, mockInsert } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockSchedulePeripheralPolicyDevice } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job'),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
 
 vi.mock('../db', () => ({
@@ -189,6 +194,7 @@ describe('addManualGroupMemberships', () => {
     expect(insertedRows[0]).toEqual([
       { deviceId: D2, groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D2, 'manual_membership_changed');
   });
 
   it('does nothing for an empty deviceIds list', async () => {
@@ -219,5 +225,25 @@ describe('addManualGroupMemberships', () => {
     expect(insertedRows[0]).toEqual([
       { deviceId: D1, groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D1, 'manual_membership_changed');
+  });
+});
+
+describe('explicit membership executor', () => {
+  it('validates and inserts on the supplied savepoint without ambient queries', async () => {
+    const tx = {
+      select: vi.fn()
+        .mockReturnValueOnce(whereChain([{ id: D1, orgId: ORG_ID, siteId: SITE_ID }]))
+        .mockReturnValueOnce(whereChain([])),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      update: vi.fn(), delete: vi.fn(),
+    };
+    const executor = tx as unknown as NonNullable<Parameters<typeof addManualGroupMemberships>[1]>;
+    expect(await validateManualMembershipDevices({ deviceIds: [D1], orgId: ORG_ID, siteId: SITE_ID }, executor)).toEqual({ ok: true });
+    expect(await addManualGroupMemberships({ deviceIds: [D1], orgId: ORG_ID, groupId: GROUP_ID }, executor)).toEqual({ added: [D1], skipped: 0 });
+    expect(tx.select).toHaveBeenCalledTimes(2);
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

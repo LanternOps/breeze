@@ -4,24 +4,30 @@ import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
 import ContextScopeLine from '../components/layout/ContextScopeLine';
 import MigrationRequiredBanner from '../components/devices/MigrationRequiredBanner';
+import TrustProbationBanner from '../components/trust/TrustProbationBanner';
+import MfaEnrollmentGraceBanner from '../components/auth/MfaEnrollmentGraceBanner';
+import MfaPolicyOffBanner from '../components/auth/MfaPolicyOffBanner';
 import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
 import HelpPanel from '../components/help/HelpPanel';
+import GlobalShortcuts from '../components/layout/GlobalShortcuts';
 import OnboardingTour from '../components/onboarding/OnboardingTour';
 import ToastContainer from '../components/shared/Toast';
 import WhatsNewSplash from '../components/whatsNew/WhatsNewSplash';
 
 interface Props {
-  title: string;
+  title?: string;
+  titleKey?: string;
 }
 
-const { title } = Astro.props;
+const { title, titleKey } = Astro.props;
 const currentPath = Astro.url.pathname;
 
 // Domain-specific accent color for wayfinding — thin 2px bar at top of content area
 const getAccentClass = (path: string): string => {
+  if (path.startsWith('/organizations')) return 'bg-primary';
   if (path.startsWith('/devices') || path.startsWith('/fleet') || path.startsWith('/remote')) return 'bg-primary';
   if (path.startsWith('/security') || path.startsWith('/cis-hardening') || path.startsWith('/audit-baselines') || path.startsWith('/sensitive-data') || path.startsWith('/ai-risk')) return 'bg-warning';
   if (path.startsWith('/alerts')) return 'bg-destructive';
@@ -37,7 +43,7 @@ const getAccentClass = (path: string): string => {
 const accentClass = getAccentClass(currentPath);
 ---
 
-<Layout title={title}>
+<Layout title={title} titleKey={titleKey}>
   <AuthOverlay client:load transition:persist />
   <AccountInactiveGuard client:load transition:persist />
   <AdminSessionManager client:load transition:persist />
@@ -50,6 +56,12 @@ const accentClass = getAccentClass(currentPath);
         {/* Registry-driven page-scope statement — mounted here so every page
             gets it and none can forget it (see routeScope.ts). */}
         <ContextScopeLine client:load />
+        <TrustProbationBanner client:load transition:persist />
+        <MfaEnrollmentGraceBanner client:load transition:persist />
+        {/* Partner policy-managers whose partner does not require MFA (spec
+            2026-09-18 D4). Per-day dismissible; clears itself once the
+            setting is saved on. */}
+        <MfaPolicyOffBanner client:load transition:persist />
         {/* Persistent self-host agent-migration notice — mounted here so it
             shows on every authenticated page (see MigrationRequiredBanner). */}
         <MigrationRequiredBanner client:load />
@@ -59,6 +71,9 @@ const accentClass = getAccentClass(currentPath);
   </div>
   <AiChatSidebar client:load transition:persist />
   <HelpPanel client:load transition:persist />
+  {/* Keyboard shortcuts (g-chords, /, ?, [), the recents recorder and the
+      shortcuts cheat sheet — see GlobalShortcuts.tsx. */}
+  <GlobalShortcuts client:load transition:persist />
   <ToastContainer client:load transition:persist />
   <WhatsNewSplash client:load transition:persist />
   <OnboardingTour client:idle />

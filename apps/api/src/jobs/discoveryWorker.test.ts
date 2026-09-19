@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import type { DispatchOutcome } from '../services/agentCommandRelay';
 
 const { mockDb } = vi.hoisted(() => ({
   mockDb: {
@@ -23,7 +24,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  discoveryProfiles: {},
+  discoveryProfiles: { id: 'discoveryProfiles.id' },
   discoveryJobs: { id: 'discoveryJobs.id' },
   discoveredAssets: {
     id: 'discoveredAssets.id',
@@ -56,7 +57,10 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
-    deviceRoleSource: 'devices.deviceRoleSource'
+    deviceRoleSource: 'devices.deviceRoleSource',
+    agentId: 'devices.agentId',
+    status: 'devices.status',
+    isEphemeral: 'devices.isEphemeral'
   },
   deviceNetwork: {
     deviceId: 'deviceNetwork.deviceId',
@@ -76,12 +80,16 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(),
-  isAgentConnected: vi.fn()
+const agentRelayMock = {
+  isAgentConnectedAnywhere: vi.fn(async () => true),
+  dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
+};
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
-vi.mock('../services/automationRuntime', () => ({
+vi.mock('../services/cronDue', () => ({
   isCronDue: vi.fn()
 }));
 
@@ -101,11 +109,11 @@ vi.mock('./networkBaselineWorker', () => ({
 
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
-import { inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { inferAssetTypeFromVendor, lookupMacVendor } from '../services/macVendorLookup';
 import { devices, discoveredAssets } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
-const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
+const { cleanupSpeculativeTopologyLinks, processResults, buildScanUpdateSet, __testables } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
 
 // Helper: build a chainable Drizzle-like mock that resolves to resolveValue
 // when awaited directly (thenable) or via .limit() / .returning().
@@ -220,6 +228,14 @@ function detectedTypeSourceCaseParams(source: string, writerRank: number): unkno
     'discoveredAssets.detectedTypeSource',
   ];
 }
+
+describe('buildScanUpdateSet', () => {
+  it('stamps status provenance on every scan sighting (spec §4.3)', () => {
+    const set = buildScanUpdateSet({ isOnline: true, lastSeenAt: new Date() }, null) as Record<string, unknown>;
+    expect(set.statusSource).toBe('scan');
+    expect(set.statusObservedAt).toBeInstanceOf(Date);
+  });
+});
 
 describe('processResults — type_source', () => {
   let capturedUpdateSet: Record<string, unknown> | null;
@@ -378,6 +394,58 @@ describe('processResults — type_source', () => {
     expect(capturedInsertValues!.detectedAssetType).toBe('server');
   });
 
+  describe('SNMP identity ingest wiring', () => {
+    const sysObjectId = '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1';
+    const xeroxHost: DiscoveredHostResult = {
+      ip: '192.168.1.53',
+      mac: 'aa:bb:cc:11:22:33',
+      assetType: 'printer',
+      model: sysObjectId,
+      methods: ['snmp'],
+      snmpData: {
+        sysObjectId,
+        sysDescr: 'Xerox(R) C325 Color MFP; SS CXTGV.230.096, kernel 5.4.254-yocto-standard, All-N-1',
+      },
+    };
+
+    beforeEach(() => {
+      vi.mocked(lookupMacVendor).mockReturnValue('LEXMARK INTERNATIONAL, INC.');
+    });
+
+    it('inserts Xerox identity from SNMP instead of the NIC vendor or raw OID', async () => {
+      selectQueue = [...baseSelectQueue(), [], []];
+
+      await processResults(makeData([xeroxHost]));
+
+      expect(lookupMacVendor).toHaveBeenCalledWith(xeroxHost.mac);
+      expect(capturedInsertValues).not.toBeNull();
+      expect.soft(capturedInsertValues!.manufacturer).toBe('Xerox');
+      expect.soft(capturedInsertValues!.model).toBe('Xerox(R) C325 Color MFP');
+    });
+
+    it('binds resolved Xerox identity into the UPDATE manual guards without the raw OID', async () => {
+      selectQueue = [
+        ...baseSelectQueue(),
+        [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }],
+        [{ linkedDeviceId: null }],
+        [],
+      ];
+
+      await processResults(makeData([xeroxHost]));
+
+      expect(lookupMacVendor).toHaveBeenCalledWith(xeroxHost.mac);
+      expect(capturedUpdateSet).not.toBeNull();
+      const manufacturer = renderSqlQuery(capturedUpdateSet!.manufacturer);
+      const model = renderSqlQuery(capturedUpdateSet!.model);
+      expect(manufacturer.sql).toContain('case when');
+      expect(model.sql).toContain('case when');
+      expect.soft(manufacturer.params).toContain('Xerox');
+      expect.soft(model.params).toContain('Xerox(R) C325 Color MFP');
+      expect.soft(manufacturer.params).not.toContain(sysObjectId);
+      expect.soft(model.params).not.toContain(sysObjectId);
+    });
+  });
+
   it('guards the device_role propagation on a manual asset type in SQL, not in JS', async () => {
     // The manual check used to be a JS decision made from the pre-read row. It
     // now rides in the statement's WHERE clause, because `type_source` can be
@@ -417,10 +485,13 @@ describe('processResults — type_source', () => {
     const where = renderSqlQuery(roleUpdate!.where);
     // Reads the ASSET's type_source, not the stale pre-read value.
     expect(where.params).toContain('discoveredAssets.typeSource');
-    // ...and the device's own manual role is protected too, with IS DISTINCT
-    // FROM so a NULL device_role_source (never set) still counts as non-manual.
+    // ...and the device's own manual role is protected too — and so is an
+    // 'ai' role a technician approved from a Fleet Design (W03 #5653). The
+    // COALESCE keeps a NULL device_role_source (never set) counting as
+    // non-manual, as the old IS DISTINCT FROM did.
     expect(where.params).toContain('devices.deviceRoleSource');
-    expect(where.sql).toContain(`is distinct from 'manual'`);
+    expect(where.sql).toContain(`not in ('manual', 'ai')`);
+    expect(where.sql).toContain(`coalesce(`);
   });
 
   it('does not auto-link a same-MAC/private-IP device from a sibling site', async () => {
@@ -798,5 +869,88 @@ describe('cleanupSpeculativeTopologyLinks', () => {
 
     expect(deleted).toBe(2);
     expect(vi.mocked(db.delete)).toHaveBeenCalledWith(expect.anything());
+  });
+});
+
+describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => {
+  // Requested-agent path: profile select, then validateRequestedAgentForDiscovery's
+  // devices select. Supplying data.agentId means the `if (!agentId)` site-auto
+  // devices lookup never runs, keeping the select queue to exactly these two.
+  const DATA = {
+    type: 'dispatch-scan' as const,
+    jobId: 'job-1',
+    profileId: 'profile-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    agentId: 'agent-1',
+  };
+  const PROFILE_ROW = { id: 'profile-1' };
+  const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
+
+  let selectQueue: unknown[][];
+  let selectCallIndex: number;
+  let updateLog: Array<{ payload: Record<string, unknown> }>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectQueue = [[PROFILE_ROW], [VALID_AGENT_ROW]];
+    selectCallIndex = 0;
+    updateLog = [];
+
+    vi.mocked(mockDb.select).mockImplementation(() =>
+      makeSelectChain(selectQueue[selectCallIndex++] ?? [])
+    );
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (payload: Record<string, unknown>) => {
+        updateLog.push({ payload });
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('marks the job failed with "No online agent available for this site" (byte-identical to today) when no agent is connected anywhere, without calling dispatch', async () => {
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: null, durationMs: expect.any(Number) });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => (u.payload.errors as { message: string } | undefined)?.message === 'No online agent available for this site')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('flips the job to running when the outcome is sent', async () => {
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: true, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => u.payload.status === 'running')).toBe(true);
+  });
+
+  it('marks the job failed with "Failed to send command to agent" (today\'s message) when the outcome is offline', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => (u.payload.errors as { message: string } | undefined)?.message === 'Failed to send command to agent')).toBe(true);
+  });
+
+  it('marks the job failed naming the outcome when indeterminate', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => {
+      const message = (u.payload.errors as { message?: string } | undefined)?.message;
+      return typeof message === 'string' && /dispatch outcome indeterminate/i.test(message);
+    })).toBe(true);
   });
 });

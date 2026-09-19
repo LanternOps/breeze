@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -24,7 +24,7 @@ import {
   deviceGroupMemberships,
   configPolicyAssignments,
   configurationPolicies,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyEventLogSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -54,20 +54,34 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
-import { policyOwnershipCondition, withPartnerWideVisibility } from '../../services/configPolicyOwnership';
+import {
+  resolvePatchConfigForDevice,
+  buildRoleOsFilterConditions,
+  matchesRoleOsFilter,
+} from '../../services/featureConfigResolver';
+import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
+import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
+import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
+import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
-import { isAlwaysMaintenanceWindow, parseMaintenanceWindow, normalizeVersionPin } from '@breeze/shared';
+import {
+  isAlwaysMaintenanceWindow,
+  parseMaintenanceWindow,
+  resolveInheritedAgentVersionPins,
+} from '@breeze/shared';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -290,50 +304,22 @@ export function inferPatchOsType(source: string, deviceOs: unknown): 'windows' |
 }
 
 // ============================================
-// Version Comparison
+// Version Comparison / artifact-edition compatibility
 // ============================================
-
-export function parseComparableVersion(raw: string): { core: number[]; prerelease: string | null } | null {
-  const trimmed = raw.trim().replace(/^v/i, '');
-  if (!trimmed) return null;
-
-  const [rawCorePart, prereleasePart] = trimmed.split('-', 2);
-  const corePart = rawCorePart ?? '';
-  if (!corePart) return null;
-  const coreTokens = corePart.split('.');
-  if (coreTokens.length === 0) return null;
-
-  const core: number[] = [];
-  for (const token of coreTokens) {
-    if (!/^\d+$/.test(token)) return null;
-    core.push(Number.parseInt(token, 10));
-  }
-
-  return {
-    core,
-    prerelease: prereleasePart ?? null,
-  };
-}
-
-export function compareAgentVersions(leftRaw: string, rightRaw: string): number {
-  const left = parseComparableVersion(leftRaw);
-  const right = parseComparableVersion(rightRaw);
-  if (!left || !right) return 0;
-
-  const maxLen = Math.max(left.core.length, right.core.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    const leftPart = left.core[i] ?? 0;
-    const rightPart = right.core[i] ?? 0;
-    if (leftPart !== rightPart) {
-      return leftPart > rightPart ? 1 : -1;
-    }
-  }
-
-  if (left.prerelease === right.prerelease) return 0;
-  if (!left.prerelease) return 1;
-  if (!right.prerelease) return -1;
-  return left.prerelease.localeCompare(right.prerelease);
-}
+//
+// Moved to services/agentEditionCompat.ts (#4093) so the DISPATCH path
+// (services/commandQueue.ts) can gate on the same predicate the heartbeat
+// offer path uses. This module imports services/commandQueue, so a direct
+// import in the other direction would be a cycle. Re-exported here: every
+// existing import site (and the suites that mock `./helpers`) keeps working.
+export {
+  parseComparableVersion,
+  compareAgentVersions,
+  AGENT_EDITION_CHECK_INTRODUCED,
+  agentAcceptsServedEdition,
+  editionWithheldDetail,
+  type EditionWithheldContext,
+} from '../../services/agentEditionCompat';
 
 // ============================================
 // Policy Probe Processing
@@ -1192,27 +1178,32 @@ export async function handleCisCommandResult(
       return;
     }
 
-    // Resolve the baseline in a SYSTEM context. This handler runs inside the
-    // agent's ORG-scoped RLS context, where breeze_current_partner_id() is
-    // NULL — so a partner-wide baseline (org_id NULL) is invisible and this
-    // lookup would return nothing. Both callers swallow the error, so the
-    // failure mode is every scheduled scan result silently discarded with
-    // only a log line. The read is by primary key and the result is
-    // immediately re-checked against the device's own org below.
-    const [baseline] = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        db
-          .select({
-            id: cisBaselines.id,
-            orgId: cisBaselines.orgId,
-            partnerId: cisBaselines.partnerId,
-            name: cisBaselines.name,
-          })
-          .from(cisBaselines)
-          .where(eq(cisBaselines.id, baselineId))
-          .limit(1)
-      )
-    );
+    // Resolve the baseline in the AGENT'S OWN context (#4673 W03).
+    //
+    // This read used to escape to a system context because the agent's
+    // ORG-scoped RLS context had breeze_current_partner_id() NULL, making a
+    // partner-wide baseline (org_id NULL) invisible. W02 populates that GUC
+    // from the device org's partner, and `cis_baselines_partner_wide_select`
+    // (2026-08-10-cis-baselines-partner-ownership.sql) grants exactly the
+    // SELECT branch this needs — so the escape is now dead weight: a second
+    // pooled connection and a full RLS bypass for a by-primary-key read.
+    //
+    // This is a deliberate TIGHTENING. The escaped read returned EVERY
+    // tenant's baselines and leaned on the org/partner re-check below; under
+    // the agent's own context a foreign tenant's baseline now reads as absent
+    // and takes the same "not found" branch. Both callers swallow that, so a
+    // miss is a discarded scan result plus a log line, never a wrong-tenant
+    // write. The re-check below stays as defense in depth.
+    const [baseline] = await db
+      .select({
+        id: cisBaselines.id,
+        orgId: cisBaselines.orgId,
+        partnerId: cisBaselines.partnerId,
+        name: cisBaselines.name,
+      })
+      .from(cisBaselines)
+      .where(eq(cisBaselines.id, baselineId))
+      .limit(1);
 
     if (!baseline) {
       console.warn(`[agents/helpers] cis_benchmark command ${command.id}: baseline ${baselineId} not found`);
@@ -1799,7 +1790,12 @@ const LEVEL_PRIORITY: Record<string, number> = {
 async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -1838,42 +1834,48 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
   }
 
   // 5. Single query: assignments → active policies → event_log feature link → settings
-  const rows = await withPartnerWideVisibility(() =>
-    db
-      .select({
-        level: configPolicyAssignments.level,
-        assignmentPriority: configPolicyAssignments.priority,
-        retentionDays: configPolicyEventLogSettings.retentionDays,
-        maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
-        collectCategories: configPolicyEventLogSettings.collectCategories,
-        minimumLevel: configPolicyEventLogSettings.minimumLevel,
-        collectionIntervalMinutes: configPolicyEventLogSettings.collectionIntervalMinutes,
-        rateLimitPerHour: configPolicyEventLogSettings.rateLimitPerHour,
-      })
-      .from(configPolicyAssignments)
-      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-      .innerJoin(configPolicyFeatureLinks, and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'event_log'),
-      ))
-      .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
-      .where(and(
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
-        or(...targetConditions),
-      ))
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+      retentionDays: configPolicyEventLogSettings.retentionDays,
+      maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
+      collectCategories: configPolicyEventLogSettings.collectCategories,
+      minimumLevel: configPolicyEventLogSettings.minimumLevel,
+      collectionIntervalMinutes: configPolicyEventLogSettings.collectionIntervalMinutes,
+      rateLimitPerHour: configPolicyEventLogSettings.rateLimitPerHour,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'event_log'),
+    ))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
+    ));
+
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
 
-  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return EVENT_LOG_DEFAULTS;
   return {
     retentionDays: winner.retentionDays,
@@ -1944,29 +1946,91 @@ export async function buildEventLogConfigUpdate(deviceId: string): Promise<{
 }
 
 /**
- * Org-level retention lookup for the retention worker.
- * Returns the retention days from the highest-priority org-level event_log policy,
- * or 30 days if none is configured.
+ * Org-scoped retention lookup for the event-log retention worker.
+ *
+ * Resolves the winning event_log policy for an org across BOTH assignment levels
+ * that can reach it — its own `level='organization'` assignment and its
+ * partner's `level='partner'` assignment — with the closer (org) level winning,
+ * matching `resolveDeviceEventLogSettings`'s precedence. Falls back to
+ * `EVENT_LOG_DEFAULTS.retentionDays` when no active policy applies.
+ *
+ * Before #3963 this filtered on `level='organization'` alone, so an MSP that set
+ * fleet-wide retention with one partner-wide policy silently got the 30-day
+ * default on every org — no error, no log line, because a partner-wide row is
+ * `org_id NULL` and an org-axis-only predicate returns zero rows rather than
+ * failing (CLAUDE.md, "Partner-Wide First"). Same shape as #3954/#3962.
+ *
+ * Two axes are in play and both had to be fixed:
+ *  - ASSIGNMENT: `config_policy_assignments.targetId` is polymorphic, so a
+ *    `level='partner'` row targets `partners.id` and can never equal an org id.
+ *  - OWNERSHIP: a partner-wide policy carries `org_id NULL` + `partner_id`, so
+ *    `policyOwnershipCondition` (#2930) is needed to admit it.
+ *
+ * RLS: the caller must be able to see partner-owned rows. Under a system context
+ * every branch short-circuits true; under an org-scoped context the
+ * `configuration_policies_partner_wide_select` branch (#4673 W01) grants it, but
+ * only when the context carries `currentPartnerId`.
  */
 export async function getOrgEventLogRetentionDays(orgId: string): Promise<number> {
-  const [row] = await db
-    .select({ retentionDays: configPolicyEventLogSettings.retentionDays })
-    .from(configPolicyAssignments)
-    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'event_log'),
-    ))
-    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
-    .where(and(
-      eq(configPolicyAssignments.level, 'organization'),
-      eq(configPolicyAssignments.targetId, orgId),
-      eq(configurationPolicies.status, 'active'),
-    ))
-    .orderBy(configPolicyAssignments.priority)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
     .limit(1);
 
-  return row?.retentionDays ?? 30;
+  // Not reachable by the schema (`organizations.partner_id` is NOT NULL and the
+  // caller read this org id out of `organizations` moments earlier), so an empty
+  // result means the invariant broke. Say it out loud: falling through quietly
+  // would silently resolve org-only — the exact #3963 failure, one join upstream
+  // — and this decides how long a customer's event logs are kept.
+  if (!org) {
+    console.error(
+      `[eventlog] organizations row missing for org ${orgId}; partner-wide retention policies cannot apply, falling back to org-level resolution`
+    );
+    captureException(new Error(`eventLogRetention: organizations row missing for org ${orgId}`));
+  }
+
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, orgId))!,
+  ];
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      retentionDays: configPolicyEventLogSettings.retentionDays,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'event_log'),
+    ))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      policyOwnershipCondition({ orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return EVENT_LOG_DEFAULTS.retentionDays;
+
+  // Same precedence as resolveDeviceEventLogSettings: level priority DESC
+  // (organization beats partner), then assignment priority ASC — which is what
+  // the previous single-level `.orderBy(priority).limit(1)` did, so the
+  // org-only case is unchanged.
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  return rows[0]!.retentionDays;
 }
 
 // ============================================
@@ -1991,10 +2055,199 @@ export interface MonitoringConfigUpdate {
   watches: MonitoringWatchConfig[];
 }
 
+/**
+ * The defaults `config_policy_monitoring_watches` itself carries, so a
+ * monitor-derived watch and a policy-tab watch for the same service are
+ * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ */
+const MONITOR_WATCH_DEFAULTS = {
+  maxRestartAttempts: 3,
+  restartCooldownSeconds: 300,
+  alertAfterConsecutiveFailures: 2,
+} as const;
+
+/** `check_interval_seconds` when monitors deliver watches but no policy resolved. */
+const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
+
+/**
+ * Service/process watches derived from the device's EFFECTIVE MONITOR SET
+ * (#5287 W04). W02 made `service` and `process` monitors first-class authoring
+ * objects but nothing delivered them; this is that delivery.
+ *
+ * Runs in the CALLER'S OWN DB CONTEXT. `monitor_definitions_partner_wide_select`
+ * (W02) is what lets a partner-wide monitor's definition be read on the agent
+ * path, because middleware/agentAuth sets `breeze.current_partner_id`. Wrapping
+ * this in a system context would be the forbidden request-path escalation
+ * (#2417) and would double-hold a pooled connection (#1105).
+ *
+ * Discriminated so a device that vanished mid-request (raced a delete/org
+ * move) is never folded into "resolved with zero monitor-derived watches" —
+ * see the `resolveDeviceMonitoringSettings` caller (#5677).
+ */
+type MonitorDerivedWatchesResult =
+  | { kind: 'device_missing' }
+  | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
+
+async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDerivedWatchesResult> {
+  const resolution = await resolveMonitorsForDevice(deviceId);
+  if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
+  const effective = resolution.monitors;
+  const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledIds.length === 0) return { kind: 'resolved', watches: [] };
+
+  const definitions = await db
+    .select({
+      id: monitorDefinitions.id,
+      kind: monitorDefinitions.kind,
+      condition: monitorDefinitions.condition,
+      responses: monitorDefinitions.responses,
+    })
+    .from(monitorDefinitions)
+    .where(and(
+      inArray(monitorDefinitions.id, enabledIds),
+      eq(monitorDefinitions.enabled, true),
+      inArray(monitorDefinitions.kind, ['service', 'process']),
+    ));
+
+  const overridesById = new Map(effective.map((m) => [m.monitorId, m.overrides]));
+  const watches: MonitoringWatchConfig[] = [];
+
+  for (const def of definitions) {
+    const spec = MONITOR_KIND_SPECS[def.kind];
+    if (!spec) continue;
+    let condition: Record<string, unknown>;
+    try {
+      condition = applyOverrides(spec, def.condition, overridesById.get(def.id) ?? null);
+    } catch (err) {
+      // An out-of-range override is an authoring bug on ONE monitor. Dropping
+      // that monitor is right; failing the whole heartbeat block would strand
+      // every other watch on the device. But it is NOT transient — it recurs on
+      // every heartbeat forever — so it must be visible: without this log the
+      // watch simply vanishes from the device's config with nothing anywhere
+      // to explain it. Mirrors monitorScriptWorker's handling of the same throw.
+      console.error('[monitoring] dropping monitor with an invalid override', {
+        monitorId: def.id,
+        deviceId,
+        error: err,
+      });
+      captureException(err);
+      continue;
+    }
+
+    const name = def.kind === 'service'
+      ? (condition.serviceName as string | undefined)
+      : (condition.processName as string | undefined);
+    if (!name) continue;
+
+    watches.push({
+      watch_type: def.kind === 'service' ? 'service' : 'process',
+      name,
+      alert_on_stop: true,
+      alert_after_consecutive_failures:
+        (condition.consecutiveFailures as number | undefined) ?? MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      // Spec §Responses: an execute_command response of kind 'restart_service'
+      // supersedes the agent-side flag, so the restart still happens locally
+      // and offline. A free-text `command` is NOT sniffed for intent — the
+      // explicit discriminator is the contract.
+      auto_restart: (def.responses ?? []).some(
+        (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+      ),
+      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    });
+  }
+
+  return { kind: 'resolved', watches };
+}
+
+/**
+ * Union monitor-derived watches with the policy tab's, keyed on
+ * (watch_type, lower(name)). The MONITOR wins every field except:
+ *  - `auto_restart`, which is OR'd — never lowered, because it drives the
+ *    agent's own offline-capable restart; and
+ *  - the process thresholds, which fall back to the policy row, because a
+ *    `service`/`process` monitor authors none (that is `process_resource`).
+ */
+function unionMonitoringWatches(
+  monitorWatches: MonitoringWatchConfig[],
+  policyWatches: MonitoringWatchConfig[],
+): MonitoringWatchConfig[] {
+  const key = (w: MonitoringWatchConfig) => `${w.watch_type}:${w.name.toLowerCase()}`;
+  const merged = new Map<string, MonitoringWatchConfig>();
+
+  for (const w of monitorWatches) merged.set(key(w), { ...w });
+
+  for (const p of policyWatches) {
+    const k = key(p);
+    const existing = merged.get(k);
+    if (!existing) {
+      merged.set(k, { ...p });
+      continue;
+    }
+    existing.auto_restart = existing.auto_restart || p.auto_restart;
+    if (existing.cpu_threshold_percent == null && p.cpu_threshold_percent != null) {
+      existing.cpu_threshold_percent = p.cpu_threshold_percent;
+    }
+    if (existing.memory_threshold_mb == null && p.memory_threshold_mb != null) {
+      existing.memory_threshold_mb = p.memory_threshold_mb;
+    }
+    if (existing.threshold_duration_seconds == null && p.threshold_duration_seconds != null) {
+      existing.threshold_duration_seconds = p.threshold_duration_seconds;
+    }
+  }
+
+  return [...merged.values()];
+}
+
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // Monitors are the primary source and win the union (#5287 W04); the policy
+  // tab is read FIRST only so its query sequence is untouched by this change —
+  // helpers.partnerWidePolicies.test.ts pins that sequence and must stay green
+  // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
+  // shape; the union below is order-independent.
+  const policy = await resolvePolicyMonitoringSettings(deviceId);
+  const monitorResult = await resolveMonitorDerivedWatches(deviceId);
+
+  // A device that vanished between authentication and here (raced a
+  // delete/org move) must NOT be folded into "resolved with zero
+  // monitor-derived watches": unioning `[]` into a truthy (possibly also
+  // empty) policy result would produce the #2949 "stop watching" clear
+  // signal for monitors this device still legitimately has, purely because
+  // of the race — not because resolution actually found zero (#5677). Omit
+  // the monitoring update entirely this heartbeat instead, same as
+  // `resolvePolicyMonitoringSettings` already does when its own device
+  // lookup misses.
+  if (monitorResult.kind === 'device_missing') {
+    // Surface this: the device just authenticated the heartbeat that reached
+    // this code, so a vanish between then and here should be rare. Silently
+    // omitting the monitoring update is the right behavior (see above), but
+    // silent AND invisible would hide a real bug (e.g. a stale deviceId)
+    // behind "just a benign race" forever (#5677 review).
+    console.warn(`[monitoring] device vanished mid-resolution, omitting monitoring update for device ${deviceId}`);
+    return null;
+  }
+  const monitorWatches = monitorResult.watches;
+
+  // Null ONLY when both sources are empty AND no policy resolved. A policy that
+  // resolved with zero enabled watches still returns `watches: []` below — that
+  // is the #2949 "stop watching" signal.
+  if (!policy && monitorWatches.length === 0) return null;
+
+  return {
+    check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
+    watches: unionMonitoringWatches(monitorWatches, policy?.watches ?? []),
+  };
+}
+
+async function resolvePolicyMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -2032,64 +2285,74 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     );
   }
 
-  // 5-7. Policy join + the winning row's watches, both under one partner-wide
-  // escape (#2930). The watches table's RLS walks settings_id → feature link →
-  // configuration_policies and needs breeze_has_partner_access for a
-  // partner-owned policy, so splitting the two reads across contexts would find
-  // the policy and then silently resolve zero watches (returning null here).
-  // Both reads are pinned to this device's own hierarchy.
-  const resolved = await withPartnerWideVisibility(async () => {
-    // 5. Single query: assignments → active policies → monitoring feature link → settings
-    const rows = await db
-      .select({
-        level: configPolicyAssignments.level,
-        assignmentPriority: configPolicyAssignments.priority,
-        settingsId: configPolicyMonitoringSettings.id,
-        checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
-      })
-      .from(configPolicyAssignments)
-      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-      .innerJoin(configPolicyFeatureLinks, and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'monitoring'),
-      ))
-      .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-      .where(and(
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
-        or(...targetConditions),
-      ));
+  // 5-7. Policy join + the winning row's watches, both in the CALLER'S OWN
+  // context (#4673 W03). config_policy_monitoring_watches' RLS walks
+  // settings_id → feature link → configuration_policies; for a partner-owned
+  // policy that chain used to need breeze_has_partner_access, which no agent or
+  // org context carries, so the read escaped to a system context. Wave 1's
+  // `config_policy_monitoring_watches_partner_wide_select` now grants exactly
+  // that chain on SELECT via breeze_current_partner_id(), and Wave 2 sets the
+  // GUC on agent contexts — so both reads resolve here without a second pooled
+  // connection. Both are pinned to this device's own hierarchy.
+  // 5. Single query: assignments → active policies → monitoring feature link → settings
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+      settingsId: configPolicyMonitoringSettings.id,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'monitoring'),
+    ))
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
+    ));
 
-    if (rows.length === 0) return null;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
 
-    // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-    rows.sort((a, b) => {
-      const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-      if (levelDiff !== 0) return levelDiff;
-      return a.assignmentPriority - b.assignmentPriority;
-    });
+  if (eligibleRows.length === 0) return null;
 
-    const winner = rows[0];
-    if (!winner) return null;
-
-    // 7. Load watches for the winning settings row
-    const watches = await db
-      .select()
-      .from(configPolicyMonitoringWatches)
-      .where(and(
-        eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
-        eq(configPolicyMonitoringWatches.enabled, true),
-      ))
-      .orderBy(configPolicyMonitoringWatches.sortOrder);
-
-    return { winner, watches };
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  eligibleRows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
   });
 
-  if (!resolved) return null;
-  const { winner, watches } = resolved;
+  const winner = eligibleRows[0];
+  if (!winner) return null;
 
-  if (watches.length === 0) return null;
+  // 7. Load watches for the winning settings row
+  const watches = await db
+    .select()
+    .from(configPolicyMonitoringWatches)
+    .where(and(
+      eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
+      eq(configPolicyMonitoringWatches.enabled, true),
+    ))
+    .orderBy(configPolicyMonitoringWatches.sortOrder);
 
+  // A winning policy row with zero enabled watches is a valid resolution — it
+  // means "clear whatever watches were previously delivered", not "no policy
+  // matched" (that case already returned null above at the empty-rows check).
+  // Collapsing both to null used to make heartbeat.ts omit monitoring_settings
+  // from the payload, so the agent (which handles an empty array fine — see
+  // agent/internal/monitoring/monitor.go ApplyConfig) could never be told to
+  // stop watching something it was configured to watch on a prior heartbeat
+  // (#2949).
   return {
     check_interval_seconds: winner.checkIntervalSeconds,
     watches: watches.map((w) => {
@@ -2260,20 +2523,13 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
     'maintenanceWindow' in partnerDefaults
       ? partnerDefaults.maintenanceWindow
       : orgDefaults.maintenanceWindow;
-  // Version pins: inherit-with-override, per component (issue #2124). An org-set
-  // component wins for that org; where the org has NOT set a component the partner
-  // default is inherited; unset at both levels → global promoted latest. Keyed by
-  // PRESENCE ('agent' in orgPins), NOT truthiness, so an org can store 'latest' to
-  // deliberately override a partner pin back to the global latest. Agent and
-  // watchdog are independent.
-  const orgPins = isObject(orgDefaults.agentVersionPins) ? orgDefaults.agentVersionPins : {};
-  const partnerPins = isObject(partnerDefaults.agentVersionPins)
-    ? partnerDefaults.agentVersionPins
-    : {};
-  const pins: AgentVersionPins = {
-    agent: normalizeVersionPin('agent' in orgPins ? orgPins.agent : partnerPins.agent),
-    watchdog: normalizeVersionPin('watchdog' in orgPins ? orgPins.watchdog : partnerPins.watchdog),
-  };
+  // Version pins: inherit-with-override, per component (issue #2124). Resolved
+  // via the shared `resolveInheritedAgentVersionPins` (packages/shared) — the
+  // SAME function `getOrgAgentVersionPinsBatch`
+  // (services/orgAgentVersionPins.ts, issue #5285) calls, so the two resolvers
+  // can never silently drift apart. See that function's docstring for the
+  // full precedence contract.
+  const pins: AgentVersionPins = resolveInheritedAgentVersionPins(orgDefaults, partnerDefaults);
 
   const policy = normalizeAgentUpdatePolicy(effectivePolicy);
   const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
@@ -2338,6 +2594,13 @@ export async function resolvePinnedUpgradeTarget(args: {
   const { component, platform, architecture, pin, agentId } = args;
 
   if (pin === null) {
+    // LOCKSTEP (#3499): this promoted-row query is duplicated by
+    // services/promotedAgentVersion.ts (which resolves the BYTES the download
+    // route serves) and by GET /agent-versions/latest (which serves the
+    // CHECKSUM). All three must use the same predicates and the same
+    // created_at tiebreak — if the version offered here is not the version
+    // whose bytes get served, agents are told to upgrade to something that
+    // fails checksum verification on arrival.
     const [latest] = await db
       .select({ version: agentVersions.version })
       .from(agentVersions)
@@ -2347,6 +2610,11 @@ export async function resolvePinnedUpgradeTarget(args: {
           eq(agentVersions.architecture, architecture),
           eq(agentVersions.component, component),
           eq(agentVersions.isLatest, true),
+          // Each server only serves its own build edition (#4072) — same
+          // scoping as the download/register/promote paths. Without this, a
+          // row registered for the OTHER edition could be resolved and
+          // offered, and the agent would hard-refuse it after download.
+          eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
@@ -2363,6 +2631,8 @@ export async function resolvePinnedUpgradeTarget(args: {
         eq(agentVersions.architecture, architecture),
         eq(agentVersions.component, component),
         eq(agentVersions.version, pin),
+        // Edition-scoped like the latest-promoted lookup above (#4072).
+        eq(agentVersions.edition, getBinaryEdition()),
       ),
     )
     .limit(1);
@@ -2376,7 +2646,9 @@ export async function resolvePinnedUpgradeTarget(args: {
     // version) so a persistent misconfig captures ONCE per process, not per beat.
     console.warn(
       `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
-        `"${pin}" has no registered build for ${platform}/${architecture} (fail closed)`,
+        `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
+        `${platform}/${architecture} (fail closed; a build registered under the other ` +
+        `edition does not count — #4072)`,
     );
     const key = `${component}:${platform}:${architecture}:${pin}`;
     if (!warnedMissingPinBuilds.has(key)) {
@@ -2384,8 +2656,8 @@ export async function resolvePinnedUpgradeTarget(args: {
       captureException(
         new Error(
           `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
-            `registered build for ${platform}/${architecture}; fleet freeze until a build ` +
-            `is published or the pin is corrected.`,
+            `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
+            `fleet freeze until a build is published under this edition or the pin is corrected.`,
         ),
       );
     }
@@ -2556,25 +2828,23 @@ export async function resolveDeviceHelperSettings(deviceId: string): Promise<Hel
   }
 
   // 5. Single query: assignments → active policies → helper feature link (pure JSONB)
-  const rows = await withPartnerWideVisibility(() =>
-    db
-      .select({
-        level: configPolicyAssignments.level,
-        assignmentPriority: configPolicyAssignments.priority,
-        inlineSettings: configPolicyFeatureLinks.inlineSettings,
-      })
-      .from(configPolicyAssignments)
-      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-      .innerJoin(configPolicyFeatureLinks, and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'helper'),
-      ))
-      .where(and(
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
-        or(...targetConditions),
-      ))
-  );
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'helper'),
+    ))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+    ));
 
   if (rows.length === 0) return null;
 
@@ -2716,25 +2986,23 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
   }
 
   // 5. Single query: assignments → active policies → pam feature link (pure JSONB)
-  const rows = await withPartnerWideVisibility(() =>
-    db
-      .select({
-        level: configPolicyAssignments.level,
-        assignmentPriority: configPolicyAssignments.priority,
-        inlineSettings: configPolicyFeatureLinks.inlineSettings,
-      })
-      .from(configPolicyAssignments)
-      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-      .innerJoin(configPolicyFeatureLinks, and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'pam'),
-      ))
-      .where(and(
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
-        or(...targetConditions),
-      ))
-  );
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'pam'),
+    ))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+    ));
 
   if (rows.length === 0) return resolveOrgPamFallback(device.orgId);
 
@@ -2811,6 +3079,38 @@ export interface PatchSourceSettings {
 export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
   const patch = await resolvePatchConfigForDevice(deviceId);
   return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
+}
+
+// ============================================
+// HP CMSL Warranty Collection Config (#5511 W02)
+// ============================================
+
+export interface WarrantySettings {
+  /**
+   * When true the (Windows-only) agent may collect HP warranty data on the
+   * device via HP's CMSL. False explicitly tells the agent to stop — so
+   * unassigning the policy, or a nearer policy replacing the link without an
+   * hpCmsl block, cleanly revokes collection.
+   */
+  hpCmslEnabled: boolean;
+}
+
+/**
+ * Resolves the warranty feature link for the device and surfaces the HP CMSL
+ * collection flag for the heartbeat config push. A device with no warranty
+ * policy assigned resolves to `false`, which the agent treats as "stop
+ * collecting". The caller (heartbeat) omits the block entirely on a resolver
+ * error so a transient failure never revokes collection fleet-wide — which is
+ * why this function deliberately does NOT catch.
+ *
+ * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
+ * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
+ * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
+ * Collection never runs on an acceptance we cannot point at.
+ */
+export async function buildWarrantyConfigUpdate(deviceId: string): Promise<WarrantySettings> {
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================
@@ -2906,11 +3206,11 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'onedrive_helper'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'onedrive_helper'),
     ))
-    .innerJoin(configPolicyOnedriveSettings, eq(configPolicyOnedriveSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .innerJoin(configPolicyOnedriveSettings, eq(configPolicyOnedriveSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       eq(configurationPolicies.orgId, device.orgId),

@@ -45,6 +45,7 @@ import {
 } from '../services/frankfurterClient';
 import { upsertFeedRates } from '../services/exchangeRateService';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'exchange-rate-sync';
 const JOB_NAME = 'exchange-rate-sync';
@@ -207,6 +208,7 @@ export async function scheduleExchangeRateSync(queue: Queue = getExchangeRateSyn
 export async function initializeExchangeRateSyncWorker(): Promise<void> {
   try {
     syncWorker = createExchangeRateSyncWorker();
+  attachWorkerObservability(syncWorker, 'exchangeRateSync');
 
     syncWorker.on('error', (error) => {
       console.error('[ExchangeRateSync] Worker error:', error);

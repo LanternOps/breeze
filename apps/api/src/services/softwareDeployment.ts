@@ -15,7 +15,8 @@ import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResol
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { loadTenantVariableScope, resolveForOrg } from './tenantVariableResolution';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
-import { queueCommand } from './commandQueue';
+import { deliveryTtlMs } from './commandOfflinePolicy';
+import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import {
   evaluateManagedSoftwareDispatch,
   type ManagedSoftwareDispatchDenialReason,
@@ -23,6 +24,10 @@ import {
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
+import {
+  fingerprintSoftwareInstallMethodDependency,
+  fingerprintSoftwareVersionDependency,
+} from './softwareDependencyIdentity';
 
 export interface CreateSoftwareDeploymentInput {
   orgId: string;
@@ -63,6 +68,15 @@ export interface CreateSoftwareDeploymentInput {
    * resolved `deviceIds` list.
    */
   targetIds?: string[] | null;
+  /**
+   * #5505 W03: the software policy whose autoInstall remediation produced this
+   * deployment. Set ONLY by services/softwarePolicyInstallRemediation.ts —
+   * HTTP callers never pass it, because an operator-created deployment is not
+   * policy-owned. Stamped by this function's INSERT so the origin is durable
+   * from the first moment the row exists (the remediation worker's dedup reads
+   * it on the very next pass, 15 minutes later).
+   */
+  softwarePolicyId?: string;
 }
 
 export interface CreateSoftwareDeploymentResult {
@@ -72,6 +86,7 @@ export interface CreateSoftwareDeploymentResult {
   status: 'pending' | 'failed';
   message?: string;
   dispatchedDeviceIds: string[];
+  deviceResults: SoftwareInstallFanoutDeviceResult[];
 }
 
 export type SoftwareInstallDispatchTransport = 'ws' | 'queued';
@@ -79,8 +94,13 @@ export type SoftwareInstallDispatchTransport = 'ws' | 'queued';
 export interface SoftwareInstallDispatchOutcome {
   /** 'ws' = delivered over the live agent socket; 'queued' = written to device_commands for pickup on next poll/reconnect. */
   transport: SoftwareInstallDispatchTransport;
-  /** device_commands row id when the offline-queue fallback was used, else null. */
-  deviceCommandId: string | null;
+  /**
+   * The `device_commands` row id. #5128: ALWAYS set — the row is persisted
+   * before either transport, so a WS push the agent never acted on is still
+   * visible to the reaper, the device-page queued list and the cancel route.
+   * It used to be `null` on the WS path, which created no row at all.
+   */
+  deviceCommandId: string;
 }
 
 /**
@@ -91,23 +111,25 @@ export interface SoftwareInstallDispatchOutcome {
  * Callers are responsible for everything that happens BEFORE dispatch
  * (presign/EDR resolution, `{{...}}` variable substitution, failure
  * pre-writes) and hand this function the fully-resolved command payload.
- * The payload MUST carry `deploymentId` — the queued-path result
- * reconciliation in routes/agents/commands.ts keys on it.
+ * The payload MUST carry `deploymentId` and `retryCount` — result
+ * reconciliation on both transports keys on them
+ * (`reconcileSoftwareInstallResult`).
  *
- * Honest dispatch (#1.2): when the agent has no live WS socket,
- * sendCommandToAgent returns false; instead of silently dropping the command
- * (the old fire-and-forget bug), fall back to queueCommand so the agent picks
- * it up on its next poll/reconnect, and link the queued device_commands row
- * id into deployment_results.device_command_id for reconciliation, cancel
- * purge, and "queued — device offline" display.
+ * #5128 — PERSIST BEFORE PUSH. This used to try the websocket first and, on
+ * success, return without creating a `device_commands` row at all. That row is
+ * the only durable record of the install: with none, a push the agent never
+ * acted on was invisible to the reaper, to the device's queued-actions list and
+ * to cancel, and `deployment_results.device_command_id` stayed NULL so the
+ * result reaper could not tell "delivered" from "never sent". The row is now
+ * always written first, by the one enqueue seam, and the push carries that
+ * row's UUID rather than the synthetic
+ * `sw-install-<deployment>-<device>-<attempt>` id.
  *
- * `retryCount` is the CURRENT attempt number at dispatch time (0 for the
- * first attempt) and is baked into the WS command id
- * (`sw-install-<deployment>-<device>-<retryCount>`) so a late result from a
- * superseded attempt — the id the FIRST dispatch used — can never be
- * misattributed to a later retry: applySoftwareInstallResult rejects any
- * result whose attempt doesn't match the row's current retryCount. The
- * caller (routes/software.ts retry endpoint) MUST bump retryCount in the DB
+ * `retryCount` is the CURRENT attempt number at dispatch time (0 for the first
+ * attempt). It travels in the payload so a late result from a superseded
+ * attempt can never be misattributed to a later retry: applySoftwareInstallResult
+ * rejects any result whose attempt doesn't match the row's current retryCount.
+ * The caller (routes/software.ts retry endpoint) MUST bump retryCount in the DB
  * before calling this, and pass that same post-bump value here.
  */
 export async function dispatchSoftwareInstallToDevice(
@@ -117,32 +139,36 @@ export async function dispatchSoftwareInstallToDevice(
   createdBy?: string | null,
   retryCount = 0,
 ): Promise<SoftwareInstallDispatchOutcome> {
-  const command: AgentCommand = {
-    id: `sw-install-${deploymentId}-${device.id}-${retryCount}`,
+  void retryCount; // carried in `payload.retryCount` by the caller; kept for the signature's contract
+
+  const res = await dispatchDeviceCommand({
+    deviceId: device.id,
     type: 'software_install',
-    payload,
+    payload: (payload ?? {}) as Record<string, unknown>,
+    ...(createdBy ? { userId: createdBy } : {}),
+    offlinePolicy: { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') },
+  });
+
+  if (!res.ok) {
+    throw new Error(`software_install dispatch refused for device ${device.id}: ${res.error}`);
+  }
+
+  // Link the row for reconciliation, cancel purge, and the "queued — device
+  // offline" display. Always populated now, on both transports.
+  await db
+    .update(deploymentResults)
+    .set({ deviceCommandId: res.command.id })
+    .where(
+      and(
+        eq(deploymentResults.deploymentId, deploymentId),
+        eq(deploymentResults.deviceId, device.id),
+      ),
+    );
+
+  return {
+    transport: res.delivery === 'delivered' ? 'ws' : 'queued',
+    deviceCommandId: res.command.id,
   };
-
-  if (sendCommandToAgent(device.agentId, command)) {
-    return { transport: 'ws', deviceCommandId: null };
-  }
-
-  // Agent offline: queue the SAME payload as a device_commands row. The agent
-  // handler dispatches on command type, so both transports hit the same code.
-  const queued = await queueCommand(device.id, 'software_install', payload, createdBy ?? undefined);
-  const deviceCommandId = queued?.id ?? null;
-  if (deviceCommandId) {
-    await db
-      .update(deploymentResults)
-      .set({ deviceCommandId })
-      .where(
-        and(
-          eq(deploymentResults.deploymentId, deploymentId),
-          eq(deploymentResults.deviceId, device.id),
-        ),
-      );
-  }
-  return { transport: 'queued', deviceCommandId };
 }
 
 /** Structural subset of a software_versions row the install fan-out needs. */
@@ -170,6 +196,7 @@ export interface SoftwareInstallFanoutCatalogItem {
  */
 export interface SoftwareInstallFanoutMethod {
   id: string;
+  catalogId: string;
   platform: string;
   kind: string;
   packageId: string;
@@ -224,12 +251,41 @@ export interface BuildAndDispatchSoftwareInstallsInput {
    * default to 0.
    */
   deviceRetryCounts?: Record<string, number>;
+  /** Exact rows created/claimed for this fan-out, keyed by device id. */
+  deploymentResultIdsByDevice?: ReadonlyMap<string, string>;
 }
 
 export interface SoftwareInstallFanoutResult {
   status: 'pending' | 'failed';
   message?: string;
   dispatchedDeviceIds: string[];
+  deviceResults: SoftwareInstallFanoutDeviceResult[];
+}
+
+export interface SoftwareInstallFanoutDeviceResult {
+  deviceId: string;
+  deploymentResultId: string;
+  status: 'queued' | 'delivered' | 'failed';
+  deviceCommandId: string | null;
+  message?: string;
+}
+
+function fanoutDeviceResult(
+  input: BuildAndDispatchSoftwareInstallsInput,
+  deviceId: string,
+  status: SoftwareInstallFanoutDeviceResult['status'],
+  deviceCommandId: string | null,
+  message?: string,
+): SoftwareInstallFanoutDeviceResult | null {
+  const deploymentResultId = input.deploymentResultIdsByDevice?.get(deviceId);
+  if (!deploymentResultId) return null;
+  return {
+    deviceId,
+    deploymentResultId,
+    status,
+    deviceCommandId,
+    ...(message ? { message } : {}),
+  };
 }
 
 /**
@@ -354,6 +410,13 @@ async function dispatchManagerInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
+  for (const deviceId of fanoutDeviceIds) {
+    if (!targetDevices.some((device) => device.id === deviceId)) {
+      const result = fanoutDeviceResult(input, deviceId, 'failed', null, DEVICE_NO_LONGER_AVAILABLE);
+      if (result) deviceResults.push(result);
+    }
+  }
   let osMismatchCount = 0;
   for (const device of targetDevices) {
     if (device.osType !== installMethod.platform) {
@@ -371,6 +434,14 @@ async function dispatchManagerInstalls(
           ),
         );
       osMismatchCount++;
+      const result = fanoutDeviceResult(
+        input,
+        device.id,
+        'failed',
+        null,
+        `${NO_INSTALL_METHOD_FOR_OS} (${device.osType})`,
+      );
+      if (result) deviceResults.push(result);
       continue;
     }
 
@@ -386,8 +457,39 @@ async function dispatchManagerInstalls(
       softwareName: catalogItem.name,
       forceReinstall,
     };
-    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    // #5128: the seam refuses (and this throws) for a device that is
+    // decommissioned or trust-denied — checks that did NOT exist on this path
+    // before. Isolate per device: an uncaught throw here would abort the whole
+    // fan-out and leave every device AFTER it with a `pending` deployment_results
+    // row that is never dispatched and never failed, which is precisely the
+    // silent-death bug this feature exists to remove.
+    let dispatch: SoftwareInstallDispatchOutcome;
+    try {
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
+      console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      const failedResult = fanoutDeviceResult(input, device.id, 'failed', null, errorMessage);
+      if (failedResult) deviceResults.push(failedResult);
+      continue;
+    }
     dispatchedDeviceIds.push(device.id);
+    const result = fanoutDeviceResult(
+      input,
+      device.id,
+      dispatch.transport === 'ws' ? 'delivered' : 'queued',
+      dispatch.deviceCommandId,
+    );
+    if (result) deviceResults.push(result);
   }
 
   if (dispatchedDeviceIds.length === 0 && (osMismatchCount > 0 || missingDeviceCount > 0)) {
@@ -398,9 +500,10 @@ async function dispatchManagerInstalls(
           ? `${NO_INSTALL_METHOD_FOR_OS} on any target device`
           : 'No target device is still available',
       dispatchedDeviceIds: [],
+      deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults };
 }
 
 export async function buildAndDispatchSoftwareInstalls(
@@ -448,6 +551,11 @@ export async function buildAndDispatchSoftwareInstalls(
       );
     }
   }
+  // #5128: remember whether the URL we are about to ship was MINTED from the
+  // S3 key. Only then may the payload carry `s3Key` for the delivery-time
+  // refresher — a stored/EDR-resolved URL must never be silently replaced by a
+  // presigned one at claim time.
+  const presignedFromS3 = downloadUrl;
   downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
 
   // Built-in EDR packages: resolve per-org keys server-side BEFORE the dispatch
@@ -473,6 +581,10 @@ export async function buildAndDispatchSoftwareInstalls(
         status: 'failed',
         message: resolved.error,
         dispatchedDeviceIds: [],
+        deviceResults: fanoutDeviceIds.flatMap((deviceId) => {
+          const result = fanoutDeviceResult(input, deviceId, 'failed', null, resolved.error);
+          return result ? [result] : [];
+        }),
       };
     }
     resolvedInstaller = resolved;
@@ -498,6 +610,16 @@ export async function buildAndDispatchSoftwareInstalls(
       status: 'failed',
       message: 'No installer available for this version',
       dispatchedDeviceIds: [],
+      deviceResults: fanoutDeviceIds.flatMap((deviceId) => {
+        const result = fanoutDeviceResult(
+          input,
+          deviceId,
+          'failed',
+          null,
+          'No installer available for this version',
+        );
+        return result ? [result] : [];
+      }),
     };
   }
 
@@ -622,6 +744,13 @@ export async function buildAndDispatchSoftwareInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
+  for (const deviceId of fanoutDeviceIds) {
+    if (!targetDevices.some((device) => device.id === deviceId)) {
+      const result = fanoutDeviceResult(input, deviceId, 'failed', null, DEVICE_NO_LONGER_AVAILABLE);
+      if (result) deviceResults.push(result);
+    }
+  }
   let variableFailureCount = 0;
   let policyDenialCount = 0;
   // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
@@ -656,6 +785,14 @@ export async function buildAndDispatchSoftwareInstalls(
             ),
           );
         variableFailureCount++;
+        const result = fanoutDeviceResult(
+          input,
+          device.id,
+          'failed',
+          null,
+          `Software deployment templates cannot use secret variable(s) ${secretTemplateKeys.map(variableToken).join(', ')}`,
+        );
+        if (result) deviceResults.push(result);
         continue;
       }
       const ctx: InstallerVariableContext = {
@@ -683,6 +820,14 @@ export async function buildAndDispatchSoftwareInstalls(
             ),
           );
         variableFailureCount++;
+        const result = fanoutDeviceResult(
+          input,
+          device.id,
+          'failed',
+          null,
+          `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
+        );
+        if (result) deviceResults.push(result);
         continue;
       }
       // Substituting a non-null template yields a non-null string; the ?? keeps
@@ -714,6 +859,8 @@ export async function buildAndDispatchSoftwareInstalls(
         );
       policyDenialCount++;
       policyDenialReasons.add(decision.reason);
+      const result = fanoutDeviceResult(input, device.id, 'failed', null, decision.reason);
+      if (result) deviceResults.push(result);
       continue;
     }
 
@@ -746,6 +893,14 @@ export async function buildAndDispatchSoftwareInstalls(
       deploymentId,
       retryCount,
       downloadUrl: deviceDownloadUrl,
+      // #5128 (OD-8): a presigned URL is valid for an hour, but a queued
+      // install may be claimed days later. Ship the STABLE reference too, and
+      // `deliveryRefreshers['software_install']` re-mints the URL at delivery.
+      // Only when the URL we resolved for THIS device is exactly the presigned
+      // one — an EDR-resolved or stored URL must not be overwritten.
+      ...(versionRecord.s3Key && presignedFromS3 && deviceDownloadUrl === presignedFromS3
+        ? { s3Key: versionRecord.s3Key }
+        : {}),
       downloadPolicy: {
         version: 1,
         approvedPrivateOrigins,
@@ -764,8 +919,39 @@ export async function buildAndDispatchSoftwareInstalls(
       ...(detectionRules ? { detectionRules } : {}),
       forceReinstall,
     };
-    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    // #5128: the seam refuses (and this throws) for a device that is
+    // decommissioned or trust-denied — checks that did NOT exist on this path
+    // before. Isolate per device: an uncaught throw here would abort the whole
+    // fan-out and leave every device AFTER it with a `pending` deployment_results
+    // row that is never dispatched and never failed, which is precisely the
+    // silent-death bug this feature exists to remove.
+    let dispatch: SoftwareInstallDispatchOutcome;
+    try {
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
+      console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      const failedResult = fanoutDeviceResult(input, device.id, 'failed', null, errorMessage);
+      if (failedResult) deviceResults.push(failedResult);
+      continue;
+    }
     dispatchedDeviceIds.push(device.id);
+    const result = fanoutDeviceResult(
+      input,
+      device.id,
+      dispatch.transport === 'ws' ? 'delivered' : 'queued',
+      dispatch.deviceCommandId,
+    );
+    if (result) deviceResults.push(result);
   }
 
   // If NOTHING dispatched because every target failed variable resolution or
@@ -786,9 +972,10 @@ export async function buildAndDispatchSoftwareInstalls(
               [...policyDenialReasons].sort().join(', ')
             : 'No target device is still available',
       dispatchedDeviceIds: [],
+      deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults };
 }
 
 export async function createSoftwareDeployment(
@@ -810,6 +997,7 @@ export async function createSoftwareDeployment(
     maintenanceWindowId,
     targetType,
     targetIds,
+    softwarePolicyId,
   } = input;
 
   // Mirrors the DB CHECK (software_deployments_one_target_chk): a deployment
@@ -864,6 +1052,10 @@ export async function createSoftwareDeployment(
     );
   }
 
+  const dependencyFingerprint = installMethod
+    ? fingerprintSoftwareInstallMethodDependency(installMethod, catalogItem)
+    : fingerprintSoftwareVersionDependency(versionRecord!, catalogItem);
+
   // Manager deploys persist their version intent in `options` so the
   // scheduler and the retry endpoint can rebuild the same payload later
   // without new columns.
@@ -891,6 +1083,8 @@ export async function createSoftwareDeployment(
       maintenanceWindowId: maintenanceWindowId ?? null,
       createdBy,
       options: storedOptions,
+      dependencyFingerprint,
+      softwarePolicyId: softwarePolicyId ?? null,
     })
     .returning();
 
@@ -899,15 +1093,18 @@ export async function createSoftwareDeployment(
   }
 
   // Insert per-device results
-  if (deviceIds.length > 0) {
-    await db.insert(deploymentResults).values(
+  const insertedDeviceResults = deviceIds.length > 0
+    ? await db.insert(deploymentResults).values(
       deviceIds.map((deviceId) => ({
         deploymentId: deployment.id,
         deviceId,
         status: 'pending' as const,
       })),
-    );
-  }
+    ).returning({ id: deploymentResults.id, deviceId: deploymentResults.deviceId })
+    : [];
+  const deploymentResultIdsByDevice = new Map(
+    insertedDeviceResults.map((result) => [result.deviceId, result.id]),
+  );
 
   // For immediate installs, dispatch software_install commands to online agents
   // via the shared fan-out (presign, EDR resolution, variable substitution,
@@ -930,9 +1127,16 @@ export async function createSoftwareDeployment(
       options: options ?? null,
       createdBy,
       markDispatched: true,
+      deploymentResultIdsByDevice,
     });
     return { deploymentId: deployment.id, deployment, ...fanout };
   }
 
-  return { deploymentId: deployment.id, deployment, status: 'pending', dispatchedDeviceIds: [] };
+  return {
+    deploymentId: deployment.id,
+    deployment,
+    status: 'pending',
+    dispatchedDeviceIds: [],
+    deviceResults: [],
+  };
 }

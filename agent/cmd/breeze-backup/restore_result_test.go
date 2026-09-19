@@ -26,6 +26,9 @@ func (p *flakyRestoreProvider) Download(key, dest string) error {
 }
 
 func TestExecBackupRestoreWithProgressTreatsPartialRestoreAsFailure(t *testing.T) {
+	originalWorkRoot := backupRestoreWorkRoot
+	backupRestoreWorkRoot = func() string { return t.TempDir() }
+	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
 	baseDir := t.TempDir()
 	localProvider := providers.NewLocalProvider(baseDir)
 	snapshotID := "restore-partial-1"

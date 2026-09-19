@@ -27,15 +27,21 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+// Type-only: the runtime import stays dynamic inside the handler.
+import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
-import { dispatchScriptToDevice } from './scriptDispatch';
+import { aiDispatchScriptToDevice, aiExecuteCommand } from './aiDispatch';
+import { approvalMethodForRelease, assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
+import { aiScriptAuthoringEnabled } from '../config/env';
+import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
+import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -84,6 +90,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -93,7 +102,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -205,6 +217,373 @@ function callerMayUseVerifiedScript(
   return script.partnerId !== null || script.isSystem;
 }
 
+/**
+ * The run_script handler, at module scope so the proposal branch is directly
+ * testable through `__testOnly.runScriptHandler`. Registered below.
+ */
+const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
+  // ---- AI script authoring (spec §4.2): run_script { proposalId } ----------
+  if (typeof input.proposalId === 'string') {
+    if (!aiScriptAuthoringEnabled()) {
+      return JSON.stringify({ error: 'feature_disabled: AI script authoring is not enabled on this deployment' });
+    }
+    const proposalDeviceIds = input.deviceIds as string[];
+    const runnable = await assertProposalRunnable(auth, {
+      proposalId: input.proposalId,
+      deviceIds: proposalDeviceIds,
+      runAs: input.runAs as string | undefined,
+      timeoutSeconds: input.timeoutSeconds as number | undefined,
+      parameters: input.parameters,
+      // A post-approval release carries the intent that claimed the proposal
+      // at creation; without it every approved proposal would read as
+      // `consumed` by itself.
+      releasingIntentId: context?.actionIntentId,
+    });
+    // Never a silent fallback to scriptId (spec §4.2): running something
+    // other than the reviewed artifact is the failure this design exists to
+    // prevent, so a refusal is always surfaced as a tool error.
+    if (!runnable.ok) {
+      return JSON.stringify({ error: `proposal_not_runnable: ${runnable.reason}`, proposalId: input.proposalId });
+    }
+    const snapshot = proposalDispatchSnapshot(runnable.proposal, proposalDeviceIds);
+    // #5645 — spec §4.1 `approval_method` is DERIVED from the releasing
+    // intent's decision record (§4.6), which both release paths put on the
+    // context next to `actionIntentId`. Resolved once per call, never per
+    // device, and never a constant: a call that carries no release decision
+    // has nothing to attribute the run to, so the row records null rather
+    // than a guess (the W06 "unattended runs" metric and the audit row read
+    // this column).
+    const approvalMethod = context?.releaseDecision ? approvalMethodForRelease(context.releaseDecision) : null;
+    if (approvalMethod === null) {
+      // Unreachable while run_script stays Tier 3 (every proposal run IS an
+      // intent release, and both release paths attach the record). Reaching
+      // it means that invariant broke — reported, not just logged, because
+      // the row this leaves behind is exactly the audit gap #5645 closed.
+      console.warn('[aiToolsScripts] run_script proposal dispatch without a release decision — approval_method left null', {
+        proposalId: input.proposalId, actionIntentId: context?.actionIntentId ?? null,
+      });
+      captureException(new Error('run_script proposal dispatch without a release decision'), undefined, {
+        area: 'script_proposal_release_decision_missing',
+      });
+    }
+    const proposalResults: Record<string, unknown> = {};
+    let markedExecuted = false;
+    // Same cap and same wait as the library path below — a proposal is not a
+    // reason to relax either.
+    for (const deviceId of proposalDeviceIds.slice(0, 10)) {
+      const access = await verifyDeviceAccess(deviceId, auth, true);
+      if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
+      try {
+        const dispatch = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+          aiDispatchScriptToDevice(auth, 'run_script', {
+            device: access.device,
+            source: { kind: 'proposal', proposal: runnable.proposal, snapshot },
+            triggerType: 'manual',
+            triggeredBy: auth.user.id,
+            createdBy: auth.user.id,
+            runAs: runnable.proposal.runAs,
+            timeoutSeconds: runnable.proposal.timeoutSeconds,
+            offlinePolicy: { kind: 'reject' },
+            provenance: {
+              approvedBy: auth.user.id,
+              approvalMethod,
+              reviewRiskTier: runnable.proposal.riskTier,
+            },
+          })));
+        if (!dispatch.ok) { proposalResults[deviceId] = { error: dispatch.error }; continue; }
+        if (!markedExecuted) {
+          // W03 (#5612): the proposal has now produced a real execution.
+          // `executed` is the precondition for verification (spec §4.9) and,
+          // through `verified`, for promotion (§4.8). CAS from
+          // reviewed|approved, once per call, so a second device in the same
+          // call or a retried dispatch cannot rewind a later status.
+          markedExecuted = true;
+          await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+            db.transaction((tx) =>
+              transitionProposal(tx, runnable.proposal.id, ['reviewed', 'approved'], 'executed', {}),
+            )));
+        }
+        const { waitForCommandResult } = await getCommandQueue();
+        const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
+        proposalResults[deviceId] = {
+          ...((cmd.result as unknown as Record<string, unknown> | undefined)
+            ?? { status: 'failed', error: 'Command did not complete' }),
+          commandId: cmd.id,
+          executionId: dispatch.executionId,
+          runAs: dispatch.runAs,
+        };
+      } catch (err) {
+        console.error('[aiToolsScripts] run_script proposal dispatch failed', { deviceId, error: err });
+        captureException(err);
+        proposalResults[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
+      }
+    }
+    return JSON.stringify({ results: proposalResults, proposalId: input.proposalId });
+  }
+
+  // ---- library script path (unchanged) --------------------------------------
+  const { waitForCommandResult } = await getCommandQueue();
+  const deviceIds = input.deviceIds as string[];
+  const results: Record<string, unknown> = {};
+
+  // #4888 — an assistant-chosen run context clears the SAME gate a human
+  // one does. Not a copy of the rules, the actual object the HTTP route
+  // validates with (`POST /scripts/:id/execute`), so the enum ('elevated'
+  // excluded — that stays a property of the saved script) and both
+  // cross-field rules ("targetSessionId requires runAs=user", "…and
+  // exactly one device") can never drift between the two callers.
+  //
+  // `parameters` is deliberately NOT re-parsed here: the AI path has never
+  // validated them against `scriptParametersSchema` and tightening that is
+  // a separate behaviour change with its own blast radius. The field being
+  // optional in the schema is what lets this validate the run context
+  // alone. Nothing about the privilege decision depends on it.
+  const runContext = executeScriptSchema.safeParse({
+    deviceIds,
+    runAs: input.runAs,
+    targetSessionId: input.targetSessionId,
+  });
+  if (!runContext.success) {
+    return JSON.stringify({
+      error: runContext.error.issues[0]?.message ?? 'Invalid run context',
+    });
+  }
+
+  // #3409 PR4c-1 — a release path may have ALREADY read this script row and
+  // resolved its tenant variables, in order to recompute the approval's
+  // pinned effect digest. Reading them again here would reopen the exact
+  // check/use window the digest exists to close: the digest proves the
+  // target was unchanged as of THAT read, and a second read proves nothing.
+  const verified = verifiedRunScriptFor(context, input.scriptId);
+
+  // AUTHORIZATION, NOT CACHING. The skipped query was filtered by BOTH its
+  // app-layer org condition AND by RLS (it ran in the caller's own DB
+  // context); the pinned row is read system-scoped, so both layers are
+  // re-expressed in `callerMayUseVerifiedScript`. The digest verifies
+  // CONTENT IDENTITY; it says nothing about this caller's authority.
+  if (verified && !callerMayUseVerifiedScript(verified.scriptRow, auth)) {
+    return JSON.stringify({ error: 'Script not found or has no content' });
+  }
+
+  // Resolve script content upfront so the agent receives the full payload
+  const script = verified ? verified.scriptRow : await queryRunScriptRow(input.scriptId as string, auth);
+
+  if (!script || !script.content) {
+    return JSON.stringify({ error: 'Script not found or has no content' });
+  }
+
+  // This guard is NOT here because the intent-release worker runs under a
+  // system context — it doesn't. jobs/intentReleaseWorker.ts executes this
+  // tool inside `withAuthDbAccessContext(auth, ...)`, which is RLS-scoped
+  // to the reconstructed approver identity, same as a live request. The
+  // real reason this app-layer check is load-bearing: a membership-less
+  // user is issued a system-SCOPE token (see
+  // middleware/auth.ts — payload.scope === 'system'), under which
+  // `auth.orgCondition(...)` returns `undefined` and RLS is effectively
+  // off for that session. For that caller, this org-equality check plus
+  // the device-org→partner lookup below are the ONLY defenses stopping a
+  // partner-wide script from running on a device outside the script's
+  // partner. Do not delete this thinking RLS already covers it.
+  const scriptPartnerId = script.partnerId ?? null;
+
+  for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
+    try {
+      // Verify access
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) {
+        results[deviceId] = { error: access.error };
+        continue;
+      }
+
+      // Identity hardening for the verified path (#3409 PR4c-1 fix round
+      // 1). `verifiedRunScriptFor` re-checks the pinned scriptId; this is
+      // the same check on the OTHER argument. The snapshot's
+      // `deviceOrgIds` is built from every id in `args.deviceIds`, and
+      // this loop dispatches a subset of that same array, so the device's
+      // org is always a member when the context and the arguments came
+      // from the same intent. If it is not, the pinned SCOPE may not cover
+      // this device's org — dispatch would resolve its tenant variables
+      // against a scope that was never loaded for it and quietly render
+      // "no value set". Fail this device closed rather than dispatch on
+      // unverified material; log + capture so the plumbing bug is visible.
+      if (verified && !verified.snapshot.deviceOrgIds.includes(access.device.orgId)) {
+        const message =
+          '[aiToolsScripts] run_script verified snapshot does not cover the dispatched device org';
+        console.error(message, { deviceId, deviceOrgId: access.device.orgId });
+        captureException(new Error(message));
+        results[deviceId] = { error: 'Device not found or access denied' };
+        continue;
+      }
+
+      // Org-equality invariant (mirrors scriptExecution.ts / playbooks.ts):
+      // a system/org-less script (orgId === null) is universally runnable,
+      // but a non-null script org MUST match the target device's org. For a
+      // multi-org caller, orgCondition resolves an org-A script and
+      // verifyDeviceAccess admits an org-B device — both pass canAccessOrg —
+      // so without this an org-A script's content lands on an org-B device.
+      // Treat a mismatch like an inaccessible device.
+      if (script.orgId !== null && script.orgId !== access.device.orgId) {
+        results[deviceId] = { error: 'Device not found or access denied' };
+        continue;
+      }
+
+      if (scriptPartnerId !== null) {
+        const [deviceOrg] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, access.device.orgId))
+          .limit(1);
+        if (!deviceOrg || deviceOrg.partnerId !== scriptPartnerId) {
+          results[deviceId] = { error: 'Device not found or access denied' };
+          continue;
+        }
+      }
+
+      // Escape the ambient held transaction before dispatch + poll (#3409 C1).
+      //
+      // Every AI tool handler (this one included) runs inside ONE held
+      // Postgres transaction for the whole turn — aiAgentSdkTools.ts:400
+      // and jobs/intentReleaseWorker.ts:459 both wrap tool dispatch in
+      // withDbAccessContext (see db/index.ts:436-484 for what "held"
+      // means: a real `baseDb.transaction()` that doesn't commit until
+      // the callback returns). Everything above this point (the script
+      // select, verifyDeviceAccess, the partner-org lookup) is RLS-scoped
+      // read work that belongs in that ambient transaction. Dispatch does
+      // not: if the device_commands INSERT stayed inside it, the row
+      // would be invisible to the agent-WS handler that processes the
+      // result on a *different* connection — its `UPDATE device_commands
+      // ... WHERE id = commandId` would match 0 rows, and
+      // waitForCommandResult would burn the full 60s timeout per device
+      // while holding a pooled connection the entire time.
+      //
+      // `executeCommand` (services/commandQueue.ts) hit exactly this and
+      // fixed it with a two-phase runOutsideDbContext escape — read its
+      // docstring there before changing this. Mirror that shape, not one
+      // long-lived transaction spanning the whole poll:
+      //
+      //   Phase 1 (write): runOutsideDbContext + withSystemDbAccessContext
+      //   wrap ONLY dispatchScriptToDevice, so its script_executions /
+      //   device_commands inserts run inside a real (non-contextless)
+      //   transaction that commits the instant dispatch returns. System
+      //   scope is safe here because ownership was already validated
+      //   above under RLS (device access + org-equality + partner guard)
+      //   — same justification as the automation worker path, which runs
+      //   this identical dispatch core under system context for the
+      //   whole run (jobs/automationWorker.ts). The insert must NOT run
+      //   contextless (bare runOutsideDbContext with no
+      //   withSystemDbAccessContext) — that would just trade the 0-row
+      //   trap for the contextless-write guard (#1375).
+      //
+      //   Phase 2 (poll): waitForCommandResult runs OUTSIDE any held
+      //   transaction — still escaped via runOutsideDbContext, but NOT
+      //   nested inside withSystemDbAccessContext — so each poll
+      //   iteration is a plain, quickly-released pool read, exactly like
+      //   executeCommand's own poll loop. Nesting the poll inside the
+      //   same withSystemDbAccessContext call as dispatch would reproduce
+      //   the identical 0-row bug under a different (system-scoped)
+      //   transaction: the INSERT wouldn't commit until the 60s wait
+      //   finished either.
+      // Task 4 (#3409 PR2): the variable-scope preload joins this SAME
+      // escape rather than getting its own — it must run inside the
+      // identical system-context transaction as dispatchScriptToDevice
+      // (see the long comment above for why a bare/contextless read
+      // would reproduce the 0-row trap this escape exists to avoid). One
+      // device per iteration here (max 10, capped above), so one org per
+      // preload — there is no wider fan-out to batch it against.
+      const dispatch = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          // #3409 PR3 P1: gated on `scriptNeedsVariableScope`, not
+          // content tokens alone — a `tenantVariable`-bound parameter
+          // lives in `scripts.parameters`, and a content-only gate would
+          // hand dispatch an empty scope for it.
+          //
+          // #3409 PR4c-1: with a verified release, the scope is the one
+          // the digest's variable references were pinned from — reusing
+          // it is the point of the whole exercise. It was loaded through
+          // the SAME gate over the SAME row, for every device org in the
+          // call, so it is a superset of what this per-device load would
+          // have produced (and equally empty when the script needs none).
+          const variableScope = verified
+            ? verified.scope
+            : await loadTenantVariableScope(
+                scriptNeedsVariableScope(script) ? [access.device.orgId] : []
+              );
+          return aiDispatchScriptToDevice(auth, 'run_script', {
+            device: access.device,
+            source: { kind: 'saved', script },
+            parameters: (input.parameters as Record<string, unknown>) ?? {},
+            triggerType: 'manual',
+            triggeredBy: auth.user.id,
+            createdBy: auth.user.id,
+            // #4888 — undefined when the assistant did not choose one, in
+            // which case dispatch falls back to `script.runAs` exactly as
+            // it always did.
+            runAs: runContext.data.runAs,
+            targetSessionId: runContext.data.targetSessionId,
+            // #5128 W4 — the AI run_script tool answers synchronously and
+            // has no way to surface a later result, so it keeps the hard
+            // offline rejection the `requireOnline` alias used to give it.
+            // W5 softens the error TEXT, not the behaviour.
+            offlinePolicy: { kind: 'reject' },
+            variableScope,
+          });
+        })
+      );
+      if (!dispatch.ok) {
+        if (dispatch.code === 'maintenance_suppressed') {
+          // #4919 — NOT an error. A maintenance window is the operator's
+          // deliberate "not now", and reporting it as a failure is how an
+          // assistant ends up retrying, escalating, or telling the user
+          // the script broke. `status: 'suppressed'` keeps it out of the
+          // error shape every other branch here uses; the message carries
+          // the distinction between an open window and a window we could
+          // not evaluate (fail-closed), so the assistant can say which.
+          results[deviceId] = {
+            status: 'suppressed',
+            suppressedBy: 'maintenance_window',
+            message: dispatch.error,
+          };
+          continue;
+        }
+        results[deviceId] = { error: dispatch.error };
+        continue;
+      }
+      // Project the polled row instead of returning it whole: the row
+      // carries `payload` (full script content + parameters), which must
+      // never reach the model context or persisted chat history — this
+      // repo already redacts that via sanitizeCommandPayloadForAudit /
+      // sanitizeCommandForHistory (services/commandAudit.ts) for the
+      // audit/history paths, and the AI path must not bypass that
+      // convention. Mirrors executeCommand's own return shape
+      // (services/commandQueue.ts) so callers reading top-level
+      // .stdout/.exitCode keep working, plus the new executionId.
+      const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
+      results[deviceId] = {
+        ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
+        commandId: cmd.id,
+        executionId: dispatch.executionId,
+        // #4888 — the RESOLVED context, echoed from dispatch rather than
+        // recomputed here, so the assistant can tell "ran as SYSTEM
+        // because I asked" from "ran as SYSTEM because that is the
+        // script's default" and reason about a user-context failure
+        // instead of retrying blind (the #4882 debugging shape).
+        runAs: dispatch.runAs,
+        ...(dispatch.targetSessionId != null ? { targetSessionId: dispatch.targetSessionId } : {}),
+      };
+    } catch (err) {
+      // A thrown error here is indistinguishable from "device unsupported"
+      // once caught below unless it's surfaced — a genuine DB/infra fault
+      // during dispatch must not silently masquerade as graceful
+      // per-device degradation.
+      console.error('[aiToolsScripts] run_script dispatch failed', { deviceId, error: err });
+      captureException(err);
+      results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
+    }
+  }
+
+  return JSON.stringify({ results });
+};
+
 export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -219,7 +598,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
+      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Other payload keys: start_service/stop_service/restart_service { serviceName } (same key manage_services takes; `name` also works — either key reaches the agent as `name`, which is what it actually reads); kill_process { processName, pid }; file_read { path }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -241,15 +620,34 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
+      const commandType = input.commandType as string;
 
       // Verify device access
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const { device } = access;
 
+      const payload = { ...((input.payload as Record<string, unknown>) ?? {}) };
+
+      // The tool description tells the model to send { serviceName } for the
+      // three service commands — the same key manage_services' own input
+      // schema takes — but unlike manage_services (which normalizes it to
+      // `name` at ~L668 before calling executeCommand), this handler used to
+      // forward the payload verbatim. The agent only reads payload["name"]
+      // (agent/internal/remote/tools/services.go), so a model-issued
+      // serviceName call silently no-oped on the device while the approval
+      // headline still confidently named the service. Accept either key;
+      // `name` wins if a caller somehow sends both.
+      if (
+        (commandType === 'start_service' || commandType === 'stop_service' || commandType === 'restart_service') &&
+        payload.serviceName !== undefined
+      ) {
+        if (payload.name === undefined) payload.name = payload.serviceName;
+        delete payload.serviceName;
+      }
+
       // Import and use executeCommand from commandQueue
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, input.commandType as string, (input.payload as Record<string, unknown>) ?? {}, {
+      const result = await aiExecuteCommand(auth, 'execute_command', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -267,225 +665,112 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
+      description: 'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both. A device inside a maintenance window that suppresses scripts is skipped, not failed: that device\'s result carries status "suppressed" with a message — report it as deferred and do not retry it now.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          scriptId: { type: 'string', description: 'UUID of an existing script to run' },
+          scriptId: { type: 'string', description: 'UUID of an existing library script to run' },
+          proposalId: { type: 'string', description: 'UUID of a reviewed AI-authored proposal to run. Mutually exclusive with scriptId; takes no parameters.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
-          parameters: { type: 'object', description: 'Script parameters' }
+          parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
+          // #4888 — see services/scriptRunRequest.ts. Shared with the three
+          // other declarations of this tool's input shape so the model can
+          // express a run context on every surface, not just some of them.
+          ...AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES
         },
-        required: ['scriptId', 'deviceIds']
+        required: ['deviceIds']
       }
     },
-    handler: async (input, auth, context) => {
-      const { waitForCommandResult } = await getCommandQueue();
-      const deviceIds = input.deviceIds as string[];
-      const results: Record<string, unknown> = {};
+    handler: runScriptHandler,
+  });
 
-      // #3409 PR4c-1 — a release path may have ALREADY read this script row and
-      // resolved its tenant variables, in order to recompute the approval's
-      // pinned effect digest. Reading them again here would reopen the exact
-      // check/use window the digest exists to close: the digest proves the
-      // target was unchanged as of THAT read, and a second read proves nothing.
-      const verified = verifiedRunScriptFor(context, input.scriptId);
+  // ============================================
+  // cancel_script_execution - Tier 3 (requires approval)
+  // ============================================
 
-      // AUTHORIZATION, NOT CACHING. The skipped query was filtered by BOTH its
-      // app-layer org condition AND by RLS (it ran in the caller's own DB
-      // context); the pinned row is read system-scoped, so both layers are
-      // re-expressed in `callerMayUseVerifiedScript`. The digest verifies
-      // CONTENT IDENTITY; it says nothing about this caller's authority.
-      if (verified && !callerMayUseVerifiedScript(verified.scriptRow, auth)) {
-        return JSON.stringify({ error: 'Script not found or has no content' });
+  registerTool({
+    tier: 3,
+    // The device is derived from the execution, not supplied — so there is no
+    // device-id property for the central `enforceDeviceArgs` gate to check.
+    // The handler therefore gates inline. It uses the shared
+    // `verifyDeviceAccess` helper (org + site on the DEVICE row), which is
+    // STRICTER than `get_script_execution`'s hand-rolled site-only check on
+    // the read side: this is a write, so the device's own org is re-checked
+    // rather than inferred from the execution.
+    deviceArgs: [],
+    definition: {
+      name: 'cancel_script_execution',
+      description: 'Stop a running script execution on a device. Cancellation is a de-escalation: it never starts work. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          executionId: { type: 'string', description: 'UUID of the script_executions row to stop' },
+          graceSeconds: { type: 'number', description: 'Seconds to wait after SIGTERM before SIGKILL (0-30, default 5). No graceful phase on Windows.' },
+        },
+        required: ['executionId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const executionId = input.executionId as string;
+
+      // Org axis on the execution itself (script_executions carries the DEVICE's
+      // org, so a partner-wide script's run is still scoped to where it ran),
+      // then the site axis and device visibility via the shared write-path gate.
+      const conditions: SQL[] = [eq(scriptExecutions.id, executionId)];
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
+      const [execution] = await db
+        .select({ id: scriptExecutions.id, deviceId: scriptExecutions.deviceId })
+        .from(scriptExecutions)
+        .where(and(...conditions))
+        .limit(1);
+      if (!execution) return JSON.stringify({ error: 'Execution not found or access denied' });
+
+      const access = await verifyDeviceAccess(execution.deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      // Same service the HTTP route and the automation fan-out use, so the
+      // state machine has exactly one implementation.
+      const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+      const outcome = await cancelScriptExecution({
+        executionId,
+        // May be a synthetic principal id; the service probes-and-degrades it
+        // against `users` rather than raising 23503.
+        actorId: auth.user.id,
+        actorLabel: `AI assistant (${auth.user.email})`,
+        graceSeconds: input.graceSeconds as number | undefined,
+      });
+
+      if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+        await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
       }
 
-      // Resolve script content upfront so the agent receives the full payload
-      const script = verified ? verified.scriptRow : await queryRunScriptRow(input.scriptId as string, auth);
+      // Report the OUTCOME, never a claimed stop: only `retracted` proves the
+      // script never ran, and `cancelling` is still awaiting the device.
+      //
+      // Each kind carries a plain-English `detail` because the bare kind names
+      // are not self-describing to a model — `recovered` in particular reads as
+      // "successfully resolved" when it means the opposite: the cancel was too
+      // late and the script already finished on its own.
+      const CANCEL_OUTCOME_DETAIL: Record<CancelOutcome['kind'], string> = {
+        not_found: 'No such execution, or it is outside your access.',
+        already_terminal: 'The execution had already finished; nothing was cancelled.',
+        idempotent: 'A cancellation was already recorded for this execution; nothing new was sent.',
+        retracted: 'Proven stopped: the script had not reached the device and the command was withdrawn.',
+        recovered: 'TOO LATE — the script already finished on its own and the cancel had no effect. Read the execution to see how it ended.',
+        cancelling: 'A stop was sent to the device. The script is NOT stopped yet; re-read the execution to see whether it was.',
+        inconsistent: 'Refused: the execution has no paired command, so a stop cannot be proven either way.',
+      };
 
-      if (!script || !script.content) {
-        return JSON.stringify({ error: 'Script not found or has no content' });
-      }
-
-      // This guard is NOT here because the intent-release worker runs under a
-      // system context — it doesn't. jobs/intentReleaseWorker.ts executes this
-      // tool inside `withAuthDbAccessContext(auth, ...)`, which is RLS-scoped
-      // to the reconstructed approver identity, same as a live request. The
-      // real reason this app-layer check is load-bearing: a membership-less
-      // user is issued a system-SCOPE token (see
-      // middleware/auth.ts — payload.scope === 'system'), under which
-      // `auth.orgCondition(...)` returns `undefined` and RLS is effectively
-      // off for that session. For that caller, this org-equality check plus
-      // the device-org→partner lookup below are the ONLY defenses stopping a
-      // partner-wide script from running on a device outside the script's
-      // partner. Do not delete this thinking RLS already covers it.
-      const scriptPartnerId = script.partnerId ?? null;
-
-      for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
-        try {
-          // Verify access
-          const access = await verifyDeviceAccess(deviceId, auth);
-          if ('error' in access) {
-            results[deviceId] = { error: access.error };
-            continue;
-          }
-
-          // Identity hardening for the verified path (#3409 PR4c-1 fix round
-          // 1). `verifiedRunScriptFor` re-checks the pinned scriptId; this is
-          // the same check on the OTHER argument. The snapshot's
-          // `deviceOrgIds` is built from every id in `args.deviceIds`, and
-          // this loop dispatches a subset of that same array, so the device's
-          // org is always a member when the context and the arguments came
-          // from the same intent. If it is not, the pinned SCOPE may not cover
-          // this device's org — dispatch would resolve its tenant variables
-          // against a scope that was never loaded for it and quietly render
-          // "no value set". Fail this device closed rather than dispatch on
-          // unverified material; log + capture so the plumbing bug is visible.
-          if (verified && !verified.snapshot.deviceOrgIds.includes(access.device.orgId)) {
-            const message =
-              '[aiToolsScripts] run_script verified snapshot does not cover the dispatched device org';
-            console.error(message, { deviceId, deviceOrgId: access.device.orgId });
-            captureException(new Error(message));
-            results[deviceId] = { error: 'Device not found or access denied' };
-            continue;
-          }
-
-          // Org-equality invariant (mirrors scriptExecution.ts / playbooks.ts):
-          // a system/org-less script (orgId === null) is universally runnable,
-          // but a non-null script org MUST match the target device's org. For a
-          // multi-org caller, orgCondition resolves an org-A script and
-          // verifyDeviceAccess admits an org-B device — both pass canAccessOrg —
-          // so without this an org-A script's content lands on an org-B device.
-          // Treat a mismatch like an inaccessible device.
-          if (script.orgId !== null && script.orgId !== access.device.orgId) {
-            results[deviceId] = { error: 'Device not found or access denied' };
-            continue;
-          }
-
-          if (scriptPartnerId !== null) {
-            const [deviceOrg] = await db
-              .select({ partnerId: organizations.partnerId })
-              .from(organizations)
-              .where(eq(organizations.id, access.device.orgId))
-              .limit(1);
-            if (!deviceOrg || deviceOrg.partnerId !== scriptPartnerId) {
-              results[deviceId] = { error: 'Device not found or access denied' };
-              continue;
-            }
-          }
-
-          // Escape the ambient held transaction before dispatch + poll (#3409 C1).
-          //
-          // Every AI tool handler (this one included) runs inside ONE held
-          // Postgres transaction for the whole turn — aiAgentSdkTools.ts:400
-          // and jobs/intentReleaseWorker.ts:459 both wrap tool dispatch in
-          // withDbAccessContext (see db/index.ts:436-484 for what "held"
-          // means: a real `baseDb.transaction()` that doesn't commit until
-          // the callback returns). Everything above this point (the script
-          // select, verifyDeviceAccess, the partner-org lookup) is RLS-scoped
-          // read work that belongs in that ambient transaction. Dispatch does
-          // not: if the device_commands INSERT stayed inside it, the row
-          // would be invisible to the agent-WS handler that processes the
-          // result on a *different* connection — its `UPDATE device_commands
-          // ... WHERE id = commandId` would match 0 rows, and
-          // waitForCommandResult would burn the full 60s timeout per device
-          // while holding a pooled connection the entire time.
-          //
-          // `executeCommand` (services/commandQueue.ts) hit exactly this and
-          // fixed it with a two-phase runOutsideDbContext escape — read its
-          // docstring there before changing this. Mirror that shape, not one
-          // long-lived transaction spanning the whole poll:
-          //
-          //   Phase 1 (write): runOutsideDbContext + withSystemDbAccessContext
-          //   wrap ONLY dispatchScriptToDevice, so its script_executions /
-          //   device_commands inserts run inside a real (non-contextless)
-          //   transaction that commits the instant dispatch returns. System
-          //   scope is safe here because ownership was already validated
-          //   above under RLS (device access + org-equality + partner guard)
-          //   — same justification as the automation worker path, which runs
-          //   this identical dispatch core under system context for the
-          //   whole run (jobs/automationWorker.ts). The insert must NOT run
-          //   contextless (bare runOutsideDbContext with no
-          //   withSystemDbAccessContext) — that would just trade the 0-row
-          //   trap for the contextless-write guard (#1375).
-          //
-          //   Phase 2 (poll): waitForCommandResult runs OUTSIDE any held
-          //   transaction — still escaped via runOutsideDbContext, but NOT
-          //   nested inside withSystemDbAccessContext — so each poll
-          //   iteration is a plain, quickly-released pool read, exactly like
-          //   executeCommand's own poll loop. Nesting the poll inside the
-          //   same withSystemDbAccessContext call as dispatch would reproduce
-          //   the identical 0-row bug under a different (system-scoped)
-          //   transaction: the INSERT wouldn't commit until the 60s wait
-          //   finished either.
-          // Task 4 (#3409 PR2): the variable-scope preload joins this SAME
-          // escape rather than getting its own — it must run inside the
-          // identical system-context transaction as dispatchScriptToDevice
-          // (see the long comment above for why a bare/contextless read
-          // would reproduce the 0-row trap this escape exists to avoid). One
-          // device per iteration here (max 10, capped above), so one org per
-          // preload — there is no wider fan-out to batch it against.
-          const dispatch = await runOutsideDbContext(() =>
-            withSystemDbAccessContext(async () => {
-              // #3409 PR3 P1: gated on `scriptNeedsVariableScope`, not
-              // content tokens alone — a `tenantVariable`-bound parameter
-              // lives in `scripts.parameters`, and a content-only gate would
-              // hand dispatch an empty scope for it.
-              //
-              // #3409 PR4c-1: with a verified release, the scope is the one
-              // the digest's variable references were pinned from — reusing
-              // it is the point of the whole exercise. It was loaded through
-              // the SAME gate over the SAME row, for every device org in the
-              // call, so it is a superset of what this per-device load would
-              // have produced (and equally empty when the script needs none).
-              const variableScope = verified
-                ? verified.scope
-                : await loadTenantVariableScope(
-                    scriptNeedsVariableScope(script) ? [access.device.orgId] : []
-                  );
-              return dispatchScriptToDevice({
-                device: access.device,
-                source: { kind: 'saved', script },
-                parameters: (input.parameters as Record<string, unknown>) ?? {},
-                triggerType: 'manual',
-                triggeredBy: auth.user.id,
-                createdBy: auth.user.id,
-                requireOnline: true,
-                variableScope,
-              });
-            })
-          );
-          if (!dispatch.ok) {
-            results[deviceId] = { error: dispatch.error };
-            continue;
-          }
-          // Project the polled row instead of returning it whole: the row
-          // carries `payload` (full script content + parameters), which must
-          // never reach the model context or persisted chat history — this
-          // repo already redacts that via sanitizeCommandPayloadForAudit /
-          // sanitizeCommandForHistory (services/commandAudit.ts) for the
-          // audit/history paths, and the AI path must not bypass that
-          // convention. Mirrors executeCommand's own return shape
-          // (services/commandQueue.ts) so callers reading top-level
-          // .stdout/.exitCode keep working, plus the new executionId.
-          const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
-          results[deviceId] = {
-            ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
-            commandId: cmd.id,
-            executionId: dispatch.executionId,
-          };
-        } catch (err) {
-          // A thrown error here is indistinguishable from "device unsupported"
-          // once caught below unless it's surfaced — a genuine DB/infra fault
-          // during dispatch must not silently masquerade as graceful
-          // per-device degradation.
-          console.error('[aiToolsScripts] run_script dispatch failed', { deviceId, error: err });
-          captureException(err);
-          results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
-        }
-      }
-
-      return JSON.stringify({ results });
-    }
+      return JSON.stringify({
+        executionId,
+        outcome: outcome.kind,
+        detail: CANCEL_OUTCOME_DETAIL[outcome.kind],
+        ...(outcome.kind === 'already_terminal' || outcome.kind === 'idempotent'
+          ? { status: outcome.status }
+          : {}),
+      });
+    },
   });
 
   // ============================================
@@ -515,7 +800,6 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
       const commandTypeMap: Record<string, string> = {
         list: 'list_services',
         start: 'start_service',
@@ -526,7 +810,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const commandType = commandTypeMap[action];
       if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
 
-      const result = await executeCommand(deviceId, commandType, {
+      const result = await aiExecuteCommand(auth, 'manage_services', deviceId, commandType, {
         name: input.serviceName
       }, { userId: auth.user.id, timeoutMs: 30000 });
 
@@ -554,6 +838,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           },
           deviceId: { type: 'string', description: 'The device UUID' },
           processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
+          processName: {
+            type: 'string',
+            description: 'The name of the process being killed, from a prior list_processes/manage_services:list read (e.g. "notepad.exe"). Recommended alongside processId for kill: a bare PID gets reused by the OS the instant a process exits, so including the name lets a reviewer verify what a kill call actually targets. This is used for verification/filtering, not a same-process guarantee — it is not re-checked against the live process list at dispatch time.'
+          },
           search: { type: 'string', description: 'Filter process list by name' },
           sortBy: {
             type: 'string',
@@ -575,11 +863,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-
       if (action === 'list') {
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
-        const result = await executeCommand(deviceId, 'list_processes', {
+        const result = await aiExecuteCommand(auth, 'manage_processes', deviceId, 'list_processes', {
           search: input.search ?? undefined,
           sortBy: input.sortBy ?? 'cpu',
           limit
@@ -593,7 +879,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'processId is required for kill action' });
         }
 
-        const result = await executeCommand(deviceId, 'kill_process', {
+        const result = await aiExecuteCommand(auth, 'manage_processes', deviceId, 'kill_process', {
           pid: input.processId
         }, { userId: auth.user.id, timeoutMs: 30000 });
 
@@ -738,6 +1024,25 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (includeExecutionStats) {
+        // Execution stats are device-attributable rows reached without naming a
+        // device: scope them to the caller's org AND to BOTH access axes. The
+        // exact-device axis applies on its own for a device-LESS analysis run
+        // (#6086); the SITE axis is the human counterpart and is a separate
+        // narrowing — a site-restricted technician carries `allowedSiteIds`
+        // and no `allowedDeviceIds`, so the device guard alone is a silent
+        // no-op for them and they read counts/avg duration for every site in
+        // the org (audit 2026-09-17 §1.1). `script_executions.device_id` is
+        // NOT NULL with an FK to `devices`, so the join below is lossless and
+        // the unrestricted caller's aggregate is unchanged — the same shape
+        // `get_script_execution_history` already uses.
+        const statsConditions: SQL[] = [eq(scriptExecutions.scriptId, scriptId)];
+        const statsOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+        if (statsOrgCondition) statsConditions.push(statsOrgCondition);
+        const statsDeviceCondition = deviceScopeCondition(auth, scriptExecutions.deviceId);
+        if (statsDeviceCondition) statsConditions.push(statsDeviceCondition);
+        const statsSiteCondition = siteScopeCondition(auth, devices.siteId);
+        if (statsSiteCondition) statsConditions.push(statsSiteCondition);
+
         const [stats] = await db
           .select({
             totalExecutions: sql<number>`count(*)::int`,
@@ -750,9 +1055,17 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             avgDurationSeconds: sql<number>`avg(extract(epoch from (${scriptExecutions.completedAt} - ${scriptExecutions.startedAt})))::numeric(10,2)`,
           })
           .from(scriptExecutions)
-          .where(eq(scriptExecutions.scriptId, scriptId));
+          .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+          .where(and(...statsConditions));
 
         result.executionStats = stats;
+        // The numbers above are narrowed but look org-wide on the wire, so the
+        // model reports them as the script's whole history. Say what they cover
+        // (review #6110).
+        if (auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined) {
+          result.executionStatsScopeNote =
+            'These execution statistics cover only the devices within your access scope, not every device in the organization.';
+        }
       }
 
       return JSON.stringify(result);
@@ -843,22 +1156,42 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
 
+      const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
+      const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+      if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedDeviceIds !== undefined) {
+        executionConditions.push(inArray(scriptExecutions.deviceId, auth.allowedDeviceIds));
+      }
+      if (auth.allowedSiteIds !== undefined) {
+        executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+      }
+
       const results = await db
         .select({
           id: scriptExecutions.id,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
+          stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
           createdAt: scriptExecutions.createdAt,
           completedAt: scriptExecutions.completedAt,
         })
         .from(scriptExecutions)
-        .where(eq(scriptExecutions.scriptId, input.scriptId as string))
+        .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+        .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
         .limit(limit);
 
-      return JSON.stringify({ executions: results, count: results.length });
+      const executions = results.map((execution) => ({
+        ...execution,
+        ...(execution.stdout && execution.stdout.length > 16_384
+          ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
+          : {}),
+        ...(execution.stderr && execution.stderr.length > 8_192
+          ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
+          : {}),
+      }));
+      return JSON.stringify({ executions, count: executions.length });
     },
   });
 
@@ -880,18 +1213,28 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      // Partner-wide/system scripts have org_id NULL; the plain orgCondition
-      // would exclude their executions (same trap run_script guards against
-      // above). Org-less scripts pass here; the device-site check below and
-      // RLS still constrain what the session can see.
-      const orgCond = auth.orgCondition(scripts.orgId);
-      const scriptOrgCondition = orgCond ? or(isNull(scripts.orgId), orgCond) : undefined;
+      // TENANCY MOVED: the org predicate used to ride `scripts.orgId` through
+      // the inner join (with an `isNull` carve-out for partner-wide/system
+      // scripts). With a left join that predicate would be NULL — and
+      // therefore not true — for every proposal row, so it is re-anchored on
+      // the execution's OWN denormalised org_id, which is the column RLS and
+      // the device-move restamp already maintain and which is NOT NULL for
+      // every execution regardless of source.
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
 
       const [execution] = await db
         .select({
           id: scriptExecutions.id,
+          sourceKind: scriptExecutions.sourceKind,
           scriptId: scriptExecutions.scriptId,
+          proposalId: scriptExecutions.proposalId,
           scriptName: scripts.name,
+          scriptLanguage: scripts.language,
+          language: scriptExecutions.language,
+          timeoutSeconds: scriptExecutions.timeoutSeconds,
+          reviewRiskTier: scriptExecutions.reviewRiskTier,
+          reviewSummary: scriptExecutions.reviewSummary,
+          approvalMethod: scriptExecutions.approvalMethod,
           deviceId: scriptExecutions.deviceId,
           deviceHostname: devices.hostname,
           deviceSiteId: devices.siteId,
@@ -905,22 +1248,25 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           createdAt: scriptExecutions.createdAt,
         })
         .from(scriptExecutions)
-        .innerJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
+        // LEFT, not INNER: a proposal-backed row has no scripts parent.
+        .leftJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
         .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
         .where(and(
           eq(scriptExecutions.id, input.executionId as string),
-          ...(scriptOrgCondition ? [scriptOrgCondition] : []),
+          ...(orgCond ? [orgCond] : []),
         ))
         .limit(1);
 
-      if (!execution) return JSON.stringify({ error: 'Execution not found' });
+      if (!execution || (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(execution.deviceId))) {
+        return JSON.stringify({ error: 'Execution not found' });
+      }
       // Site axis: same rule verifyDeviceAccess applies on the write path.
       if (auth.canAccessSite && !auth.canAccessSite(execution.deviceSiteId)) {
         return JSON.stringify({ error: 'Execution not found' });
       }
 
       const { deviceSiteId: _siteId, ...result } = execution;
-      return JSON.stringify({ execution: result });
+      return JSON.stringify({ execution: shapeExecutionRow(result) });
     },
   });
 
@@ -1085,7 +1431,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand, CommandTypes } = await getCommandQueue();
+      const { CommandTypes } = await getCommandQueue();
       const commandTypeMap: Record<string, string> = {
         list: CommandTypes.TASKS_LIST,
         run: CommandTypes.TASK_RUN,
@@ -1105,7 +1451,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         payload.path = input.taskName;
       }
 
-      const result = await executeCommand(deviceId, commandType, payload, {
+      const result = await aiExecuteCommand(auth, 'manage_scheduled_tasks', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -1115,11 +1461,18 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // registry_operations - Tier 1 base, with action escalation
+  // registry_operations - Tier 2 base, with action escalation
+  //
+  // Base raised 1 -> 2 (2026-09-17 AI tool ROLE audit §2.4, SR5-01 precedent):
+  // every action dispatches a real agent command, whose HTTP path requires
+  // devices:execute + MFA (routes/devices/commands.ts:49). read_key/get_value
+  // are classified in TIER2_ACTIONS and the writes in TIER3_ACTIONS; the base
+  // tier is what an UNCLASSIFIED action would fall back to, and Tier 1 there
+  // meant no approval gate and no audit-tier prompt.
   // ============================================
 
   registerTool({
-    tier: 1,
+    tier: 2,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',
@@ -1155,7 +1508,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand, CommandTypes } = await getCommandQueue();
+      const { CommandTypes } = await getCommandQueue();
 
       const commandTypeMap: Record<string, string> = {
         read_key: CommandTypes.REGISTRY_VALUES,
@@ -1179,7 +1532,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (input.valueData !== undefined) payload.data = input.valueData;
       if (input.valueType) payload.type = input.valueType;
 
-      const result = await executeCommand(deviceId, commandType, payload, {
+      const result = await aiExecuteCommand(auth, 'registry_operations', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000,
       });
@@ -1188,3 +1541,21 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     }
   });
 }
+
+function shapeExecutionRow(row: {
+  sourceKind: 'library' | 'proposal'; proposalId: string | null;
+  scriptName: string | null; language: string | null; scriptLanguage: string | null;
+  timeoutSeconds: number | null; [key: string]: unknown;
+}) {
+  return {
+    ...row,
+    // A proposal has no library name. Say so plainly rather than rendering an
+    // empty string the assistant might read as "the script was deleted".
+    scriptName: row.scriptName ?? (row.sourceKind === 'proposal' ? 'AI-authored proposal' : null),
+    language: row.language ?? row.scriptLanguage ?? null,
+  };
+}
+
+// Extended by Task 21 (runScriptHandler) — keep as a plain object literal
+// rather than reassigning it, so later work can merge into the same export.
+export const __testOnly = { shapeExecutionRow, runScriptHandler };

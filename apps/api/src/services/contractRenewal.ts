@@ -9,6 +9,7 @@ import { getEmailService } from './email';
 import { buildContractRenewalEmail } from './contractRenewalTemplate';
 import { duePeriodStartFor, extendTermPastDue, isWithinNoticeWindow } from './contractMath';
 import { captureException } from './sentry';
+import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 
 const WEB_BASE = process.env.PUBLIC_APP_URL ?? '';
 
@@ -75,7 +76,8 @@ async function dispatchNotice(c: RenewalCandidate, kind: 'advance' | 'renewed', 
           kind, contractName: c.name, orgName, endDate, contractUrl,
           noticeDays: kind === 'advance' ? (c.renewalNoticeDays ?? undefined) : undefined
         });
-        await emailService.sendEmail({ to: recipients.map((r) => r.email), subject: tpl.subject, html: tpl.html, text: tpl.text });
+        // To MSP staff, not the customer (spec §8.2) — platform sender.
+        await emailService.sendEmail({ to: recipients.map((r) => r.email), subject: tpl.subject, html: tpl.html, text: tpl.text, purpose: 'staff.contract_renewal' });
       }
     }
   } catch (err) {
@@ -99,7 +101,15 @@ export async function runContractRenewalSweep(asOf: Date = new Date()): Promise<
     billingTiming: contracts.billingTiming, intervalMonths: contracts.intervalMonths,
     endDate: contracts.endDate, nextBillingAt: contracts.nextBillingAt,
     autoRenew: contracts.autoRenew, renewalTermMonths: contracts.renewalTermMonths, renewalNoticeDays: contracts.renewalNoticeDays
-  }).from(contracts).where(and(eq(contracts.status, 'active' as never), eq(contracts.autoRenew, true), isNotNull(contracts.endDate)));
+  }).from(contracts).where(and(
+    eq(contracts.status, 'active' as never),
+    eq(contracts.autoRenew, true),
+    isNotNull(contracts.endDate),
+    // Org-lifecycle Wave 4: an ARCHIVED/purging/merging tenant must not have
+    // its contract term silently extended (or its MSP emailed about a renewal)
+    // while the org is hidden and counting down to erasure.
+    buildAutomationEligibleOrgPredicate(contracts.orgId),
+  ));
 
   let noticed = 0;
   let renewed = 0;

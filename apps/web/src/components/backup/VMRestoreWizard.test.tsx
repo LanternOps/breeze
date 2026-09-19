@@ -35,9 +35,10 @@ describe('VMRestoreWizard', () => {
           ],
         });
       }
-      if (url === '/devices') {
+      if (url.startsWith('/devices/options?')) {
         return makeJsonResponse({
-          data: [{ id: 'device-1', hostname: 'hyperv-01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'device-1', hostname: 'hyperv-01', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null }],
+          page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
         });
       }
       if (url === '/backup/restore/as-vm/estimate/snapshot-1') {
@@ -67,6 +68,8 @@ describe('VMRestoreWizard', () => {
     await screen.findByText('Select backup snapshot');
     expect(screen.getByText('Nightly Snapshot')).toBeTruthy();
     expect(screen.getByText('1. Snapshot')).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
   });
 
   it('renders alpha banner', async () => {
@@ -83,7 +86,7 @@ describe('VMRestoreWizard', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\. Target Host/i }));
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'device-1' } });
+    fireEvent.click(await screen.findByRole('radio'));
     fireEvent.click(screen.getByRole('button', { name: /3\. VM Specs/i }));
 
     await waitFor(() => {
@@ -124,7 +127,7 @@ describe('VMRestoreWizard', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\. Target Host/i }));
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'device-1' } });
+    fireEvent.click(await screen.findByRole('radio'));
     fireEvent.click(screen.getByRole('button', { name: /4\. VM Name/i }));
     fireEvent.change(screen.getByLabelText(/VM Name/i), { target: { value: 'Instant VM' } });
     fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));

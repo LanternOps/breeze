@@ -55,6 +55,7 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d --
 - Dev mode runs `autoMigrate` on boot — branch migrations apply automatically (forward-only, idempotent).
 - The `:dev` images supply `node_modules`; **mounted `src` is what runs**. If the branch added dependencies (check `git log --since=...-p -- apps/api/package.json`), the `:dev` image may be missing them → `docker compose ... up -d --build api web`.
 - After editing `src`, `tsx watch` usually hot-reloads; if a change doesn't take, `docker compose ... restart api`.
+- **When done:** `docker compose -f docker-compose.yml -f docker-compose.override.yml.dev down -v --remove-orphans` (same `-f` files as `up`; caddy is in the same `breeze` project). Nothing tears it down for you — `docker compose ls -a` shows what is still up across all worktrees; full checklist in the `worktree-stack` skill → "Tear down when done".
 
 ---
 

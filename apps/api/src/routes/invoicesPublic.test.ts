@@ -14,6 +14,7 @@ vi.mock('../db', () => {
   };
   return {
     db: makeChain(),
+    getCurrentDbAccessContext: () => undefined,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
@@ -52,8 +53,21 @@ vi.mock('../services/documentThemes', () => ({
   resolvePageSize: (p: unknown) => p ?? 'letter',
 }));
 
+// Org-lifecycle gate (Wave 4 review fix C-A.1): each handler runs one extra
+// system-context org-status read. Stubbed OPEN by default so it does not
+// consume the FIFO dbResults queue; the gate's own query is covered by
+// services/publicLinkOrgGate.test.ts and the 410s are pinned below.
+vi.mock('../services/publicLinkOrgGate', async (importActual) => {
+  const actual = await importActual<typeof import('../services/publicLinkOrgGate')>();
+  return {
+    ...actual,
+    resolveOrgLinkGate: vi.fn(async () => actual.PUBLIC_LINK_ORG_GATE_OPEN),
+  };
+});
+
 import { invoicesPublicRoutes } from './invoicesPublic';
 import { InvoiceServiceError } from '../services/invoiceTypes';
+import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
 
 const TOKEN = 'A'.repeat(43);
 const INV_ID = '11111111-1111-1111-1111-111111111111';
@@ -264,5 +278,69 @@ describe('POST /invoices/public/settle-return', () => {
     expect(data.settled).toBe(false);
     // Terminal non-success: no settle replay either.
     expect(settleMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── org-lifecycle gate (Wave 4 review fix C-A.1) ───────────────────────────
+// The public invoice link is a DURABLE bearer capability, so it outlives an
+// archive: without this gate an archived tenant keeps taking card payments for
+// the whole retention window and then has the payment rows erased under it.
+describe('invoicesPublic org-lifecycle gate', () => {
+  const blocked = { orgId: ORG_ID, status: 'archived', blocked: true };
+
+  // vi.clearAllMocks() (global beforeEach) clears CALLS but not
+  // implementations, so a mockResolvedValue set by one case would leak into
+  // the next and quietly make the live-org case vacuous.
+  beforeEach(() => {
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue({ orgId: null, status: null, blocked: false });
+  });
+
+  it('410s the customer view for an archived org', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue(blocked);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(PUBLIC_LINK_ORG_UNAVAILABLE);
+    expect(markViewedMock).not.toHaveBeenCalled();
+  });
+
+  it('410s the PDF download for an archived org', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue(blocked);
+    const res = await app().request(`/invoices/public/${TOKEN}/pdf`);
+    expect(res.status).toBe(410);
+    expect(getPdfMock).not.toHaveBeenCalled();
+  });
+
+  it('410s the pay-link mint for an archived org (no Stripe session)', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue(blocked);
+    const res = await app().request(`/invoices/public/${TOKEN}/pay`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+    expect(res.status).toBe(410);
+    expect(payLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('410s settle-return for an archived org WITHOUT settling', async () => {
+    dbResults.push([{ invoiceId: INV_ID, status: 'pending', updatedAt: new Date() }]);
+    dbResults.push([invoice()]);
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue(blocked);
+    const res = await app().request('/invoices/public/settle-return', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'cs_test_123' }),
+    });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(PUBLIC_LINK_ORG_UNAVAILABLE);
+    expect(settleMock).not.toHaveBeenCalled();
+    expect(mintMock).not.toHaveBeenCalled();
+  });
+
+  it('serves normally for a live org (the gate is not a blanket refusal)', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, []);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(resolveOrgLinkGate).toHaveBeenCalledWith(ORG_ID);
   });
 });

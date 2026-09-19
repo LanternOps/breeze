@@ -30,13 +30,18 @@ import { getHelperAllowedMcpToolNames, type HelperPermissionLevel } from '../../
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot } from '../../services/screenshotStorage';
-import { checkBudget, getRemainingBudgetUsd } from '../../services/aiCostTracker';
+import { checkBudget } from '../../services/aiCostTracker';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
-import { resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 import { captureException } from '../../services/sentry';
+import {
+  isAiBudgetLockTimeout,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from '../../services/aiBudgetReservations';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
@@ -160,15 +165,7 @@ async function runHelperPreFlight(
     ? clientDeclaredToolMcpNames(clientTools)
     : getHelperAllowedMcpToolNames(permissionLevel);
 
-  let maxBudgetUsd: number | undefined;
-  try {
-    const remaining = await getRemainingBudgetUsd(device.orgId);
-    if (remaining !== null) maxBudgetUsd = remaining;
-  } catch {
-    // Non-fatal
-  }
-
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, allowedTools, clientTools, resolved };
 }
 
 // ============================================
@@ -280,7 +277,7 @@ helperRoutes.post(
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, allowedTools, clientTools, resolved } = preflight;
 
     // When the session declared client tools, build the generic client-declared
     // MCP server: each model tool call publishes `client_tool_request` and parks
@@ -302,38 +299,84 @@ helperRoutes.post(
         })
       : undefined;
 
-    // Get or create streaming session
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-      },
-      auth,
-      c,
-      systemPrompt,
-      maxBudgetUsd,
-      resolved,
-      allowedTools,
-      mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-    );
-
-    // Concurrent message guard. If the turn is blocked only on pending
-    // approval waits (PAM-gated helper tools), settle them so the assistant
-    // can conclude and answer this message (#3089 — shared helper, see ai.ts).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    const priorSession = streamingSessionManager.get(sessionId);
+    if (priorSession?.state === 'processing') {
+      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      if (settle !== 'concluded') {
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
             : 'The assistant is wrapping up the previous turn — please try again in a moment',
         }, 409);
       }
+    }
+    if (streamingSessionManager.get(sessionId)) streamingSessionManager.remove(sessionId);
+
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        sessionId,
+        idempotencyKey: `helper-chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 402);
+    const budgetReservationId = reservation.reservationId;
+    const reservedMaxBudgetUsd = reservation.kind === 'reserved'
+      ? reservation.reservedCostCents / 100
+      : undefined;
+
+    // Get or create streaming session.
+    //
+    // The `resolveLlmConfig` check earlier in this handler already 503s an
+    // unavailable partner config, but it cannot see this one: `getOrCreate`
+    // resolves the WIRE model inside the manager, so a catalog revision with no
+    // verified mapping for THIS session's model fails closed only here. Same
+    // catch shape as ai.ts — otherwise it reaches `app.onError` as a 500.
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+        },
+        auth,
+        c,
+        systemPrompt,
+        reservedMaxBudgetUsd,
+        resolved,
+        allowedTools,
+        mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
+        { budgetReservationId },
+      );
+    } catch (err) {
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      throw err;
+    }
+
+    // Concurrent message guard. If the turn is blocked only on pending
+    // approval waits (PAM-gated helper tools), settle them so the assistant
+    // can conclude and answer this message (#3089 — shared helper, see ai.ts).
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     // Save user message
@@ -346,6 +389,7 @@ helperRoutes.post(
     } catch (err) {
       console.error('[Helper] Failed to save user message:', err);
       activeSession.state = 'idle';
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       return c.json({ error: 'Failed to save message' }, 500);
     }
 

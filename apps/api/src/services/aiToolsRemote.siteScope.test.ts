@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const remoteSessionCreateMocks = vi.hoisted(() => {
+  class RemoteSessionDeniedError extends Error {
+    readonly capability = 'remote_control' as const;
+    constructor(readonly code: 'TRUST_PROBATION' | 'TRUST_RESTRICTED', readonly reason: string) {
+      super(reason);
+    }
+  }
+  return { createRemoteSession: vi.fn(), RemoteSessionDeniedError };
+});
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -10,6 +20,7 @@ vi.mock('./commandQueue', () => ({
   executeCommand: vi.fn(),
   queueCommandForExecution: vi.fn(),
 }));
+vi.mock('./remoteSessionCreate', () => remoteSessionCreateMocks);
 
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -177,5 +188,38 @@ describe('list_remote_sessions — per-user ownership', () => {
     expect(resolveSiteCalled).toBe(false);
     // No userId filter for system scope.
     expect(renderWhere(captured).params).not.toContain('u1');
+  });
+});
+
+describe('create_remote_session — partner trust', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns the stable tool error when remote control is denied', async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{
+            id: 'device-1',
+            orgId: 'org-1',
+            siteId: 'site-A',
+            hostname: 'host-1',
+            status: 'online',
+          }]),
+        }),
+      }),
+    });
+    remoteSessionCreateMocks.createRemoteSession.mockRejectedValueOnce(
+      new remoteSessionCreateMocks.RemoteSessionDeniedError('TRUST_PROBATION', 'probation_default_deny'),
+    );
+
+    const result = await handlerFor('create_remote_session')(
+      { deviceId: 'device-1', type: 'terminal' },
+      makeAuth(),
+    );
+
+    expect(JSON.parse(result)).toEqual({
+      error: 'TRUST_PROBATION',
+      message: 'Remote control is not available until this account is verified.',
+    });
   });
 });

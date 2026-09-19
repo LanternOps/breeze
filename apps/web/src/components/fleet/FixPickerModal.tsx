@@ -6,6 +6,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { handleActionError } from '@/lib/runAction';
 import { Dialog } from '../shared/Dialog';
 import ScriptPickerModal, { type Script } from '../devices/ScriptPickerModal';
+import { RunContextChip, RunContextSelect, type RunContextChoice } from '../common/RunContext';
 import { remediateFinding, runIdFromFailure } from '@/services/fleetFindings';
 import type {
   FleetFindingDetail, RemediateRequest, RemediateResponse,
@@ -46,6 +47,16 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
   const [step, setStep] = useState<Step>('action');
   const [kind, setKind] = useState<FixKind | null>(null);
   const [script, setScript] = useState<Script | null>(null);
+  // Mirrors `ScriptPickerModal`'s own default — that picker always resets to
+  // 'system' on open (it has no "script default" option), so a fresh pick
+  // that never touches the run-as select still carries an explicit 'system'
+  // choice, not an absent one.
+  // #4888 — `null` means "leave the script's saved default alone", and it has
+  // to be the initial value. The launch-time enum has no 'elevated', so a
+  // control that always sent a concrete value would silently downgrade an
+  // elevated remediation script to `system` — a quieter bug than the one this
+  // issue is about (a select whose value was discarded), and a worse one.
+  const [scriptRunAs, setScriptRunAs] = useState<RunContextChoice | null>(null);
   const [scriptParameters, setScriptParameters] = useState<Record<string, unknown>>({});
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [serviceName, setServiceName] = useState('');
@@ -144,10 +155,15 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
 
   const handleScriptSelect = useCallback(
     (selected: Script, _runAs: unknown, parameters?: Record<string, unknown>) => {
-      // `runAs` is intentionally ignored: the remediation dispatcher reads
-      // runAs from the stored script row, so honouring a picker override here
-      // would be a lie (see dispatch.ts — `runAs: scriptPayload.runAs`).
+      // The picker's own run-as select is HIDDEN here (`showRunAsSelector={false}`
+      // below), so its argument carries no operator intent and is ignored on
+      // purpose — this modal owns the control instead, because only it can
+      // offer "script default". The choice made there IS honoured: it is
+      // persisted on the run (`fleet_remediation_runs.run_as`) and read back
+      // by `services/fleetFindings/dispatch.ts` at dispatch (#4888).
       setScript(selected);
+      // A fresh script means a fresh default to inherit.
+      setScriptRunAs(null);
       setScriptParameters(parameters ?? {});
       setScriptPickerOpen(false);
     },
@@ -167,6 +183,12 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
       return {
         actionKind: 'script',
         scriptId: script!.id,
+        // Only ever sent on the `script` branch — the `command` branch's
+        // schema is `.strict()` and 400s on an unrecognised `runAs` field.
+        // Omitted entirely when the operator left it on "Script default", so
+        // the dispatcher keeps resolving `scripts.run_as` (including
+        // 'elevated', which this control cannot express).
+        ...(scriptRunAs ? { runAs: scriptRunAs } : {}),
         parameters: scriptParameters,
         deviceIds,
       };
@@ -258,9 +280,24 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
                         : t('longTail.fleet.FixPicker.chooseScript')}
                     </button>
                     {script && (
-                      <p data-testid="fix-picker-selected-script" className="text-sm">
-                        {t('longTail.fleet.FixPicker.selectedScript', { name: script.name })}
-                      </p>
+                      <>
+                        <p data-testid="fix-picker-selected-script" className="text-sm">
+                          {t('longTail.fleet.FixPicker.selectedScript', { name: script.name })}
+                        </p>
+                        {/* #4888 — the run context the operator is choosing,
+                            honoured all the way to the agent payload. No
+                            session-target control: session ids are per-device
+                            and a fleet fix fans out to many. */}
+                        <RunContextSelect
+                          value={scriptRunAs}
+                          onChange={setScriptRunAs}
+                          allowScriptDefault
+                          scriptDefault={script.runAs ?? null}
+                          showLabel
+                          id="fix-picker-run-context"
+                          testId="fix-picker-run-as"
+                        />
+                      </>
                     )}
                   </div>
                 )}
@@ -419,6 +456,18 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
                     {t('longTail.fleet.FixPicker.confirmAction')}
                   </span>
                   <p data-testid="fix-picker-confirm-action">{describeAction(kind, script, serviceName, t)}</p>
+                  {kind === 'script' && (
+                    <div className="mt-1">
+                      {/* The EFFECTIVE context, so the confirm step never
+                          leaves the operator guessing what "Script default"
+                          resolved to. */}
+                      <RunContextChip
+                        runAs={scriptRunAs ?? script?.runAs ?? null}
+                        withLabel
+                        testId="fix-picker-confirm-run-as"
+                      />
+                    </div>
+                  )}
                 </div>
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">
@@ -550,12 +599,21 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
       </Dialog>
 
       {/* The device bulk run-script picker, reused verbatim: it already owns
-          the library fetch, the OS/category filters and the parameter form. */}
+          the library fetch, the OS/category filters and the parameter form.
+          Deliberately opened WITHOUT `deviceId` — its RDS session-target
+          dropdown only makes sense for a single on-demand device, and a
+          fleet fix fans out to many devices with independent session ids,
+          so `targetSessionId` is never produced here. */}
       {scriptPickerOpen && (
         <ScriptPickerModal
           isOpen
           onClose={() => setScriptPickerOpen(false)}
           onSelect={handleScriptSelect}
+          // #4888 — this modal renders its own run-context control (with a
+          // "Script default" option the picker's has no concept of), so the
+          // picker's would be a second, contradictory answer to the same
+          // question.
+          showRunAsSelector={false}
         />
       )}
     </>

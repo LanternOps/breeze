@@ -136,10 +136,23 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
       message: payload.message,
       link,
       metadata,
+      // Durable backstop for a redelivered alert.triggered. The stable job id
+      // on `process-alert` only holds while BullMQ retains the completed job;
+      // this is enforced by the partial unique index
+      // user_notifications_user_dedupe_key_uq (user_id, dedupe_key), added in
+      // 2026-09-04-ai-agent-notifications.sql.
+      //
+      // PER-USER, not per-alert: the index is keyed on (user_id, dedupe_key),
+      // but a key of `alert:<id>` alone would still be wrong the moment this
+      // table is read or exported by key — and more importantly it reads as if
+      // one alert may notify only one person. Keep the user in the key so the
+      // intent is legible at the call site.
+      dedupeKey: `alert:${payload.alertId}:${userId}`,
       read: false
     }));
 
-    await db.insert(userNotifications).values(notifications);
+    // Redelivery is expected, not exceptional: collide-and-continue.
+    await db.insert(userNotifications).values(notifications).onConflictDoNothing();
 
     console.log(`[InAppSender] Created ${notifications.length} in-app notifications for alert ${payload.alertId} (${orgUserResults.length} org users, ${partnerUserResults.length} partner users)`);
 

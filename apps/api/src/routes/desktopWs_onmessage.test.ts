@@ -12,11 +12,21 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn()
-  }
+  },
+  // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
+  // unless this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true)
 }));
 
 vi.mock('../db/schema', () => ({
-  remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status' },
+  remoteSessions: {
+    id: 'remoteSessions.id',
+    deviceId: 'remoteSessions.deviceId',
+    status: 'remoteSessions.status',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
+  },
   devices: { id: 'devices.id' },
   users: { id: 'users.id', status: 'users.status' },
   patchPolicies: {},
@@ -79,6 +89,28 @@ vi.mock('./remote/helpers', () => ({
 
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
+}));
+
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1_000_060_000,
+    hardDeadline: 1_000_600_000,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
 }));
 
 // -------------------------------------------------------------------
@@ -160,8 +192,23 @@ function mockUpdateNoReturn() {
   return {
     set: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID, generation: 1n }]),
       }),
+    })
+  } as any;
+}
+
+// select().from().where().limit().for('update') — the row-locked read
+// commitDesktopStreamStartIntent issues (SEC-038 W02, real impl in
+// remoteDesktopStartIntent.ts, not mocked in this file).
+function mockSelectLimitForChain(result: unknown) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue(result)
+        })
+      })
     })
   } as any;
 }
@@ -234,7 +281,15 @@ function setupSuccessfulValidation() {
           })
         })
       })
-    } as any);
+    } as any)
+    // commitDesktopStreamStartIntent: row-locked read (SEC-038 W02)
+    .mockReturnValueOnce(mockSelectLimitForChain([{
+      status: session.status,
+      terminationPhase: 'none',
+      generation: 0n
+    }]))
+    // assertDesktopStartIntentCurrent: pre-send re-read
+    .mockReturnValueOnce(mockSelectChain([{ terminationPhase: 'none', generation: 1n }]));
 
   vi.mocked(isAgentConnected).mockReturnValue(true);
   vi.mocked(sendCommandToAgent).mockReturnValue(true);

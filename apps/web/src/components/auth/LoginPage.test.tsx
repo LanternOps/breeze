@@ -62,7 +62,7 @@ async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure
   await waitFor(() => screen.getByLabelText(/email/i));
   fireEvent.change(screen.getByLabelText(/email/i), { target: { value: email } });
   fireEvent.change(screen.getByLabelText(/password/i), { target: { value: password } });
-  fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  fireEvent.click(screen.getByTestId('login-submit'));
 }
 
 describe('LoginPage hydration safety', () => {
@@ -155,24 +155,80 @@ describe('LoginPage partner SSO button', () => {
 
     const btn = await screen.findByTestId('partner-sso-button');
     expect(btn).toHaveTextContent('Sign in with Okta');
-    // safeNext defaults to '/', so the redirect param is always appended.
-    expect(btn.getAttribute('href')).toBe('/api/v1/sso/login/partner/p1?redirect=%2F');
+    expect(btn.tagName).toBe('BUTTON');
     // Password form remains visible.
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
   });
 
-  it('appends the safe next as a redirect param on the SSO button href', async () => {
+  it('bootstraps the browser binding before partner SSO navigation', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({
       branding: null,
       partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: false },
     });
 
-    render(<LoginPage next="/devices" />);
+    const calls: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/api/v1/config')) {
+        return new Response(JSON.stringify({ cfAccessLogin: { enabled: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const realLocation = window.location;
+    const assign = vi.fn((url: string) => { calls.push(url); });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, assign },
+    });
 
+    try {
+      render(<LoginPage next="/devices" />);
+
+      const btn = await screen.findByTestId('partner-sso-button');
+      fireEvent.click(btn);
+
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(
+        '/api/v1/sso/login/partner/p1?redirect=%2Fdevices',
+      ));
+      expect(calls.slice(-2)).toEqual([
+        '/api/v1/auth/browser-binding/bootstrap',
+        '/api/v1/sso/login/partner/p1?redirect=%2Fdevices',
+      ]);
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    }
+  });
+
+  it('disables the SSO button while bootstrapping and shows the login error on failure', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: false },
+    });
+    let resolveBootstrap!: (response: Response) => void;
+    const bootstrap = new Promise<Response>((resolve) => { resolveBootstrap = resolve; });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/config')) {
+        return new Response(JSON.stringify({ cfAccessLogin: { enabled: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return bootstrap;
+    });
+
+    render(<LoginPage />);
     const btn = await screen.findByTestId('partner-sso-button');
-    expect(btn.getAttribute('href')).toBe(
-      '/api/v1/sso/login/partner/p1?redirect=%2Fdevices'
-    );
+    fireEvent.click(btn);
+
+    expect(btn).toBeDisabled();
+    resolveBootstrap(new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 }));
+    expect(await screen.findByText('Authentication bootstrap failed')).toBeInTheDocument();
+    expect(btn).not.toBeDisabled();
   });
 
   it('omits the SSO button when the login-context fetch degrades to null', async () => {
@@ -194,7 +250,7 @@ describe('LoginPage partner SSO button', () => {
     render(<LoginPage />);
 
     const notice = await screen.findByRole('alert');
-    expect(notice).toHaveTextContent(/This account already has a password/i);
+    expect(notice).toHaveTextContent(/couldn.t be connected to your account automatically/i);
 
     Object.defineProperty(window, 'location', { configurable: true, value: realWindow });
   });
@@ -261,6 +317,43 @@ describe('LoginPage partner SSO button', () => {
   });
 });
 
+describe('LoginPage Cloudflare Access redirect', () => {
+  it('bootstraps the browser binding before automatic redirect-login navigation', async () => {
+    const calls: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/api/v1/config')) {
+        return new Response(JSON.stringify({ cfAccessLogin: { enabled: true } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const realLocation = window.location;
+    const assign = vi.fn((url: string) => { calls.push(url); });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, search: '', assign },
+    });
+
+    try {
+      render(<LoginPage next="/devices" />);
+
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(
+        '/api/v1/auth/cf-access-login?next=%2Fdevices',
+      ));
+      expect(calls.slice(-2)).toEqual([
+        '/api/v1/auth/browser-binding/bootstrap',
+        '/api/v1/auth/cf-access-login?next=%2Fdevices',
+      ]);
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    }
+  });
+});
+
 describe('LoginPage navigation after MFA verify', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -323,11 +416,11 @@ describe('LoginPage navigation after MFA verify', () => {
 // /login?next=…&reason=<code>. Without a notice the user lands on a bare sign-in
 // form with no explanation of why they were kicked out.
 describe('LoginPage session-expiry notice', () => {
-  function withSearch(search: string, run: () => Promise<void>): Promise<void> {
+  function withSearch(search: string, run: () => Promise<void>, origin?: string): Promise<void> {
     const realLocation = window.location;
     Object.defineProperty(window, 'location', {
       configurable: true,
-      value: { ...realLocation, search },
+      value: { ...realLocation, search, ...(origin ? { origin } : {}) },
     });
     return run().finally(() => {
       Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
@@ -344,6 +437,25 @@ describe('LoginPage session-expiry notice', () => {
       const notice = await screen.findByTestId('login-session-expired-notice');
       expect(notice).toHaveTextContent(copy);
     }));
+
+  // A self-hoster on an SSH tunnel is bounced here after EVERY successful
+  // login because the API rejects https://localhost:8443 as an origin. The
+  // generic expiry copy sends them hunting for a password problem, so this
+  // notice has to name the origin the browser is actually using and both
+  // settings that accept it.
+  it('renders the origin-rejected notice with the browser origin interpolated', async () =>
+    withSearch(
+      '?next=%2Fdevices&reason=origin-rejected',
+      async () => {
+        render(<LoginPage />);
+
+        const notice = await screen.findByTestId('login-session-expired-notice');
+        expect(notice).toHaveTextContent('https://localhost:8443');
+        expect(notice).toHaveTextContent(/PUBLIC_APP_URL/);
+        expect(notice).toHaveTextContent(/CORS_ALLOWED_ORIGINS/);
+      },
+      'https://localhost:8443',
+    ));
 
   it('renders nothing for an unrecognized reason', async () =>
     withSearch('?reason=made-up-code', async () => {
@@ -367,7 +479,7 @@ describe('LoginPage session-expiry notice', () => {
       render(<LoginPage />);
 
       const notice = await screen.findByRole('alert');
-      expect(notice).toHaveTextContent(/This account already has a password/i);
+      expect(notice).toHaveTextContent(/couldn.t be connected to your account automatically/i);
       expect(screen.queryByTestId('login-session-expired-notice')).not.toBeInTheDocument();
     }));
 });

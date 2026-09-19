@@ -4,12 +4,19 @@ import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { deviceCommands, devices, organizations, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
-import { isCronDue } from '../services/automationRuntime';
+import { requestLikeFromSnapshot, writeAuditEvent } from '../services/auditEvents';
+import { isCronDue } from '../services/cronDue';
 import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { sensitiveDataQueueJobDataSchema, type SensitiveDataQueueJobData } from './queueSchemas';
+import {
+  authorityAdmitsDevice,
+  resolveSensitiveDataAuthority,
+  resolveSensitiveDataAuthorityInCurrentSystemContext,
+  type PersistedSensitiveDataAuthority,
+} from '../services/sensitiveDataPolicyAuthority';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -58,11 +65,11 @@ export function getSensitiveDataQueue(): Queue<SensitiveDataJobData> {
 }
 
 async function addUniqueSensitiveDataDispatchJob(
-  scanId: string,
+  data: DispatchScanJobData,
   opts: Omit<JobsOptions, 'jobId'> = {},
 ) {
   const queue = getSensitiveDataQueue();
-  const stableJobId = getSensitiveDataDispatchJobId(scanId);
+  const stableJobId = getSensitiveDataDispatchJobId(data.scanId);
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
@@ -76,7 +83,7 @@ async function addUniqueSensitiveDataDispatchJob(
 
   return queue.add(
     'dispatch-scan',
-    { type: 'dispatch-scan', scanId },
+    data,
     {
       removeOnComplete: { count: 200 },
       removeOnFail: { count: 500 },
@@ -87,7 +94,7 @@ async function addUniqueSensitiveDataDispatchJob(
 }
 
 export async function enqueueSensitiveDataScan(scanId: string): Promise<string | null> {
-  const job = await addUniqueSensitiveDataDispatchJob(scanId);
+  const job = await addUniqueSensitiveDataDispatchJob({ type: 'dispatch-scan', scanId, origin: 'manual' });
   return typeof job.id === 'string' ? job.id : job.id ? String(job.id) : null;
 }
 
@@ -225,23 +232,35 @@ async function getDevicePendingCommands(deviceId: string): Promise<number> {
   return Number(row?.count ?? 0);
 }
 
-async function requeueThrottledScan(scanId: string, reason: string): Promise<void> {
-  await addUniqueSensitiveDataDispatchJob(scanId, {
+async function requeueThrottledScan(
+  data: DispatchScanJobData,
+  summary: Record<string, unknown>,
+  reason: string,
+): Promise<void> {
+  const queue = getSensitiveDataQueue();
+  await queue.add('dispatch-scan', data, {
     delay: SENSITIVE_DATA_THROTTLE_REQUEUE_SECONDS * 1000,
+    jobId: `${getSensitiveDataDispatchJobId(data.scanId)}-retry-${Date.now()}`,
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 500 },
   });
   await db
     .update(sensitiveDataScans)
     .set({
       summary: {
-        throttled: true,
-        reason,
-        requeuedAt: new Date().toISOString(),
+        ...summary,
+        throttle: {
+          ...(isRecord(summary.throttle) ? summary.throttle : {}),
+          throttled: true,
+          reason,
+          requeuedAt: new Date().toISOString(),
+        },
       }
     })
-    .where(eq(sensitiveDataScans.id, scanId));
+    .where(eq(sensitiveDataScans.id, data.scanId));
 }
 
-async function processDispatchScan(data: DispatchScanJobData): Promise<{
+export async function processDispatchScan(data: DispatchScanJobData): Promise<{
   dispatched: boolean;
   commandId: string | null;
 }> {
@@ -255,38 +274,169 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       status: sensitiveDataScans.status,
       startedAt: sensitiveDataScans.startedAt,
       summary: sensitiveDataScans.summary,
+      policyAuthorityGeneration: sensitiveDataScans.policyAuthorityGeneration,
       policyScope: sensitiveDataPolicies.scope,
-      policyClasses: sensitiveDataPolicies.detectionClasses
+      policyClasses: sensitiveDataPolicies.detectionClasses,
+      policyIsActive: sensitiveDataPolicies.isActive,
+      policySchedule: sensitiveDataPolicies.schedule,
+      policyOrgId: sensitiveDataPolicies.orgId,
+      policyPartnerId: sensitiveDataPolicies.partnerId,
+      executionAuthorityVersion: sensitiveDataPolicies.executionAuthorityVersion,
+      executionAuthorityKind: sensitiveDataPolicies.executionAuthorityKind,
+      executionAuthoritySiteIds: sensitiveDataPolicies.executionAuthoritySiteIds,
+      executionAuthorityUserId: sensitiveDataPolicies.executionAuthorityUserId,
+      executionAuthorityPrincipalKind: sensitiveDataPolicies.executionAuthorityPrincipalKind,
+      executionAuthorityFingerprint: sensitiveDataPolicies.executionAuthorityFingerprint,
+      executionAuthorityCapturedAt: sensitiveDataPolicies.executionAuthorityCapturedAt,
+      executionAuthorityGeneration: sensitiveDataPolicies.executionAuthorityGeneration,
+      deviceOrgId: devices.orgId,
+      deviceSiteId: devices.siteId,
+      devicePartnerId: organizations.partnerId,
     })
     .from(sensitiveDataScans)
     .leftJoin(sensitiveDataPolicies, eq(sensitiveDataPolicies.id, sensitiveDataScans.policyId))
+    .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
     .where(eq(sensitiveDataScans.id, data.scanId))
-    .limit(1);
+    .limit(1)
+    .for('update', { of: sensitiveDataScans });
 
   if (!scan) return { dispatched: false, commandId: null };
-  if (scan.status !== 'queued' && scan.status !== 'running') {
+  if (scan.status !== 'queued') {
     return { dispatched: false, commandId: null };
+  }
+
+  const summary = isRecord(scan.summary) ? scan.summary : {};
+  const isScheduledScan = scan.policyAuthorityGeneration !== null || summary.source === 'policy_scheduler';
+  const jobMatchesDurableOrigin = isScheduledScan
+    ? data.origin === 'policy_scheduler'
+      && data.authorityGeneration === scan.policyAuthorityGeneration
+    : data.origin === 'manual';
+  if (!jobMatchesDurableOrigin) {
+    await db.update(sensitiveDataScans).set({
+      status: 'failed',
+      completedAt: new Date(),
+      summary: {
+        ...summary,
+        dispatch: { deniedAt: new Date().toISOString(), error: 'authorization_invalid' },
+      },
+    }).where(eq(sensitiveDataScans.id, scan.id));
+    return { dispatched: false, commandId: null };
+  }
+  const refuseOrgChanged = async () => {
+    console.error('[SensitiveDataJobs] Refusing scan dispatch: device_org_changed', {
+      scanId: scan.id, deviceId: scan.deviceId, expectedOrgId: scan.orgId,
+    });
+    await db.update(sensitiveDataScans).set({
+      status: 'failed',
+      completedAt: new Date(),
+      summary: {
+        ...summary,
+        dispatch: { deniedAt: new Date().toISOString(), error: 'device_org_changed' },
+      },
+    }).where(eq(sensitiveDataScans.id, scan.id));
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: scan.orgId,
+      action: 'sensitive_data.scan.dispatch_denied',
+      resourceType: 'sensitive_data_scan',
+      resourceId: scan.id,
+      actorType: 'system',
+      result: 'failure',
+      errorMessage: 'device_org_changed',
+      details: { deviceId: scan.deviceId, reason: 'device_org_changed' },
+    });
+    return { dispatched: false, commandId: null };
+  };
+  if (!isScheduledScan && scan.deviceOrgId !== scan.orgId) {
+    return refuseOrgChanged();
+  }
+  if (isScheduledScan) {
+    // Bind the final policy, creator and target snapshots through command
+    // creation. Permission/membership triggers serialize on the user row.
+    if (!scan.policyId) return { dispatched: false, commandId: null };
+    const [currentPolicy] = await db.select().from(sensitiveDataPolicies)
+      .where(eq(sensitiveDataPolicies.id, scan.policyId)).limit(1).for('update');
+    if (!currentPolicy) return { dispatched: false, commandId: null };
+    if (currentPolicy.executionAuthorityUserId) {
+      await db.execute(sql`select id from users where id = ${currentPolicy.executionAuthorityUserId} for update`);
+    }
+    const [currentDevice] = await db.select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      partnerId: organizations.partnerId,
+    }).from(devices).innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .where(eq(devices.id, scan.deviceId)).limit(1).for('update', { of: devices });
+    if (!currentDevice) return { dispatched: false, commandId: null };
+
+    const currentSchedule = parsePolicySchedule(currentPolicy.schedule);
+    const policy = {
+      orgId: currentPolicy.orgId,
+      partnerId: currentPolicy.partnerId,
+      executionAuthorityVersion: currentPolicy.executionAuthorityVersion,
+      executionAuthorityKind: currentPolicy.executionAuthorityKind,
+      executionAuthoritySiteIds: currentPolicy.executionAuthoritySiteIds,
+      executionAuthorityUserId: currentPolicy.executionAuthorityUserId,
+      executionAuthorityPrincipalKind: currentPolicy.executionAuthorityPrincipalKind,
+      executionAuthorityFingerprint: currentPolicy.executionAuthorityFingerprint,
+      executionAuthorityCapturedAt: currentPolicy.executionAuthorityCapturedAt,
+      executionAuthorityGeneration: currentPolicy.executionAuthorityGeneration,
+    } as PersistedSensitiveDataAuthority;
+    const authority = await resolveSensitiveDataAuthorityInCurrentSystemContext(policy);
+    const owner = policy.orgId
+      ? { orgId: policy.orgId, partnerId: null }
+      : policy.partnerId
+        ? { orgId: null, partnerId: policy.partnerId }
+        : null;
+    if (
+      !authority
+      || !currentPolicy.isActive
+      || !currentSchedule.enabled
+      || currentSchedule.type === 'manual'
+      || summary.executionAuthorityFingerprint !== authority.fingerprint
+      || summary.executionAuthorityGeneration !== authority.generation
+      || scan.policyAuthorityGeneration !== authority.generation
+      || data.origin !== 'policy_scheduler'
+      || data.authorityGeneration !== authority.generation
+      || !owner
+      || !authorityAdmitsDevice(authority, owner, {
+      orgId: currentDevice.orgId,
+      siteId: currentDevice.siteId,
+      partnerId: currentDevice.partnerId,
+      })
+    ) {
+      await db
+        .update(sensitiveDataScans)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          summary: {
+            ...summary,
+            dispatch: { deniedAt: new Date().toISOString(), error: 'authorization_invalid' },
+          },
+        })
+        .where(eq(sensitiveDataScans.id, scan.id));
+      return { dispatched: false, commandId: null };
+    }
   }
 
   const orgRunning = await getOrgRunningScans(scan.orgId);
   if (orgRunning >= SENSITIVE_DATA_ORG_CONCURRENCY_CAP) {
-    await requeueThrottledScan(scan.id, `org cap ${SENSITIVE_DATA_ORG_CONCURRENCY_CAP}`);
+    await requeueThrottledScan(data, summary, `org cap ${SENSITIVE_DATA_ORG_CONCURRENCY_CAP}`);
     return { dispatched: false, commandId: null };
   }
 
   const deviceRunning = await getDeviceRunningScans(scan.deviceId);
   if (deviceRunning >= SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP) {
-    await requeueThrottledScan(scan.id, `device cap ${SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP}`);
+    await requeueThrottledScan(data, summary, `device cap ${SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP}`);
     return { dispatched: false, commandId: null };
   }
 
   const pendingCommands = await getDevicePendingCommands(scan.deviceId);
   if (pendingCommands >= SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP) {
-    await requeueThrottledScan(scan.id, 'device queue busy');
+    await requeueThrottledScan(data, summary, 'device queue busy');
     return { dispatched: false, commandId: null };
   }
 
-  const summary = isRecord(scan.summary) ? scan.summary : {};
   const request = isRecord(summary.request) ? summary.request : {};
   const scope = isRecord(request.scope)
     ? request.scope
@@ -303,9 +453,18 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     policyId: scan.policyId,
     scope,
     detectionClasses: resolvedClasses,
+    ...(isScheduledScan ? { authorityGeneration: scan.policyAuthorityGeneration } : {}),
   };
 
-  await db
+  const claimConditions: SQL[] = [
+    eq(sensitiveDataScans.id, scan.id),
+    eq(sensitiveDataScans.status, 'queued'),
+  ];
+  if (isScheduledScan) {
+    if (!scan.policyAuthorityGeneration) return { dispatched: false, commandId: null };
+    claimConditions.push(eq(sensitiveDataScans.policyAuthorityGeneration, scan.policyAuthorityGeneration));
+  }
+  const claimed = await db
     .update(sensitiveDataScans)
     .set({
       status: 'running',
@@ -318,7 +477,9 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
         }
       }
     })
-    .where(eq(sensitiveDataScans.id, scan.id));
+    .where(and(...claimConditions))
+    .returning({ id: sensitiveDataScans.id });
+  if (claimed.length !== 1) return { dispatched: false, commandId: null };
 
   const queued = await queueCommandForExecution(
     scan.deviceId,
@@ -326,11 +487,21 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     commandPayload,
     {
       userId: scan.requestedBy ?? undefined,
+      expectedOrgId: scan.orgId,
       preferHeartbeat: false
     }
   );
 
   if (!queued.command) {
+    // The queue deliberately masks its ownership refusal as a missing device.
+    // Re-read only for internal failure attribution; never expose the new org.
+    if (queued.error === 'Device not found') {
+      const [currentDevice] = await db.select({ orgId: devices.orgId }).from(devices)
+        .where(eq(devices.id, scan.deviceId)).limit(1);
+      if (currentDevice && currentDevice.orgId !== scan.orgId) {
+        return refuseOrgChanged();
+      }
+    }
     await db
       .update(sensitiveDataScans)
       .set({
@@ -372,12 +543,48 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 
 type SchedulablePolicy = {
   id: string;
+  isActive: boolean;
   orgId: string | null;
   partnerId: string | null;
   scope: unknown;
   detectionClasses: unknown;
   schedule: unknown;
-};
+} & PersistedSensitiveDataAuthority;
+
+async function claimPolicyOccurrence(
+  policyId: string,
+  now: Date,
+): Promise<{ policy: SchedulablePolicy; authority: Awaited<ReturnType<typeof resolveSensitiveDataAuthority>> } | null> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(
+      hashtext('sensitive-data-policy-schedule'), hashtext(${policyId})
+    )`);
+    const [current] = await tx
+      .select()
+      .from(sensitiveDataPolicies)
+      .where(eq(sensitiveDataPolicies.id, policyId))
+      .limit(1);
+    if (!current || !current.isActive || !shouldSchedulePolicy(current.schedule, now)) return null;
+    const authority = await resolveSensitiveDataAuthority(current);
+    if (!authority) return null;
+    const claimed = await tx
+      .update(sensitiveDataPolicies)
+      .set({
+        schedule: {
+          ...(isRecord(current.schedule) ? current.schedule : {}),
+          lastRunAt: now.toISOString(),
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(sensitiveDataPolicies.id, policyId),
+        eq(sensitiveDataPolicies.executionAuthorityFingerprint, authority.fingerprint),
+      ))
+      .returning({ id: sensitiveDataPolicies.id });
+    if (claimed.length !== 1) return null;
+    return { policy: current, authority };
+  });
+}
 
 /**
  * Queue scheduled scans for ONE due policy. Exported so the integration suite
@@ -385,6 +592,10 @@ type SchedulablePolicy = {
  * sweeping every active policy in the shared test DB.
  */
 export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date): Promise<number> {
+  const claim = await claimPolicyOccurrence(policy.id, now);
+  if (!claim?.authority) return 0;
+  policy = claim.policy;
+  const authority = claim.authority;
   // Resolve the policy owner's device-org pool (#2131): an org-owned policy
   // targets its own org; a partner-wide policy (orgId NULL) fans out to
   // every org under the owning partner. The per-org queue backpressure
@@ -442,6 +653,9 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
   if (schedule.deviceIds.length > 0) {
     conditions.push(inArray(devices.id, schedule.deviceIds));
   }
+  if (authority.siteIds !== null) {
+    conditions.push(inArray(devices.siteId, authority.siteIds));
+  }
 
   const targetDevices = await db
     .select({ id: devices.id, orgId: devices.orgId })
@@ -460,9 +674,13 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
         orgId: device.orgId,
         deviceId: device.id,
         policyId: policy.id,
+        requestedBy: authority.userId,
         status: 'queued',
+        policyAuthorityGeneration: authority.generation,
         summary: {
           source: 'policy_scheduler',
+          executionAuthorityFingerprint: authority.fingerprint,
+          executionAuthorityGeneration: authority.generation,
           policySchedule: {
             type: schedule.type,
             cron: schedule.cron,
@@ -482,7 +700,12 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
     await queue.addBulk(
       created.map((scan) => ({
         name: 'dispatch-scan',
-        data: { type: 'dispatch-scan' as const, scanId: scan.id },
+        data: {
+          type: 'dispatch-scan' as const,
+          scanId: scan.id,
+          origin: 'policy_scheduler' as const,
+          authorityGeneration: authority.generation,
+        },
         opts: {
           jobId: `sensitive-scan-${scan.id}`,
           removeOnComplete: { count: 200 },
@@ -491,17 +714,6 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
       }))
     );
   }
-
-  await db
-    .update(sensitiveDataPolicies)
-    .set({
-      schedule: {
-        ...(isRecord(policy.schedule) ? policy.schedule : {}),
-        lastRunAt: now.toISOString()
-      },
-      updatedAt: new Date()
-    })
-    .where(eq(sensitiveDataPolicies.id, policy.id));
 
   return created.length;
 }
@@ -520,7 +732,16 @@ async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
       partnerId: sensitiveDataPolicies.partnerId,
       scope: sensitiveDataPolicies.scope,
       detectionClasses: sensitiveDataPolicies.detectionClasses,
-      schedule: sensitiveDataPolicies.schedule
+      schedule: sensitiveDataPolicies.schedule,
+      isActive: sensitiveDataPolicies.isActive,
+      executionAuthorityVersion: sensitiveDataPolicies.executionAuthorityVersion,
+      executionAuthorityKind: sensitiveDataPolicies.executionAuthorityKind,
+      executionAuthoritySiteIds: sensitiveDataPolicies.executionAuthoritySiteIds,
+      executionAuthorityUserId: sensitiveDataPolicies.executionAuthorityUserId,
+      executionAuthorityPrincipalKind: sensitiveDataPolicies.executionAuthorityPrincipalKind,
+      executionAuthorityFingerprint: sensitiveDataPolicies.executionAuthorityFingerprint,
+      executionAuthorityCapturedAt: sensitiveDataPolicies.executionAuthorityCapturedAt,
+      executionAuthorityGeneration: sensitiveDataPolicies.executionAuthorityGeneration,
     })
     .from(sensitiveDataPolicies)
     .where(eq(sensitiveDataPolicies.isActive, true));

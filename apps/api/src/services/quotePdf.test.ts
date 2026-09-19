@@ -1,8 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
 import { formatMoney } from '@breeze/shared';
+
+// Spy on captureException (kept otherwise-real) so the #3483 doc.image()
+// failure tests can assert the render loop actually REPORTS a draw failure,
+// not just that it degrades to "no image" — the two behaviors are distinct
+// and the previous version of this file only proved the latter.
+vi.mock('./sentry', async (importActual) => {
+  const actual = await importActual<typeof import('./sentry')>();
+  return { ...actual, captureException: vi.fn() };
+});
+
+import { captureException } from './sentry';
 import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -298,6 +309,56 @@ describe('renderQuotePdf', () => {
     expect(recurringText).toContain('Annual');
   });
 
+  it('does not render a redundant category breakdown for a plain single-category quote', async () => {
+    const pdf = await renderQuotePdf(
+      {
+        id: 'q-single', quoteNumber: 'Q-SINGLE', currencyCode: 'USD', subtotal: '100.00', taxTotal: '0.00',
+        oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '100.00', total: '100.00', categoryBreakdown: [
+          { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+    );
+    expect(extractPdfText(pdf)).not.toContain('Other');
+  });
+
+  it('renders every recurring surface and the estimate sentence for a zero-count device set', async () => {
+    const pdf = await renderQuotePdf(
+      {
+        id: 'q-zero', quoteNumber: 'Q-ZERO', currencyCode: 'USD', subtotal: '100.00', taxTotal: '0.00',
+        oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '100.00', total: '100.00', categoryBreakdown: [
+          { category: 'hardware', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'other', oneTimeTotal: '0.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { showSubtotal: true } }],
+      [
+        { id: 'setup', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' },
+        {
+          id: 'servers', blockId: 'b1', name: 'Servers', description: null, quantity: '0', unitPrice: '40',
+          lineTotal: '0.00', recurrence: 'monthly', contractLineType: 'per_device_role', deviceRoles: ['iot', 'nas'],
+          deviceGroupName: null, siteName: null, includedQuantity: null, overageMode: null, overageUnitPrice: null,
+        },
+      ],
+      async () => null,
+      {},
+    );
+    const text = extractPdfText(pdf);
+    expect(text).toContain('Monthly');
+    expect(text).toContain('First-period total');
+    expect(text).toContain('Subtotal');
+    expect(text).toContain('$0.00/mo');
+    expect(text).toContain('Other');
+    expect(text).toContain('Estimated quantity');
+    expect(text).toContain('each billing period');
+    expect(text).toContain('IoT devices, NAS devices');
+  });
+
   it('produces a PDF buffer (heading + line_items block)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
@@ -336,6 +397,62 @@ describe('renderQuotePdf', () => {
     const text = extractPdfText(buf);
     expect(text).toContain('Hello');
     expect(text).toContain('world');
+  });
+
+  // #3483: quote image uploads now reject WebP at the API boundary (route-level
+  // fix), but bytes already stored before that shipped must still not corrupt
+  // or abort the whole document. pdfkit's doc.image() throws synchronously on
+  // WebP; this proves the render loop's catch actually swallows that specific
+  // draw failure and keeps rendering everything around it — replacing the old
+  // imageIntrinsicSize-only assertion that WebP merely fails to *parse*
+  // (which never proved the render path degrades instead of vanishing silently).
+  it('degrades gracefully — surrounding content still renders — when an image block holds WebP bytes pdfkit cannot embed', async () => {
+    vi.mocked(captureException).mockClear();
+    const webpBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]); // RIFF....WEBP
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-WEBP', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' },
+      [
+        { id: 'b1', blockType: 'image', sortOrder: 0, content: { imageId: 'img-webp', caption: 'Skipped image', width: 200 } },
+        { id: 'b2', blockType: 'rich_text', sortOrder: 1, content: { html: '<p>AFTERWEBP</p>' } },
+      ],
+      [],
+      async () => ({ data: webpBytes }),
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    const text = extractPdfText(buf);
+    // The caption and the block after the failed image draw must still
+    // render — a decode failure degrades to "no image", never aborts the doc.
+    expect(text).toContain('Skipped image');
+    expect(text).toContain('AFTERWEBP');
+    // The draw failure must be REPORTED, not just swallowed — this is the
+    // actual behavior change this PR makes at this call site (previously
+    // console.error-only). A previous version of this test only proved the
+    // "no throw" half; this proves the "not silent" half too.
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('cover image: reports a WebP draw failure via captureException and leaves the page usable (no leaked clip/save state)', async () => {
+    vi.mocked(captureException).mockClear();
+    const webpBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]); // RIFF....WEBP
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-WEBP-COVER', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+        coverPage: { enabled: true, title: 'COVERTITLE', coverImageId: 'cover-webp' },
+      } as never,
+      [{ id: 'b1', blockType: 'rich_text', sortOrder: 0, content: { html: '<p>BODYAFTERCOVER</p>' } }],
+      [],
+      async () => ({ data: webpBytes }),
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(captureException).toHaveBeenCalledTimes(1);
+    const text = extractPdfText(buf);
+    // A failed cover-image draw must not corrupt the content stream (the
+    // unmatched doc.save()/doc.restore() bug this PR also fixes) — the cover
+    // title and the body content that follows must both still be legible.
+    expect(text).toContain('COVERTITLE');
+    expect(text).toContain('BODYAFTERCOVER');
   });
 
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
@@ -676,9 +793,9 @@ describe('renderQuotePdf', () => {
       },
       [],
       [
-        { id: 'l1', description: 'Setup', quantity: '1', unitPrice: '3000', lineTotal: '3000.00', recurrence: 'one_time' },
-        { id: 'l2', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly' },
-        { id: 'l3', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual' },
+        { id: 'l1', description: 'Setup', quantity: '1', unitPrice: '3000', lineTotal: '3000.00', recurrence: 'one_time', itemType: 'service' },
+        { id: 'l2', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly', itemType: 'service' },
+        { id: 'l3', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual', itemType: 'service' },
       ],
       async () => null,
       {},
@@ -1049,7 +1166,11 @@ describe('imageIntrinsicSize', () => {
   it('returns null for unparseable buffers', () => {
     expect(imageIntrinsicSize(Buffer.from('not an image at all'))).toBeNull();
     expect(imageIntrinsicSize(Buffer.alloc(0))).toBeNull();
-    // WebP (RIFF) — pdfkit can't embed it and the probe doesn't parse it.
+    // WebP (RIFF) — the probe doesn't parse it either, so the render loop
+    // falls back to a fixed fitHeight rather than a measured aspect ratio.
+    // (The renderQuotePdf-level "degrades gracefully ... WebP" test above
+    // proves the actual doc.image() failure this feeds into is caught and
+    // reported, not silently swallowed — #3483.)
     expect(imageIntrinsicSize(Buffer.from('RIFF0000WEBPVP8 '))).toBeNull();
   });
 });

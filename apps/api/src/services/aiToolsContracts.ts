@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { createContractSchema, updateContractSchema, contractLineInputSchema } from '@breeze/shared';
+import { BILLABLE_DEVICE_ROLES, createContractSchema, updateContractSchema, contractLineInputSchema, updateContractLineSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
@@ -27,16 +27,19 @@ import {
   getContract,
   createContract,
   updateContract,
+  updateContractLine,
   deleteDraftContract,
   addContractLineToContract,
   removeContractLine,
+  contractLineAuditDetails,
   activateContract,
   pauseContract,
   resumeContract,
   cancelContract
 } from './contractService';
-import { ContractServiceError, type ContractActor } from './contractTypes';
+import { ContractServiceError, type ContractActor, type ContractLineAudit } from './contractTypes';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 
 /**
  * Params each manage_contracts action requires, presence-checked BEFORE any
@@ -49,6 +52,7 @@ const MANAGE_CONTRACTS_REQUIRED: Record<string, readonly string[]> = {
   delete_draft: ['contractId'],
   add_line: ['contractId', 'line'],
   remove_line: ['contractId', 'lineId'],
+  update_line: ['contractId', 'lineId', 'patch'],
   activate: ['contractId'],
   pause: ['contractId'],
   resume: ['contractId'],
@@ -59,13 +63,21 @@ function actorFromAuth(auth: AuthContext): ContractActor {
   return {
     userId: auth.user.id,
     partnerId: auth.partnerId ?? null,
-    accessibleOrgIds: auth.accessibleOrgIds
+    accessibleOrgIds: auth.accessibleOrgIds,
+    // Thread the caller's site-axis restriction so a site-limited AI session can't
+    // read/mutate contracts outside its sites — the sibling actors already do
+    // (aiToolsBilling.ts, aiToolsQuotes.ts). undefined (partner/system, all-sites
+    // org users) stays unrestricted, preserving prior behavior.
+    allowedSiteIds: auth.allowedSiteIds
   };
 }
 
 function serviceErrorToJson(err: unknown): string | null {
   if (err instanceof ContractServiceError) {
-    return JSON.stringify({ error: err.message, code: err.code });
+    // #3205 W03: HTTP returns `details` verbatim (routes/contracts/contracts.ts
+    // :50-57) while this door dropped it. A model that trips INVALID_LINE_PATCH
+    // and is told only "those changes aren't valid" cannot self-correct.
+    return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
   }
   return null;
 }
@@ -80,6 +92,69 @@ function serviceErrorToJson(err: unknown): string | null {
 const createPayload = z.object({ input: createContractSchema });
 const patchPayload = z.object({ patch: updateContractSchema });
 const linePayload = z.object({ line: contractLineInputSchema });
+const lineUpdatePayload = z.object({ patch: updateContractLineSchema });
+
+/** Best-effort audit write for the AI door (#3205 W03). Never blocks the tool
+ *  result. initiatedBy 'ai' is an explicit value of the initiated_by_type enum
+ *  (db/schema/audit.ts:14) and writeAuditEventAsync honours it over its
+ *  actor-type inference (auditEvents.ts:73-74). Same no-free-text payload as
+ *  the HTTP door. */
+function auditContractLineToolEvent(
+  auth: AuthContext,
+  action: 'contract.line.added' | 'contract.line.removed' | 'contract.line.updated',
+  audit: ContractLineAudit,
+): void {
+  if (audit.changedFields && audit.changedFields.length === 0) return;
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: audit.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action,
+      resourceType: 'contract',
+      resourceId: audit.contractId,
+      resourceName: audit.contractName,
+      result: 'success',
+      initiatedBy: 'ai',
+      details: {
+        ...contractLineAuditDetails(audit),
+        tool_name: 'manage_contracts',
+      },
+    });
+  } catch (err) {
+    console.error('[manage_contracts] audit write failed', err);
+  }
+}
+
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/contracts/` is
+ * `requireScope('partner','system')` (contracts.ts:16, bulk.ts:11, lines.ts:18,
+ * lifecycle.ts:13, periods.ts:10, generate.ts:14, reports.ts:21, deliverables.ts:19).
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+/** Site-axis analogue of `SITE_SCOPE_EMPTY_NOTE` (aiToolsSiteScope.ts), worded
+ *  for contracts: the site-attributable unit here is the LINE, not a device. */
+const CONTRACT_SITE_SCOPE_NOTE =
+  'Your site access limits this result: contracts are shown only when they carry a line in one of your sites, '
+  + 'and such a contract may still have lines you cannot see. This is a restriction on your access, not an absence of data.';
+
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Contract access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
 
 export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_contracts', {
@@ -105,6 +180,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
         const rows = await listContracts(
@@ -115,7 +192,14 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           },
           actorFromAuth(auth)
         );
-        return JSON.stringify({ contracts: rows, showing: rows.length });
+        return JSON.stringify({
+          contracts: rows,
+          showing: rows.length,
+          // Defence in depth beside the scope gate above: if a site-restricted
+          // caller ever does reach this tool, say so, so the model reads a short
+          // page as "limited by access" rather than "this is all that exists".
+          ...(auth.allowedSiteIds ? { scopeNote: CONTRACT_SITE_SCOPE_NOTE } : {}),
+        });
       } catch (err) {
         const json = serviceErrorToJson(err);
         if (json) return json;
@@ -141,6 +225,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       try {
         const result = await getContract(String(input.contractId), actorFromAuth(auth));
         return JSON.stringify(result);
@@ -172,6 +258,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
               'delete_draft',
               'add_line',
               'remove_line',
+              'update_line',
               'activate',
               'pause',
               'resume',
@@ -181,20 +268,63 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           contractId: { type: 'string', description: 'Contract UUID' },
           lineId: { type: 'string', description: 'Contract line UUID' },
           input: { type: 'object', description: 'Full create-contract payload including orgId, name, and schedule fields' },
-          patch: { type: 'object', description: 'Contract update patch fields' },
+          patch: {
+            type: 'object',
+            description:
+              'For action "update": contract header fields. For action "update_line": the line patch. ' +
+              'update_line edits one line in place, keeping its id (and therefore its invoice lineage). ' +
+              'Every field of a line is editable EXCEPT lineType — sending lineType is rejected; to change the ' +
+              'type, remove_line then add_line. catalogItemId is three-valued: leave it out to keep the current ' +
+              'link AND the current stamped price, send a DIFFERENT item id to re-link and re-resolve price and ' +
+              'taxable in the contract\'s currency (any unitPrice/taxable you send is ignored), or send null to ' +
+              'unlink — which requires unitPrice AND taxable in the same call. Sending the item id the line ' +
+              'already has changes nothing; to re-price an unchanged link, send refreshCatalogPrice: true. ' +
+              'siteId accepts null to widen a site-scoped line to the whole org. Lines are only editable on ' +
+              'draft and active contracts. Edits apply to future billing periods; invoices already generated ' +
+              'are unchanged. ' +
+              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
+              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
+              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
+              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
+              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
+              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
+              'result and the billing log for a human to act on. For update_line, the rule applies to the MERGED line: ' +
+              'absent fields are unchanged and null clears a field; to remove an allowance send includedQuantity, overageMode and overageUnitPrice all as null. ' +
+              'The merged line requires includedQuantity and overageMode together, and overageUnitPrice only with "bill".',
+          },
           line: {
             type: 'object',
             description:
-              'Contract line input fields. With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
+              'Contract line input. lineType is one of flat | per_device | per_device_role | per_device_group | per_seat | manual. ' +
+              'per_device counts the org\'s billable devices (optionally one site via siteId). ' +
+              'per_device_role counts only devices whose role is in deviceRoles — a non-empty array of ' +
+              `${BILLABLE_DEVICE_ROLES.join(', ')} ` +
+              '(never unknown: unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
+              'per_device_group counts the members of one device group named by deviceGroupId (a device group UUID in the ' +
+              'contract\'s org). Static groups bill their current members; dynamic groups are evaluated live from their filter at ' +
+              'estimate and invoice time (a filter condition on groupId still reads that other group\'s cached membership). ' +
+              'No siteId on this type — the group\'s own site narrows it. ' +
+              'manual requires manualQuantity. ' +
+              'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
               'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
               'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
-              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required.',
+              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required. ' +
+              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
+              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
+              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
+              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
+              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
+              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
+              'result and the billing log for a human to act on. For add_line, includedQuantity and overageMode must ' +
+              'be supplied together, and overageUnitPrice is allowed only with "bill".',
           },
         },
         required: ['action'],
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
 
       const action = String(input.action);
@@ -221,15 +351,33 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           case 'delete_draft':
             await deleteDraftContract(String(input.contractId), actor);
             return JSON.stringify({ ok: true });
-          case 'add_line':
-            return JSON.stringify(await addContractLineToContract(
+          case 'add_line': {
+            // contractName is an audit-only helper on the service result: it feeds
+            // resourceName and never reaches the model (mirrors routes/contracts/lines.ts).
+            const { contractName, ...row } = await addContractLineToContract(
               String(input.contractId),
               linePayload.parse({ line: input.line }).line,
               actor
-            ));
-          case 'remove_line':
-            await removeContractLine(String(input.contractId), String(input.lineId), actor);
+            );
+            auditContractLineToolEvent(auth, 'contract.line.added', {
+              orgId: row.orgId, contractId: String(input.contractId), contractName,
+              contractLineId: row.id, lineType: row.lineType, newUnitPrice: row.unitPrice,
+            });
+            return JSON.stringify(row);
+          }
+          case 'remove_line': {
+            const audit = await removeContractLine(String(input.contractId), String(input.lineId), actor);
+            auditContractLineToolEvent(auth, 'contract.line.removed', audit);
             return JSON.stringify({ ok: true });
+          }
+          case 'update_line': {
+            const { line, audit } = await updateContractLine(
+              String(input.contractId), String(input.lineId),
+              lineUpdatePayload.parse({ patch: input.patch }).patch, actor,
+            );
+            auditContractLineToolEvent(auth, 'contract.line.updated', audit);
+            return JSON.stringify(line);
+          }
           case 'activate':
             return JSON.stringify(await activateContract(String(input.contractId), actor));
           case 'pause':

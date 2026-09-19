@@ -14,6 +14,10 @@ const state = vi.hoisted(() => ({
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../stores/auth', () => ({
+  // #5075 W04 — Sidebar now reads the Service Management mode from orgStore,
+  // whose module scope calls registerOrgIdProvider on import. Without this the
+  // whole suite dies at import time, before any test runs.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: fetchWithAuthMock,
   useAuthStore: Object.assign(
     (selector: (s: { user: typeof state.user }) => unknown) => selector({ user: state.user }),
@@ -41,6 +45,7 @@ const PARTNER_BILLING: Perm[] = [
   { resource: 'quotes', action: 'read' }, { resource: 'quotes', action: 'write' }, { resource: 'quotes', action: 'send' },
   { resource: 'invoices', action: 'read' }, { resource: 'invoices', action: 'write' }, { resource: 'invoices', action: 'send' }, { resource: 'invoices', action: 'export' },
   { resource: 'contracts', action: 'read' }, { resource: 'contracts', action: 'write' }, { resource: 'contracts', action: 'manage' },
+  { resource: 'agreements', action: 'read' }, { resource: 'agreements', action: 'write' },
 ];
 const PARTNER_TECHNICIAN: Perm[] = [
   { resource: 'backup', action: 'read' }, { resource: 'backup', action: 'write' },
@@ -75,7 +80,7 @@ beforeEach(() => {
   // Expand every section so collapsed children don't hide hrefs.
   localStorage.setItem(
     'sidebar-sections',
-    JSON.stringify({ 'ai-fleet': true, monitoring: true, security: true, operations: true, backup: true, reporting: true, settings: true }),
+    JSON.stringify({ ai: true, 'fleet-management': true, security: true, backup: true, billing: true, reporting: true, settings: true, administration: true }),
   );
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
     matches: false, media: query,
@@ -97,6 +102,7 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/billing/invoices')).toBe(true);
     expect(has(container, '/billing/quotes')).toBe(true);
     expect(has(container, '/contracts')).toBe(true);
+    expect(has(container, '/agreements/templates')).toBe(true);
     expect(has(container, '/settings/catalog')).toBe(true);
 
     // Admin / fleet surfaces it must NOT see (the #1454 regression):
@@ -111,15 +117,16 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     // #1629 follow-up: a section whose items are ALL permission-filtered out
     // must hide its header entirely — no empty "Monitoring/Security/Backup/
     // Reporting" group that expands to nothing.
-    expect(hasSectionHeader(container, 'Monitoring')).toBe(false);
+    expect(hasSectionHeader(container, 'Fleet Management')).toBe(false);
     expect(hasSectionHeader(container, 'Security')).toBe(false);
     expect(hasSectionHeader(container, 'Backup')).toBe(false);
     expect(hasSectionHeader(container, 'Reporting')).toBe(false);
+    expect(hasSectionHeader(container, 'Administration')).toBe(false);
     // Sections that still have at least one visible item keep their header:
-    // Operations holds the billing items it can access, and AI & Fleet has the
-    // always-visible Fleet landing item.
-    expect(hasSectionHeader(container, 'Operations')).toBe(true);
-    expect(hasSectionHeader(container, 'AI & Fleet')).toBe(true);
+    // Billing holds the items it can access, and AI has the always-visible
+    // Fleet Orchestration landing item.
+    expect(hasSectionHeader(container, 'Billing')).toBe(true);
+    expect(hasSectionHeader(container, 'AI')).toBe(true);
   });
 
   it('Partner Technician sees fleet/ops items but no billing and no user/role admin', async () => {
@@ -140,6 +147,7 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/billing/invoices')).toBe(false);
     expect(has(container, '/billing/quotes')).toBe(false);
     expect(has(container, '/contracts')).toBe(false);
+    expect(has(container, '/agreements/templates')).toBe(false);
     expect(has(container, '/settings/catalog')).toBe(false);
 
     // No users grant → user/role admin hidden:
@@ -160,8 +168,9 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/reports')).toBe(true);
     expect(has(container, '/backup')).toBe(true);
 
-    // Admin sees every section header (nothing filtered out).
-    expect(hasSectionHeader(container, 'Monitoring')).toBe(true);
+    // Admin sees every non-platform-admin section header (nothing filtered out).
+    expect(hasSectionHeader(container, 'Fleet Management')).toBe(true);
+    expect(hasSectionHeader(container, 'Billing')).toBe(true);
     expect(hasSectionHeader(container, 'Security')).toBe(true);
     expect(hasSectionHeader(container, 'Backup')).toBe(true);
     expect(hasSectionHeader(container, 'Reporting')).toBe(true);
@@ -216,5 +225,15 @@ describe('Sidebar — SSO (sso:admin) and platform-admin gating', () => {
 
     expect(has(container, '/admin/third-party-catalog')).toBe(true);
     expect(has(container, '/admin/connected-apps')).toBe(true);
+    expect(hasSectionHeader(container, 'Administration')).toBe(true);
+  });
+  it('shows Agreements for agreements:read alone and hides it without', async () => {
+    state.user.permissions = [{ resource: 'agreements', action: 'read' }];
+    const { container, rerender } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(has(container, '/agreements/templates')).toBe(true));
+    // contracts:read alone must NOT reveal it — the whole point of the W02 split.
+    state.user.permissions = [{ resource: 'contracts', action: 'read' }];
+    rerender(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(has(container, '/agreements/templates')).toBe(false));
   });
 });

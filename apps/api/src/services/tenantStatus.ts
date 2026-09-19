@@ -1,4 +1,5 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners } from '../db/schema';
 import { getRedis } from './redis';
@@ -10,8 +11,48 @@ export class TenantInactiveError extends Error {
   }
 }
 
-function isUsableOrgStatus(status: string | null | undefined): boolean {
+export function isUsableOrgStatus(status: string | null | undefined): boolean {
   return status === 'active' || status === 'trial';
+}
+
+/**
+ * Org statuses whose rows fleet-wide background automation may still act on.
+ *
+ * This is the exact complement of the three LIFECYCLE-FROZEN statuses —
+ * `archived` and `purging` (hidden, read-only, purge timer running) and
+ * `merging` (fenced mid-merge). It deliberately does NOT re-litigate the legacy
+ * statuses: a `suspended` or `churned` org's invoices went overdue and its
+ * contracts renewed before Wave 4 and still do. The only new behaviour is that
+ * a tenant the operator archived stops accruing new commerce it will never see.
+ *
+ * An inclusion list, not `NOT IN (...)`, so a status added later is excluded
+ * from automation until someone deliberately admits it.
+ */
+export const AUTOMATION_ELIGIBLE_ORG_STATUSES = [
+  'active',
+  'trial',
+  'suspended',
+  'churned',
+  'offboarding',
+] as const;
+
+/**
+ * `EXISTS`-shaped org-status predicate for fleet-wide sweeps that select
+ * org-scoped rows under a system context (invoice overdue sweep, contract
+ * billing/renewal sweeps). Exported as a builder so each call site is
+ * compiled-SQL assertable — a sweep test that seeds rows straight past the
+ * WHERE clause cannot tell a present predicate from an absent one.
+ */
+export function buildAutomationEligibleOrgPredicate(orgIdColumn: PgColumn): SQL {
+  const statuses = sql.join(
+    AUTOMATION_ELIGIBLE_ORG_STATUSES.map((status) => sql`${status}`),
+    sql`, `,
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM ${organizations} AS automation_eligible_org
+     WHERE automation_eligible_org.id = ${orgIdColumn}
+       AND automation_eligible_org.status::text IN (${statuses})
+  )`;
 }
 
 /**

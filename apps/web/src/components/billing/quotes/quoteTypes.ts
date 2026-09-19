@@ -6,7 +6,7 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation, StripeCurrencyWarning } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation, StripeCurrencyWarning, QuoteDeviceSetType } from '@breeze/shared';
 export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent, QuotePresentation } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
@@ -199,6 +199,20 @@ export interface QuoteLine {
   billingFrequency: string | null;
   sortOrder: number;
   createdAt: string;
+  /** Server-derived billing descriptor. Optional for legacy payloads/fixtures;
+   *  current quote endpoints always send these fields. */
+  contractLineType?: QuoteDeviceSetType | null;
+  deviceRoles?: string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
+  deviceGroup?: { id: string; name: string; type: string } | null;
+  site?: { id: string; name: string } | null;
+  descriptorUnresolved?: boolean;
 }
 
 // A line's title falls back to its description for legacy lines created before

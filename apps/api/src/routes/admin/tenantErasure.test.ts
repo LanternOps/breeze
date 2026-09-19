@@ -206,6 +206,7 @@ describe('POST /admin/tenant-erasure', () => {
       orgId: ORG_ID,
       performedBy: 'admin-1',
       performedByEmail: 'admin@breeze.test',
+      source: 'platform_admin',
     });
     expect(createAuditLogMock).toHaveBeenCalledWith(
       expect.objectContaining({

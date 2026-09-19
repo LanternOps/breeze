@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
@@ -36,6 +37,8 @@ import {
  */
 export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number }) {
   const { t } = useTranslation('security');
+  const { can } = usePermissions();
+  const canManage = can('pam', 'manage_policy');
   const [groups, setGroups] = useState<PamSignerGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,15 +130,17 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
               'A signer group is a named list of trusted Authenticode signers. Reference one from a rule instead of repeating the same publisher across many rules.',
           })}
         </p>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          data-testid="pam-add-signer-group-btn"
-          className={btnPrimaryClass}
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t('pamPamSignerGroupsTab.actions.addSignerGroup', { defaultValue: 'Add signer group' })}
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            data-testid="pam-add-signer-group-btn"
+            className={btnPrimaryClass}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {t('pamPamSignerGroupsTab.actions.addSignerGroup', { defaultValue: 'Add signer group' })}
+          </button>
+        )}
       </div>
 
       {error && <ErrorAlert>{error}</ErrorAlert>}
@@ -199,22 +204,26 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
                   </td>
                   <td className={`${tdClass} whitespace-nowrap text-right`}>
                     <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(group)}
-                        data-testid={`pam-signer-group-edit-${group.id}`}
-                        className={btnOutlineClass}
-                      >
-                        {t('common:actions.edit', { defaultValue: 'Edit' })}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(group)}
-                        data-testid={`pam-signer-group-delete-${group.id}`}
-                        className={btnOutlineDestructiveClass}
-                      >
-                        {t('common:actions.delete', { defaultValue: 'Delete' })}
-                      </button>
+                      {canManage && (
+                        <button
+                          type="button"
+                          onClick={() => setEditing(group)}
+                          data-testid={`pam-signer-group-edit-${group.id}`}
+                          className={btnOutlineClass}
+                        >
+                          {t('common:actions.edit', { defaultValue: 'Edit' })}
+                        </button>
+                      )}
+                      {canManage && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(group)}
+                          data-testid={`pam-signer-group-delete-${group.id}`}
+                          className={btnOutlineDestructiveClass}
+                        >
+                          {t('common:actions.delete', { defaultValue: 'Delete' })}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

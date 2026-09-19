@@ -1,0 +1,18 @@
+{
+  "severity": {
+    "critical": "Crítico",
+    "high": "Alto",
+    "medium": "Médio",
+    "low": "Baixo",
+    "info": "Informação"
+  },
+  "alert": {
+    "on": "em {{deviceName}}",
+    "resolved": "Resolvido",
+    "acknowledged": "Reconhecido"
+  },
+  "channel": {
+    "testSubject": "Notificação de teste do Breeze",
+    "testBody": "Esta é uma notificação de teste."
+  }
+}

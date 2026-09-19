@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import type { InvoiceDetail, InvoiceLine } from '@/lib/api';
 
 // Same stub the other portal component suites use: the real module reaches
@@ -17,6 +17,7 @@ afterEach(() => cleanup());
 // the PDF the same customer downloads label a line the same way.
 function line(overrides: Partial<InvoiceLine> = {}): InvoiceLine {
   return {
+    ticketNumber: null,
     name: null,
     // The API serializes a NULL description as '' (invoiceService's
     // toCustomerInvoiceLine), so '' — not null — is the real absent-blurb shape.
@@ -85,5 +86,28 @@ describe('InvoiceDetailView line labels (#3319)', () => {
     renderDetail([line({ name: null, description: '' })]);
 
     expect(screen.getByText('—')).toBeTruthy();
+  });
+
+  it('renders a linked ticket number and omits it for an unlinked line', () => {
+    renderDetail([
+      line({ ticketNumber: 'T-100' }),
+      line({ ticketNumber: null }),
+    ]);
+    expect(screen.getByTestId('invoice-line-ticket-0').textContent).toBe(
+      'Ticket #T-100',
+    );
+    expect(screen.queryByTestId('invoice-line-ticket-1')).toBeNull();
+  });
+});
+
+describe('InvoiceDetailView — payment unavailable', () => {
+  it('tells the customer what to do next when online payment is switched off (409)', async () => {
+    const { portalApi } = await import('@/lib/api');
+    vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ data: null, error: 'Online payment is not available', statusCode: 409 } as never);
+    render(<InvoiceDetailView detail={detail([line()])} />);
+    fireEvent.click(screen.getByTestId('invoice-pay-button'));
+    const alert = await screen.findByTestId('invoice-pay-error');
+    expect(alert).toHaveTextContent('Online payment is not available');
+    expect(screen.getByTestId('invoice-pay-next-step')).toHaveTextContent(/how to pay this invoice/);
   });
 });

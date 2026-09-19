@@ -11,6 +11,7 @@ import {
   date,
   boolean,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { devices } from './devices';
 import { organizations } from './orgs';
 
@@ -27,7 +28,15 @@ export const warrantyStatusEnum = pgEnum('warranty_status', [
 
 export const deviceWarranty = pgTable('device_warranty', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  // #4622 — XOR subject with manualAssetId, enforced by
+  // device_warranty_one_subject_chk. Nullable since W03.
+  deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'cascade' }),
+  // #4622 — the composite same-org FK (manual_asset_id, org_id) ->
+  // manual_assets(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+  // is declared in SQL only: Drizzle cannot express a multi-column FK on a
+  // table definition, and a single-column .references() here would also create
+  // a circular import between warranty.ts and manualAssets.ts.
+  manualAssetId: uuid('manual_asset_id'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   manufacturer: varchar('manufacturer', { length: 100 }),
   serialNumber: varchar('serial_number', { length: 100 }),
@@ -46,7 +55,15 @@ export const deviceWarranty = pgTable('device_warranty', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   orgIdIdx: index('device_warranty_org_id_idx').on(table.orgId),
-  deviceIdIdx: uniqueIndex('device_warranty_device_id_idx').on(table.deviceId),
+  // Two partial unique indexes, one per subject kind — both upsert conflict
+  // targets must stay valid now that either column can be NULL.
+  deviceIdIdx: uniqueIndex('device_warranty_device_id_idx')
+    .on(table.deviceId)
+    .where(sql`${table.deviceId} IS NOT NULL`),
+  manualAssetIdIdx: uniqueIndex('device_warranty_manual_asset_id_idx')
+    .on(table.manualAssetId)
+    .where(sql`${table.manualAssetId} IS NOT NULL`),
+  manualAssetFkIdx: index('device_warranty_manual_asset_fk_idx').on(table.manualAssetId, table.orgId),
   warrantyEndDateIdx: index('device_warranty_end_date_idx').on(table.warrantyEndDate),
   nextSyncAtIdx: index('device_warranty_next_sync_at_idx').on(table.nextSyncAt),
 }));

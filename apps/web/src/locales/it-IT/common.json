@@ -1,8 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "Assistente IA",
+    "agent": "Agente IA",
+    "originUnavailable": "Origine non disponibile",
+    "openSession": "Apri conversazione",
+    "openAgentRun": "Apri esecuzione dell'agente",
+    "tool": "Strumento: {{name}}",
+    "occurredAt": "Avvenuto il {{time}}"
+  },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura della flotta",
     "dashboard": "Dashboard",
-    "devices": "Dispositivi",
+    "devices": "Dispositivi e asset",
     "alerts": "Avvisi",
     "approvals": "Approvazioni",
     "pendingApprovals": "{{count}} approvazioni in attesa",
@@ -15,32 +27,28 @@
     "patches": "Patch",
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
-    "fleet": "Flotta",
-    "aiWorkspace": "Area di lavoro AI",
     "aiForOffice": "AI per Office",
     "networkMonitor": "Monitoraggio rete",
+    "jobs": "Attività",
+    "monitoring": "Monitoraggio",
     "networkDiscovery": "Rilevamento rete",
-    "security": "Sicurezza",
     "edr": "EDR",
     "dnsSecurity": "Sicurezza DNS",
     "pam": "PAM",
     "userRisk": "Rischio utente",
     "sensitiveData": "Dati sensibili",
     "peripherals": "Periferiche",
-    "aiRiskEngine": "Motore di rischio AI",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Linee di base di conformità",
     "quotes": "Preventivi",
     "invoices": "Fatture",
     "contracts": "Contratti",
+    "agreements": "Accordi",
     "timesheets": "Fogli ore",
     "productCatalog": "Catalogo prodotti",
-    "softwareLibrary": "Libreria software",
-    "softwarePolicies": "Criteri software",
     "deviceGroups": "Gruppi di dispositivi",
     "configPolicies": "Criteri di configurazione",
     "integrations": "Integrazioni",
-    "backup": "Backup",
     "cloudBackup": "Backup sul cloud",
     "disasterRecovery": "Ripristino di emergenza",
     "reports": "Report",
@@ -48,9 +56,15 @@
     "auditTrail": "Registro di controllo",
     "eventLogs": "Registri eventi",
     "partner": "Partner",
+    "billing": "Fatturazione",
     "organizations": "Organizzazioni",
-    "aiUsageBudget": "Utilizzo e budget AI",
+    "aiUsage": "Utilizzo AI",
+    "scriptAuthoring": "Creazione di script",
+    "toolSources": "Fonti degli strumenti",
     "aiAgents": "Agenti AI",
+    "aiAgentRuns": "Esecuzioni agenti IA",
+    "aiImpact": "Impatto IA",
+    "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
     "users": "Utenti",
@@ -58,19 +72,32 @@
     "sso": "SSO",
     "accessReviews": "Revisioni degli accessi",
     "enrollmentKeys": "Chiavi di registrazione",
-    "deletionRequests": "Richieste di cancellazione",
+    "deletionRequests": "Richieste di eliminazione",
     "quarantinedDevices": "Dispositivi in quarantena",
     "thirdPartyCatalog": "Catalogo di terze parti",
-    "connectedAppsAdmin": "App connesse (amministratore)",
-    "sectionAiFleet": "AI e flotta",
-    "sectionMonitoring": "Monitoraggio",
+    "connectedAppsAdmin": "App connesse",
     "sectionSecurity": "Sicurezza",
-    "sectionOperations": "Operazioni",
     "sectionBackup": "Backup",
     "sectionReporting": "Reportistica",
     "sectionSettings": "Impostazioni",
     "sectionExtensions": "Estensioni",
-    "variables": "Variabili"
+    "variables": "Variabili",
+    "llmProviderCatalog": "Catalogo dei fornitori LLM",
+    "aiKillSwitch": "Interruttore di emergenza IA",
+    "sectionAi": "IA",
+    "sectionFleetManagement": "Gestione flotta",
+    "sectionBilling": "Fatturazione",
+    "sectionAdministration": "Amministrazione",
+    "fleetOrchestration": "Orchestrazione flotta",
+    "aiAssistant": "Assistente IA",
+    "software": "Software",
+    "securityOverview": "Panoramica",
+    "aiRisk": "Rischio IA",
+    "deviceBackup": "Backup dispositivi",
+    "sectionServiceDesk": "Service desk",
+    "serviceManagement": "Gestione servizi",
+    "ticketing": "Ticket",
+    "deliverableTemplates": "Modelli di consegna"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -161,6 +188,19 @@
     "none": "Nessuno",
     "optional": "Facoltativo",
     "required": "Obbligatorio"
+  },
+  "runContext": {
+    "label": "Esegui come",
+    "scriptDefault": "Predefinito dello script",
+    "scriptDefaultNamed": "Predefinito dello script ({{context}})",
+    "system": "Sistema",
+    "user": "Utente connesso",
+    "elevated": "Elevato",
+    "unknown": "Non registrato",
+    "userInSession": "Utente connesso (sessione {{session}})",
+    "sessionLabel": "Sessione target",
+    "sessionAny": "Qualsiasi sessione attiva",
+    "effectiveLabel": "Contesto di esecuzione"
   },
   "shared": {
     "accessDenied": {
@@ -352,6 +392,9 @@
       "criticalPending": "{{count}} patch critiche in sospeso",
       "criticalPending_one": "{{count}} patch critica in sospeso",
       "criticalPending_other": "{{count}} patch critiche in sospeso",
+      "unratedPending": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
+      "unratedPending_one": "{{count}} patch non valutata in sospeso (non verrà approvata automaticamente)",
+      "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "empty": "Nessun dato sulle patch ancora"
     },
     "vuln": {
@@ -687,7 +730,19 @@
         "scripts": "Script",
         "alerts": "Avvisi",
         "users": "Utenti",
-        "settings": "Impostazioni"
+        "settings": "Impostazioni",
+        "recent-devices": "Dispositivi recenti",
+        "recent-pages": "Visitati di recente"
+      },
+      "actions": {
+        "newDevice": "Nuovo dispositivo",
+        "newDeviceDescription": "Aggiungi un dispositivo alla flotta",
+        "runScript": "Esegui script",
+        "runScriptDescription": "Esegui uno script sui dispositivi",
+        "alertRules": "Regole di avviso",
+        "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
+        "keyboardShortcuts": "Scorciatoie da tastiera",
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
       }
     },
     "notifications": {
@@ -727,7 +782,10 @@
       "collapse": "Comprimi la barra laterale",
       "expand": "Espandi la barra laterale",
       "collapseSections": "Comprimi tutte le sezioni",
-      "closeMenu": "Chiudi menu"
+      "closeMenu": "Chiudi menu",
+      "recentDevices": "Dispositivi recenti",
+      "hideRecentDevices": "Nascondi dispositivi recenti",
+      "showRecentDevices": "Mostra dispositivi recenti"
     },
     "orgRequired": {
       "title": "Seleziona un'organizzazione",
@@ -738,6 +796,20 @@
       "title": "Impossibile caricare le tue organizzazioni",
       "description": "Qualcosa è andato storto durante il caricamento dell'elenco della tua organizzazione. Controlla la connessione e riprova.",
       "retry": "Riprova"
+    },
+    "shortcuts": {
+      "title": "Scorciatoie da tastiera",
+      "general": "Generali",
+      "goTo": "Vai a",
+      "goToHint": "Premi g, rilascia, poi il tasto.",
+      "then": "poi",
+      "search": "Cerca in Breeze",
+      "searchSlash": "Ricerca (si apre anche con questo tasto)",
+      "cycleSidebar": "Cambia la modalità della barra laterale",
+      "help": "Apri il pannello di aiuto",
+      "showThis": "Mostra questa scheda",
+      "close": "Chiudi una finestra di dialogo o un menu",
+      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo."
     }
   },
   "migrationBanner": {
@@ -886,7 +958,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Intervallo (s)",
-          "timeout": "Timeout (s)"
+          "timeout": "Timeout (s)",
+          "target": "URL di destinazione"
         },
         "labels": {
           "lastChecked": "Ultimo controllo: {{time}}",
@@ -914,6 +987,20 @@
           "httpCheck": "Controllo HTTP",
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Porta"
+        },
+        "targetResetNote": "La modifica dell’URL reimposta l’osservazione TLS.",
+        "saved": "Monitor aggiornato",
+        "certificate": {
+          "title": "Certificato",
+          "issuer": "Emittente",
+          "expires": "Scadenza",
+          "observedHost": "Host osservato",
+          "state": "Stato",
+          "states": {
+            "observed": "Osservato",
+            "handshakeFailed": "Negoziazione TLS non riuscita",
+            "notTls": "Senza TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1626,6 +1713,12 @@
         "editEntry": "Modifica voce {{id}}",
         "total": "Totale: {{duration}}",
         "billableTotal": "Fatturabile: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "Da posizione",
+        "remote_session": "Da sessione remota",
+        "support_session": "Da Quick Support"
       }
     },
     "snmp": {
@@ -1758,7 +1851,9 @@
         "assetsDescription": "Visualizzazione unificata del polling SNMP e dei controlli di rete per risorsa rilevata.",
         "table": {
           "asset": "Risorsa",
-          "overall": "Stato complessivo"
+          "overall": "Stato complessivo",
+          "reachability": "Raggiungibilità",
+          "collection": "Raccolta"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1810,7 +1905,29 @@
         "disabling": "Disabilitazione...",
         "yesDisable": "Sì, disabilita",
         "monitoringNotActive": "Il monitoraggio non è attivo per questa risorsa.",
-        "saving": "Salvataggio..."
+        "saving": "Salvataggio...",
+        "openSettings": "Impostazioni…",
+        "reachability": {
+          "responding": "Risponde",
+          "notResponding": "Non risponde",
+          "unverified": "Non verificato",
+          "sources": {
+            "networkCheck": "controllo di rete",
+            "probe": "controlla ora",
+            "scan": "scansione",
+            "unifi": "controller UniFi",
+            "snmp": "interrogazione SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Raccolta in corso",
+          "partial": "Parziale",
+          "no_template": "Nessun modello",
+          "failing": "Non riuscita",
+          "paused": "In pausa",
+          "never_polled": "Mai interrogato",
+          "not_configured": "Non configurato"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2014,7 +2131,8 @@
           "notMember": "Non più interessato da questo rilievo",
           "decommissioned": "Il dispositivo è rimosso",
           "timeout": "Scaduto dopo 30 minuti",
-          "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito"
+          "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito",
+          "maintenanceWindow": "Il dispositivo è in una finestra di manutenzione"
         },
         "viewProgress": "Vedi avanzamento",
         "errors": {
@@ -2404,6 +2522,21 @@
     "link": "Novità"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approssimativo · cambi al {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approssimativo · cambi al {{rateDate}}",
+    "approximateFailed": "≈ totale non disponibile — impossibile caricare i tassi di cambio",
+    "approximateUnavailableMissing": "≈ totale non disponibile — nessun tasso di cambio verso {{target}} per {{codes}}",
+    "approximateUnavailableStale": "≈ totale non disponibile — il tasso di cambio verso {{target}} per {{codes}} è troppo vecchio",
+    "approximateUnavailableMixed": "≈ totale non disponibile — impossibile convertire {{codes}} in {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} e altri {{more}}"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Il tuo ruolo richiederà l'autenticazione a due fattori. Configurala entro il {{date}}.",
+    "cta": "Configura 2FA",
+    "dismiss": "Ignora il promemoria per l'autenticazione a due fattori"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'autenticazione a più fattori non è obbligatoria per il tuo team. Le sessioni con sola password possono eseguire script, spostare dispositivi e modificare i criteri.",
+    "cta": "Richiedi MFA",
+    "dismiss": "Ignora per oggi il promemoria sui criteri MFA"
   }
 }

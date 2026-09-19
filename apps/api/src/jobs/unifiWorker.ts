@@ -205,3 +205,14 @@ export async function initializeUnifiWorker(): Promise<void> {
   await scheduleUnifiSync();
   console.log('[UnifiWorker] UniFi sync worker initialized');
 }
+
+export async function shutdownUnifiWorker(): Promise<void> {
+  if (unifiWorker) {
+    await unifiWorker.close();
+    unifiWorker = null;
+  }
+  if (unifiSyncQueue) {
+    await unifiSyncQueue.close();
+    unifiSyncQueue = null;
+  }
+}

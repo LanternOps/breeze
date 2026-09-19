@@ -22,6 +22,7 @@ function chainMock(terminalValue: any) {
 
 vi.mock('../db', () => ({
   db: {
+    execute: vi.fn(async () => [{ id: 'locked' }]),
     select: vi.fn(() => chainMock([])),
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock([])),
@@ -1005,6 +1006,21 @@ describe('software upload-session routes', () => {
       const res = await app.request(completeUrl, { method: 'POST' });
       expect(res.status).toBe(404);
       expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('404s before object upload when catalog deletion wins the parent lock', async () => {
+      await seedTempFile('helloworld');
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+      vi.mocked(db.execute).mockResolvedValueOnce([] as never);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertLatestSoftwareVersion).not.toHaveBeenCalled();
     });
 
     // GET/DELETE/chunks all validate `:id`/`:uploadId` as UUIDs; complete must

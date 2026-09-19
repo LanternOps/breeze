@@ -338,6 +338,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 		MaxRecoveryAttempts:     cfg.Watchdog.MaxRecoveryAttempts,
 		RecoveryCooldown:        cfg.Watchdog.RecoveryCooldown,
 		StandbyTimeout:          cfg.Watchdog.StandbyTimeout,
+		StandbyGrace:            cfg.Watchdog.StandbyGrace,
 		FailoverPollInterval:    cfg.Watchdog.FailoverPollInterval,
 	}
 
@@ -407,6 +408,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Create health checker with the IPC client as the prober.
 	processChecker := &watchdog.OSProcessChecker{}
 	healthChecker := watchdog.NewHealthChecker(processChecker, ipcClient, wdCfg.HeartbeatStaleThreshold)
+	// Sizes the state_sync recency window for the in-flight-backup IPC veto
+	// (D3) — see HealthChecker.SetIPCProbeInterval.
+	healthChecker.SetIPCProbeInterval(wdCfg.IPCProbeInterval)
 
 	// Create recovery manager.
 	recovery := watchdog.NewRecoveryManager(wdCfg.MaxRecoveryAttempts, wdCfg.RecoveryCooldown)
@@ -495,6 +499,124 @@ func runWatchdog(stopCh <-chan struct{}) {
 	var failoverFailures int
 	var lastDiskServerURL string
 
+	// --- STANDBY policy (#5252) ---------------------------------------
+	// Details of the shutdown the agent last announced. Only meaningful
+	// while the state is STANDBY; refreshed on every shutdown intent. The
+	// defaults describe an intent that arrived with no reason at all.
+	standbyWindow := watchdog.StandbyWindow("", 0, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
+	standbyReason := ""
+	standbyRecognized := true
+	// standbyHoldLogInterval bounds how often a still-holding STANDBY writes a
+	// heartbeat to the health journal.
+	const standbyHoldLogInterval = 5 * time.Minute
+	// A hold is deliberately not journaled per tick (the process ticker runs
+	// every few seconds), but a long hold must not look like a dead watchdog
+	// in the diagnostics bundle: an unrecognized reason can legitimately hold
+	// out to the 30-minute ceiling, and the journal is what
+	// collect_diagnostics ships. One heartbeat every few minutes is the
+	// difference between "waiting on purpose" and "process died".
+	var lastStandbyHoldLog time.Time
+
+	// agentLooksHealthy requires live IPC AND a fresh heartbeat — the same
+	// evidence the FAILOVER self-recovery block uses. IsConnected() alone is
+	// only a socket flag and can still describe the connection of an agent
+	// that is on its way out, so on its own it would cancel the very standby
+	// the agent just asked for.
+	agentLooksHealthy := func() bool {
+		if !ipcClient.IsConnected() {
+			return false
+		}
+		hb := healthChecker.LastKnownHeartbeat(agentState)
+		return !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold
+	}
+
+	// applyStandby evaluates the standby policy once and acts on it. It is
+	// the ONLY place STANDBY leaves its state, so the per-tick check and the
+	// unhealthy-signal funnel below cannot drift apart (#5252).
+	// fireStandbyEvent applies a standby decision and refuses to let a
+	// rejected transition pass silently. HandleEvent logs nothing of its own
+	// on a rejected event, and this whole function exists to guarantee STANDBY
+	// never drifts without a trace.
+	fireStandbyEvent := func(event string, fields map[string]any) bool {
+		if _, ok := wd.HandleEvent(event); ok {
+			return true
+		}
+		rejected := make(map[string]any, len(fields)+2)
+		for k, v := range fields {
+			rejected[k] = v
+		}
+		rejected["event"] = event
+		rejected["state"] = wd.State()
+		journal.Log(watchdog.LevelError, "standby.transition_rejected", rejected)
+		return false
+	}
+
+	applyStandby := func() {
+		elapsed := time.Since(wd.LastTransitionTime())
+		decision := watchdog.EvaluateStandby(watchdog.StandbyInput{
+			Elapsed:      elapsed,
+			Window:       standbyWindow,
+			Ceiling:      wdCfg.StandbyTimeout,
+			Recognized:   standbyRecognized,
+			AgentHealthy: agentLooksHealthy(),
+		})
+		fields := map[string]any{
+			"reason":          standbyReason,
+			"elapsed_seconds": int(elapsed.Seconds()),
+			"window_seconds":  int(standbyWindow.Seconds()),
+			"decision":        decision.String(),
+		}
+		switch decision {
+		case watchdog.StandbyHold:
+			if time.Since(lastStandbyHoldLog) >= standbyHoldLogInterval {
+				lastStandbyHoldLog = time.Now()
+				journal.Log(watchdog.LevelInfo, "standby.holding", fields)
+			}
+			return
+		case watchdog.StandbyResume:
+			// The announced shutdown never completed — the agent is still
+			// there and healthy. Restarting it would be gratuitous.
+			journal.Log(watchdog.LevelInfo, "standby.agent_still_healthy", fields)
+			fireStandbyEvent(watchdog.EventAgentRecovered, fields)
+		case watchdog.StandbyRecover:
+			// The window closed with the agent gone. Hand off to the normal
+			// recovery ladder, which owns the restart budget, flap detection
+			// and its own ensure-start before FAILOVER.
+			journal.Log(watchdog.LevelWarn, "standby.window_expired", fields)
+			fireStandbyEvent(watchdog.EventAgentUnhealthy, fields)
+		case watchdog.StandbyFailover:
+			journal.Log(watchdog.LevelWarn, "standby.timeout", fields)
+			// Transition FIRST and only ensure-start on an ACCEPTED
+			// transition: the ensure-start is budget-free, so running it
+			// ahead of a transition that did not happen would repeat it on
+			// every tick. Entering FAILOVER with the agent stopped is what
+			// stranded the host in #5252.
+			if fireStandbyEvent(watchdog.EventStandbyTimeout, fields) {
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
+			}
+		default:
+			// Go has no exhaustiveness check on this switch, so a decision
+			// added later would otherwise fall through as a no-op — i.e. the
+			// watchdog holds in STANDBY forever, which IS the #5252 failure.
+			// Escalate instead: starting an agent that did not need it is
+			// recoverable, leaving a remote host offline is not.
+			journal.Log(watchdog.LevelError, "standby.unknown_decision", fields)
+			fireStandbyEvent(watchdog.EventAgentUnhealthy, fields)
+		}
+	}
+
+	// noteAgentUnhealthy funnels EVERY "the agent looks dead" signal through
+	// one place. In STANDBY such a signal is EXPECTED — the agent announced
+	// it was going away — so the standby policy decides what happens rather
+	// than the raw transition table restarting an agent mid-shutdown.
+	noteAgentUnhealthy := func() {
+		if wd.State() == watchdog.StateStandby {
+			applyStandby()
+			return
+		}
+		wd.HandleEvent(watchdog.EventAgentUnhealthy)
+	}
+
 	for {
 		select {
 		case <-runCtx.Done():
@@ -524,7 +646,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				result := healthChecker.CheckProcess(pid)
 				if result == watchdog.CheckProcessGone {
 					journal.Log(watchdog.LevelWarn, "check.process_gone", map[string]any{"pid": pid})
-					wd.HandleEvent(watchdog.EventAgentUnhealthy)
+					noteAgentUnhealthy()
 				}
 			}
 
@@ -536,11 +658,23 @@ func runWatchdog(stopCh <-chan struct{}) {
 					journal.Log(watchdog.LevelError, "check.ipc_failed", map[string]any{
 						"consecutive_failures": healthChecker.IPCFailCount(),
 					})
-					wd.HandleEvent(watchdog.EventAgentUnhealthy)
+					noteAgentUnhealthy()
 				case watchdog.CheckIPCDegraded:
-					journal.Log(watchdog.LevelWarn, "check.ipc_degraded", map[string]any{
-						"consecutive_failures": healthChecker.IPCFailCount(),
-					})
+					if healthChecker.LastIPCCheckVetoed() {
+						// D3: this degraded verdict is standing in for what
+						// would otherwise be a CheckIPCFailed escalation —
+						// distinct event name so the journal shows the veto
+						// happened instead of reading as an ordinary degraded
+						// tick.
+						journal.Log(watchdog.LevelWarn, "check.ipc_veto_backup_inflight", map[string]any{
+							"consecutive_failures": healthChecker.IPCFailCount(),
+							"veto_count":           healthChecker.IPCVetoCount(),
+						})
+					} else {
+						journal.Log(watchdog.LevelWarn, "check.ipc_degraded", map[string]any{
+							"consecutive_failures": healthChecker.IPCFailCount(),
+						})
+					}
 				}
 			} else {
 				// Try to reconnect.
@@ -581,7 +715,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 					"ipc_connected": ipcUp,
 					"vetoes_before": vetoes,
 				})
-				wd.HandleEvent(watchdog.EventAgentUnhealthy)
+				noteAgentUnhealthy()
 			case watchdog.StaleVetoed:
 				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
 					"consecutive_vetoes": vetoes,
@@ -589,7 +723,22 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case env := <-ipcMessages:
-			handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
+			if intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker); intent != nil {
+				standbyReason = intent.Reason
+				standbyRecognized = watchdog.RecognizedShutdownReason(intent.Reason)
+				standbyWindow = watchdog.StandbyWindow(
+					intent.Reason, intent.ExpectedDuration, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
+				lastStandbyHoldLog = time.Now()
+				journal.Log(watchdog.LevelInfo, "standby.window", map[string]any{
+					"reason":     standbyReason,
+					"recognized": standbyRecognized,
+					// Both, so a declared duration that was clamped (or was
+					// corrupt) is visible in the shipped journal rather than
+					// showing up as a plausible-looking window with no trace.
+					"declared_seconds": intent.ExpectedDuration,
+					"window_seconds":   int(standbyWindow.Seconds()),
+				})
+			}
 
 		case <-failoverTicker.C:
 			// Only poll in FAILOVER state.
@@ -756,11 +905,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case watchdog.StateStandby:
-			// Check standby timeout.
-			if time.Since(wd.LastTransitionTime()) > wdCfg.StandbyTimeout {
-				journal.Log(watchdog.LevelWarn, "standby.timeout", nil)
-				wd.HandleEvent(watchdog.EventStandbyTimeout)
-			}
+			applyStandby()
 
 		case watchdog.StateMonitoring:
 			// Reset per-window recovery counter when healthy. Note: restart history
@@ -777,8 +922,13 @@ func runWatchdog(stopCh <-chan struct{}) {
 	}
 }
 
-// handleIPCMessage dispatches IPC envelope messages from the agent.
-func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) {
+// handleIPCMessage dispatches IPC envelope messages from the agent. It returns
+// the shutdown intent that actually moved the watchdog into STANDBY, so the
+// caller can size the standby window from the reason and declared duration the
+// agent sent (#5252). It returns nil for every other message type, for an
+// intent that failed to parse, and for an intent that did not cause a
+// transition.
+func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) *ipc.ShutdownIntent {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
 		var intent ipc.ShutdownIntent
@@ -786,13 +936,20 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_shutdown_intent", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "agent.shutdown_intent", map[string]any{
 			"reason":   intent.Reason,
 			"duration": intent.ExpectedDuration,
 		})
-		wd.HandleEvent(watchdog.EventShutdownIntent)
+		// Report the intent ONLY when it actually moved us into STANDBY.
+		// shutdown_intent is a valid edge from MONITORING alone, so an intent
+		// that arrives while RECOVERING or in FAILOVER changes nothing — and
+		// must not resize a standby window that this intent did not open.
+		if _, ok := wd.HandleEvent(watchdog.EventShutdownIntent); ok {
+			return &intent
+		}
+		return nil
 
 	case ipc.TypeTokenUpdate:
 		var update ipc.TokenUpdate
@@ -800,7 +957,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_token_update", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "token.updated", nil)
 		tokens.Replace(update.Token)
@@ -818,21 +975,25 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_state_sync", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", map[string]any{
-			"agentVersion":  sync.AgentVersion,
-			"connected":     sync.Connected,
-			"lastHeartbeat": sync.LastHeartbeat,
+			"agentVersion":     sync.AgentVersion,
+			"connected":        sync.Connected,
+			"lastHeartbeat":    sync.LastHeartbeat,
+			"activeBackupRuns": sync.ActiveBackupRuns,
 		})
-		// Feed the staleness check: the agent sends a state_sync only after
-		// a successful server heartbeat, so this is authoritative liveness
-		// even when agent.state on disk is unwritable (AV/EDR sharing
-		// violations). Without this, the file alone drove restart decisions
-		// and a blocked writer read as a dead agent (#2763).
+		// Feed the staleness check AND the D3 in-flight-backup IPC veto: the
+		// agent sends a state_sync only after a successful server heartbeat,
+		// so this is authoritative liveness evidence even when agent.state on
+		// disk is unwritable (AV/EDR sharing violations). Without the
+		// heartbeat half, the file alone drove restart decisions and a
+		// blocked writer read as a dead agent (#2763). Without the backup-run
+		// count half, CheckIPC has no way to know a backup is in flight and
+		// escalates on a transient IPC hiccup mid-run.
 		if health != nil && sync.LastHeartbeat != "" {
 			if hb, perr := time.Parse(time.RFC3339, sync.LastHeartbeat); perr == nil {
-				health.NoteStateSync(hb)
+				health.NoteStateSync(hb, sync.ActiveBackupRuns)
 			} else {
 				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_heartbeat", map[string]any{
 					"value": sync.LastHeartbeat, "error": perr.Error(),
@@ -849,6 +1010,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"type": env.Type,
 		})
 	}
+	return nil
 }
 
 // ensureAgentStartedBeforeFailover issues a budget-free, best-effort

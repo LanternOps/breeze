@@ -6,6 +6,7 @@ import OrgSettingsPage, { runOrgNameSave } from './OrgSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -25,11 +26,28 @@ vi.mock('@/lib/navigation', () => ({
 
 // Stub the heavy child editors — they're unrelated to name editing, and several
 // pull in their own fetches/effects; stubbing keeps these tests focused and fast.
-vi.mock('./OrgBrandingEditor', () => ({ default: () => <div data-testid="branding-editor" /> }));
+const brandingProps: Array<{ onSave: (data: Record<string, unknown>) => unknown }> = [];
+vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record<string, unknown>) => unknown }) => {
+  brandingProps.push(props);
+  return <div data-testid="branding-editor" />;
+} }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="security" /> }));
+vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
+  onDirty: () => void; onSave: (value: unknown) => void;
+}) => <button data-testid="security" onClick={() => {
+  onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
+}}>Save security</button> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
+// #6004: the AI budget editor. Capture its props — the tab is worthless if it
+// is not handed the org it is meant to edit.
+const aiBudgetProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgAiBudgetSettings', () => ({
+  default: (props: Record<string, unknown>) => {
+    aiBudgetProps.push(props);
+    return <div data-testid="org-ai-budget" />;
+  },
+}));
 // Capture the props the Remote Access tab is mounted with. #3432: the parent
 // used to hand it `onDirty`, which it fired AFTER already persisting a rule —
 // leaving the page permanently "unsaved" and firing a bogus beforeunload
@@ -42,6 +60,9 @@ vi.mock('./OrgRemoteAccessSettings', () => ({
   },
 }));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
+vi.mock('./ContactsCard', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="contacts-card">{orgId}</div>,
+}));
 vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
 vi.mock('../extensions/ExtensionSlotHost', () => ({
   default: (props: Record<string, unknown>) => (
@@ -52,6 +73,7 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
+const navigateToMock = vi.mocked(navigateTo);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -319,6 +341,27 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     });
   });
 
+  it('surfaces the MFA activation rejection and preserves unsaved settings', async () => {
+    const message = 'Enroll an allowed MFA method for affected users before changing this policy.';
+    window.location.hash = '#security';
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({
+        code: 'mfa_policy_would_lock_out_users', error: message, count: 1, countCapped: false,
+      }, false, 409));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await userEvent.click(await screen.findByTestId('security'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByText(/saved at/i)).toBeNull();
+    expect(screen.getByText(/^unsaved changes$/i)).not.toBeNull();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations/org-1', expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ settings: { security: { allowedMethods: { totp: false, sms: false } } } }),
+    }));
+  });
+
   it('never shows a fabricated "Saved at" timestamp on load', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
 
@@ -342,6 +385,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('branding-editor')).not.toBeNull();
   });
 
+  it.each([true, false])('returns branding save success (%s) without an independent success toast', async (ok) => {
+    window.location.hash = '#branding';
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url.endsWith('/effective-settings')) return makeJsonResponse({ locked: [] });
+      if (init?.method === 'PATCH') return makeJsonResponse(ok ? {} : { error: 'Branding rejected' }, ok);
+      return makeJsonResponse(orgDetails);
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('branding-editor');
+    let result: unknown;
+    await act(async () => { result = await brandingProps.at(-1)!.onSave({ primaryColor: '#123456' }); });
+    expect(result).toBe(ok);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    if (!ok) expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
   it('deep-links the hash to the right section on mount', async () => {
     window.location.hash = '#remote-access';
 
@@ -350,6 +409,45 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     const link = await screen.findByRole('link', { name: /^remote access$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('remote-access')).not.toBeNull();
+  });
+
+  it('redirects an old #contracts deep link to the organization record\'s Contracts & Billing tab (#5075 W03)', async () => {
+    window.location.hash = '#contracts';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#billing', { replace: true }));
+    // ContractsList is no longer embedded here.
+    expect(screen.queryByTestId('org-tab-contracts')).not.toBeInTheDocument();
+  });
+
+  it('no longer lists Contracts in the sidebar nav — it moved to the organization record', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+    expect(screen.queryByRole('link', { name: /^contracts$/i })).not.toBeInTheDocument();
+  });
+
+  it('registers an AI tab that deep-links on #ai and mounts the budget editor for this org (#6004)', async () => {
+    aiBudgetProps.length = 0;
+    window.location.hash = '#ai';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^ai$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
+    expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
+  });
+
+  it('places the AI tab beside Approval Security in the nav (#6004)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+
+    const links = screen.getAllByRole('link');
+    const approvalIdx = links.indexOf(screen.getByRole('link', { name: /^approval security$/i }));
+    const aiIdx = links.indexOf(screen.getByRole('link', { name: /^ai$/i }));
+    expect(approvalIdx).toBeGreaterThanOrEqual(0);
+    expect(aiIdx).toBe(approvalIdx + 1);
   });
 
   it('mounts the Remote Access tab without an onDirty channel, so it can never strand the page as unsaved (#3432)', async () => {
@@ -406,11 +504,143 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
+  it('deep-links #contacts to the organization record instead of rendering it here (#5075 W02)', async () => {
+    window.location.hash = '#contacts';
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    // The nav entry is still there and still marks itself active...
+    const link = await screen.findByRole('link', { name: /^contacts$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    // ...but activating it hands off to the record for the org whose
+    // settings are open, NOT the globally selected one — the two differ
+    // whenever an admin opens one tenant while another is selected in the
+    // header — and ContactsCard never mounts on this page anymore.
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('redirects a Contacts nav click the same way as the #contacts deep link (#5075 W02)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    await userEvent.click(screen.getByRole('link', { name: /^contacts$/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
   it('offers the compact section select for narrow viewports', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
 
     await screen.findByTestId('org-name-input');
     const select = screen.getByLabelText('Settings section') as HTMLSelectElement;
     expect(select.value).toBe('general');
+  });
+});
+
+describe('OrgSettingsPage — archived organization (2026-08-28 pre-release sweep)', () => {
+  // The API's GET returns the full row plus `archived: true` for an archived
+  // org (see orgs.ts) — it does NOT 404. The PATCH does 404, via the
+  // LIFECYCLE_FROZEN_ORG_STATUSES guard, so the page must go read-only on
+  // its own signal rather than let the user hit that 404 on Save.
+  const archivedOrgDetails = {
+    id: 'org-1',
+    name: 'Acme Systems',
+    slug: 'acme',
+    status: 'archived',
+    archived: true,
+    purgeAt: '2026-11-24T12:00:00.000Z',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    settings: {}
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(archivedOrgDetails));
+    });
+  });
+
+  it('shows an archived read-only banner with the purge date and a restore link', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+
+    const banner = screen.getByTestId('org-archived-banner');
+    expect(banner.textContent).toMatch(/archived/i);
+    // Purge date should be rendered somewhere in the banner.
+    expect(banner.textContent).toMatch(/2026/);
+
+    const restoreLink = screen.getByTestId('org-archived-restore-link') as HTMLAnchorElement;
+    expect(restoreLink.getAttribute('href')).toBe('/organizations#filter=archived');
+  });
+
+  it('disables the name and type Save controls so the page cannot 404 on save', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+
+    const nameInput = screen.getByTestId('org-name-input') as HTMLInputElement;
+    const nameSave = screen.getByTestId('org-name-save') as HTMLButtonElement;
+    const typeSelect = screen.getByTestId('org-type-select') as HTMLSelectElement;
+    const typeSave = screen.getByTestId('org-type-save') as HTMLButtonElement;
+
+    expect(nameInput.disabled).toBe(true);
+    expect(nameSave.disabled).toBe(true);
+    expect(typeSelect.disabled).toBe(true);
+    expect(typeSave.disabled).toBe(true);
+
+    // No PATCH should ever be issued for an archived org.
+    expect(fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+
+  // #4166 — the same GET now also answers for an org mid-ARCHIVE drain
+  // (`status: 'offboarding'`, still flagged `archived: true`). That row is
+  // outside `accessibleOrgIds` exactly like a settled archived one, so every
+  // PATCH from this page 404s — but the read-only gate was keyed on
+  // `status === 'archived'`, which would have handed the operator a fully
+  // editable form that could only fail on Save.
+  describe('org mid-archive-drain', () => {
+    const drainingOrgDetails = {
+      ...archivedOrgDetails,
+      status: 'offboarding',
+      offboardingTarget: 'archive',
+    };
+
+    beforeEach(() => {
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        return Promise.resolve(makeJsonResponse(drainingOrgDetails));
+      });
+    });
+
+    it('goes read-only for a draining org too', async () => {
+      render(<OrgSettingsPage orgId="org-1" />);
+
+      await screen.findByTestId('org-name-input');
+
+      expect((screen.getByTestId('org-name-input') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('org-name-save') as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId('org-type-select') as HTMLSelectElement).disabled).toBe(true);
+      expect(fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+    });
+
+    // The banner is this page's primary explanation of what happened, and the
+    // whole point of #4166 is that the operator could not tell. Claiming the
+    // org "is archived" while its agents are still being uninstalled would be
+    // the same lie in a different place.
+    it('says the org is BEING archived, not that it already is', async () => {
+      render(<OrgSettingsPage orgId="org-1" />);
+
+      await screen.findByTestId('org-name-input');
+
+      const banner = screen.getByTestId('org-archived-banner');
+      expect(banner.textContent).toMatch(/being archived/i);
+      expect(banner.textContent).toMatch(/2026/);
+      expect(screen.getByTestId('org-archived-restore-link')).toBeInTheDocument();
+    });
   });
 });

@@ -18,10 +18,16 @@ import {
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from './backupProviderConfig';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -98,8 +104,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const instOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && instOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(instOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = instOrgId
+          ? await resolveSiteAllowedDeviceIds(instOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ instances: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ instances: [], showing: 0 });
         conditions.push(inArray(sqlInstances.deviceId, allowed));
@@ -167,8 +179,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const chainOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && chainOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(chainOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = chainOrgId
+          ? await resolveSiteAllowedDeviceIds(chainOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ chains: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ chains: [], showing: 0 });
         conditions.push(inArray(backupChains.deviceId, allowed));
@@ -285,12 +303,24 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const resolvedConfig = await resolveBackupConfigForDevice(deviceId);
       if (!resolvedConfig?.configId) {
         return JSON.stringify({ error: 'A provider-backed backup configuration is required on this device' });
       }
+
+      // D20b follow-up: the helper only builds a manager from the command
+      // payload when it has no agent.yaml backup config (mgr == nil — the
+      // normal state for every policy-managed device); without
+      // provider/providerConfig here the helper fails every AI-dispatched
+      // mssql_backup with "backup not configured on this device", exactly
+      // like the REST route did before D20b item A.
+      const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, device.orgId);
+      if (!destinationResult.ok) {
+        return JSON.stringify({ error: destinationResult.message });
+      }
+      const { destination } = destinationResult;
 
       const [backupJob] = await db
         .insert(backupJobs)
@@ -307,11 +337,17 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_mssql_backup',
         deviceId,
         CommandTypes.MSSQL_BACKUP,
         {
           backupJobId: backupJob?.id,
+          configId: resolvedConfig.configId,
+          provider: destination.provider,
+          providerConfig: destination.providerConfig,
+          storageEncryption: destination.storageEncryption,
           instance,
           database,
           backupType,
@@ -395,7 +431,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under the caller's org AND site scope: the source
       // snapshot must be within the caller's site scope, not just the target
@@ -421,7 +457,22 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Snapshot is missing MSSQL backup file metadata' });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      // D20b follow-up: the helper builds its read provider from THIS
+      // command's own payload (restoreProviderForCommand), the same way the
+      // REST /mssql/restore route does — mirroring the destination the
+      // BACKUP command wrote this snapshot to, not whatever the device's
+      // CURRENT config happens to be.
+      const backupProviderConfig = snapshot.configId
+        ? await resolveBackupProviderConfig(snapshot.configId, snapshot.orgId)
+        : null;
+      if (!backupProviderConfig) {
+        const { message } = resolveBackupDestinationError(snapshot.configId);
+        return JSON.stringify({ error: message });
+      }
+
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_mssql_database',
         deviceId,
         CommandTypes.MSSQL_RESTORE,
         {
@@ -438,6 +489,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
           backupFileName,
           targetDatabase,
           noRecovery: Boolean(input.noRecovery),
+          provider: backupProviderConfig.provider,
+          providerConfig: backupProviderConfig.providerConfig,
         },
         { userId: auth.user?.id }
       );
@@ -489,9 +542,11 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       const [snapshot] = await db
         .select({
           id: backupSnapshots.id,
+          orgId: backupSnapshots.orgId,
           deviceId: backupSnapshots.deviceId,
           providerSnapshotId: backupSnapshots.snapshotId,
           metadata: backupSnapshots.metadata,
+          configId: backupSnapshots.configId,
         })
         .from(backupSnapshots)
         .where(and(...snapshotConditions))
@@ -520,7 +575,19 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Snapshot is missing MSSQL backup file metadata' });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      // D20b follow-up: execMSSQLVerify's stageMSSQLSnapshotArtifact also
+      // requires a provider — same mgr==nil gap as restore.
+      const backupProviderConfig = snapshot.configId
+        ? await resolveBackupProviderConfig(snapshot.configId, snapshot.orgId)
+        : null;
+      if (!backupProviderConfig) {
+        const { message } = resolveBackupDestinationError(snapshot.configId);
+        return JSON.stringify({ error: message });
+      }
+
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'verify_mssql_backup',
         snapshot.deviceId,
         CommandTypes.MSSQL_VERIFY,
         {
@@ -535,6 +602,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
             ),
           snapshotId: snapshot.providerSnapshotId,
           backupFileName,
+          provider: backupProviderConfig.provider,
+          providerConfig: backupProviderConfig.providerConfig,
         },
         { userId: auth.user?.id }
       );

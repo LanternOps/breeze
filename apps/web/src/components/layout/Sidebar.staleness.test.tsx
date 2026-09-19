@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
 
 vi.mock('../../stores/auth', () => ({
+  // #5075 W04 — Sidebar now reads the Service Management mode from orgStore,
+  // whose module scope calls registerOrgIdProvider on import. Without this the
+  // whole suite dies at import time, before any test runs.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: { getState: () => ({ tokens: null }) },
 }));

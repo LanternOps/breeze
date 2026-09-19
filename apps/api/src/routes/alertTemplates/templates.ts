@@ -14,9 +14,12 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
+import { canAccessTemplateDependents } from './siteScope';
+import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 
 export const templateRoutes = new Hono();
 
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 // Partner-wide means `partner_id = X AND org_id IS NULL` — NEVER a bare
@@ -106,6 +109,7 @@ export function canWriteTemplate(
 templateRoutes.get(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
@@ -164,6 +168,7 @@ templateRoutes.get(
 templateRoutes.get(
   '/templates/built-in',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
@@ -317,6 +322,7 @@ templateRoutes.post(
 templateRoutes.get(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -366,9 +372,23 @@ templateRoutes.patch(
         return c.json({ error: 'Template not found' }, 404);
       }
 
+      // #5289 — a template compiled from a monitor definition must be edited
+      // only by the compiler; a side edit here would silently drift from the
+      // definition until the next compile pass overwrote it.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
+      }
+
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
+      }
+
+      if (auth.allowedSiteIds !== undefined && (
+        existing.orgId === null
+        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
+      )) {
+        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
       }
 
       const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
@@ -430,9 +450,21 @@ templateRoutes.delete(
         return c.json({ error: 'Template not found' }, 404);
       }
 
+      // #5289 — see the guard in PATCH above.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
+      }
+
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
+      }
+
+      if (auth.allowedSiteIds !== undefined && (
+        existing.orgId === null
+        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
+      )) {
+        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
       }
 
       await db

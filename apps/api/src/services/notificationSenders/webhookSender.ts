@@ -5,7 +5,6 @@
  * Supports custom headers, authentication, and payload templates.
  */
 
-import { isIP } from 'net';
 import {
   isAlwaysBlockedIp,
   isPrivateIp,
@@ -13,6 +12,7 @@ import {
   safeFetch,
   SsrfBlockedError
 } from '../urlSafety';
+import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../ipRanges';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
@@ -66,6 +66,23 @@ export interface SendResult {
   statusCode?: number;
   error?: string;
   responseBody?: string;
+  /** Whether a durable queue may safely retry this transport result. */
+  retryable?: boolean;
+}
+
+/** Configured retries exclude the initial attempt. The queue stores total attempts. */
+export const MAX_WEBHOOK_RETRIES = 2;
+
+/** Clamp legacy JSON and convert configured retries to BullMQ total attempts. */
+export function webhookTotalAttempts(config: unknown): number {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return MAX_WEBHOOK_RETRIES + 1;
+  }
+  const value = (config as Record<string, unknown>).retryCount;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return MAX_WEBHOOK_RETRIES + 1;
+  }
+  return Math.min(MAX_WEBHOOK_RETRIES, Math.max(0, Math.floor(value))) + 1;
 }
 
 export function validateWebhookUrlSafety(rawUrl: string): string[] {
@@ -94,7 +111,12 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
     return errors;
   }
 
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  // Shared with every other URL validator (`ipRanges.classifyNonRoutableHostname`)
+  // so the list of loopback aliases cannot drift between them. `.internal` is
+  // deliberately NOT refused: a self-host operator may name an on-LAN receiver in
+  // a corporate `.internal` zone, and the address checks below still apply to it.
+  const hostnameKind = classifyNonRoutableHostname(hostname);
+  if (hostnameKind === 'loopback' || hostnameKind === 'mdns-local' || hostnameKind === 'metadata') {
     errors.push('Webhook URL cannot target localhost or local network hostnames');
   }
 
@@ -103,8 +125,12 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
   // metadata and CGNAT (100.64/10) — the ranges that are never a legitimate
   // receiver. Without the opt-in, `isPrivateIp` refuses every private range.
   const blocked = allowPrivate ? isAlwaysBlockedIp : isPrivateIp;
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0 && blocked(hostname)) {
+  // `isIpLiteralHost` recognises the `inet_aton` short/octal/hex spellings of an
+  // IPv4 address as literals too, and `canonicalIpLiteral` hands the classifier
+  // the dotted-quad they name — a `net.isIP` gate would route them to the DNS
+  // branch instead of classifying them here.
+  const literal = isIpLiteralHost(hostname) ? canonicalIpLiteral(hostname) : null;
+  if (literal !== null && blocked(literal)) {
     errors.push(
       allowPrivate
         ? 'Webhook URL cannot target loopback, link-local, metadata, or CGNAT addresses'
@@ -118,8 +144,8 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
   if (
     allowPrivate &&
     parsed.protocol === 'http:' &&
-    ipVersion !== 0 &&
-    !isRfc1918OrUla(hostname)
+    literal !== null &&
+    !isRfc1918OrUla(literal)
   ) {
     errors.push('Webhook URL may only use plain http for private (RFC1918/ULA) addresses');
   }
@@ -141,8 +167,8 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
   }
 
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0) {
+  if (isIpLiteralHost(hostname)) {
+    // Already classified by the synchronous validator above; nothing to resolve.
     return errors;
   }
 
@@ -199,13 +225,17 @@ export async function sendWebhookNotification(
   if (staticErrors.length > 0) {
     return {
       success: false,
-      error: `Unsafe webhook URL: ${staticErrors.join('; ')}`
+      error: `Unsafe webhook URL: ${staticErrors.join('; ')}`,
+      retryable: false,
     };
   }
 
   const method = config.method || 'POST';
-  const timeout = config.timeout || 30000; // 30 second default
-  const maxRetries = config.retryCount || 0;
+  // Runtime clamp protects pre-validation legacy JSON as well as new writes.
+  const requestedTimeout = typeof config.timeout === 'number' && Number.isFinite(config.timeout)
+    ? config.timeout
+    : 30_000;
+  const timeout = Math.min(60_000, Math.max(1_000, requestedTimeout));
 
   // Build headers
   const headers: Record<string, string> = {
@@ -224,7 +254,8 @@ export async function sendWebhookNotification(
     if (validateOutboundHeader(config.apiKeyHeader, config.apiKeyValue)) {
       return {
         success: false,
-        error: 'Invalid API key header'
+        error: 'Invalid API key header',
+        retryable: false,
       };
     }
     headers[config.apiKeyHeader.trim()] = config.apiKeyValue;
@@ -261,91 +292,88 @@ export async function sendWebhookNotification(
     });
   }
 
-  // Send request with retries
+  // Perform exactly one request. Alert delivery retries are scheduled by
+  // BullMQ, outside this scarce worker slot; direct test/automation calls are
+  // deliberately one-shot. Never reintroduce an in-process sleep loop here.
   let lastError: string | undefined;
   // The operator-facing `lastError` is deliberately short and markup-free
   // (#3992); the unshortened form is kept for the log line below so debugging
   // a strange destination loses nothing.
   let lastErrorDetail: string | undefined;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+  let retryable = true;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await safeFetch(config.url, {
+      method,
+      headers,
+      body,
+      signal: controller.signal,
+      redirect: 'error',
+      // Must mirror the save-time decision, or a URL we accepted would be
+      // refused at delivery — the TOCTOU re-check is meant to catch DNS
+      // rebinding, not to second-guess the deployment's own policy.
+      allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+      // The cleartext allowance is for the operator's own LAN hop; safeFetch
+      // enforces it against the record it pins, so this cannot drift from the
+      // address actually dialed.
+      requirePrivateForCleartext: true
+    });
 
-      const response = await safeFetch(config.url, {
-        method,
-        headers,
-        body,
-        signal: controller.signal,
-        redirect: 'error',
-        // Must mirror the save-time decision, or a URL we accepted would be
-        // refused at delivery — the TOCTOU re-check is meant to catch DNS
-        // rebinding, not to second-guess the deployment's own policy.
-        allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
-        // The cleartext allowance is for the operator's own LAN hop; safeFetch
-        // enforces it against the record it pins, so this cannot drift from the
-        // address actually dialed.
-        requirePrivateForCleartext: true
-      });
+    const responseBody = await response.text();
 
-      clearTimeout(timeoutId);
+    if (response.ok) {
+      return {
+        success: true,
+        statusCode: response.status,
+        responseBody
+      };
+    }
 
-      const responseBody = await response.text();
+    // Non-2xx response. Redact the channel's own credentials from the RAW
+    // body first: the route's scrub runs on the already-transformed string.
+    const secrets = collectChannelSecretStrings('webhook', config);
+    lastError = formatHttpFailure(response.status, responseBody, { secrets });
+    lastErrorDetail = formatHttpFailureDetail(response.status, responseBody, secrets);
 
-      if (response.ok) {
-        return {
-          success: true,
-          statusCode: response.status,
-          responseBody
-        };
-      }
-
-      // Non-2xx response
-      // Redact the channel's own credentials from the RAW body first: the
-      // route's scrub runs on the already-transformed string and matches by
-      // literal substring, so it cannot catch what normalisation rewrote (#3992).
-      const secrets = collectChannelSecretStrings('webhook', config);
-      lastError = formatHttpFailure(response.status, responseBody, { secrets });
-      lastErrorDetail = formatHttpFailureDetail(response.status, responseBody, secrets);
-
-      // Don't retry on 4xx errors (client errors)
-      if (response.status >= 400 && response.status < 500) {
-        break;
-      }
-    } catch (error) {
-      if (error instanceof SsrfBlockedError) {
-        // DNS resolved to a private IP — do not retry, the answer won't change
-        // on this timescale and we don't want to spam DNS either.
-        return {
-          success: false,
-          error: `Unsafe webhook URL: ${error.message}`
-        };
-      }
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          lastError = 'Request timed out';
-          lastErrorDetail = lastError;
-        } else {
-          lastError = error.message;
-          lastErrorDetail = lastError;
-        }
+    // Retry only statuses that can reasonably be transient. In particular,
+    // rate limiting is not a durable configuration failure, while ordinary
+    // 4xx responses should dead-letter instead of consuming the queue budget.
+    retryable = response.status === 408
+      || response.status === 425
+      || response.status === 429
+      || response.status >= 500;
+  } catch (error) {
+    if (error instanceof SsrfBlockedError) {
+      // DNS policy failures are durable configuration errors.
+      return {
+        success: false,
+        error: `Unsafe webhook URL: ${error.message}`,
+        retryable: false,
+      };
+    }
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        lastError = 'Request timed out';
+        lastErrorDetail = lastError;
       } else {
-        lastError = 'Unknown error';
+        lastError = error.message;
         lastErrorDetail = lastError;
       }
+    } else {
+      lastError = 'Unknown error';
+      lastErrorDetail = lastError;
     }
-
-    // Wait before retry (exponential backoff)
-    if (attempt < maxRetries) {
-      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
-    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   console.error(`[WebhookSender] Failed to send to ${redactUrlForLogs(config.url)}: ${lastErrorDetail ?? lastError}`);
 
   return {
     success: false,
-    error: lastError
+    error: lastError,
+    retryable,
   };
 }
 
@@ -462,6 +490,18 @@ export function validateWebhookConfig(config: unknown): { valid: boolean; errors
     if (typeof c.timeout !== 'number' || c.timeout < 1000 || c.timeout > 60000) {
       errors.push('Timeout must be between 1000 and 60000 milliseconds');
     }
+  }
+
+  // Retries are durable queue jobs, not sleeps inside a five-slot worker.
+  // retryCount means retries AFTER the initial request, hence max 2 -> 3
+  // total attempts. Runtime scheduling also clamps legacy stored values.
+  if (c.retryCount !== undefined && (
+    typeof c.retryCount !== 'number'
+    || !Number.isInteger(c.retryCount)
+    || c.retryCount < 0
+    || c.retryCount > MAX_WEBHOOK_RETRIES
+  )) {
+    errors.push(`retryCount must be an integer between 0 and ${MAX_WEBHOOK_RETRIES}`);
   }
 
   // Validate payload template if provided

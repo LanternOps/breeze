@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, apiLogin, useAuthStore } from '../../stores/auth';
@@ -18,8 +18,29 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
+  const [showTrustNotice, setShowTrustNotice] = useState(false);
 
   const user = useAuthStore((s) => s.user);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadTrustState = async () => {
+      try {
+        const response = await fetchWithAuth('/partner/trust');
+        if (!response.ok) return;
+        const data = await response.json() as { trustState?: unknown };
+        if (active && typeof data.trustState === 'string') {
+          setShowTrustNotice(data.trustState !== 'trusted');
+        }
+      } catch {
+        // This supplemental onboarding copy stays hidden when trust status is unavailable.
+      }
+    };
+
+    void loadTrustState();
+    return () => { active = false; };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,6 +150,11 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         <p className="mt-1 text-sm text-muted-foreground">
           {t('setup.account.description')}
         </p>
+        {showTrustNotice && (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Remote control and script execution unlock after your first card payment settles (about 24 hours) or once we have reviewed your account.
+          </p>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">

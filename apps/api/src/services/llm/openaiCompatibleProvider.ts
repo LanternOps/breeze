@@ -1,8 +1,21 @@
 /**
  * OpenAI-compatible LLM provider (chat-only PoC).
  *
- * Uses native Node fetch + manual SSE parsing to call any OpenAI-compatible endpoint
- * (target: vLLM). No `openai` npm package dependency.
+ * Calls any OpenAI-compatible endpoint (target: vLLM) with manual SSE parsing.
+ * No `openai` npm package dependency.
+ *
+ * Egress goes through `safeFetch` (#4121), never raw global `fetch`. The
+ * endpoint comes from operator config (`MCP_LLM_BASE_URL`) rather than from a
+ * tenant, so this is defense in depth rather than a live exploit fix — but a
+ * module that dials an operator-supplied URL with no DNS pinning and no
+ * redirect discipline is exactly the exception that quietly becomes a real
+ * SSRF hole the first time someone extends it. Routing through the shared
+ * helper also brings this path under the #1105 held-DB-context tripwire, which
+ * a direct `fetch()` bypasses entirely.
+ *
+ * `streamResponse: true` is load-bearing: `safeFetch`'s default mode buffers
+ * the whole body before resolving, which would collapse an incremental SSE
+ * chat stream into a single burst delivered after the turn ended.
  *
  * Tool-calling is explicitly unsupported on this path: we send no `tools` field.
  * If the model returns tool_calls anyway, we yield an error event and stop.
@@ -11,10 +24,28 @@
  * Cost tracking is best-effort via declared per-token pricing in config.
  */
 
+import { safeFetch, SsrfBlockedError } from '../urlSafety';
+import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import type { LLMProvider, LLMStreamEvent, ChatMessage } from './types';
 
 const FETCH_TIMEOUT_MS = 6 * 60 * 1000; // 6 min, aligned with Anthropic turn timeout
 const LLM_REQUEST_TIMEOUT_MESSAGE = 'LLM request timed out after 6 minutes';
+
+/**
+ * Ceiling on a single streamed turn. Nothing is accumulated in memory (the body
+ * is consumed as it arrives), so this exists to bound a hostile or wedged
+ * endpoint that answers at line rate for the full six-minute timeout rather
+ * than to cap a buffer. SSE framing costs ~60 bytes of JSON envelope per token,
+ * so even a 100k-token answer lands around 6 MB — 32 MiB leaves generous room
+ * above any legitimate turn while still being a hard stop.
+ */
+const MAX_STREAM_RESPONSE_BYTES = 32 * 1024 * 1024;
+
+// A monetary reservation is one ceiling, not permission to expand an
+// otherwise ordinary request without bound. Keep a provider-independent
+// per-turn work ceiling even when a very large budget or tiny configured
+// token price would make the arithmetic yield an impractical value.
+const MAX_OUTPUT_TOKENS_PER_REQUEST = 100_000;
 
 /**
  * Abort comes from AbortSignal.any([caller, timeout]): distinguish timeout vs user Stop.
@@ -55,6 +86,44 @@ export interface OpenAICompatibleProviderConfig {
 export class OpenAICompatibleProvider implements LLMProvider {
   constructor(private readonly config: OpenAICompatibleProviderConfig) {}
 
+  /**
+   * Convert a monetary reservation into a conservative output-token ceiling.
+   *
+   * OpenAI-compatible endpoints do not expose a portable tokenizer. UTF-8 byte
+   * length is nevertheless a safe upper bound on content tokens; the fixed
+   * allowance covers role/framing tokens added by common chat templates. A
+   * capped request fails closed when output pricing is absent, because in that
+   * configuration no monetary ceiling can be translated into provider work.
+   */
+  maxOutputTokensForBudgetUsd(messages: ChatMessage[], budgetUsd: number): number | null {
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return null;
+    if (!Number.isFinite(this.config.priceOutputPerMUsd) || this.config.priceOutputPerMUsd <= 0) {
+      return null;
+    }
+    if (!Number.isFinite(this.config.priceInputPerMUsd) || this.config.priceInputPerMUsd < 0) {
+      return null;
+    }
+
+    const contentBytes = messages.reduce(
+      (total, message) => total + Buffer.byteLength(message.content, 'utf8'),
+      0,
+    );
+    const conservativeInputTokens = contentBytes + (messages.length * 16) + 256;
+    const inputCostUsd = this.config.priceInputPerMUsd > 0
+      ? (conservativeInputTokens * this.config.priceInputPerMUsd) / 1_000_000
+      : 0;
+    const remainingUsd = budgetUsd - inputCostUsd;
+    if (remainingUsd <= 0) return null;
+
+    const monetaryMaxTokens = Math.floor(
+      (remainingUsd * 1_000_000) / this.config.priceOutputPerMUsd,
+    );
+    if (!Number.isFinite(monetaryMaxTokens)) return MAX_OUTPUT_TOKENS_PER_REQUEST;
+    return monetaryMaxTokens > 0
+      ? Math.min(monetaryMaxTokens, MAX_OUTPUT_TOKENS_PER_REQUEST)
+      : null;
+  }
+
   async *chatStream(
     messages: ChatMessage[],
     options: {
@@ -70,7 +139,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      ...(options.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
       // Explicitly no `tools` or `tool_choice` field.
     });
 
@@ -83,7 +152,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await safeFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -91,6 +160,23 @@ export class OpenAICompatibleProvider implements LLMProvider {
         },
         body,
         signal,
+        // Inert inside safeFetch (it never follows a Location and hands back
+        // the raw 3xx), but stated at the call site so the intent survives:
+        // a redirect on a POST carrying a bearer token is refused, not chased.
+        // The explicit 3xx check below is what actually enforces it.
+        redirect: 'error',
+        // Without this the body would be buffered to completion and the chat
+        // would stop streaming. See the module comment.
+        streamResponse: true,
+        maxBytes: MAX_STREAM_RESPONSE_BYTES,
+        // Same pair `webhookDelivery` uses. `MCP_LLM_PROVIDER=openai-compatible`
+        // is a self-host-only path and a self-hosted vLLM normally lives on the
+        // operator's LAN, so without the opt-in every such deployment would
+        // fail with "URL points to blocked address"; `requirePrivateForCleartext`
+        // keeps the cleartext allowance confined to that LAN hop instead of
+        // letting an `http://` endpoint ship the API key over the open internet.
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+        requirePrivateForCleartext: true,
       });
     } catch (err) {
       clearTimeout(timeoutId);
@@ -102,18 +188,63 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (abortKind === 'user') {
         return;
       }
+      if (err instanceof SsrfBlockedError) {
+        // The operator set this URL in their own env, so the fix is theirs to
+        // make — say what is actually allowed instead of just "blocked address".
+        yield {
+          type: 'error',
+          message:
+            `LLM endpoint refused by the egress guard: ${err.message}. MCP_LLM_BASE_URL must ` +
+            'point at a public host, or — on a self-hosted install with IS_HOSTED=false — an ' +
+            'RFC1918/ULA LAN address. Loopback (127.0.0.1/::1) is never dialable; use the ' +
+            "service name or LAN IP of the model host instead of 'localhost'.",
+        };
+        return;
+      }
       const msg = err instanceof Error ? err.message : 'Network error calling LLM endpoint';
       yield { type: 'error', message: msg };
       return;
     }
 
-    if (!response.ok) {
+    // `safeFetch` deliberately follows nothing and returns the raw 3xx, so the
+    // refusal has to be explicit here. `!response.ok` below would also catch it,
+    // but only incidentally — and the operator deserves to be told the endpoint
+    // tried to redirect rather than a bare "HTTP 302". Following it would be an
+    // SSRF bypass and would replay the bearer token at whatever the Location says.
+    if (response.status >= 300 && response.status < 400) {
+      // Release the socket before disarming the timeout that protects it.
+      // `cancel()` cannot reject with today's stream teardown, but a floating
+      // promise here would become an unhandled rejection if that ever changed.
+      void response.body?.cancel().catch(() => { /* socket is going away anyway */ });
       clearTimeout(timeoutId);
+      yield {
+        type: 'error',
+        message:
+          `LLM endpoint error: refused to follow a redirect (HTTP ${response.status}) from the ` +
+          'configured endpoint. Point MCP_LLM_BASE_URL at the endpoint that serves the response.',
+      };
+      return;
+    }
+
+    if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try {
+        // The body is a LIVE stream now, so this read can block. The turn
+        // timeout has to stay armed across it — clearing it first (as the
+        // buffered version safely could) would let an endpoint that sends
+        // error headers and then stalls hang the turn forever.
         const text = await response.text();
         detail += `: ${text.slice(0, 300)}`;
-      } catch { /* ignore */ }
+      } catch (readErr) {
+        // The status still reaches the user; only the extra detail is lost. Say
+        // why, so a transport failure while reading an error page (or a
+        // maxBytes truncation) leaves a trail instead of looking like an
+        // endpoint that returned an empty error body.
+        const why = readErr instanceof Error ? readErr.message : String(readErr);
+        console.warn(`openaiCompatibleProvider: could not read the error body for ${detail}: ${why}`);
+      } finally {
+        clearTimeout(timeoutId);
+      }
       yield { type: 'error', message: `LLM endpoint error: ${detail}` };
       return;
     }

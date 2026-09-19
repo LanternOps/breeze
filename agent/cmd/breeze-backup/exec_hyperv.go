@@ -26,6 +26,12 @@ var (
 	runMSSQLBackup  = mssql.RunBackup
 	runMSSQLRestore = mssql.RunRestore
 	runMSSQLVerify  = mssql.VerifyBackup
+
+	// resolveMSSQLRestoreTargetDir resolves the directory RESTORE/RESTORE
+	// VERIFYONLY artifacts must be downloaded into: the same SQL-Server-
+	// writable directory RunBackup writes into (D23b). See
+	// mssql.ResolveRestoreTargetDir's doc comment.
+	resolveMSSQLRestoreTargetDir = mssql.ResolveRestoreTargetDir
 )
 
 // --- MSSQL ---
@@ -79,9 +85,11 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	remotePath := path.Join("snapshots", snapshotID, "files", filepath.Base(result.BackupFile))
 
 	if err := provider.Upload(result.BackupFile, remotePath); err != nil {
+		removeMssqlBackupFile(result.BackupFile)
 		cleanupMssqlSnapshot(provider, snapshotID)
 		return fail("failed to upload MSSQL backup: " + err.Error())
 	}
+	removeMssqlBackupFile(result.BackupFile)
 
 	modTime := backupFileInfo.ModTime().UTC()
 	snapshot := backup.Snapshot{
@@ -154,12 +162,10 @@ func execMSSQLRestore(payload json.RawMessage, mgr *backup.BackupManager) backup
 		return fail("invalid MSSQL restore payload: " + err.Error())
 	}
 	var provider providers.BackupProvider
-	var stagingBase string
 	if mgr != nil {
 		provider = mgr.GetProvider()
-		stagingBase = mgr.GetStagingDir()
 	}
-	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(provider, p.SnapshotID, p.BackupFile, stagingBase)
+	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -180,12 +186,10 @@ func execMSSQLVerify(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		return fail("invalid MSSQL verify payload: " + err.Error())
 	}
 	var provider providers.BackupProvider
-	var stagingBase string
 	if mgr != nil {
 		provider = mgr.GetProvider()
-		stagingBase = mgr.GetStagingDir()
 	}
-	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(provider, p.SnapshotID, p.BackupFile, stagingBase)
+	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -569,6 +573,25 @@ func downloadMssqlSnapshotManifest(provider providers.BackupProvider, snapshotID
 	return &snapshot, nil
 }
 
+// removeMssqlBackupFile deletes the local .bak/.trn file once execMSSQLBackup
+// is done with it, on both the success and upload-failure paths.
+//
+// D23: RunBackup no longer writes into the staging directory this function
+// created (mssql.RunBackup now resolves its own directory that the SQL
+// Server service account, not the Breeze helper, can write to), so the
+// deferred os.RemoveAll(stagingDir) in execMSSQLBackup no longer reaches
+// the real backup file — it would otherwise accumulate forever in SQL
+// Server's default backup directory or the ProgramData fallback.
+func removeMssqlBackupFile(localPath string) {
+	if err := os.Remove(localPath); err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to remove local MSSQL backup file", "file", localPath, "error", err.Error())
+		}
+		return
+	}
+	slog.Debug("removed local MSSQL backup file", "file", localPath)
+}
+
 func cleanupMssqlSnapshot(provider providers.BackupProvider, snapshotID string) {
 	if provider == nil || snapshotID == "" {
 		return
@@ -609,9 +632,14 @@ func newMssqlSnapshotID(instance, database string) string {
 	return fmt.Sprintf("mssql-%s-%d-%x", slug, time.Now().Unix(), random)
 }
 
-func resolveMSSQLBackupArtifact(provider providers.BackupProvider, snapshotID, backupFile, stagingBase string) (string, func(), error) {
+// resolveMSSQLBackupArtifact locates the local file RESTORE / RESTORE
+// VERIFYONLY should read: either an already-local path the caller supplied
+// directly, or a remote artifact downloaded via downloadMSSQLArtifact —
+// see that function's doc comment for why the download destination isn't a
+// process-local staging directory (D23b).
+func resolveMSSQLBackupArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string) (string, func(), error) {
 	if snapshotID != "" {
-		return stageMSSQLSnapshotArtifact(provider, snapshotID, stagingBase)
+		return stageMSSQLSnapshotArtifact(instance, provider, snapshotID)
 	}
 
 	trimmed := strings.TrimSpace(backupFile)
@@ -630,25 +658,13 @@ func resolveMSSQLBackupArtifact(provider providers.BackupProvider, snapshotID, b
 
 	cleaned := path.Clean(filepath.ToSlash(trimmed))
 	if snapshotIDFromPath := mssqlSnapshotIDFromArtifactPath(cleaned); snapshotIDFromPath != "" {
-		return stageMSSQLSnapshotArtifact(provider, snapshotIDFromPath, stagingBase)
+		return stageMSSQLSnapshotArtifact(instance, provider, snapshotIDFromPath)
 	}
 
-	tempDir, err := os.MkdirTemp(stagingBase, "breeze-mssql-artifact-*")
-	if err != nil {
-		return "", nil, err
-	}
-	localPath := filepath.Join(tempDir, filepath.Base(cleaned))
-	if err := provider.Download(cleaned, localPath); err != nil {
-		_ = os.RemoveAll(tempDir)
-		return "", nil, err
-	}
-
-	return localPath, func() {
-		_ = os.RemoveAll(tempDir)
-	}, nil
+	return downloadMSSQLArtifact(instance, provider, cleaned, filepath.Base(cleaned))
 }
 
-func stageMSSQLSnapshotArtifact(provider providers.BackupProvider, snapshotID, stagingBase string) (string, func(), error) {
+func stageMSSQLSnapshotArtifact(instance string, provider providers.BackupProvider, snapshotID string) (string, func(), error) {
 	if provider == nil {
 		return "", nil, fmt.Errorf("backup provider is required")
 	}
@@ -660,22 +676,36 @@ func stageMSSQLSnapshotArtifact(provider providers.BackupProvider, snapshotID, s
 		return "", nil, fmt.Errorf("snapshot %s has no backup files", snapshotID)
 	}
 
-	tempDir, err := os.MkdirTemp(stagingBase, "breeze-mssql-artifact-*")
-	if err != nil {
-		return "", nil, err
-	}
-	cleanup := func() {
-		_ = os.RemoveAll(tempDir)
-	}
-
 	file := manifest.Files[0]
-	localPath := filepath.Join(tempDir, filepath.Base(file.BackupPath))
-	if err := provider.Download(file.BackupPath, localPath); err != nil {
-		cleanup()
+	return downloadMSSQLArtifact(instance, provider, file.BackupPath, filepath.Base(file.BackupPath))
+}
+
+// downloadMSSQLArtifact downloads a remote backup artifact into the same
+// SQL-Server-writable directory RunBackup writes into (D23b): RESTORE
+// DATABASE/LOG and RESTORE VERIFYONLY are executed by the SQL Server
+// service account, not the Breeze helper, exactly like BACKUP DATABASE/LOG
+// (D23) — so a process-local staging directory (which resolves under
+// C:\Windows\SystemTemp when the helper runs as SYSTEM) is the wrong place
+// to put the file; the SQL Server service account can't open it there.
+//
+// The returned cleanup removes only the downloaded file, not a whole
+// directory: the resolved directory is either SQL Server's own default
+// backup directory or a shared Breeze staging directory, either of which
+// other concurrent jobs may also be using.
+func downloadMSSQLArtifact(instance string, provider providers.BackupProvider, remotePath, filename string) (string, func(), error) {
+	targetDir, err := resolveMSSQLRestoreTargetDir(instance)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve restore target directory: %w", err)
+	}
+	localPath := filepath.Join(targetDir, filename)
+	if err := provider.Download(remotePath, localPath); err != nil {
+		removeMssqlBackupFile(localPath)
 		return "", nil, err
 	}
 
-	return localPath, cleanup, nil
+	return localPath, func() {
+		removeMssqlBackupFile(localPath)
+	}, nil
 }
 
 func mssqlSnapshotIDFromArtifactPath(artifactPath string) string {

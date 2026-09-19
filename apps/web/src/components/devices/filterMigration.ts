@@ -56,7 +56,7 @@ export function legacyRulesToFilterConditions(rules: LegacyDeviceGroupRule[]): F
 
 const FIELD_LABELS = new Map(FILTER_FIELDS.map(field => [field.key, field.label]));
 
-const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
+export const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
 
 function isConditionGroup(entry: FilterCondition | FilterConditionGroup): entry is FilterConditionGroup {
   return entry !== null && typeof entry === 'object' && Array.isArray((entry as FilterConditionGroup).conditions);

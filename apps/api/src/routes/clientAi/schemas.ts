@@ -200,6 +200,7 @@ export const clientToolResultSchema = z.object({
 export type ClientAiSessionPayload = {
   portalUserId: string;
   orgId: string;
+  authEpoch: number;
   createdAt: string;
 };
 

@@ -8,6 +8,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -32,6 +33,9 @@ vi.mock('../db/schema', () => ({
     lastChecked: 'softwareComplianceStatus.lastChecked',
     remediationStatus: 'softwareComplianceStatus.remediationStatus',
     lastRemediationAttempt: 'softwareComplianceStatus.lastRemediationAttempt',
+    installRemediationStatus: 'softwareComplianceStatus.install_remediation_status',
+    lastInstallRemediationAttempt: 'softwareComplianceStatus.last_install_remediation_attempt',
+    installRemediationAttempts: 'softwareComplianceStatus.install_remediation_attempts',
   },
   softwarePolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', mode: 'mode', name: 'name', isActive: 'isActive', updatedAt: 'updatedAt' },
 }));
@@ -64,6 +68,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../services/pamActuationLifecycle', () => ({
+  requestPamCleanup: vi.fn(),
+}));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -82,6 +90,7 @@ vi.mock('../services/permissions', () => ({
 
 import {
   executableRuleSchema,
+  cleanupSoftwarePolicyElevations,
   resolveOrgIdForWrite,
   softwarePoliciesRoutes,
   softwareRulesSchema,
@@ -91,6 +100,30 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
+import { requestPamCleanup } from '../services/pamActuationLifecycle';
+
+describe('cleanupSoftwarePolicyElevations', () => {
+  it('creates cleanup generations for only the active requests transitioned by the policy removal', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }, { id: 'elevation-2' }] });
+    const tx = { execute } as any;
+
+    await cleanupSoftwarePolicyElevations(tx, 'policy-1');
+
+    expect(requestPamCleanup).toHaveBeenCalledTimes(2);
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(1, tx, {
+      elevationRequestId: 'elevation-1', cause: 'policy_removed',
+    });
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(2, tx, {
+      elevationRequestId: 'elevation-2', cause: 'policy_removed',
+    });
+  });
+
+  it('propagates cleanup failure so the caller transaction rolls back', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }] }) } as any;
+    vi.mocked(requestPamCleanup).mockRejectedValueOnce(new Error('cleanup failed'));
+    await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).rejects.toThrow('cleanup failed');
+  });
+});
 
 function makeOrgAuth(orgId: string): AuthContext {
   return {
@@ -673,6 +706,55 @@ describe('GET /violations — site scope', () => {
     app.route('/software-policies', softwarePoliciesRoutes);
   });
 
+  it.each([
+    { status: 'gave_up', attemptedAt: new Date('2026-09-15T12:00:00Z'), attempts: 3 },
+    { status: 'none', attemptedAt: null, attempts: 0 },
+    { status: null, attemptedAt: null, attempts: 0 },
+  ])('returns install remediation fields on the wire ($status)', async ({ status, attemptedAt, attempts }) => {
+    const storedRow: Record<string, unknown> = {
+      'softwareComplianceStatus.remediationStatus': 'failed',
+      'softwareComplianceStatus.install_remediation_status': status,
+      'softwareComplianceStatus.last_install_remediation_attempt': attemptedAt,
+      'softwareComplianceStatus.install_remediation_attempts': attempts,
+    };
+    // Honor the route's projection so an omitted or incorrectly mapped column
+    // cannot pass merely because the mock returned a pre-shaped response.
+    vi.mocked(db.select).mockImplementationOnce((projection: any) => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                device: { id: DEVICE_ALLOWED },
+                compliance: Object.fromEntries(
+                  Object.entries(projection.compliance).map(([key, column]) => [key, storedRow[String(column)]])
+                ),
+              }]),
+            }),
+          }),
+        }),
+      }),
+    }) as any);
+
+    const res = await app.request('/software-policies/violations', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [{
+        device: { id: DEVICE_ALLOWED },
+        compliance: {
+          remediationStatus: 'failed',
+          installRemediationStatus: status,
+          lastInstallRemediationAttempt: attemptedAt?.toISOString() ?? null,
+          installRemediationAttempts: attempts,
+        },
+      }],
+      total: 1,
+    });
+  });
+
   it('returns 403 when an explicit deviceId is outside the caller site allowlist', async () => {
     setAuth([SITE_ALLOWED]);
     mockSiteResolution([
@@ -884,7 +966,8 @@ describe('partner-wide software policies (#2126)', () => {
         }),
       }),
     };
-    vi.mocked(db.update).mockReturnValue(updateChain);
+    const tx = { update: vi.fn().mockReturnValue(updateChain) };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
 
     const res = await app.request(`/${POLICY_ID}`, {
       method: 'PATCH',
@@ -893,6 +976,6 @@ describe('partner-wide software policies (#2126)', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(db.update).toHaveBeenCalled();
+    expect(tx.update).toHaveBeenCalled();
   });
 });

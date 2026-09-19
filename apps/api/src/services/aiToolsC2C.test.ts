@@ -21,6 +21,11 @@ vi.mock('./c2cJobCreation', () => ({
   createC2cSyncJobIfIdle: vi.fn(),
 }));
 
+const captureSubjectMock = vi.fn();
+vi.mock('./recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: (...args: unknown[]) => captureSubjectMock(...args),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -101,6 +106,14 @@ function setDefaultDbMocks() {
   });
   vi.mocked(enqueueC2cSync).mockResolvedValue('queue-job-1');
   vi.mocked(enqueueC2cRestore).mockResolvedValue('queue-job-2');
+  captureSubjectMock.mockResolvedValue({
+    authorizationPrincipalKind: 'ai_agent',
+    authorizationPrincipalId: 'run-1',
+    authorizationGrantRevision: 'ai-rev-1',
+    authorizationState: 'pending',
+    authorizationDenialCode: null,
+    authorizationCheckedAt: null,
+  });
 }
 
 function mockSelectSequence(rowsList: any[][]) {
@@ -115,6 +128,7 @@ function mockInsertSequence(rowsList: any[][]) {
 
 function makeAuth(): AuthContext {
   return {
+    principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     token: {} as any,
     partnerId: null,
@@ -299,5 +313,39 @@ describe('aiToolsC2C handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+
+  it('passes the actual AI subject into sync job creation with the exact tool intent', async () => {
+    prepareHandlerMocks('trigger_c2c_sync');
+    const auth = makeAuth();
+
+    await toolMap.get('trigger_c2c_sync')!.handler({ configId: CONFIG_ID }, auth);
+
+    expect(createC2cSyncJobIfIdle).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      configId: CONFIG_ID,
+      auth,
+    });
+  });
+
+  it('persists restore kind and the actual AI run subject before enqueue', async () => {
+    mockSelectSequence([[{ id: ITEM_ID, orgId: ORG_ID, configId: CONFIG_ID }]]);
+    const insertChain = createInsertChain([{ id: JOB_ID, status: 'pending' }]);
+    vi.mocked(db.insert).mockReturnValueOnce(insertChain as any);
+    const auth = makeAuth();
+
+    await toolMap.get('restore_c2c_items')!.handler({ itemIds: [ITEM_ID] }, auth);
+
+    expect(captureSubjectMock).toHaveBeenCalledWith(
+      auth,
+      ORG_ID,
+      expect.objectContaining({ operation: 'c2c_restore', requiredAiTool: 'restore_c2c_items' }),
+    );
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({
+      operationKind: 'restore',
+      authorizationPrincipalKind: 'ai_agent',
+      authorizationPrincipalId: 'run-1',
+      authorizationGrantRevision: 'ai-rev-1',
+    }));
   });
 });

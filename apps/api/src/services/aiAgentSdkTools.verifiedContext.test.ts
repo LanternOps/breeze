@@ -50,6 +50,8 @@ vi.mock('./aiTools', async (importOriginal) => ({
 }));
 
 import { __test__ } from './aiAgentSdkTools';
+import { buildScriptBuilderTools } from './scriptBuilderTools';
+import type { PreToolUseCallback } from './aiAgentSdkTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 
 const { makeHandler } = __test__;
@@ -71,7 +73,18 @@ const verifiedContext = {
   },
 } as unknown as ToolExecutionContext;
 
-describe('makeHandler forwards pre-verified release material to executeTool (#3409 PR4c-1)', () => {
+describe.each([
+  { name: 'Fleet AI', makeHandler },
+  {
+    name: 'Script Builder',
+    makeHandler: (toolName: string, getAuth: () => typeof fakeAuth, onPreToolUse?: PreToolUseCallback) => {
+      const exposedName = toolName === 'run_script' ? 'execute_script_on_device' : toolName;
+      const registered = buildScriptBuilderTools(getAuth, onPreToolUse).find(t => t.name === exposedName);
+      if (!registered) throw new Error(`Missing tool: ${exposedName}`);
+      return (args: Record<string, unknown>) => registered.handler(args as never, undefined);
+    },
+  },
+])('$name forwards pre-verified release material to executeTool', ({ makeHandler }) => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
@@ -91,7 +104,40 @@ describe('makeHandler forwards pre-verified release material to executeTool (#34
     expect((call[3] as { context?: unknown }).context).toBe(verifiedContext);
   });
 
-  it('calls executeTool with exactly three arguments when nothing was verified', async () => {
+  // P2-5 (#4192): the SAME seam now also carries the id of the intent whose
+  // inline release this invocation IS. `createSessionPreToolUse` sets
+  // `intentId` only after it wins the approved -> executing CAS, so its
+  // presence is the fact a handler that may run ONLY as an approved release
+  // (manage_ai_agents:authorize_supervised_key) keys off.
+  it('forwards the released intent id alongside the verified material', async () => {
+    const onPreToolUse = vi.fn(async () => ({
+      allowed: true as const,
+      intentId: 'intent-1',
+      context: verifiedContext,
+    }));
+    const handler = makeHandler('run_script', () => fakeAuth, onPreToolUse);
+
+    await handler({ scriptId: 'script-1', deviceIds: ['device-1'] });
+
+    const context = (mockExecuteTool.mock.calls[0]! as unknown as unknown[])[3] as
+      { context: ToolExecutionContext };
+    expect(context.context.actionIntentId).toBe('intent-1');
+    expect(context.context.verifiedRunScript).toBe(verifiedContext.verifiedRunScript);
+  });
+
+  it('forwards the released intent id even when nothing was verified', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const, intentId: 'intent-2' }));
+    const handler = makeHandler('run_script', () => fakeAuth, onPreToolUse);
+
+    await handler({ scriptId: 'script-1', deviceIds: ['device-1'] });
+
+    const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
+    expect(call).toHaveLength(4);
+    expect((call[3] as { context: ToolExecutionContext }).context)
+      .toEqual({ actionIntentId: 'intent-2' });
+  });
+
+  it('calls executeTool with exactly three arguments when nothing was verified and no intent was released', async () => {
     const onPreToolUse = vi.fn(async () => ({ allowed: true as const }));
     const handler = makeHandler('list_scripts', () => fakeAuth, onPreToolUse);
 

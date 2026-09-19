@@ -11,7 +11,7 @@
  */
 
 import { db } from '../db';
-import { devices, deviceFilesystemCleanupRuns } from '../db/schema';
+import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -24,6 +24,7 @@ import {
   saveFilesystemSnapshot,
   safeCleanupCategories,
 } from './filesystemAnalysis';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -32,6 +33,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -41,14 +45,11 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
@@ -84,7 +85,6 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
       const actionMap: Record<string, string> = {
         list: 'file_list',
         read: 'file_read',
@@ -111,7 +111,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
-      const result = await executeCommand(deviceId, fileCommandType, {
+      const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
         path: input.path,
         content: input.content,
         newPath: input.newPath
@@ -164,9 +164,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       let snapshot = await getLatestFilesystemSnapshot(deviceId);
 
       if (refresh || !snapshot) {
-        const { executeCommand } = await getCommandQueue();
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
-        const commandResult = await executeCommand(deviceId, 'filesystem_analysis', {
+        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
           trigger: 'on_demand',
           path: scanPath,
           maxDepth: input.maxDepth,
@@ -250,6 +249,20 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
       if ('error' in access) return JSON.stringify({ error: access.error });
 
+      // Review fix (#3826 Task 5 follow-up): `device_filesystem_cleanup_runs
+      // .requested_by` FK-references users.id (db/schema/filesystem.ts:47),
+      // but an `ai_agent` principal's `auth.user.id` is the agent's
+      // `ai_agents.id`, not a users row (agentAuthContext.ts) — inserting it
+      // verbatim dies on 23503, which is exactly what made the shipped Disk
+      // Cleanup built-in's `preview` (and `execute`) act step unreachable
+      // under act mode. Same probe-degrade precedent as
+      // aiToolsPlaybooks.ts's `triggeredByUserId` and commandQueue.ts:855-889:
+      // one indexed PK lookup, and a non-resolving id degrades the FK column
+      // to NULL. Agent attribution already lives on the run/outcome, not on
+      // this column.
+      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+      const safeRequestedBy = userRow ? auth.user.id : null;
+
       const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
       if (!snapshot) {
         return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
@@ -268,7 +281,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           .values({
             deviceId,
             orgId: access.device.orgId,
-            requestedBy: auth.user.id,
+            requestedBy: safeRequestedBy,
             plan: {
               snapshotId: snapshot.id,
               categories: requestedCategories ?? safeCleanupCategories,
@@ -306,12 +319,11 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'No valid cleanup candidates selected from the latest preview set' });
       }
 
-      const { executeCommand } = await getCommandQueue();
       const actions: Array<{ path: string; category: string; sizeBytes: number; status: string; error?: string }> = [];
       let bytesReclaimed = 0;
 
       for (const candidate of selected) {
-        const commandResult = await executeCommand(deviceId, 'file_delete', {
+        const commandResult = await aiExecuteCommand(auth, 'disk_cleanup', deviceId, 'file_delete', {
           path: candidate.path,
           recursive: true,
         }, { userId: auth.user.id, timeoutMs: 30_000 });
@@ -336,7 +348,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         .values({
           deviceId,
           orgId: access.device.orgId,
-          requestedBy: auth.user.id,
+          requestedBy: safeRequestedBy,
           approvedAt: new Date(),
           plan: {
             snapshotId: snapshot.id,

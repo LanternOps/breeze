@@ -1,8 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "KI-Assistent",
+    "agent": "KI-Agent",
+    "originUnavailable": "Ursprung nicht verfügbar",
+    "openSession": "Unterhaltung öffnen",
+    "openAgentRun": "Agentenlauf öffnen",
+    "tool": "Verwendetes Tool: {{name}}",
+    "occurredAt": "Aufgetreten am {{time}}"
+  },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
-    "devices": "Geräte",
+    "devices": "Geräte & Assets",
     "alerts": "Warnmeldungen",
     "approvals": "Genehmigungen",
     "pendingApprovals": "{{count}} ausstehende Genehmigungen",
@@ -15,32 +27,28 @@
     "patches": "Patches",
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
-    "fleet": "Gerätebestand",
-    "aiWorkspace": "KI-Arbeitsbereich",
     "aiForOffice": "KI für Office",
     "networkMonitor": "Netzwerküberwachung",
+    "jobs": "Aufträge",
+    "monitoring": "Überwachung",
     "networkDiscovery": "Netzwerkerkennung",
-    "security": "Sicherheit",
     "edr": "EDR",
     "dnsSecurity": "DNS-Sicherheit",
     "pam": "PAM",
     "userRisk": "Benutzerrisiko",
     "sensitiveData": "Sensible Daten",
     "peripherals": "Peripheriegeräte",
-    "aiRiskEngine": "KI-Risiko-Engine",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Compliance-Baselines",
     "quotes": "Angebote",
     "invoices": "Rechnungen",
     "contracts": "Verträge",
+    "agreements": "Vereinbarungen",
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
-    "softwareLibrary": "Softwarebibliothek",
-    "softwarePolicies": "Softwarerichtlinien",
     "deviceGroups": "Gerätegruppen",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
-    "backup": "Datensicherung",
     "cloudBackup": "Cloud-Backup",
     "disasterRecovery": "Notfallwiederherstellung",
     "reports": "Berichte",
@@ -48,9 +56,15 @@
     "auditTrail": "Audit-Protokoll",
     "eventLogs": "Ereignisprotokolle",
     "partner": "Partner",
+    "billing": "Abrechnung",
     "organizations": "Organisationen",
-    "aiUsageBudget": "KI-Nutzung und Budget",
+    "aiUsage": "KI-Nutzung",
+    "scriptAuthoring": "Skripterstellung",
+    "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
+    "aiAgentRuns": "KI-Agenten-Läufe",
+    "aiImpact": "KI-Wirkung",
+    "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -61,16 +75,29 @@
     "deletionRequests": "Löschanfragen",
     "quarantinedDevices": "Geräte in Quarantäne",
     "thirdPartyCatalog": "Drittanbieterkatalog",
-    "connectedAppsAdmin": "Verbundene Apps (Admin)",
-    "sectionAiFleet": "KI und Gerätebestand",
-    "sectionMonitoring": "Überwachung",
+    "connectedAppsAdmin": "Verbundene Apps",
     "sectionSecurity": "Sicherheit",
-    "sectionOperations": "Betrieb",
     "sectionBackup": "Datensicherung",
     "sectionReporting": "Berichte",
     "sectionSettings": "Einstellungen",
     "sectionExtensions": "Erweiterungen",
-    "variables": "Variablen"
+    "variables": "Variablen",
+    "llmProviderCatalog": "LLM-Anbieterkatalog",
+    "aiKillSwitch": "KI-Notausschalter",
+    "sectionAi": "KI",
+    "sectionFleetManagement": "Flottenverwaltung",
+    "sectionBilling": "Abrechnung",
+    "sectionAdministration": "Administration",
+    "fleetOrchestration": "Flottenorchestrierung",
+    "aiAssistant": "KI-Assistent",
+    "software": "Software",
+    "securityOverview": "Übersicht",
+    "aiRisk": "KI-Risiko",
+    "deviceBackup": "Gerätesicherung",
+    "sectionServiceDesk": "Service-Desk",
+    "serviceManagement": "Service-Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Liefervorlagen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -161,6 +188,19 @@
     "none": "Keine",
     "optional": "Optional",
     "required": "Erforderlich"
+  },
+  "runContext": {
+    "label": "Ausführen als",
+    "scriptDefault": "Skript-Standard",
+    "scriptDefaultNamed": "Skript-Standard ({{context}})",
+    "system": "System",
+    "user": "Angemeldeter Benutzer",
+    "elevated": "Erhöht",
+    "unknown": "Nicht erfasst",
+    "userInSession": "Angemeldeter Benutzer (Sitzung {{session}})",
+    "sessionLabel": "Zielsitzung",
+    "sessionAny": "Beliebige aktive Sitzung",
+    "effectiveLabel": "Ausführungskontext"
   },
   "shared": {
     "accessDenied": {
@@ -352,6 +392,9 @@
       "criticalPending": "{{count}} kritische Patches ausstehend",
       "criticalPending_one": "{{count}} kritischer Patch ausstehend",
       "criticalPending_other": "{{count}} kritische Patches ausstehend",
+      "unratedPending": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
+      "unratedPending_one": "{{count}} unbewerteter Patch ausstehend (wird nicht automatisch genehmigt)",
+      "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "empty": "Noch keine Patch-Daten"
     },
     "vuln": {
@@ -687,7 +730,19 @@
         "scripts": "Skripte",
         "alerts": "Warnmeldungen",
         "users": "Benutzer",
-        "settings": "Einstellungen"
+        "settings": "Einstellungen",
+        "recent-devices": "Zuletzt geöffnete Geräte",
+        "recent-pages": "Zuletzt besucht"
+      },
+      "actions": {
+        "newDevice": "Neues Gerät",
+        "newDeviceDescription": "Gerät zur Flotte hinzufügen",
+        "runScript": "Skript ausführen",
+        "runScriptDescription": "Ein Skript auf Geräten ausführen",
+        "alertRules": "Alarmregeln",
+        "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
+        "keyboardShortcuts": "Tastenkürzel",
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
       }
     },
     "notifications": {
@@ -727,7 +782,10 @@
       "collapse": "Seitenleiste einklappen",
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
-      "closeMenu": "Menü schließen"
+      "closeMenu": "Menü schließen",
+      "recentDevices": "Zuletzt geöffnete Geräte",
+      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
+      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -738,6 +796,20 @@
       "title": "Organisationen konnten nicht geladen werden",
       "description": "Beim Laden Ihrer Organisationsliste ist ein Fehler aufgetreten. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "retry": "Erneut versuchen"
+    },
+    "shortcuts": {
+      "title": "Tastenkürzel",
+      "general": "Allgemein",
+      "goTo": "Gehe zu",
+      "goToHint": "g drücken, loslassen, dann die Taste.",
+      "then": "dann",
+      "search": "Breeze durchsuchen",
+      "searchSlash": "Suche (öffnet auch mit dieser Taste)",
+      "cycleSidebar": "Seitenleisten-Modus wechseln",
+      "help": "Hilfebereich öffnen",
+      "showThis": "Diese Karte anzeigen",
+      "close": "Dialog oder Menü schließen",
+      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen."
     }
   },
   "migrationBanner": {
@@ -886,7 +958,8 @@
         "fallbackTitle": "Überwachen",
         "fields": {
           "interval": "Intervall (s)",
-          "timeout": "Zeitüberschreitung (s)"
+          "timeout": "Zeitüberschreitung (s)",
+          "target": "Ziel-URL"
         },
         "labels": {
           "lastChecked": "Zuletzt geprüft: {{time}}",
@@ -914,6 +987,20 @@
           "httpCheck": "HTTP-Prüfung",
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
+        },
+        "targetResetNote": "Wenn Sie die URL ändern, wird die TLS-Beobachtung zurückgesetzt.",
+        "saved": "Monitor aktualisiert",
+        "certificate": {
+          "title": "Zertifikat",
+          "issuer": "Aussteller",
+          "expires": "Gültig bis",
+          "observedHost": "Beobachteter Host",
+          "state": "Zustand",
+          "states": {
+            "observed": "Beobachtet",
+            "handshakeFailed": "TLS-Handshake fehlgeschlagen",
+            "notTls": "Kein TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1626,6 +1713,12 @@
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
         "billableTotal": "Abrechnungsfähig: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "Aus Standort",
+        "remote_session": "Aus Remote-Sitzung",
+        "support_session": "Aus Quick Support"
       }
     },
     "snmp": {
@@ -1758,7 +1851,9 @@
         "assetsDescription": "Einheitliche Ansicht von SNMP-Abfragen und Netzwerkprüfungen pro erkanntem Asset.",
         "table": {
           "asset": "Asset",
-          "overall": "Insgesamt"
+          "overall": "Insgesamt",
+          "reachability": "Erreichbarkeit",
+          "collection": "Datenerfassung"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1810,7 +1905,29 @@
         "disabling": "Deaktivieren...",
         "yesDisable": "Ja, deaktivieren",
         "monitoringNotActive": "Für dieses Asset ist die Überwachung nicht aktiv.",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "openSettings": "Einstellungen…",
+        "reachability": {
+          "responding": "Antwortet",
+          "notResponding": "Antwortet nicht",
+          "unverified": "Nicht überprüft",
+          "sources": {
+            "networkCheck": "Netzwerkprüfung",
+            "probe": "Jetzt prüfen",
+            "scan": "Scan",
+            "unifi": "UniFi-Steuerung",
+            "snmp": "SNMP-Abfrage"
+          }
+        },
+        "collectionState": {
+          "collecting": "Daten werden erfasst",
+          "partial": "Teilweise",
+          "no_template": "Keine Vorlage",
+          "failing": "Fehlgeschlagen",
+          "paused": "Pausiert",
+          "never_polled": "Noch nie abgefragt",
+          "not_configured": "Nicht konfiguriert"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2014,7 +2131,8 @@
           "notMember": "Von diesem Befund nicht mehr betroffen",
           "decommissioned": "Gerät ist entfernt",
           "timeout": "Nach 30 Minuten abgelaufen",
-          "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen"
+          "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen",
+          "maintenanceWindow": "Gerät befindet sich in einem Wartungsfenster"
         },
         "viewProgress": "Fortschritt anzeigen",
         "errors": {
@@ -2404,6 +2522,21 @@
     "link": "Neuigkeiten"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}",
+    "approximateFailed": "≈ Summe nicht verfügbar — Wechselkurse konnten nicht geladen werden",
+    "approximateUnavailableMissing": "≈ Summe nicht verfügbar — kein {{target}}-Wechselkurs für {{codes}}",
+    "approximateUnavailableStale": "≈ Summe nicht verfügbar — {{target}}-Wechselkurs für {{codes}} ist zu alt",
+    "approximateUnavailableMixed": "≈ Summe nicht verfügbar — {{codes}} konnte nicht in {{target}} umgerechnet werden",
+    "approximateUnavailableCodesOverflow": "{{codes}} und {{more}} weitere"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Ihre Rolle wird künftig eine Zwei-Faktor-Authentifizierung erfordern. Richten Sie sie bis {{date}} ein.",
+    "cta": "2FA einrichten",
+    "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "cta": "MFA erzwingen",
+    "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   }
 }

@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', () => ({
+  // #5075 W04 — Sidebar now reads the Service Management mode from orgStore,
+  // whose module scope calls registerOrgIdProvider on import. Without this the
+  // whole suite dies at import time, before any test runs.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: fetchWithAuthMock,
   useAuthStore: Object.assign(
     (selector: (s: { user: { isPlatformAdmin: boolean; permissions: Array<{ resource: string; action: string }> } }) => unknown) =>
@@ -88,7 +92,7 @@ describe('Sidebar extension navigation', () => {
 
     // Core top-level items still render.
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Devices')).toBeInTheDocument();
+    expect(screen.getByText('Devices & Assets')).toBeInTheDocument();
     // No stray "Extensions" section header.
     expect(screen.queryByText('Extensions')).not.toBeInTheDocument();
   });

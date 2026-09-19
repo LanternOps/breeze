@@ -41,6 +41,26 @@ const (
 
 const fileDeleteChildAccess = 0x00000040
 
+// MainAgentPinnedShareMode is the sharing the agent grants other openers while
+// it holds its lifetime pins on ConfigDir and the run child.
+//
+// FILE_SHARE_DELETE is deliberately withheld. That is the bit that actually
+// carries the anti-tamper intent: while the pin is held neither pinned
+// directory can be renamed or deleted, and a hostile pre-existing
+// delete/rename handle makes OpenPreparedMainAgentLockDir fail closed.
+//
+// FILE_SHARE_WRITE is deliberately granted. Windows checks the PARENT
+// directory's share mode when a file is renamed INTO it, so a pin without
+// FILE_SHARE_WRITE fails every such rename with ERROR_SHARING_VIOLATION while
+// still permitting plain file creation. That combination silently broke every
+// atomic temp-file-plus-rename write the agent performs in its own config
+// directory — agent.state, the PAM v2 lifetime ledger, and config.SaveTo —
+// from v0.96.0 through v0.108.0 (issue #4184). Withholding it bought no
+// security: anyone with write access to the directory could already create
+// files there, and content-level trust rests on the PROTECTED
+// SYSTEM+Administrators DACL that these handles verify, not on the share mode.
+const MainAgentPinnedShareMode = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
+
 var (
 	mainAgentConfigDirFn            = ConfigDir
 	getMainAgentFileInformationFn   = windows.GetFileInformationByHandle
@@ -137,9 +157,16 @@ func (d *MainAgentLockDirectory) Close() error {
 }
 
 // OpenPreparedMainAgentLockDir revalidates and pins the current ConfigDir and
-// its handle-relative run child without delete/write sharing. A hostile
-// pre-existing rename/write handle therefore makes this fail closed, and no
-// new namespace mutation handle can open until MainAgentLockDirectory.Close.
+// its handle-relative run child without delete sharing (see
+// MainAgentPinnedShareMode). A hostile pre-existing delete/rename handle on
+// either directory therefore makes this fail closed, and until
+// MainAgentLockDirectory.Close no handle that could rename or delete the
+// pinned directories themselves can open.
+//
+// The pin does not, and never did, prevent writes to files INSIDE those
+// directories; that is the job of their PROTECTED SYSTEM+Administrators DACL,
+// verified here on every open. The pin does permit the agent's own atomic
+// temp-file-plus-rename persistence inside them (issue #4184).
 func OpenPreparedMainAgentLockDir() (*MainAgentLockDirectory, error) {
 	configPath := mainAgentConfigDirFn()
 	configHandle, err := openMainAgentDirectoryPinned(configPath)
@@ -197,7 +224,7 @@ func openMainAgentDirectory(path string) (windows.Handle, error) {
 }
 
 func openMainAgentDirectoryPinned(path string) (windows.Handle, error) {
-	return openMainAgentDirectoryWithShare(path, windows.FILE_SHARE_READ)
+	return openMainAgentDirectoryWithShare(path, MainAgentPinnedShareMode)
 }
 
 func openMainAgentDirectoryWithShare(path string, share uint32) (windows.Handle, error) {
@@ -238,7 +265,7 @@ func openMainAgentChildDirectory(parent windows.Handle, name string) (windows.Ha
 		&iosb,
 		nil,
 		0,
-		windows.FILE_SHARE_READ,
+		MainAgentPinnedShareMode,
 		windows.FILE_OPEN,
 		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
 		0,

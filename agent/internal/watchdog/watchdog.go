@@ -42,8 +42,19 @@ var transitions = map[string]map[string]string{
 		EventIPCConnected:      StateMonitoring,
 		EventRecoveryExhausted: StateFailover,
 	},
+	// STANDBY is entered when the agent announces a graceful shutdown. It is
+	// deliberately deaf to health signals for the duration of the announced
+	// window (see EvaluateStandby) — the agent is SUPPOSED to be gone — but it
+	// must still be able to leave once that window closes. Before #5252 it
+	// could not: agent_unhealthy and ipc_connected had no edge here, so the
+	// process-gone tick that follows every graceful stop, and the reconnect
+	// that follows every successful upgrade, were both silently dropped. A
+	// host stopped by `service install` sat unmanaged for the whole 30-minute
+	// standby timeout and then parked in FAILOVER, still stopped.
 	StateStandby: {
 		EventAgentRecovered: StateMonitoring,
+		EventIPCConnected:   StateMonitoring,
+		EventAgentUnhealthy: StateRecovering,
 		EventStandbyTimeout: StateFailover,
 		EventStartAgent:     StateRecovering,
 	},
@@ -61,6 +72,7 @@ type Config struct {
 	MaxRecoveryAttempts     int
 	RecoveryCooldown        time.Duration
 	StandbyTimeout          time.Duration
+	StandbyGrace            time.Duration
 	FailoverPollInterval    time.Duration
 }
 

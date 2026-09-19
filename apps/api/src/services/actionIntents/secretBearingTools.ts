@@ -12,6 +12,7 @@
  * enumerate it for fail-closed contract tests without gaining a mutable
  * security registry.
  */
+import { stripMcpPrefix } from '../mcpToolNames';
 import { encryptSecret } from '../secretCrypto';
 import {
   ACTION_INTENT_RESULT_AAD,
@@ -52,22 +53,6 @@ export const SECRET_UNAVAILABLE_TEXT =
 
 /** Prose tripwire for the shape that caused the original Google leak. */
 const PROSE_CREDENTIAL_PATTERN = /Temporary password:\s*(?!\[REDACTED\]|\[redacted\])\S/;
-
-/**
- * Local copy of aiAgentSdk's stripMcpPrefix. Duplicated rather than imported
- * to avoid an import cycle (aiAgentSdk imports this module). Must stay in
- * sync with the canonical algorithm: this predicate gates both the
- * pre-execution refusal (aiAgentSdkTools.ts) and assertNoPlaintextSecret
- * below, so a narrower normalization here (e.g. only literal
- * "mcp__breeze__") lets a differently-prefixed tool name slip past both
- * checks and fails OPEN — reinstating the plaintext-leak class this module
- * exists to close.
- */
-function stripMcpPrefix(toolName: string): string {
-  if (!toolName.startsWith('mcp__')) return toolName;
-  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
-  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
-}
 
 export function isSecretBearingTool(toolName: string): boolean {
   const bare = stripMcpPrefix(toolName);

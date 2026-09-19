@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/node';
 import type { Job, Worker } from 'bullmq';
 import { captureException } from '../services/sentry';
+import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 
 /**
  * Attaches unified error + failed-job reporting to a BullMQ worker (#1379).
@@ -88,6 +89,10 @@ export const WORKER_FAILURE_REASONS = [
   'desktop_stop_pending',
   /** desktopSessionFinalizationWorker: another finalizer already released the intent. */
   'desktop_intent_already_released',
+  /** aiBudgetAlertDelivery: the event row is not committed/visible yet (#4388). */
+  'ai_budget_alert_event_not_visible',
+  /** m365SyncWorker: Graph throttled or the executor was at its sync in-flight cap. */
+  'm365_sync_throttled',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];
@@ -204,6 +209,7 @@ export function attachWorkerObservability(
   options?: WorkerObservabilityOptions,
 ): void {
   tagJobExecution(worker, name);
+  workerReadinessRegistry.attach(name, worker);
 
   worker.on('error', (e) => {
     console.error(`[${name}] worker error:`, e);

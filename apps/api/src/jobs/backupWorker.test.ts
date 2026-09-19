@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { DispatchOutcome } from '../services/agentCommandRelay';
 
 // Mock db module — backupWorker uses `import * as dbModule from '../db'`
 // then destructures: `const { db } = dbModule;`
@@ -8,6 +9,12 @@ const mockDb = {
   where: vi.fn().mockReturnThis(),
   limit: vi.fn().mockResolvedValue([]),
   selectDistinct: vi.fn(),
+  update: vi.fn(),
+  // D18 W01: stampDispatchPinAndIdentity opens `db.transaction(async (tx) =>
+  // ...)` — the mock transaction simply invokes the callback with mockDb
+  // itself as `tx`, so every existing select/update wiring in this file
+  // transparently covers the transactional path too.
+  transaction: vi.fn((cb: (tx: unknown) => unknown) => cb(mockDb)),
 };
 
 vi.mock('../db', () => ({
@@ -23,6 +30,17 @@ const sweepUnreferencedBackupObjectsMock = vi.fn();
 vi.mock('./backupRetention', () => ({
   cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
   sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
+  // D18 W01: real (not mocked) identity logic — a test double here would
+  // hide identity-scoping bugs stampDispatchPinAndIdentity depends on.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 const captureExceptionMock = vi.fn();
@@ -39,8 +57,24 @@ vi.mock('../services/backupResultPersistence', () => ({
   markBackupJobFailedIfInFlight: markBackupJobFailedIfInFlightMock,
 }));
 
+const recordDispatchedExpectationMock = vi.fn(async () => undefined);
+vi.mock('../services/agentWorkExpectation', () => ({
+  recordDispatchedExpectation: recordDispatchedExpectationMock,
+}));
+
+const agentRelayMock = {
+  isAgentConnectedAnywhere: vi.fn(async () => true),
+  dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
+};
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
+}));
+
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
-const { resolveBackupTargets, processCleanupExpiredSnapshots, __testOnly } = await import('./backupWorker');
+const { resolveBackupTargets, processCleanupExpiredSnapshots, EmptyBackupPathsError, __testOnly } = await import('./backupWorker');
 
 describe('resolveBackupTargets', () => {
   beforeEach(() => {
@@ -110,6 +144,112 @@ describe('resolveBackupTargets', () => {
     expect(result).toEqual([
       { commandType: 'backup_run', payload: { systemImage: true } },
     ]);
+  });
+
+  // #5493: wholeMachine=true fans out ONE snapshot carrying files + layout +
+  // system state instead of a files-less system_image snapshot alongside a
+  // files-only file snapshot. Root path is chosen server-side from the
+  // device's osType, never trusted from the caller.
+  it('returns a wholeMachine system_image target with OS root and excludes for linux', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'linux' }]),
+      }),
+    });
+
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: true, excludes: ['/proc/**', '/sys/**'] },
+      'device-id'
+    );
+
+    expect(result).toEqual([
+      {
+        commandType: 'backup_run',
+        payload: {
+          systemImage: true,
+          wholeMachine: true,
+          paths: ['/'],
+          excludes: ['/proc/**', '/sys/**'],
+        },
+      },
+    ]);
+  });
+
+  it('returns a wholeMachine system_image target with C:\\ root for windows', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'windows' }]),
+      }),
+    });
+
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: true, excludes: [] },
+      'device-id'
+    );
+
+    expect(result).toEqual([
+      {
+        commandType: 'backup_run',
+        payload: {
+          systemImage: true,
+          wholeMachine: true,
+          paths: ['C:\\'],
+          excludes: [],
+        },
+      },
+    ]);
+  });
+
+  it('returns the byte-identical legacy payload when wholeMachine is false', async () => {
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: false, excludes: [] },
+      'device-id'
+    );
+    expect(result).toEqual([
+      { commandType: 'backup_run', payload: { systemImage: true } },
+    ]);
+  });
+
+  // Review finding on #5572: osType is windows|macos|linux, but the original
+  // `device?.osType === 'windows' ? 'C:\\' : '/'` silently sent EVERY
+  // non-windows device — including macos, which is explicitly out of scope
+  // (spec §12), and a device whose row couldn't be found at all — a
+  // whole-machine job with paths:['/'] and the Linux exclude list. Both must
+  // refuse loudly instead of walking the wrong filesystem or dispatching
+  // nothing silently.
+  it('refuses a wholeMachine target for a macOS device instead of defaulting to "/"', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'macos' }]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on macos');
+  });
+
+  it('refuses a wholeMachine target when the device row cannot be found', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on unknown');
   });
 
   it('returns one entry per discovered VM for hyperv minus excludes', async () => {
@@ -311,10 +451,63 @@ describe('resolveBackupTargets', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty paths and no excludes field for file mode when not provided', async () => {
-    const result = await resolveBackupTargets('file', {}, 'device-id');
+  // #6001: this case used to assert `{ paths: [] }` was emitted. That payload
+  // could only ever produce the agent's "backup_run payload has no paths"
+  // bounce at 0s, so file mode now refuses at the server instead — the job is
+  // marked failed with an actionable reason before anything reaches a device.
+  it('refuses file mode with no paths rather than dispatching an empty list', async () => {
+    await expect(resolveBackupTargets('file', {}, 'device-id')).rejects.toThrow(
+      EmptyBackupPathsError
+    );
+    await expect(resolveBackupTargets('file', { paths: [] }, 'device-id')).rejects.toThrow(
+      EmptyBackupPathsError
+    );
+  });
+
+  it('refuses file mode whose paths are only blank strings', async () => {
+    // A whitespace-only entry is not a path — admitting it would hand the agent
+    // a list it discards, reproducing the same 0s failure the refusal exists to
+    // prevent.
+    await expect(
+      resolveBackupTargets('file', { paths: ['', '   '] }, 'device-id')
+    ).rejects.toThrow(EmptyBackupPathsError);
+  });
+
+  it('warns when normalization drops SOME path entries rather than dropping them silently', async () => {
+    // A selection that lost entries is not the selection the tech configured.
+    // The job still succeeds on what is left (refusing the whole run would be
+    // worse), so the log line is the only trail explaining why one folder
+    // stopped being backed up.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await resolveBackupTargets(
+        'file',
+        { paths: ['C:\\Users', '', null as unknown as string, '   '] },
+        'device-id'
+      );
+      expect(result[0]!.payload).toEqual({ paths: ['C:\\Users'] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('Dropped 3 unusable path entries');
+      expect(warn.mock.calls[0]![0]).toContain('device-id');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn when every configured path is usable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await resolveBackupTargets('file', { paths: ['/data', '/etc'] }, 'device-id');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('trims surrounding whitespace off dispatched paths', async () => {
+    const result = await resolveBackupTargets('file', { paths: ['  C:\\Users  '] }, 'device-id');
     expect(result).toEqual([
-      { commandType: 'backup_run', payload: { paths: [] } },
+      { commandType: 'backup_run', payload: { paths: ['C:\\Users'] } },
     ]);
   });
 });
@@ -336,8 +529,12 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedLegalHold: 0,
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 2, blockedIdentities: 1 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 5, skippedIdentities: 2, blockedIdentities: 1,
+      retiredSwept: 1, orphansSwept: 2, deferredIdentities: 0, unreachableIdentities: 0,
+    });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -351,9 +548,14 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       deleted: 2,
       skipped: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
       gcDeleted: 5,
       gcSkippedIdentities: 2,
       gcBlockedIdentities: 1,
+      gcRetiredSwept: 1,
+      gcOrphansSwept: 2,
+      gcDeferredIdentities: 0,
+      gcUnreachableIdentities: 0,
     });
   });
 
@@ -366,6 +568,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedLegalHold: 1,
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
     });
     sweepUnreferencedBackupObjectsMock.mockRejectedValue(new Error('S3 listing failed'));
 
@@ -377,6 +580,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(result.gcDeleted).toBe(0);
     expect(result.gcSkippedIdentities).toBe(0);
     expect(result.gcBlockedIdentities).toBe(0);
+    expect(result.gcRetiredSwept).toBe(0);
+    expect(result.gcOrphansSwept).toBe(0);
+    expect(result.gcDeferredIdentities).toBe(0);
+    expect(result.gcUnreachableIdentities).toBe(0);
     // A thrown GC sweep is escalated to Sentry (retention run still succeeds).
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
@@ -385,7 +592,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     mockDb.selectDistinct.mockReturnValue({
       from: vi.fn().mockResolvedValue([]),
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -395,10 +605,66 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       deleted: 0,
       skipped: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
       gcDeleted: 0,
       gcSkippedIdentities: 0,
       gcBlockedIdentities: 0,
+      gcRetiredSwept: 0,
+      gcOrphansSwept: 0,
+      gcDeferredIdentities: 0,
+      gcUnreachableIdentities: 0,
     });
+  });
+
+  it('D17: a per-row cleanup failure does not prevent the GC sweep, but still fails the job at the end', async () => {
+    // Before the fix, cleanupExpiredSnapshots threw straight out of
+    // processCleanupExpiredSnapshots on a per-row FK violation, so the GC
+    // sweep below (which runs AFTER row-level retention in the same job) was
+    // never reached. Row-level isolation now lives inside
+    // cleanupExpiredSnapshots itself (it resolves with a `failed` count
+    // instead of throwing), but this job must still (a) always run the sweep
+    // and (b) still end up as a FAILED BullMQ job so the failure is visible
+    // — just only after the sweep has already run.
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }]),
+    });
+    cleanupExpiredSnapshotsMock.mockResolvedValue({
+      deleted: 1,
+      skippedLegalHold: 0,
+      skippedImmutable: 0,
+      prunedByMaxVersions: 0,
+      failed: 1,
+    });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 5, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    });
+
+    await expect(processCleanupExpiredSnapshots()).rejects.toThrow(/1 snapshot row delete\(s\) failed/);
+
+    // The sweep must have been called despite the row-level failure — this is
+    // the assertion that would have failed before the fix, since the old code
+    // threw straight out of cleanupExpiredSnapshots before the sweep line was
+    // ever reached.
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles cleanup-expired-snapshots OUTSIDE the blanket runWithSystemDbAccess wrap (D18 W01 §3.7)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const source = fs.readFileSync(path.resolve(__dirname, './backupWorker.ts'), 'utf-8');
+
+    const cleanupBranchIndex = source.indexOf("data.type === 'cleanup-expired-snapshots'");
+    const blanketWrapIndex = source.indexOf('return runWithSystemDbAccess(async () => {');
+    const switchCleanupCaseIndex = source.indexOf("case 'cleanup-expired-snapshots':");
+
+    expect(cleanupBranchIndex).toBeGreaterThan(-1);
+    expect(blanketWrapIndex).toBeGreaterThan(-1);
+    // The special-cased branch must appear BEFORE the blanket wrap.
+    expect(cleanupBranchIndex).toBeLessThan(blanketWrapIndex);
+    // The switch inside the blanket wrap must no longer have its own
+    // 'cleanup-expired-snapshots' case.
+    expect(switchCleanupCaseIndex).toBe(-1);
   });
 });
 
@@ -497,5 +763,374 @@ describe('processResults — malformed payload path rendering (#3260)', () => {
     expect(message).toMatch(/^Malformed backup result payload:/);
     expect(message).toContain('filesBackedUp');
     expect(message).not.toContain('<root>');
+  });
+});
+
+describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () => {
+  const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  // Route every db.select() call by the shape of its column-selector argument
+  // (all these queries hit different tables/columns, real schema refs — not
+  // stringly-typed, so we key off which fields were requested).
+  function wireSelects(currentOrgId = 'org-1') {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      let rows: unknown[];
+      if (keys.length === 0) {
+        rows = [CONFIG_ROW]; // config load: db.select() with no arg
+      } else if (keys.length === 1 && keys[0] === 'status') {
+        rows = []; // isBackupJobCancelled: never cancelled
+      } else if (keys.length === 1 && keys[0] === 'orgId') {
+        rows = [{ orgId: currentOrgId }];
+      } else if (keys.length === 1 && keys[0] === 'agentId') {
+        rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
+      } else if (keys.includes('featureLinkId')) {
+        rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }]; // job mode lookup
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        rows = []; // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup — no eligible base by default
+      } else {
+        throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+            for: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      };
+    }) as never);
+  }
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireSelects();
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('marks the job failed with "Agent not connected" (byte-identical to today) when no agent is connected anywhere, without calling dispatch', async () => {
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.errorLog === 'Agent not connected')).toBe(true);
+  });
+
+  it('refuses dispatch after a device moves org and records the failure reason', async () => {
+    wireSelects('org-2');
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(result).toEqual({ dispatched: false });
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+  });
+
+  it('dispatches normally (sentCount incremented) when the outcome is sent', async () => {
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+    // Final status flip to 'running' proves sentCount > 0 took the happy path.
+    expect(updateLog.some((u) => u.payload.status === 'running')).toBe(true);
+    expect(updateLog.some((u) => typeof u.payload.errorLog === 'string' && u.payload.errorLog.includes('Failed to send'))).toBe(false);
+  });
+
+  it('marks the target failed with "Failed to send ... command to agent" (today\'s message) when the outcome is offline', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[BackupWorker\] Failed to send backup_run command to agent for job/));
+    // Single target reuses the original jobId, so no per-target failed-row
+    // UPDATE fires (that branch only runs when commandJobId !== data.jobId);
+    // the only observable failure signal is the final markJobFailed.
+    expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('marks the job failed naming the outcome when indeterminate (still may have been sent)', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dispatch outcome indeterminate/i));
+    // The persisted job errorLog (not just the console.warn) must name the
+    // outcome so ops/dashboards can distinguish "maybe sent" (indeterminate)
+    // from a genuine "offline" — same distinct-message contract as
+    // discoveryWorker. Single target reuses the original jobId, so the only
+    // observable failure signal is the final markJobFailed UPDATE.
+    expect(
+      updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent (dispatch outcome indeterminate)')
+    ).toBe(true);
+    expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('calls recordDispatchedExpectation BEFORE dispatchCommandToAgent (expectation-first, backupWorker.ts:645-651)', async () => {
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(recordDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
+    const expectationOrder = recordDispatchedExpectationMock.mock.invocationCallOrder[0] as number;
+    const dispatchOrder = agentRelayMock.dispatchCommandToAgent.mock.invocationCallOrder[0] as number;
+    expect(expectationOrder).toBeLessThan(dispatchOrder);
+  });
+});
+
+describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)', () => {
+  const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: { path: '/tmp/gc-test' }, encryption: false };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  // Common shape router for this describe block's dispatch flow: (1) config
+  // load (no arg), (2) isBackupJobCancelled (`status`), (3) device->agent
+  // lookup (`agentId`), (4) job mode lookup (`featureLinkId`), (5) the
+  // base-candidate lookup (`id`+`snapshotId`, ends in `.limit()`), (6) the
+  // FOR SHARE lock on backup_snapshots ALONE (`id`, ends in `.for()`), (7)
+  // the retirement-existence check (`id`, ends in `.limit()`).
+  function wireSelectsWithCandidate(candidateRows: unknown[], retirementRows: unknown[] = []) {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
+      let rows: unknown[] = [];
+      if (keys.length === 0) rows = [CONFIG_ROW];
+      else if (keys.length === 1 && keys[0] === 'status') rows = [];
+      else if (keys.length === 1 && keys[0] === 'agentId') rows = [{ agentId: 'agent-1' }];
+      else if (keys.includes('featureLinkId')) rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) rows = candidateRows;
+      else if (keys.length === 1 && keys[0] === 'id') rows = candidateRows; // locked row mirrors the candidate (same row, just re-selected under FOR SHARE)
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(keys.length === 1 && keys[0] === 'id' ? retirementRows : rows),
+            for: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      };
+    }) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+  });
+
+  it('pins a base snapshot and includes baseSnapshotId/publishLeaseExpiresAt in the backup_run payload', async () => {
+    let capturedCommand: { payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    wireSelectsWithCandidate([{ id: 'base-row-id', snapshotId: 'base-snap-1' }], []);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.payload?.baseSnapshotId).toBe('base-snap-1');
+    expect(typeof capturedCommand?.payload?.publishLeaseExpiresAt).toBe('string');
+  });
+
+  it('sends baseSnapshotId "" and still sets publishLeaseExpiresAt when no eligible base exists', async () => {
+    let capturedCommand: { payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    wireSelectsWithCandidate([]);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.payload?.baseSnapshotId).toBe('');
+    expect(typeof capturedCommand?.payload?.publishLeaseExpiresAt).toBe('string');
+  });
+
+  it('stamps storage_identity (but no lease/pin) directly via stampDispatchPinAndIdentity when mode is null (hyperv/mssql)', async () => {
+    await (__testOnly as any).stampDispatchPinAndIdentity({
+      deviceId: 'device-1',
+      configId: 'config-1',
+      jobId: 'job-hv-1',
+      mode: null,
+      provider: 'local',
+      providerConfig: { path: '/tmp/gc-test' },
+    });
+
+    const entry = updateLog.find((u) => u.payload.storageIdentity !== undefined);
+    expect(entry).toBeDefined();
+    expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
+    expect(entry?.payload.publishLeaseExpiresAt).toBeUndefined();
+    expect(entry?.payload.baseSnapshotId).toBeUndefined();
+  });
+
+  // Interface contract confirmed against the merged agent implementation
+  // (W03, exec_backup.go): a backup_run payload is REJECTED by the helper if
+  // baseSnapshotId is present without publishLeaseExpiresAt, or vice versa --
+  // presence of the baseSnapshotId KEY (even "") is the server-owned-mode
+  // switch. Every backup_run dispatch must therefore always send BOTH keys
+  // together, and hyperv/mssql (never backup_run) must send NEITHER.
+  it('sends baseSnapshotId+publishLeaseExpiresAt together for backup_run, and neither for a hyperv_backup dispatch', async () => {
+    let capturedCommand: { type?: string; payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    // Route the job-mode lookup to 'hyperv' and the hypervVms discovery
+    // select (`{vmName}`) to one VM, on top of this describe's existing
+    // shape router.
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
+      if (keys.length === 0) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([CONFIG_ROW]) }) }) };
+      if (keys.length === 1 && keys[0] === 'status') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) };
+      if (keys.length === 1 && keys[0] === 'agentId') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }) }) };
+      if (keys.includes('featureLinkId')) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ featureLinkId: null, backupMode: 'hyperv', modeTargets: {} }]) }) }) };
+      if (keys.length === 1 && keys[0] === 'vmName') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ vmName: 'DC-01' }]) }) };
+      throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+    }) as never);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.type).toBe('hyperv_backup');
+    expect(capturedCommand?.payload).not.toHaveProperty('baseSnapshotId');
+    expect(capturedCommand?.payload).not.toHaveProperty('publishLeaseExpiresAt');
+    // storage_identity is still stamped on the job row for a hyperv target.
+    const entry = updateLog.find((u) => u.payload.storageIdentity !== undefined);
+    expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
+  });
+});
+
+describe('processDispatchBackup — approval_generation mismatch (site-ceiling gate contract §3)', () => {
+  const CONFIG_ROW_GEN3 = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false, approvalGeneration: 3 };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  function wireSelects(configRow: Record<string, unknown> = CONFIG_ROW_GEN3) {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
+      let rows: unknown[];
+      if (keys.length === 0) {
+        rows = [configRow];
+      } else if (keys.length === 1 && keys[0] === 'status') {
+        rows = [];
+      } else if (keys.length === 1 && keys[0] === 'agentId') {
+        rows = [{ agentId: 'agent-1' }];
+      } else if (keys.includes('featureLinkId')) {
+        rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup —
+        // no eligible base for these generation-gate tests (irrelevant to
+        // what this describe block asserts).
+        rows = [];
+      } else if (keys.length === 1 && keys[0] === 'id') {
+        rows = [];
+      } else {
+        throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+      }
+      const limitFn = vi.fn().mockResolvedValue(rows);
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
+        }),
+      };
+    }) as never);
+  }
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireSelects();
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('fails the job closed with backup_config_changed when the job generation does not match the reloaded config', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1', configGeneration: 2 };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.errorLog === 'backup_config_changed')).toBe(true);
+  });
+
+  it('dispatches normally when the job generation matches the reloaded config', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1', configGeneration: 3 };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+  });
+
+  it('dispatches normally when the job carries no generation (legacy payload, opt-in only)', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
   });
 });

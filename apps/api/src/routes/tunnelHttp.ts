@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
@@ -12,6 +13,9 @@ import { isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
+import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
+import { PERMISSIONS } from '../services/permissions';
+import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -30,11 +34,12 @@ import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
  *      tunnel's proxy base, and 302-redirect to the same URL without `__bzt`
  *      (so the ticket isn't re-used or leaked via Referer).
  *   2. Sub-resource requests authenticate via that cookie.
- *   EVERY request re-checks owner + device-online + agent-connected + policy.
+ *   EVERY request re-checks the active user and organization, current tenant
+ *   membership, site scope, role grants, session ownership, device state,
+ *   agent connectivity, and policy.
  *
- * Known gaps (documented, not bugs): `<base href>` injection fixes relative
- * URLs in most printer UIs, but absolute-URL or JS-constructed URLs that point
- * straight at the LAN host won't be rewritten and will 404 through the proxy.
+ * HTML/CSS URLs and common browser request APIs are rewritten to the tunnel.
+ * Direct JavaScript location assignments and WebSocket upgrades remain unsupported.
  * Per-user rate limiting is intentionally deferred to the Task 8 security pass.
  */
 export const tunnelHttpRoutes = new Hono();
@@ -52,6 +57,14 @@ const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 100
 const ACTIVITY_BUMP_THROTTLE_MS = 30_000;
 const COOKIE_AUDIENCE = 'breeze-tunnel-http';
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'];
+const TUNNEL_CONTINUATION_PERMISSIONS = [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE];
+
+async function authorizeTunnelContinuation(tunnelId: string, userId: string) {
+  return authorizeRemoteSessionContinuation(
+    { sessionId: tunnelId, sessionType: 'tunnel', userId },
+    TUNNEL_CONTINUATION_PERMISSIONS,
+  );
+}
 
 /** Absolute 12h cap off the tunnel row's createdAt, independent of activity. */
 function isPastSessionCap(createdAt: Date): boolean {
@@ -79,7 +92,6 @@ const HOP_BY_HOP = new Set([
 const FORWARDABLE_REQUEST_HEADERS = new Set([
   'accept',
   'accept-language',
-  'accept-encoding',
   'user-agent',
   'content-type',
   'content-length',
@@ -152,6 +164,7 @@ interface UsableTunnel {
   agentId: string | null;
   deviceId: string;
   deviceStatus: string;
+  deviceSiteId: string | null;
   targetHost: string;
   targetPort: number;
   scheme: string | null;
@@ -188,6 +201,7 @@ async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise
       agentId: device.agentId ?? null,
       deviceId: device.id,
       deviceStatus: device.status,
+      deviceSiteId: device.siteId ?? null,
       targetHost: session.targetHost,
       targetPort: session.targetPort,
       scheme: session.scheme ?? null,
@@ -236,17 +250,6 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
   return out;
 }
 
-/** Inject `<base href>` so relative URLs in the framed page resolve via proxy. */
-function injectBaseTag(html: string, basePath: string): string {
-  const tag = `<base href="${basePath}">`;
-  const headMatch = html.match(/<head[^>]*>/i);
-  if (headMatch && headMatch.index !== undefined) {
-    const idx = headMatch.index + headMatch[0].length;
-    return html.slice(0, idx) + tag + html.slice(idx);
-  }
-  return tag + html;
-}
-
 // ---------------------------------------------------------------------------
 // The proxy route.
 // ---------------------------------------------------------------------------
@@ -275,6 +278,11 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       return c.text('Unauthorized', 401);
     }
 
+    const liveAuthority = await authorizeTunnelContinuation(tunnelId, consumed.userId);
+    if (!liveAuthority.ok) {
+      return c.text('Access denied', liveAuthority.status);
+    }
+
     // Confirm the ticket-bearer actually owns a usable session before minting
     // the cookie (fail-closed — don't hand out a 5-min cookie for a dead/
     // foreign session).
@@ -294,10 +302,11 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
     });
 
+    // Subresources originate in the sandbox's opaque origin: Lax is insufficient.
     setCookie(c, authCookieName, await signTunnelCookie(consumed.userId, tunnelId), {
       httpOnly: true,
       secure: true,
-      sameSite: 'Lax',
+      sameSite: 'None',
       path: basePath,
       maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
     });
@@ -309,6 +318,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
 
   // 2. Authz: owner + absolute cap + device online + agent connected + policy
   // (fail-closed).
+  const liveAuthority = await authorizeTunnelContinuation(tunnelId, userId);
+  if (!liveAuthority.ok) {
+    return c.text('Access denied', liveAuthority.status);
+  }
   const session = await loadOwnedTunnelSession(tunnelId, userId);
   if (!session) {
     return c.text('Not found', 404);
@@ -353,7 +366,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: 'None',
     path: basePath,
     maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
   });
@@ -386,6 +399,14 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   }
 
   const scheme: 'http' | 'https' = (session.scheme as 'http' | 'https' | null) ?? (session.targetPort === 443 ? 'https' : 'http');
+  // This cookie-authenticated route has no request-scoped DB context. The
+  // session lookup above established trusted org/device/site values under a
+  // bounded system read; use those exact values for the FORCE-RLS allowlist
+  // lookup rather than issuing a contextless query that would fail closed for
+  // every legitimate proxy request.
+  const allowlistRules = await withSystemDbAccessContext(() =>
+    getActiveAllowlistPatterns(session.orgId, session.deviceSiteId)
+  );
 
   const awaitResult = await sendCommandToAgentAwaitResult(
     session.agentId,
@@ -402,7 +423,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
         headers,
         bodyB64,
         skipTlsVerify: session.skipTlsVerify,
-        allowlistRules: await getActiveAllowlistPatterns(session.orgId),
+        allowlistRules,
       },
     },
     HTTP_REQUEST_TIMEOUT_MS,
@@ -483,8 +504,31 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Set-Cookie headers already appended above.
   respHeaders.append('set-cookie', refreshedCookie);
 
-  if (contentType.toLowerCase().includes('text/html')) {
-    body = injectBaseTag(body.toString('utf8'), basePath);
+  const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
+    ? `[${session.targetHost}]` : session.targetHost;
+  const rewriteOptions = { basePath, targetOrigin: `${scheme}://${targetHost}:${session.targetPort}` };
+  const isHtml = contentType.toLowerCase().includes('text/html');
+  if (isHtml || contentType.toLowerCase().includes('text/css')) {
+    const encodings = (respHeaders.get('content-encoding') ?? 'identity')
+      .split(',').map((encoding) => encoding.trim().toLowerCase());
+    // Check the entire stack first: an unknown encoding must pass through with
+    // its original bytes and headers, even when another layer is supported.
+    if (encodings.every((encoding) => ['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
+      try {
+        for (const encoding of encodings.reverse()) {
+          if (encoding === 'gzip') body = gunzipSync(body);
+          else if (encoding === 'deflate') body = inflateSync(body);
+          else if (encoding === 'br') body = brotliDecompressSync(body);
+        }
+      } catch {
+        return c.text('Malformed upstream content encoding', 502);
+      }
+      body = isHtml
+        ? rewriteTunnelHtml(body.toString('utf8'), rewriteOptions)
+        : rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
+      respHeaders.delete('content-encoding');
+      respHeaders.set('content-length', String(Buffer.byteLength(body)));
+    }
   }
 
   // Buffer isn't a DOM `BodyInit`; hand the runtime a Uint8Array for binary

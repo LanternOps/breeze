@@ -11,11 +11,17 @@
  *  - per-app block/pin rules
  *
  * Manual per-device installs do NOT pass through this evaluator.
+ *
+ * Since AI patch agent W02 (#5748) this module is the PURE rules half: the
+ * priority-ordered decision (`decidePatchApproval` / `evaluatePatchApproval`),
+ * the deferral rule (`isHeldByDeferral`) and the filter helpers. Everything
+ * that reads the database — including `resolveApprovedPatchesForDevice`, the
+ * job executor's entry point — lives in `patchEligibility.ts`, which imports
+ * from here and never the other way round. Two implementations of the
+ * deferral rule is the failure mode that split exists to prevent.
  */
 
-import { db } from '../db';
-import { devicePatches, patches, patchApprovals, organizations, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { PatchIneligibleReason } from '@breeze/shared';
 import { captureException } from './sentry';
 
 // ============================================
@@ -29,6 +35,8 @@ export interface CategoryRule {
   autoApproveSeverities?: string[];
   /** @deprecated Legacy stored alias for autoApproveSeverities (rows/snapshots written before 2026-08). Read-only. */
   severityFilter?: string[];
+  /** Opt-in: also auto-approve patches with no severity rating (#3758). Default false (fail-closed). */
+  autoApproveUnrated?: boolean;
   deferralDaysOverride?: number | null;
 }
 
@@ -216,6 +224,18 @@ export function isThirdPartyPatchSource(source: string | null | undefined): bool
   return (THIRD_PARTY_PATCH_SOURCES as readonly string[]).includes(source ?? '');
 }
 
+/**
+ * True when a patch carries no usable severity signal: `severity` is
+ * NULL/empty, or the DB's explicit `'unknown'` sentinel value. Both must be
+ * treated identically by every auto-approve severity gate (#3758) — treating
+ * only NULL as "unrated" left 'unknown'-severity patches falling through a
+ * *different* code path that happened to reach the same fail-closed outcome,
+ * which is fragile (see the two guards below).
+ */
+export function isUnratedSeverity(severity: string | null | undefined): boolean {
+  return !severity || severity === 'unknown';
+}
+
 // ============================================
 // Per-app rules (block / pin)
 // ============================================
@@ -304,204 +324,10 @@ export function evaluateAppRule(
 }
 
 // ============================================
-// Main evaluator
-// ============================================
-
-export async function resolveApprovedPatchesForDevice(
-  deviceId: string,
-  orgId: string,
-  ringConfig: ApprovalEvaluationConfig
-): Promise<ApprovedPatch[]> {
-  // Resolve the device-org's partner. Approvals are partner-scoped; an org
-  // without a partner cannot have approvals.
-  const [orgRow] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  const partnerId = orgRow?.partnerId ?? null;
-  if (!partnerId) return []; // org without a partner cannot have approvals
-
-  // Cross-partner ring guard: a config policy could reference a ring owned by
-  // a different partner (featurePolicyId is an unconstrained uuid). If the
-  // ring's partner != this device-org's partner, treat it as no ring.
-  if (ringConfig.ringId && ringConfig.ringPartnerId && ringConfig.ringPartnerId !== partnerId) {
-    ringConfig = { ...ringConfig, ringId: null };
-  }
-
-  // 1. Query outstanding (needs-install) devicePatches, joined with patch details.
-  //    Only 'pending' is outstanding — 'missing' is a stale tombstone (see
-  //    OUTSTANDING_DEVICE_PATCH_STATUSES); automation must never try to install it.
-  const pendingPatches = await db
-    .select({
-      devicePatchId: devicePatches.id,
-      patchId: devicePatches.patchId,
-      externalId: patches.externalId,
-      title: patches.title,
-      category: patches.category,
-      severity: patches.severity,
-      releaseDate: patches.releaseDate,
-      requiresReboot: patches.requiresReboot,
-      source: patches.source,
-      packageId: patches.packageId,
-      // Pins use THIS device's observed version, so another tenant's agent cannot move the global version out from under a pin.
-      version: sql<string | null>`COALESCE(${devicePatches.availableVersion}, ${patches.version})`,
-      // First-seen timestamp for this device+patch. Third-party entries have no
-      // vendor releaseDate, so deferral windows anchor on when we first saw the
-      // patch instead of failing closed (#2218).
-      firstSeenAt: devicePatches.createdAt,
-    })
-    .from(devicePatches)
-    .innerJoin(patches, eq(devicePatches.patchId, patches.id))
-    .where(
-      and(
-        eq(devicePatches.deviceId, deviceId),
-        inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES])
-      )
-    );
-
-  if (pendingPatches.length === 0) return [];
-
-  // Apply policy-level source filtering ('os' vs 'third_party' etc.).
-  const allowedSources = buildAllowedPatchSources(ringConfig.sources);
-  const candidatePatches = allowedSources
-    ? pendingPatches.filter((p) => allowedSources.has(p.source))
-    : pendingPatches;
-
-  if (candidatePatches.length === 0) {
-    console.warn(
-      `[PatchApproval] device ${deviceId}: all ${pendingPatches.length} pending patches excluded by policy sources [${(ringConfig.sources ?? []).join(', ')}]`
-    );
-    return [];
-  }
-
-  // Ring category include/exclude filtering (#2117). These stored ring arrays
-  // previously had no approval-path consumer, so excluding a category did
-  // nothing. Like source and app-rule filtering they only narrow the candidate
-  // set — so, consistently with those gates, they also override an explicit
-  // manual approval (an excluded category is never installed).
-  const hasCategoryFilter =
-    (ringConfig.categories?.length ?? 0) > 0 || (ringConfig.excludeCategories?.length ?? 0) > 0;
-  const categoryFiltered = hasCategoryFilter
-    ? candidatePatches.filter((p) => {
-        if (isCategoryAllowed(p.category, ringConfig.categories, ringConfig.excludeCategories)) {
-          return true;
-        }
-        console.warn(
-          `[PatchApproval] device ${deviceId}: patch ${p.patchId} (category=${p.category ?? 'null'}) excluded by ring category filter (include=[${(ringConfig.categories ?? []).join(', ')}] exclude=[${(ringConfig.excludeCategories ?? []).join(', ')}])`
-        );
-        return false;
-      })
-    : candidatePatches;
-
-  if (categoryFiltered.length === 0) return [];
-
-  // App rules filter before manual approvals are loaded — a policy block/pin
-  // overrides even an explicit manual approval in the job flow; manual
-  // per-device installs bypass this evaluator entirely.
-  const appRuleMap = buildAppRuleMap(ringConfig.apps);
-  const finalCandidates = appRuleMap.size > 0
-    ? categoryFiltered.filter((p) => {
-        if (!p.packageId && isThirdPartyPatchSource(p.source)) {
-          // Deliberate allow-with-warn: holding every unidentified third-party
-          // patch because one unrelated app is pinned/blocked would be
-          // disproportionate.
-          console.warn(
-            `[PatchApproval] device ${deviceId}: patch ${p.patchId} (${p.source}) cannot be matched against app rules — missing packageId`
-          );
-          return true;
-        }
-        const verdict = evaluateAppRule(p, appRuleMap);
-        if (verdict !== 'allowed') {
-          console.warn(
-            `[PatchApproval] device ${deviceId}: patch ${p.patchId} (${p.source}/${p.packageId ?? '?'} v${p.version ?? '?'}) excluded by app rule (${verdict})`
-          );
-          return false;
-        }
-        return true;
-      })
-    : categoryFiltered;
-
-  if (finalCandidates.length === 0) return [];
-
-  // 2. Load manual approvals for this partner (optionally scoped to ring).
-  //    partner-wide (ring_id NULL) AND ring-specific rows are both returned.
-  const patchIds = finalCandidates.map((p) => p.patchId);
-  const manualApprovals = await db
-    .select({
-      patchId: patchApprovals.patchId,
-      status: patchApprovals.status,
-      ringId: patchApprovals.ringId,
-    })
-    .from(patchApprovals)
-    .where(
-      and(
-        eq(patchApprovals.partnerId, partnerId),
-        inArray(patchApprovals.patchId, patchIds),
-        eq(patchApprovals.status, 'approved')
-      )
-    );
-
-  // Index manual approvals by patchId for fast lookup
-  const manualApprovalSet = new Set<string>();
-  for (const approval of manualApprovals) {
-    // Ring-scoped approval: match if ringId matches, or approval is partner-wide (null ringId)
-    if (approval.ringId === ringConfig.ringId || approval.ringId === null) {
-      manualApprovalSet.add(approval.patchId);
-    }
-  }
-
-  // 3. Build category rules index
-  const categoryRules = Array.isArray(ringConfig.categoryRules) ? ringConfig.categoryRules : [];
-  const categoryRuleMap = new Map<string, CategoryRule>();
-  for (const rule of categoryRules) {
-    if (rule.category) {
-      categoryRuleMap.set(canonicalizePatchCategory(rule.category), rule);
-    }
-  }
-
-  // 4. Parse ring-level auto-approve config (#1317): enabled + severities +
-  //    deferral. Backward-compatible with the legacy boolean / no-deferral shapes.
-  const ringAutoApprove = parseRingAutoApprove(
-    ringConfig.autoApprove,
-    ringConfig.ringId ? `ring ${ringConfig.ringId}` : undefined
-  );
-
-  const now = new Date();
-  const approved: ApprovedPatch[] = [];
-
-  for (const patch of finalCandidates) {
-    const reason = evaluatePatchApproval(
-      patch,
-      ringConfig,
-      manualApprovalSet,
-      categoryRuleMap,
-      ringAutoApprove,
-      now
-    );
-
-    if (reason) {
-      approved.push({
-        patchId: patch.patchId,
-        devicePatchId: patch.devicePatchId,
-        externalId: patch.externalId,
-        title: patch.title,
-        category: patch.category,
-        severity: patch.severity,
-        requiresReboot: patch.requiresReboot,
-        approvalReason: reason,
-      });
-    }
-  }
-
-  return approved;
-}
-
-// ============================================
 // Helpers
 // ============================================
 
-interface PatchCandidate {
+export interface PatchCandidate {
   patchId: string;
   category: string | null;
   severity: string | null;
@@ -517,7 +343,16 @@ interface PatchCandidate {
   firstSeenAt?: Date | string | null;
 }
 
-function evaluatePatchApproval(
+/**
+ * The priority-ordered decision with a reason for every denial. W02 (#5748)
+ * needs the reason so an install proposal can say WHY a patch was dropped;
+ * `evaluatePatchApproval` below is the reason-less view the job path keeps.
+ */
+export type PatchApprovalDecision =
+  | { approved: ApprovalReason }
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org'> };
+
+export function evaluatePatchApproval(
   patch: PatchCandidate,
   ringConfig: ApprovalEvaluationConfig,
   manualApprovalSet: Set<string>,
@@ -525,14 +360,29 @@ function evaluatePatchApproval(
   ringAutoApprove: RingAutoApproveConfig,
   now: Date
 ): ApprovalReason | null {
+  const decision = decidePatchApproval(patch, ringConfig, manualApprovalSet, categoryRuleMap, ringAutoApprove, now);
+  return 'approved' in decision ? decision.approved : null;
+}
+
+export function decidePatchApproval(
+  patch: PatchCandidate,
+  ringConfig: ApprovalEvaluationConfig,
+  manualApprovalSet: Set<string>,
+  categoryRuleMap: Map<string, CategoryRule>,
+  ringAutoApprove: RingAutoApproveConfig,
+  now: Date
+): PatchApprovalDecision {
+  const MANUAL: PatchApprovalDecision = { denied: 'awaiting_manual_approval' };
+  const DEFERRED: PatchApprovalDecision = { denied: 'held_by_deferral' };
+
   // Priority 1: Manual approval
   if (manualApprovalSet.has(patch.patchId)) {
-    return 'manual';
+    return { approved: 'manual' };
   }
 
   // No ring linked → only manual approvals apply (partner-wide blanket handled above).
   if (!ringConfig.ringId) {
-    return null;
+    return { denied: 'no_ring_resolved' };
   }
 
   // Priority 2: Category rule. The virtual 'third_party_app' category was
@@ -551,7 +401,7 @@ function evaluatePatchApproval(
     : undefined;
   if (rule) {
     if (!rule.autoApprove) {
-      return null;
+      return MANUAL;
     }
     if (isThirdPartyPatchSource(patch.source)) {
       // Dual consent (same legs as Priority 3): the policy must opt into
@@ -560,7 +410,7 @@ function evaluatePatchApproval(
         !(ringConfig.sources ?? []).includes('third_party') ||
         !ringAutoApprove.thirdPartyApps
       ) {
-        return null;
+        return MANUAL;
       }
     }
     // Severity allowlist. Canonical name is autoApproveSeverities (what the
@@ -569,15 +419,19 @@ function evaluatePatchApproval(
     // never produced, so chips were silently unenforced (fail-open).
     const severityAllowlist = rule.autoApproveSeverities ?? rule.severityFilter;
     if (severityAllowlist && severityAllowlist.length > 0) {
-      if (!patch.severity || !severityAllowlist.includes(patch.severity)) {
-        return null;
+      if (isUnratedSeverity(patch.severity)) {
+        if (!rule.autoApproveUnrated) {
+          return MANUAL;
+        }
+      } else if (!severityAllowlist.includes(patch.severity as string)) {
+        return MANUAL;
       }
     }
     const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
     if (isHeldByDeferral(patch, deferralDays, now, 'category')) {
-      return null;
+      return DEFERRED;
     }
-    return 'category_rule';
+    return { approved: 'category_rule' };
   }
 
   // Priority 3: Ring-level auto-approve (#1317). Severity gates OS candidates;
@@ -598,37 +452,41 @@ function evaluatePatchApproval(
   if (ringAutoApprove.enabled) {
     if (isThirdPartyPatchSource(patch.source)) {
       if (!(ringConfig.sources ?? []).includes('third_party')) {
-        return null;
+        return MANUAL;
       }
       if (!ringAutoApprove.thirdPartyApps) {
-        return null;
+        return MANUAL;
       }
       const hold = ringAutoApprove.thirdPartyDeferralDays ?? ringAutoApprove.deferralDays;
       if (isHeldByDeferral(patch, hold, now, 'ring')) {
-        return null;
+        return DEFERRED;
       }
-      return 'ring_auto_approve';
+      return { approved: 'ring_auto_approve' };
     }
 
     // OS path: unchanged fail-closed severity gating. Enabled with an empty
     // severity set approves no OS patches (legacy boolean `true` and malformed
     // `{enabled:true}` rows stay inert here).
     if (ringAutoApprove.severities.length === 0) {
-      return null;
+      return MANUAL;
     }
-    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
-      return null;
+    if (isUnratedSeverity(patch.severity)) {
+      if (!ringAutoApprove.autoApproveUnrated) {
+        return MANUAL;
+      }
+    } else if (!ringAutoApprove.severities.includes(patch.severity as string)) {
+      return MANUAL;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
-      return null;
+      return DEFERRED;
     }
-    return 'ring_auto_approve';
+    return { approved: 'ring_auto_approve' };
   }
 
-  return null;
+  return MANUAL;
 }
 
-function isHeldByDeferral(
+export function isHeldByDeferral(
   patch: PatchCandidate,
   deferralDays: number,
   now: Date,
@@ -676,7 +534,7 @@ function isHeldByDeferral(
   return deferralEnd > now;
 }
 
-interface RingAutoApproveConfig {
+export interface RingAutoApproveConfig {
   enabled: boolean;
   severities: string[];
   /** Deferral window (days) for OS ring auto-approve. 0 = no deferral. */
@@ -688,6 +546,8 @@ interface RingAutoApproveConfig {
    * releaseDate when present, first-seen otherwise (#2218).
    */
   thirdPartyDeferralDays: number | null;
+  /** Opt-in: also auto-approve OS patches with no severity rating (#3758). Default false (fail-closed). */
+  autoApproveUnrated: boolean;
 }
 
 const RECOGNIZED_RING_SEVERITIES = new Set(['critical', 'important', 'moderate', 'low']);
@@ -698,6 +558,7 @@ const DISABLED_RING_AUTO_APPROVE: RingAutoApproveConfig = {
   deferralDays: 0,
   thirdPartyApps: false,
   thirdPartyDeferralDays: null,
+  autoApproveUnrated: false,
 };
 
 /**
@@ -763,7 +624,9 @@ export function parseRingAutoApprove(autoApprove: unknown, context?: string): Ri
     thirdPartyDeferralDays = rawTp;
   }
 
-  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
+  const autoApproveUnrated = config.autoApproveUnrated === true;
+
+  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays, autoApproveUnrated };
 }
 
 /**

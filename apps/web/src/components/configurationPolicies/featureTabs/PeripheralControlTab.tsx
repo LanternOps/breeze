@@ -48,6 +48,13 @@ export default function PeripheralControlTab({
   );
   const [linkedPolicySummary, setLinkedPolicySummary] =
     useState<PolicySummary | null>(null);
+  // #5080: the initializer above only runs once, at mount — if `parentLink`
+  // arrives afterward (or `existingLink` is cleared, e.g. by handleLinkChanged
+  // after a revert on this or another tab causing a re-render), the selection
+  // must re-sync rather than freeze the stale answer. Own link always wins.
+  useEffect(() => {
+    if (!existingLink) setSelectedPolicyId(parentLink?.featurePolicyId ?? null);
+  }, [existingLink, parentLink]);
   const meta = FEATURE_META.peripheral_control;
   useEffect(() => {
     if (!selectedPolicyId || !meta.fetchUrl) {

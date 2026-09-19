@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Yama onaylandı",
       "declined": "Yama reddedildi",
+      "declinedAllRings": "Yama tüm güncelleme halkaları için reddedildi",
       "deferred": "Yama ertelendi"
+    },
+    "allRings": {
+      "label": "Tüm halka onaylarını temizle",
+      "description": "Bu yamanın onayını yalnızca mevcut kapsamda değil, bu iş ortağına ait diğer tüm güncelleme halkalarında da iptal eder."
     },
     "confirm": {
       "title": "Yama onayını onaylayın",
@@ -243,7 +248,9 @@
       "critical": "Kritik",
       "important": "Önemli",
       "moderate": "Orta",
-      "low": "Düşük"
+      "low": "Düşük",
+      "unrated": "Derecelendirilmemiş",
+      "unratedNote": "Otomatik onaylanmayacak"
     },
     "approval": {
       "pending": "Beklemede",
@@ -262,6 +269,7 @@
     "actions": {
       "deploy": "Dağıt",
       "review": "İnceleme",
+      "unapprove": "Onayı kaldır",
       "details": "Ayrıntılar",
       "approveCount": "Onayla {{count}}",
       "declineCount": "Reddet {{count}}",
@@ -429,6 +437,8 @@
       "allCategories": "Tüm kategoriler",
       "default": "Varsayılan",
       "severityNote": "Önem dereceleri yalnızca işletim sistemi güncellemeleri için geçerlidir. Üçüncü taraf uygulama güncellemeleri aşağıdaki geçişle kontrol edilir; ciddiyet kontrollü değildir.",
+      "unratedSeverityNote": "Derecesiz yamalar (önem derecesi olmayan) bu önem derecesi seçiminin dışında tutulur ve aşağıdaki geçişi açmadığınız sürece, tüm önem dereceleri işaretli olsa bile otomatik olarak onaylanmaz.",
+      "autoApproveUnratedLabel": "Derecesiz yamaları da otomatik onayla",
       "manualDefault": "Bu halkadaki her yamanın manuel olarak onaylanması gerekiyor.",
       "manualCategory": "Bu kategorideki yamaların manuel olarak onaylanması gerekir.",
       "noOverrides": "Tüm kategoriler varsayılanı takip eder. Birine farklı davranmak için geçersiz kılma ekleyin."

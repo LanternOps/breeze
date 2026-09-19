@@ -1,3 +1,4 @@
+import { lockMfaPolicySettings } from '../../../services/mfaPolicyActivation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../../db';
@@ -159,6 +160,7 @@ export async function setRiskProfile(
   partnerId: string,
   level: 'low' | 'standard' | 'strict',
 ): Promise<StepResult> {
+  await lockMfaPolicySettings({ kind: 'partner', id: partnerId });
   const [row] = await db
     .select({ settings: partners.settings })
     .from(partners)

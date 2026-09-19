@@ -3,6 +3,7 @@ import { coreRoutes } from './core';
 import { runsRoutes } from './runs';
 import { dataRoutes } from './data';
 import { generateRoutes } from './generate';
+import { recipientsRoutes } from './recipients';
 
 export const reportRoutes = new Hono();
 
@@ -11,5 +12,5 @@ export const reportRoutes = new Hono();
 reportRoutes.route('/', dataRoutes);
 reportRoutes.route('/', generateRoutes);
 reportRoutes.route('/', runsRoutes);
+reportRoutes.route('/', recipientsRoutes);
 reportRoutes.route('/', coreRoutes);
-

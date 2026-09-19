@@ -78,19 +78,26 @@ test('manual documentation inventory remains available', () => {
   assert.equal(existsSync(absolute('scripts/docs-review/last-reviewed.json')), true);
 });
 
-test('Docs CI keeps its check identity and runs deterministic validation', () => {
-  const docsWorkflow = read('.github/workflows/docs-ci.yml');
+test('the docs check lives in ci.yml, is gated on the classifier, and runs deterministic validation', () => {
+  // Formerly `docs-ci.yml`, whose job was also named `CI Success`. `ci.yml` is
+  // now the only reporter of that check; the docs validation is its
+  // `docs-check` job, asserted by `ci-success` (see classify-pr-paths.test.mjs).
+  const workflow = read('.github/workflows/ci.yml');
   const docsPackage = readJson('apps/docs/package.json');
+  const docsJob = workflow.match(/^  docs-check:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/mu)?.[1];
 
-  assert.match(docsWorkflow, /^name: Docs CI$/mu);
-  assert.match(docsWorkflow, /^\s+name: CI Success$/mu);
+  assert.equal(existsSync(absolute('.github/workflows/docs-ci.yml')), false, 'docs-ci.yml must stay deleted');
+  assert.ok(docsJob, 'ci.yml must define the docs-check job');
+  assert.match(docsJob, /^    name: Docs Check$/mu);
+  assert.match(docsJob, /^    if: needs\.changes\.outputs\.docs == 'true'$/mu);
   assert.match(
-    docsWorkflow,
+    docsJob,
     /- name: Checkout\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+persist-credentials: false/u,
-    'Docs CI checkout must disable persisted GitHub credentials',
+    'docs-check checkout must disable persisted GitHub credentials',
   );
-  assert.match(docsWorkflow, /pnpm --filter @breeze\/docs check/u);
-  assert.match(docsWorkflow, /pnpm --filter @breeze\/docs build/u);
+  assert.match(docsJob, /pnpm test:docs-automation/u);
+  assert.match(docsJob, /pnpm --filter @breeze\/docs check/u);
+  assert.match(docsJob, /pnpm --filter @breeze\/docs build/u);
   assert.equal(docsPackage.scripts?.check, 'astro check');
   assert.equal(docsPackage.scripts?.build, 'astro build');
 });

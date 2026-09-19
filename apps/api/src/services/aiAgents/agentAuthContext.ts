@@ -22,6 +22,21 @@ export interface AgentRunRef {
    * the agent to the whole org.
    */
   deviceSiteId?: string | null;
+  /**
+   * The persisted `ai_sessions.id` this run is bound to, when it has one
+   * (#5022 W01). Carried into `aiOrigin` so a run initiated from a chat
+   * session keeps the conversation pointer alongside the run pointer.
+   */
+  sessionId?: string | null;
+  /**
+   * Execution plane W04 — the frozen device SET of a device-LESS analysis
+   * run (`ai_agent_runs.staged_inputs.deviceIds`). A run with a `deviceId`
+   * ignores this (that branch already pins the exact device). Without it a
+   * device-less run has NO `allowedDeviceIds` at all, i.e. every device in
+   * the org, which is precisely what `analysisMaxInputDevicesPerRun` exists
+   * to prevent.
+   */
+  allowedDeviceIds?: readonly string[];
 }
 
 export interface OrgRef {
@@ -76,6 +91,13 @@ export function buildAgentAuthContext(
   assertRunOwnership(agent, run, org);
   return {
     principal: { kind: 'ai_agent', agentId: agent.id, runId: run.id },
+    // #5022 W01: the AI-surface mint site for autonomous agent runs. Minted
+    // ONCE here, per run -- never per tool. `services/aiDispatch.ts` reads it.
+    aiOrigin: {
+      kind: 'ai_agent' as const,
+      agentRunId: run.id,
+      ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+    },
     // Attribution only. Never used for RBAC (checkPermissionRequirements denies
     // ai_agent first) and never copied into breeze.user_id (agentDbAccessContext).
     user: {
@@ -96,11 +118,23 @@ export function buildAgentAuthContext(
     // skipped entirely and a device-bound agent could target any device in the
     // org. A run with a device pins to that device's site; a run with no device
     // pins to the empty set rather than to "unrestricted".
+    //
+    // The site pin alone is not exact: it admits every SIBLING device in the
+    // same site, not just the one device the run targets. `allowedDeviceIds`
+    // is the tightening on top — `verifyDeviceAccess` (aiTools.ts) enforces
+    // it as an exact-match allowlist alongside the site check.
     ...(run.deviceId
       ? {
           allowedSiteIds: run.deviceSiteId ? [run.deviceSiteId] : [],
           canAccessSite: siteAccessCheck(run.deviceSiteId ? [run.deviceSiteId] : []),
+          allowedDeviceIds: [run.deviceId],
         }
+      : {}),
+    // W04: the device-LESS analysis run's frozen set. Only reachable when the
+    // run has no `deviceId` — the branch above already pinned that case, and
+    // an analysis run is device-less by construction.
+    ...(!run.deviceId && run.allowedDeviceIds
+      ? { allowedDeviceIds: [...run.allowedDeviceIds] }
       : {}),
   };
 }

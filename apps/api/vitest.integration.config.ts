@@ -2,14 +2,19 @@ import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
 
 // Load test environment variables
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
+      'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
+      'src/routes/integrationConnectionScope.integration.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
       // convention). It uses the shared integration setup via setupFiles plus an
@@ -46,6 +51,14 @@ export default defineConfig({
       'src/services/vulnerabilityCorrelationPhase2.integration.test.ts',
       // Co-located real-DB integration test for the DisplayName→CPE resolution cache (#2290).
       'src/services/cpeResolution.integration.test.ts',
+      // Real-DB proof for dual-axis, per-device peripheral policy resolution.
+      'src/services/peripheralEffectivePolicy.integration.test.ts',
+      'src/services/peripheralPolicyState.integration.test.ts',
+      // Real PostgreSQL + Redis proof for atomic signed rollback creation.
+      'src/services/agentRollback.integration.test.ts',
+      // Real PostgreSQL proof for restart-safe rollback observation ingestion,
+      // append-only dedupe, and terminal projection truth.
+      'src/services/agentRollbackResult.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
@@ -106,6 +119,11 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB proof for the backup queue lifecycle guards
+      // (#4923): queued admission vs. the worker's dispatch-time running
+      // marker, starting-promotes-once, late queued pings, terminal rejection.
+      // The mocked unit suite only substring-matches the generated CASE SQL.
+      'src/services/backupProgress.integration.test.ts',
       // Co-located real-DB integration test for the intent stale-execution
       // reaper: proves the COALESCE(execution_started_at, decided_at) < now()
       // - interval predicate the mocked unit suite can't verify against a
@@ -147,6 +165,8 @@ export default defineConfig({
       // roll back as ONE system-scoped transaction, and probes that an org-B
       // context still cannot read org A's system-scoped intent (RLS unchanged).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // #5612 W04: live-DB race proving the lane hourly cap reserves under the advisory lock.
+      'src/services/actionIntents/scriptLaneHourlyCap.integration.test.ts',
       // Co-located real-DB integration test for headless Google Tier-3 dispatch
       // (Phase 2): drives an approved google_suspend_user intent through the real
       // release worker with only the Google SDK client mocked, proving it
@@ -164,13 +184,6 @@ export default defineConfig({
       // mocked unit suite (which mocks `../services/m365ToolsHeadless`
       // wholesale) can't exercise this.
       'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
-      // Co-located real-DB integration test for the two-replica runtime
-      // extension reconcile + failure policy (Task 8, issue #2619). Forks two
-      // genuinely separate child processes against the real reconciler/
-      // migrator/state-store; needs the real, already-migrated :5433 database
-      // this config's globalSetup provides. Belongs here, not the unit
-      // runner (no DB, no child-process fork target).
-      'src/extensions/twoReplicaReconcile.integration.test.ts',
       // Co-located real-Redis integration test for the #2707 approver-device
       // register grant chain (mint -> validate -> consume -> replay rejected,
       // cross-operation isolation, TTL): imports `__tests__/integration/setup`
@@ -192,6 +205,10 @@ export default defineConfig({
       // mocked route suite can only assert the predicate's shape and cannot
       // see the ON DELETE CASCADE at all.
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Real-Postgres rotation/redeem revocation boundary.
+      'src/routes/installerRotationRevocation.integration.test.ts',
+      // One-time legacy token/child cutover and replay proof.
+      'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
       // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
       // split (Task 10): four_eyes fan-out ownership (both admins, never the
       // requester), a t+30min approve/release proving the new 60-minute
@@ -232,6 +249,7 @@ export default defineConfig({
       // The mocked list suite returns whatever rows it is handed regardless
       // of the predicate and cannot test this at all.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      'src/routes/enrollmentKeysSiteScope.integration.test.ts',
       // Co-located real-DB integration test for the fleet posture report
       // (#3244): the mixed never-scanned/stale/clean/detected fixture that
       // guards the two-query split — a mocked unit test cannot catch the
@@ -252,6 +270,30 @@ export default defineConfig({
       // persistence and the draft-preview-doesn't-persist rule.
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      // Wave 3.5c (#4085): real-Postgres + real-Redis/BullMQ coverage for the
+      // durable event-dispatch pipeline (enqueueRouteEvent, eventDispatchProcessor,
+      // the event_delivery_receipts state machine) — a real Worker draining a
+      // real queue, receipt idempotent-skip, retry/backoff outcomes, shadow-mode
+      // writes, and the RLS forge on event_delivery_receipts. Lives under
+      // src/__tests__/integration/**, already covered by the shared glob above;
+      // named here for discoverability only (same pattern
+      // staleBackupReaper.integration.test.ts uses).
+      'src/__tests__/integration/eventDispatchQueue.integration.test.ts',
+      // Wave 3.5c (#4085): real-Postgres coverage for the alert_notifications
+      // send-identity unique index (alert_id, channel_id, escalation_step) and
+      // the migration's loser-renumbering dedupe (2026-09-11-f), replayed by
+      // path against seeded dirty data. Lives under src/__tests__/integration/**,
+      // already covered by the shared glob above; named here for discoverability
+      // only.
+      'src/__tests__/integration/alertNotificationSendIdentity.integration.test.ts',
+      // Wave 3.5b (#4084): real-Redis coverage for the socket-affinity command
+      // relay — fenced presence leases, the sealed AAD-bound envelope, the
+      // at-most-once send claim, owner/expiry fencing, and the
+      // dispatchCommandToAgent local-vs-relay facade. No Postgres fixtures;
+      // lives under src/__tests__/integration/** so it's already covered by
+      // the shared glob above; named here for discoverability only (same
+      // pattern staleBackupReaper.integration.test.ts uses).
+      'src/__tests__/integration/agentCommandRelay.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
@@ -280,6 +322,20 @@ export default defineConfig({
       // the RLS scaffolding work. Tracked as a follow-up issue; the
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
+      // integration-suite-coverage.integration.test.ts (#4522) is pure
+      // static analysis — it reads this very file's include/exclude
+      // arrays and walks `src/**/*.integration.test.ts` from disk. It
+      // MUST NOT be hooked to setup.ts (real postgres pool + TRUNCATE);
+      // see vitest.config.integration-suite-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
+      // workspace.vercel.e2e.test.ts is the NIGHTLY real-Vercel suite: it needs
+      // live VERCEL_* credentials, spends real sandbox-minutes, and every case
+      // waits out a deliberate deny-all network failure. It must never run in
+      // the PR-blocking Integration Tests job, and it needs no Postgres/Redis
+      // setup at all — see vitest.config.workspace-e2e.ts
+      // (`pnpm test:workspace-e2e`) and .github/workflows/workspace-nightly.yml.
+      'src/__tests__/integration/workspace.vercel.e2e.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file

@@ -1,3 +1,8 @@
+vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
+  lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
+  countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
+}));
 /**
  * Regression coverage for orgId / organizationId resolution on partner-scope,
  * multi-org users (issues #620 and #723).

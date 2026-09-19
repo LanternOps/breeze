@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { escapeCsvCell } from '@/lib/csvExport';
+import { csvRow } from '@/lib/csvExport';
 import {
   type ElevationFlowType,
   type ElevationRequest,
@@ -52,10 +52,6 @@ const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_
 const EXPORT_MAX_ROWS = 1000;
 
 /** Neutralize spreadsheet-formula injection then RFC-4180-quote an audit cell. */
-function csvEscape(value: unknown): string {
-  return escapeCsvCell(value === null || value === undefined ? '' : String(value));
-}
-
 export function buildAuditCsv(rows: ElevationRequest[]): string {
   const header = [
     'id',
@@ -82,10 +78,10 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
     'matchedPolicyName',
     'pamRuleName',
   ];
-  const lines = [header.join(',')];
+  const lines = [csvRow(header)];
   for (const r of rows) {
     lines.push(
-      [
+      csvRow([
         r.id,
         r.requestedAt,
         r.status,
@@ -111,9 +107,7 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
         r.decisionSource ?? '',
         r.matchedPolicyName ?? '',
         r.pamRuleName ?? '',
-      ]
-        .map(csvEscape)
-        .join(','),
+      ]),
     );
   }
   return lines.join('\n');

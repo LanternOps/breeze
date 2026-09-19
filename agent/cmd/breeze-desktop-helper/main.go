@@ -57,11 +57,15 @@ func main() {
 }
 
 func runDesktopHelper() {
-	logDir := filepath.Dir(config.Default().LogFile)
-	_ = os.MkdirAll(logDir, 0700)
+	// On macOS this resolves to ~/Library/Logs/Breeze, not the root-owned
+	// 0700 shared agent log directory the user-session LaunchAgent cannot
+	// write (#5877). Other platforms keep the shared directory.
+	logDir, homeErr := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logPath := filepath.Join(logDir, "desktop-helper.log")
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		output = f
 	}
 	logging.Init("text", "info", output)
@@ -104,7 +108,23 @@ func runDesktopHelper() {
 			AuthMonitor:  authMon,
 		})
 		defer logging.StopShipper()
+	} else {
+		// Say so once, loudly: without a shipper nothing this process logs
+		// ever reaches Agent Logs, and the WebRTC session diagnostics are the
+		// only evidence for remote-desktop triage (#5929). Report which keys
+		// are missing, never their values.
+		log.Warn("Log shipping disabled: helper config is missing required keys",
+			"missing", missingShipperKeys(cfg),
+		)
 	}
+
+	// Always record where diagnostics are going. The pre-#5877 code fell
+	// back to stdout silently, and this LaunchAgent's plist points stdout
+	// and stderr at /dev/null, so an unwritable log directory looked like
+	// an empty log with no explanation anywhere. Emitted after the shipper
+	// is up so the warn reaches Agent Logs even when nothing local can be
+	// written.
+	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
 
 	startupProbe := collectProbeOutput(false, true)
 	attrs := []any{
@@ -134,18 +154,41 @@ func runDesktopHelper() {
 	}
 	log.Info("desktop helper startup probe", attrs...)
 
-	client := userhelper.NewWithOptions(socketPath, desktopHelperRole(), ipc.HelperBinaryDesktopHelper, contextFlag)
-
+	// Shutdown is signalled by closing `done`, NOT by calling Stop on a
+	// captured client. The supervisor builds a fresh client per reconnect
+	// attempt, so a handler closing over one client would stop the first
+	// attempt's client and silently ignore SIGTERM from then on.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
 	go func() {
 		<-sigChan
-		client.Stop()
+		close(done)
 	}()
 
-	if err := client.Run(); err != nil {
-		log.Error("desktop helper error", "error", err)
-		os.Exit(1)
+	// Reconnect in-process instead of exiting on the first IPC failure.
+	// Before #4194 any transient failure — the agent restarting and
+	// recreating the socket, a sleep/wake gap — killed the process, and
+	// recovery depended entirely on launchd respawning it into a live Aqua
+	// session. Until that happened the device reported
+	// desktopAccess.reason = "helper_not_connected" while showing as online.
+	//
+	// Keeping the process alive also means the startup capture probe above
+	// runs once per login session rather than once per IPC blip, which stops
+	// reconnects from re-firing the macOS Screen Recording prompt.
+	sup := &userhelper.Supervisor{
+		Name:   "desktop helper",
+		Policy: desktopHelperReconnectPolicy(),
+		NewClient: func() userhelper.SupervisedClient {
+			return userhelper.NewWithOptions(socketPath, desktopHelperRole(), ipc.HelperBinaryDesktopHelper, contextFlag)
+		},
+		Log: log,
+	}
+
+	code := runSupervisedHelper(sup, done, fatalCooldown, userhelper.WaitOrShutdown)
+	if code != exitOK {
+		logging.StopShipper() // flush before os.Exit skips the deferred stop
+		os.Exit(code)
 	}
 }
 

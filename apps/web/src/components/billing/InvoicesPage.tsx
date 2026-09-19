@@ -7,11 +7,13 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { usePermissions } from '../../lib/permissions';
+import { useJwtClaims } from '../../lib/authScope';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
+import BillablesExportCard from './BillablesExportCard';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
 import { ApproximateMoneyLine } from './shared/ApproximateMoneyLine';
@@ -94,9 +96,29 @@ function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
   return cents(inv.amountPaid) < cents(inv.depositDue) ? 'unpaid' : 'paid';
 }
 
-export function InvoicesPage() {
+export interface InvoicesPageProps {
+  /** When set (e.g. embedded in the org record's Contracts & Billing tab), the
+   *  list is locked to this org: the org column is hidden, the "New invoice"
+   *  dialog pre-selects it and disables the org picker, and hash-filter
+   *  writes are skipped so the host page's own hash-based tab routing is
+   *  never fought — follows the same `lockedOrgId` contract as
+   *  `ContractsList` (the two dialogs differ in shape: a plain link there vs.
+   *  an inline picker here). */
+  lockedOrgId?: string;
+}
+
+export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
+  // POST /accounting/quickbooks/invoices/push-bulk is `requireScope('partner',
+  // 'system')`, so an organization-scoped session can only ever get a 403 —
+  // hide the action rather than offer a guaranteed failure. The reactive hook
+  // (not the one-shot `getJwtClaims()`) because this decision is rendered:
+  // captured at mount, a cold load would freeze the empty-store answer (#4010).
+  // While the scope is `unresolved` the action stays visible — unknown is not
+  // denied, and falling through to the server is the correct default there.
+  const claims = useJwtClaims();
+  const isOrgScoped = claims.status === 'resolved' && claims.claims.scope === 'organization';
   const bulk = useBulkSelection();
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
@@ -107,11 +129,17 @@ export function InvoicesPage() {
   const [forbidden, setForbidden] = useState(false);
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
   // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
-  // no-deep-link case keeps the default reference and never refetches.
-  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
+  // no-deep-link case keeps the default reference and never refetches. When
+  // locked to an org (embedded in a hash-routed host tab) the host owns the
+  // hash, so parsing always yields undefined — mirrors ContractsList.
+  const [filters, setFilters] = useHashState<Filters>(
+    EMPTY_FILTERS,
+    (h) => (lockedOrgId || !h ? undefined : readFilters(h)),
+  );
   // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
-  // so it doesn't silently widen the invoice view to every org.
-  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'));
+  // so it doesn't silently widen the invoice view to every org — but NOT in the
+  // locked embed, where `#orgId=` (if present at all) is the host's own pin.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'), !lockedOrgId);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadInvoices).
@@ -126,6 +154,8 @@ export function InvoicesPage() {
 
   // New-invoice dialog state
   const [assembleOpen, setAssembleOpen] = useState(false);
+  // Billables export dialog state (M5) — moved here from Ticketing settings.
+  const [exportOpen, setExportOpen] = useState(false);
   const [mode, setMode] = useState<'assemble' | 'blank'>('assemble');
   const [assembleOrgId, setAssembleOrgId] = useState('');
   const [assembleSiteId, setAssembleSiteId] = useState('');
@@ -151,8 +181,21 @@ export function InvoicesPage() {
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadOrganizations')); return; }
     const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
-    setOrgs(body.data ?? body.organizations ?? []);
-  }, [t]);
+    const list = body.data ?? body.organizations ?? [];
+    // `/orgs/organizations` is a single, server-default-sized page — a
+    // partner with more orgs than that page holds can lock to one that isn't
+    // in it. Without this, the create dialog's org <select> would render its
+    // "Select organization…" placeholder (no matching <option>) while still
+    // submitting for the correct-but-invisible locked org — silently
+    // confusing, not silently wrong. Fetch that one org directly so the
+    // picker always has something to show.
+    if (lockedOrgId && !list.some((o) => o.id === lockedOrgId)) {
+      const lockedRes = await fetchWithAuth(`/orgs/organizations/${lockedOrgId}`);
+      const lockedOrg = lockedRes.ok ? ((await lockedRes.json().catch(() => null)) as Organization | null) : null;
+      if (lockedOrg?.id) list.unshift(lockedOrg);
+    }
+    setOrgs(list);
+  }, [t, lockedOrgId]);
 
   const loadInvoices = useCallback(async (f: Filters) => {
     // Latest-request-wins. A deep-linked load (`/invoices#status=paid`) fires
@@ -168,6 +211,7 @@ export function InvoicesPage() {
       if (f.status) params.set('status', f.status);
       if (f.from) params.set('from', f.from);
       if (f.to) params.set('to', f.to);
+      if (lockedOrgId) params.set('orgId', lockedOrgId);
       const qs = params.toString();
       const res = await fetchWithAuth(`/invoices${qs ? `?${qs}` : ''}`);
       if (seq !== fetchSeq.current) return;
@@ -183,7 +227,7 @@ export function InvoicesPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t]);
+  }, [t, lockedOrgId]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadInvoices(filters); }, [loadInvoices, filters]);
@@ -197,16 +241,16 @@ export function InvoicesPage() {
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
       const next = { ...prev, ...patch };
-      writeFilters(next);
+      if (!lockedOrgId) writeFilters(next);
       return next;
     });
-  }, []);
+  }, [lockedOrgId]);
 
   const clearFilters = useCallback(() => {
     setFilters(EMPTY_FILTERS);
-    writeFilters(EMPTY_FILTERS);
+    if (!lockedOrgId) writeFilters(EMPTY_FILTERS);
     setSearch('');
-  }, []);
+  }, [lockedOrgId]);
 
   // Load sites for the org picker in the dialog.
   const loadAssembleSites = useCallback(async (orgId: string) => {
@@ -222,8 +266,9 @@ export function InvoicesPage() {
 
   const openAssemble = useCallback(() => {
     setMode('assemble');
-    // Default the target org to the header's context when one is selected.
-    const contextOrgId = useOrgStore.getState().currentOrgId ?? '';
+    // Locked embeds always target their own org; otherwise default to the
+    // header's context when one is selected.
+    const contextOrgId = lockedOrgId || useOrgStore.getState().currentOrgId || '';
     setAssembleOrgId(contextOrgId);
     setAssembleSiteId('');
     setAssembleSites([]);
@@ -235,7 +280,7 @@ export function InvoicesPage() {
     setBlockedGroups([]);
     setAssembleOpen(true);
     if (contextOrgId) void loadAssembleSites(contextOrgId);
-  }, [loadAssembleSites]);
+  }, [loadAssembleSites, lockedOrgId]);
 
   // `currencyOverride` lets the blocked-group shortcut re-submit in the same
   // tick it sets the select — the state write alone would not be visible to
@@ -326,6 +371,59 @@ export function InvoicesPage() {
     [bulk, loadInvoices, filters, t],
   );
 
+  // Bulk QuickBooks push (Phase C, Task 7). Deliberately NOT routed through
+  // `runBulkInvoices`: the accounting route answers a bare
+  // `{ enqueued, skipped, failed }` (no `data` envelope, no `succeeded`) and
+  // only enqueues — the push itself happens later on the accounting-sync
+  // worker, so the toast must say "queued", never "pushed".
+  //
+  // `failed` counts invoices whose enqueue threw (a Redis outage, say). Those
+  // will never reach the worker, so folding them into `enqueued` would promise
+  // a push that never happens — the failure branch therefore takes precedence
+  // over the skipped-only one. It defaults to 0 so an older or unexpected body
+  // degrades to the previous two-number wording instead of printing `undefined`.
+  const pushSelectedToQuickbooks = useCallback(async () => {
+    const invoiceIds = Array.from(bulk.selectedIds);
+    if (invoiceIds.length === 0) return;
+    if (invoiceIds.length > BULK_ID_LIMIT) {
+      showToast({ type: 'warning', message: t('invoicesPage.bulk.limit', { limit: BULK_ID_LIMIT }) });
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const { enqueued, skipped, failed = 0 } = await runAction<{
+        enqueued: number;
+        skipped: number;
+        failed?: number;
+      }>({
+        request: () =>
+          fetchWithAuth('/accounting/quickbooks/invoices/push-bulk', {
+            method: 'POST',
+            body: JSON.stringify({ invoiceIds }),
+          }),
+        errorFallback: t('invoicesPage.bulk.quickbooksFailed'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (failed > 0) {
+        showToast({
+          type: 'warning',
+          message: t('invoicesPage.bulk.quickbooksQueuedFailed', { enqueued, skipped, failed }),
+        });
+      } else {
+        showToast(
+          skipped > 0
+            ? { type: 'warning', message: t('invoicesPage.bulk.quickbooksQueuedPartial', { enqueued, skipped }) }
+            : { type: 'success', message: t('invoicesPage.bulk.quickbooksQueued', { enqueued }) },
+        );
+      }
+      bulk.clear();
+    } catch (err) {
+      handleActionError(err, t('invoicesPage.bulk.quickbooksFailed'));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulk, t]);
+
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -387,21 +485,37 @@ export function InvoicesPage() {
     <div className="space-y-5" data-testid="invoices-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">{t('invoicesPage.title')}</h1>
+          {lockedOrgId ? (
+            <h2 className="text-lg font-semibold">{t('invoicesPage.title')}</h2>
+          ) : (
+            <h1 className="text-xl font-semibold">{t('invoicesPage.title')}</h1>
+          )}
           <p className="mt-1 text-sm text-muted-foreground">
             {t('invoicesPage.subtitle')}
           </p>
         </div>
-        {can('invoices', 'write') && (
-          <button
-            type="button"
-            onClick={openAssemble}
-            data-testid="invoices-assemble-open"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            {t('invoicesPage.newInvoice')}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!lockedOrgId && !isOrgScoped && can('tickets', 'read') && can('time_entries', 'read') && (
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              data-testid="invoices-export-billables-open"
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted/40"
+            >
+              {t('invoicesPage.exportBillables')}
+            </button>
+          )}
+          {can('invoices', 'write') && (
+            <button
+              type="button"
+              onClick={openAssemble}
+              data-testid="invoices-assemble-open"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              {t('invoicesPage.newInvoice')}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Outstanding summary */}
@@ -562,7 +676,7 @@ export function InvoicesPage() {
                       />
                     </th>
                     <th className="px-3 py-3 font-medium">{t('invoicesPage.table.number')}</th>
-                    <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>
+                    {!lockedOrgId && <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>}
                     <SortableTh label={t('invoicesPage.table.issued')} sortKey="issued" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-issued" />
                     <SortableTh label={t('invoicesPage.table.due')} sortKey="due" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-due" />
                     <SortableTh label={t('invoicesPage.table.total')} sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="invoices-sort-total" />
@@ -608,7 +722,7 @@ export function InvoicesPage() {
                             </a>
                           </span>
                         </td>
-                        <td className="px-3 py-3">{orgName(inv.orgId)}</td>
+                        {!lockedOrgId && <td className="px-3 py-3">{orgName(inv.orgId)}</td>}
                         <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
                         <td className={`px-3 py-3 ${overdue ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
                           {formatDate(inv.dueDate)}
@@ -701,7 +815,7 @@ export function InvoicesPage() {
                       </div>
                     </div>
                     <div className="mt-3 space-y-1.5">
-                      <CardField label={t('common:labels.organization')}>{orgName(inv.orgId)}</CardField>
+                      {!lockedOrgId && <CardField label={t('common:labels.organization')}>{orgName(inv.orgId)}</CardField>}
                       <CardField label={t('invoicesPage.table.issued')}>{formatDate(inv.issueDate)}</CardField>
                       <CardField label={t('invoicesPage.table.due')}>
                         <span className={overdue ? 'font-medium text-destructive' : undefined}>{formatDate(inv.dueDate)}</span>
@@ -723,6 +837,7 @@ export function InvoicesPage() {
               actions={[
                 ...(can('invoices', 'send') ? [{ key: 'issue', label: t('invoicesPage.bulk.issue'), disabled: bulkBusy, onClick: () => void runBulkInvoices('/invoices/bulk-issue', t('invoicesPage.bulk.issuedVerb')) }] : []),
                 ...(can('invoices', 'send') ? [{ key: 'void', label: t('invoicesPage.bulk.void'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
+                ...(can('invoices', 'write') && !isOrgScoped ? [{ key: 'quickbooks', label: t('invoicesPage.bulk.quickbooks'), disabled: bulkBusy, onClick: () => void pushSelectedToQuickbooks() }] : []),
                 ...(can('invoices', 'write') ? [{ key: 'delete', label: t('invoicesPage.bulk.deleteDrafts'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
@@ -780,6 +895,19 @@ export function InvoicesPage() {
         confirmTestId="invoices-bulk-delete-confirm"
       />
 
+      {/* Export billables dialog (M5) */}
+      <Dialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title={t('invoicesPage.exportBillablesDialogTitle')}
+        labelledBy="invoices-export-billables-title"
+        maxWidth="lg"
+        className="p-6"
+      >
+        <h2 id="invoices-export-billables-title" className="sr-only">{t('invoicesPage.exportBillablesDialogTitle')}</h2>
+        <BillablesExportCard />
+      </Dialog>
+
       {/* New-invoice dialog (assemble | blank) */}
       <Dialog
         open={assembleOpen}
@@ -821,7 +949,8 @@ export function InvoicesPage() {
               value={assembleOrgId}
               onChange={(e) => { setAssembleOrgId(e.target.value); void loadAssembleSites(e.target.value); }}
               data-testid="invoices-assemble-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              disabled={!!lockedOrgId}
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             >
               <option value="">{t('invoicesPage.dialog.selectOrganization')}</option>
               {orgs.map((o) => (

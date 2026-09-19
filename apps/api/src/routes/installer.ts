@@ -13,6 +13,7 @@ import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
 import { envInt } from "../utils/envInt";
+import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
 
 /**
  * Base lifetime for a child enrollment key minted at redemption, in minutes.
@@ -25,12 +26,19 @@ import { envInt } from "../utils/envInt";
  * entirely on any self-host that pulled the release without adding the key to
  * its .env (#2776).
  *
+ * The fallback (when `CHILD_ENROLLMENT_KEY_TTL_MINUTES` itself is unset/empty)
+ * is the shared `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` default from
+ * enrollmentKeyTtlDefault.ts, not an independent constant — this used to be
+ * its own hard-coded `24 * 60` (1 day), which drifted from the human "Add
+ * Device" route's 30-day default after #4126 raised that one alone (#4126
+ * follow-up).
+ *
  * Resolved per call rather than at module load so the fallback is directly
  * testable; the env is fixed at boot in production, so this is the same value
  * every time.
  */
 export function childEnrollmentKeyTtlMinutes(): number {
-  return envInt("CHILD_ENROLLMENT_KEY_TTL_MINUTES", 24 * 60);
+  return envInt("CHILD_ENROLLMENT_KEY_TTL_MINUTES", getDefaultEnrollmentKeyTtlMinutes());
 }
 
 /**
@@ -159,24 +167,32 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // ── 2. Resolve parent enrollment key; validate it's not expired ───
+    // ── 2. Resolve and lock the exact parent credential epoch ─────────
     const [parent] = await db
       .select()
       .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, row.parentEnrollmentKeyId))
-      .limit(1);
+      .where(
+        and(
+          eq(enrollmentKeys.id, row.parentEnrollmentKeyId),
+          eq(enrollmentKeys.credentialGeneration, row.parentCredentialGeneration),
+        ),
+      )
+      .limit(1)
+      // Rotation updates this parent row. SHARE is held through child INSERT
+      // and token consumption, so rotation is a true revocation barrier under
+      // concurrent redemption rather than a check-then-act race.
+      .for('share');
 
     if (!parent) {
-      // Data-integrity anomaly: token references a parent key that no longer exists.
-      console.error(
-        "[installer] bootstrap orphaned parent — data integrity incident",
-        {
-          reason: "orphaned_parent",
-          tokenId: row.id,
-          parentEnrollmentKeyId: row.parentEnrollmentKeyId,
-          ip,
-        },
-      );
+      // Missing and rotated parents intentionally share the public 404 shape.
+      // The token id is safe for private correlation; never log its bearer
+      // value. A generation mismatch is expected after deliberate rotation.
+      console.error("[installer] bootstrap parent unavailable", {
+        reason: "orphaned_or_rotated_parent",
+        tokenId: row.id,
+        parentEnrollmentKeyId: row.parentEnrollmentKeyId,
+        ip,
+      });
       return null;
     }
 

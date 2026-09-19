@@ -1,11 +1,38 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, Square, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
-export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+import { executionRowStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
+import type { ExecutionStatus, CancelState } from '@breeze/shared';
+import type { RunContextValue } from '@/components/common/RunContext';
+import { hasPermission } from '@/lib/permissions';
+import type { Permission } from '@/stores/auth';
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
+
+// #4767 — the only statuses a Stop request is meaningful against. `cancelling`
+// itself is not offered a NEW stop (that's the Force-stop path below), it gets
+// the disabled "Stopping…" affordance instead.
+const CANCELLABLE_STATUSES = new Set<ExecutionStatus>(['pending', 'queued', 'running']);
+
+// Mirrors the API's own default (apps/api/src/services/scriptCancellation.ts) —
+// shown here only as what the primary Stop action requests; Force stop always
+// sends 0 regardless of this constant.
+const DEFAULT_GRACE_SECONDS = 5;
+
+// #2698: per-run summary of the script custom-field write-back. Mirrors
+// `ScriptCustomFieldWriteSummary` in apps/api/src/db/schema/scripts.ts — kept
+// as a local type rather than a cross-package import since apps/web does not
+// depend on apps/api. `rejected.reason` is one of the
+// CustomFieldWriteRejection values documented in
+// apps/api/src/services/customFields/scriptWriteBack.ts.
+export type ScriptCustomFieldWriteResult = {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+};
 
 export type ScriptExecution = {
   id: string;
@@ -14,38 +41,79 @@ export type ScriptExecution = {
   deviceId: string;
   deviceHostname: string;
   status: ExecutionStatus;
-  startedAt: string;
+  // NULL from the API for any execution the agent hasn't picked up yet
+  // (`pending`) — `started_at` is only ever written once a run actually
+  // starts.
+  startedAt: string | null;
   completedAt?: string;
   exitCode?: number;
   stdout?: string;
   stderr?: string;
   duration?: number; // in seconds
+  // NULL/absent for every run that emitted no `::breeze:custom-fields::`
+  // marker. Only present once the execution-detail endpoint has been fetched
+  // (the list endpoint omits it, same as stdout/stderr).
+  customFieldResult?: ScriptCustomFieldWriteResult | null;
+  // #4885 — the runtime values this execution was submitted with. Both
+  // GET /scripts/:id/executions and GET /scripts/executions/:id already
+  // return `script_executions.parameters` on the wire; this was simply never
+  // declared on the type any consumer read through. Powers "Run again".
+  parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System". Surfaced
+  // in ExecutionDetails; the list row here is already at 7 columns and has
+  // no room for a compact indicator without crowding the table.
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
+  // #4767 — set once a stop was requested; drives resolveExecutionStatusLabel's
+  // "too late" / "stop failed" copy once the execution reaches a terminal
+  // status. Absent/null means no cancel was ever requested.
+  cancelState?: CancelState | null;
 };
 
 type ExecutionHistoryProps = {
   executions: ScriptExecution[];
   onViewDetails?: (execution: ScriptExecution) => void;
+  // #4767 — wired by ScriptExecutionsPage via runAction. Omitted entirely (no
+  // Stop affordance rendered) where the host page has no cancel endpoint to
+  // call, mirroring the onRunAgain optionality pattern in ExecutionDetails.
+  onCancel?: (execution: ScriptExecution, graceSeconds: number) => Promise<void> | void;
+  // UX-only gate (the API re-checks scripts:execute server-side) — Stop is
+  // HIDDEN, never merely disabled, without it.
+  permissions?: Permission[];
   pageSize?: number;
   showScriptName?: boolean;
   timezone?: string;
 };
 
-const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  failed: { label: 'status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
-  timeout: { label: 'status.timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
-};
-
-function formatDuration(seconds?: number): string {
-  if (seconds === undefined || seconds === null) return '-';
+export function formatDuration(seconds?: number): string {
+  if (seconds === undefined || seconds === null) return '—';
   if (seconds < 1) return '<1s';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
+}
+
+/**
+ * The list/detail endpoints never return `script_executions.duration` — only
+ * `startedAt`/`completedAt` are on the wire (apps/api/src/routes/scripts.ts).
+ * Prefer an explicit `duration` if a future payload ever supplies one, else
+ * derive it from the two timestamps, else give up honestly.
+ */
+export function computeDurationSeconds(execution: {
+  duration?: number;
+  startedAt?: string | null;
+  completedAt?: string;
+}): number | undefined {
+  if (execution.duration !== undefined && execution.duration !== null) return execution.duration;
+  if (!execution.startedAt || !execution.completedAt) return undefined;
+  const start = new Date(execution.startedAt).getTime();
+  const end = new Date(execution.completedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+  return Math.max(0, (end - start) / 1000);
 }
 
 function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): string {
@@ -82,6 +150,8 @@ function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): str
 export default function ExecutionHistory({
   executions,
   onViewDetails,
+  onCancel,
+  permissions,
   pageSize = 10,
   showScriptName = true,
   timezone
@@ -93,6 +163,33 @@ export default function ExecutionHistory({
   const [currentPage, setCurrentPage] = useState(1);
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  // #4767 — the execution currently in the Stop confirm dialog, and (a
+  // superset while the request is in flight) the one whose Stop/Force-stop
+  // button must show the ConfirmDialog's isLoading state. Tracked by row
+  // rather than a single boolean since any row in view could be the target.
+  const [confirming, setConfirming] = useState<ScriptExecution | null>(null);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const canCancel = hasPermission(permissions, 'scripts', 'execute');
+
+  const handleConfirmCancel = async (execution: ScriptExecution, graceSeconds: number) => {
+    if (!onCancel) return;
+    setSubmittingId(execution.id);
+    try {
+      await onCancel(execution, graceSeconds);
+    } catch (err) {
+      // onCancel's real (and only) implementation, ScriptExecutionsPage's
+      // handleCancel, already reports every failure via runAction/
+      // handleActionError — this is only a backstop against a FUTURE onCancel
+      // that throws instead, so that becomes a loud dev warning rather than
+      // ever landing as a silent unhandled promise rejection.
+      if (import.meta.env.DEV) {
+        console.warn('[ExecutionHistory] onCancel rejected without reporting its own failure', err);
+      }
+    } finally {
+      setSubmittingId(null);
+      setConfirming(null);
+    }
+  };
 
   const toggleSort = (column: string) => {
     if (sortColumn === column) {
@@ -118,7 +215,10 @@ export default function ExecutionHistory({
 
       let matchesDate = true;
       if (dateFilter !== 'all') {
-        const executionDate = new Date(execution.startedAt);
+        // A pending execution has no startedAt yet ("" parses to an Invalid
+        // Date, so every comparison below is false) -- it can't match any
+        // specific-date filter, but still shows under "All time".
+        const executionDate = new Date(execution.startedAt ?? '');
         const diffMs = now.getTime() - executionDate.getTime();
         const diffHours = diffMs / (1000 * 60 * 60);
         const diffDays = diffMs / (1000 * 60 * 60 * 24);
@@ -158,10 +258,10 @@ export default function ExecutionHistory({
           cmp = a.status.localeCompare(b.status);
           break;
         case 'startedAt':
-          cmp = a.startedAt.localeCompare(b.startedAt);
+          cmp = (a.startedAt ?? '').localeCompare(b.startedAt ?? '');
           break;
         case 'duration':
-          cmp = (a.duration ?? 0) - (b.duration ?? 0);
+          cmp = (computeDurationSeconds(a) ?? 0) - (computeDurationSeconds(b) ?? 0);
           break;
         case 'exitCode':
           cmp = (a.exitCode ?? -1) - (b.exitCode ?? -1);
@@ -202,10 +302,13 @@ export default function ExecutionHistory({
           >
             <option value="all">{t('executionHistory.filters.allStatus')}</option>
             <option value="pending">{t('executionHistory.status.pending')}</option>
+            <option value="queued">{t('executionHistory.status.queued')}</option>
             <option value="running">{t('executionHistory.status.running')}</option>
+            <option value="cancelling">{t('executionHistory.status.cancelling')}</option>
             <option value="completed">{t('executionHistory.status.completed')}</option>
             <option value="failed">{t('executionHistory.status.failed')}</option>
             <option value="timeout">{t('executionHistory.status.timeout')}</option>
+            <option value="cancelled">{t('executionHistory.status.cancelled')}</option>
           </select>
           <select
             value={dateFilter}
@@ -298,19 +401,21 @@ export default function ExecutionHistory({
                     )}
                     <td className="px-4 py-3 text-sm">{execution.deviceHostname}</td>
                     <td className="px-4 py-3">
-                      <span className={cn(
-                        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
-                        statusConfig[execution.status].color
-                      )}>
+                      <span
+                        data-testid={`execution-status-${execution.id}`}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
+                          statusConfig[execution.status].color
+                        )}>
                         <StatusIcon className={cn(
                           'h-3 w-3',
-                          execution.status === 'running' && 'animate-spin'
+                          (execution.status === 'running' || execution.status === 'cancelling') && 'animate-spin'
                         )} />
-                        {t(/* i18n-dynamic */ `executionHistory.${statusConfig[execution.status].label}`)}
+                        {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(execution.startedAt, t, timezone)}
+                      {execution.startedAt ? formatDateTime(execution.startedAt, t, timezone) : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {execution.status === 'running' ? (
@@ -319,7 +424,7 @@ export default function ExecutionHistory({
                           {t('executionHistory.status.running')}
                         </span>
                       ) : (
-                        formatDuration(execution.duration)
+                        formatDuration(computeDurationSeconds(execution))
                       )}
                     </td>
                     <td className="px-4 py-3">
@@ -337,7 +442,26 @@ export default function ExecutionHistory({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-end">
+                      <div className="flex items-center justify-end gap-1">
+                        {onCancel && canCancel && (CANCELLABLE_STATUSES.has(execution.status) || execution.status === 'cancelling') && (
+                          <button
+                            type="button"
+                            data-testid={`cancel-execution-${execution.id}`}
+                            disabled={execution.status === 'cancelling'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (execution.status !== 'cancelling') setConfirming(execution);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                            title={execution.status === 'cancelling'
+                              ? t('executionHistory.status.cancelling')
+                              : t('executionHistory.actions.stop')}
+                          >
+                            {execution.status === 'cancelling'
+                              ? <Loader2 className="h-4 w-4 animate-spin" />
+                              : <Square className="h-4 w-4" />}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {
@@ -390,6 +514,32 @@ export default function ExecutionHistory({
             </button>
           </div>
         </div>
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setConfirming(null)}
+          onConfirm={() => void handleConfirmCancel(confirming, DEFAULT_GRACE_SECONDS)}
+          title={t('executionHistory.actions.confirmStopTitle')}
+          message={t('executionHistory.actions.confirmStopMessage', {
+            script: confirming.scriptName ?? confirming.deviceHostname,
+          })}
+          variant="warning"
+          confirmLabel={t('executionHistory.actions.stop')}
+          confirmTestId="confirm-stop"
+          isLoading={submittingId === confirming.id}
+        >
+          <button
+            type="button"
+            data-testid="confirm-force-stop"
+            disabled={submittingId === confirming.id}
+            onClick={() => void handleConfirmCancel(confirming, 0)}
+            className="text-sm font-medium text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('executionHistory.actions.forceStop')}
+          </button>
+        </ConfirmDialog>
       )}
     </div>
   );

@@ -2,6 +2,11 @@
 
 package mssql
 
+// ResolveRestoreTargetDir is a no-op on non-Windows platforms.
+func ResolveRestoreTargetDir(_ string) (string, error) {
+	return "", ErrMSSQLNotSupported
+}
+
 // RunRestore is a no-op on non-Windows platforms.
 func RunRestore(_, _, _ string, _ bool) (*RestoreResult, error) {
 	return nil, ErrMSSQLNotSupported

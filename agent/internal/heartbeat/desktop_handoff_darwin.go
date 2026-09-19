@@ -54,7 +54,13 @@ func (h *Heartbeat) startDarwinDesktopWatcher() {
 }
 
 func (h *Heartbeat) handleHelperSessionClosed(session *sessionbroker.Session) {
-	if session == nil || !session.HasScope("desktop") {
+	if session == nil {
+		return
+	}
+	// A helper session that ends takes its SEC-038 fence seed with it: the
+	// successor must be seeded again rather than inheriting the claim.
+	h.forgetHelperFenceSync(session.SessionID)
+	if !session.HasScope("desktop") {
 		return
 	}
 	h.reconcileDarwinDesktopOwners("helper_closed")
@@ -122,7 +128,8 @@ func (h *Heartbeat) reconcileDarwinDesktopOwners(reason string) {
 		switch {
 		case owner == nil:
 			h.forgetDesktopOwner(desktopSessionID)
-			go h.sendDesktopDisconnectNotification(desktopSessionID)
+			// Handoff disconnect, not a capture failure — no #5300 reason.
+			go h.sendDesktopDisconnectNotification(desktopSessionID, "")
 		case preferred == nil:
 			h.disconnectDarwinDesktopOwner(desktopSessionID, owner, reason)
 		case preferred.SessionID != owner.SessionID:
@@ -165,5 +172,6 @@ func (h *Heartbeat) disconnectDarwinDesktopOwner(desktopSessionID string, owner 
 	}
 
 	h.forgetDesktopOwner(desktopSessionID)
-	go h.sendDesktopDisconnectNotification(desktopSessionID)
+	// Handoff disconnect, not a capture failure — no #5300 reason.
+	go h.sendDesktopDisconnectNotification(desktopSessionID, "")
 }

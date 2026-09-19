@@ -1,17 +1,40 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
+import { Bot, Coins, DollarSign, Flag, MessageSquare, Zap, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+import {
+  AI_BUDGET_FIELDS,
+  aiBudgetSource,
+  withAiBudgetDefaults,
+  type AiBudgetField,
+  type EffectiveAiBudget,
+} from '@/lib/aiBudget';
+
+/**
+ * Literal keys per alert period, so the i18n key scanner can see them (a
+ * `t(\`...${f.period}\`)` template is a dynamic key it cannot check).
+ */
+const PERIOD_LABEL_KEYS = {
+  daily: 'aiUsagePage.periodLabel.daily',
+  monthly: 'aiUsagePage.periodLabel.monthly',
+} as const;
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   monthly: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   /** Who pays for LLM calls: the platform key or the partner's own Anthropic key (BYOK). */
   billedTo?: 'platform' | 'partner_key';
+  /** Name of the catalog endpoint the org's most recent session used, when
+   *  billed to the partner key via a platform-vetted third-party endpoint
+   *  rather than direct Anthropic (#3922 W4). */
+  catalogEndpointName?: string | null;
+  /** #4388 W04: the partner's cached platform-credit balance. `null`/absent
+   *  when BYOK, no partner id, or nothing cached yet. */
+  credits?: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
   budget: {
     enabled: boolean;
     monthlyBudgetCents: number | null;
@@ -19,7 +42,11 @@ interface UsageData {
     monthlyUsedCents: number;
     dailyUsedCents: number;
     approvalMode: string;
+    alertThresholdPercents?: number[];
   } | null;
+  alerts?: {
+    fired: Array<{ period: string; periodKey: string; thresholdPct: number; createdAt: string; deliveredAt: string | null }>;
+  };
 }
 
 interface SessionRow {
@@ -36,38 +63,51 @@ interface SessionRow {
   createdAt: string;
 }
 
-type ApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+/** Where the partner-wide copies of these fields are edited. */
+const PARTNER_AI_BUDGETS_HREF = '/settings/partner#ai-budgets';
 
-interface BudgetForm {
-  enabled: boolean;
-  monthlyBudgetDollars: string;
-  dailyBudgetDollars: string;
-  maxTurnsPerSession: string;
-  messagesPerMinutePerUser: string;
-  messagesPerHourPerOrg: string;
-  approvalMode: ApprovalMode;
-}
+/**
+ * Literal label keys per budget field and per approval mode, for the same
+ * reason as PERIOD_LABEL_KEYS above: a template key is invisible to the
+ * i18n key scanner.
+ */
+const BUDGET_FIELD_LABEL_KEYS: Record<AiBudgetField, string> = {
+  enabled: 'aiUsagePage.aIEnabled',
+  monthlyBudgetCents: 'aiUsagePage.monthlyBudget',
+  dailyBudgetCents: 'aiUsagePage.dailyBudget',
+  maxTurnsPerSession: 'aiUsagePage.maxTurnsPerSession',
+  messagesPerMinutePerUser: 'aiUsagePage.msgsMinPerUser',
+  messagesPerHourPerOrg: 'aiUsagePage.msgsHrPerOrg',
+  approvalMode: 'aiUsagePage.approvalMode',
+  alertThresholdPercents: 'aiUsagePage.alertThresholds',
+};
+
+const APPROVAL_MODE_LABEL_KEYS: Record<string, string> = {
+  per_step: 'aiUsagePage.perStepDefault',
+  action_plan: 'aiUsagePage.actionPlan',
+  auto_approve: 'aiUsagePage.autoApprove',
+  hybrid_plan: 'aiUsagePage.hybridPlanAbort',
+};
+
+const SOURCE_LABEL_KEYS = {
+  partner: 'aiUsagePage.sourcePartner',
+  organization: 'aiUsagePage.sourceOrganization',
+  default: 'aiUsagePage.sourceDefault',
+} as const;
 
 export default function AiUsagePage() {
   const { t } = useTranslation('settings');
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [locked, setLocked] = useState<string[]>([]);
+  // The MERGED budget from effective-settings. The API never returns the raw
+  // `ai_budgets` row, so provenance is derived from `locked` plus a comparison
+  // against the shipped defaults — see `aiBudgetSource`.
+  const [effectiveBudget, setEffectiveBudget] = useState<EffectiveAiBudget | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const { currentOrgId } = useOrgStore();
-  const [budget, setBudget] = useState<BudgetForm>({
-    enabled: true,
-    monthlyBudgetDollars: '',
-    dailyBudgetDollars: '',
-    maxTurnsPerSession: '50',
-    messagesPerMinutePerUser: '20',
-    messagesPerHourPerOrg: '200',
-    approvalMode: 'per_step',
-  });
 
   const fetchData = useCallback(async () => {
     try {
@@ -75,25 +115,19 @@ export default function AiUsagePage() {
       const sessionsUrl = showFlaggedOnly
         ? '/ai/admin/sessions?limit=50&flagged=true'
         : '/ai/admin/sessions?limit=50';
-      const [usageRes, sessionsRes] = await Promise.all([
+      const [usageRes, sessionsRes, effRes] = await Promise.all([
         fetchWithAuth('/ai/usage'),
-        fetchWithAuth(sessionsUrl)
+        fetchWithAuth(sessionsUrl),
+        currentOrgId
+          ? fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`).catch((err) => {
+              console.warn('[AiUsagePage] Error fetching effective settings:', err);
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
 
       if (usageRes.ok) {
-        const data = await usageRes.json();
-        setUsage(data);
-        if (data.budget) {
-          setBudget({
-            enabled: data.budget.enabled,
-            monthlyBudgetDollars: data.budget.monthlyBudgetCents ? (data.budget.monthlyBudgetCents / 100).toFixed(2) : '',
-            dailyBudgetDollars: data.budget.dailyBudgetCents ? (data.budget.dailyBudgetCents / 100).toFixed(2) : '',
-            maxTurnsPerSession: '50',
-            messagesPerMinutePerUser: '20',
-            messagesPerHourPerOrg: '200',
-            approvalMode: data.budget.approvalMode || 'per_step',
-          });
-        }
+        setUsage(await usageRes.json());
       }
 
       if (sessionsRes.ok) {
@@ -101,17 +135,15 @@ export default function AiUsagePage() {
         setSessions(data.data || []);
       }
 
-      // Fetch locked fields from partner
-      if (currentOrgId) {
-        try {
-          const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
-          if (effRes.ok) {
-            const effData = await effRes.json();
-            setLocked(effData.locked || []);
-          }
-        } catch (err) {
-          console.warn('[AiUsagePage] Error fetching effective settings:', err);
-        }
+      // Locked fields + the merged budget (effective-settings), fetched in
+      // parallel above. Absent on All organizations: there is no org to merge.
+      if (effRes && effRes.ok) {
+        const effData = await effRes.json();
+        setLocked(effData.locked || []);
+        setEffectiveBudget(withAiBudgetDefaults(effData.effective?.aiBudgets ?? effData.aiBudgets));
+      } else {
+        setLocked([]);
+        setEffectiveBudget(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
@@ -122,44 +154,25 @@ export default function AiUsagePage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const isLocked = (field: string) => locked.includes(`aiBudgets.${field}`);
+  const formatCost = (cents: number) => formatCurrency(cents / 100);
 
-  const budgetFields = [
-    'enabled', 'monthlyBudgetCents', 'dailyBudgetCents',
-    'maxTurnsPerSession', 'messagesPerMinutePerUser', 'messagesPerHourPerOrg',
-    'approvalMode',
-  ];
-  const allFieldsLocked = budgetFields.every((f) => isLocked(f));
-
-  const handleSaveBudget = async () => {
-    setSaving(true);
-    setSaveSuccess(false);
-    try {
-      // Filter out partner-locked fields to prevent 403 errors
-      const payload: Record<string, unknown> = {};
-      if (!isLocked('enabled')) payload.enabled = budget.enabled;
-      if (!isLocked('monthlyBudgetCents')) payload.monthlyBudgetCents = budget.monthlyBudgetDollars ? Math.round(parseFloat(budget.monthlyBudgetDollars) * 100) : null;
-      if (!isLocked('dailyBudgetCents')) payload.dailyBudgetCents = budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null;
-      if (!isLocked('maxTurnsPerSession')) payload.maxTurnsPerSession = parseInt(budget.maxTurnsPerSession) || 50;
-      if (!isLocked('messagesPerMinutePerUser')) payload.messagesPerMinutePerUser = parseInt(budget.messagesPerMinutePerUser) || 20;
-      if (!isLocked('messagesPerHourPerOrg')) payload.messagesPerHourPerOrg = parseInt(budget.messagesPerHourPerOrg) || 200;
-      if (!isLocked('approvalMode')) payload.approvalMode = budget.approvalMode;
-
-      const res = await fetchWithAuth('/ai/budget', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || t('aiUsagePage.failedToSaveBudget'));
-      }
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToSave'));
-    } finally {
-      setSaving(false);
+  /** The rendered effective value for one budget field. */
+  const formatBudgetValue = (field: AiBudgetField, b: EffectiveAiBudget): string => {
+    switch (field) {
+      case 'enabled':
+        return b.enabled ? t('aiUsagePage.enabled') : t('aiUsagePage.disabled');
+      case 'approvalMode':
+        return t(/* i18n-dynamic */ APPROVAL_MODE_LABEL_KEYS[b.approvalMode] ?? 'aiUsagePage.perStepDefault');
+      case 'monthlyBudgetCents':
+        return b.monthlyBudgetCents == null ? t('aiUsagePage.noLimit') : formatCost(b.monthlyBudgetCents);
+      case 'dailyBudgetCents':
+        return b.dailyBudgetCents == null ? t('aiUsagePage.noLimit') : formatCost(b.dailyBudgetCents);
+      case 'alertThresholdPercents':
+        return b.alertThresholdPercents.length === 0
+          ? t('aiUsagePage.thresholdsOff')
+          : b.alertThresholdPercents.map((n) => `${n}%`).join(', ');
+      default:
+        return formatNumber(b[field] as number);
     }
   };
 
@@ -171,17 +184,18 @@ export default function AiUsagePage() {
     );
   }
 
-  const formatCost = (cents: number) => formatCurrency(cents / 100);
   const formatTokens = (n: number) => n >= 1_000_000 ? `${formatNumber(n / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M` : n >= 1_000 ? `${formatNumber(n / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K` : formatNumber(n);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('aiUsagePage.aIUsageBudget')}</h1>
-        <p className="text-muted-foreground">{t('aiUsagePage.monitorAIAssistantUsageAndConfigureBudgetLimits')}</p>
+        <p className="text-muted-foreground">{t('aiUsagePage.monitorAIAssistantUsage')}</p>
         {usage?.billedTo === 'partner_key' && (
           <p className="mt-1 text-sm text-muted-foreground" data-testid="ai-usage-billed-to-note">
-            {t('aiUsagePage.billedToPartnerKey')}
+            {usage.catalogEndpointName
+              ? t('aiUsagePage.billedToPartnerKeyViaEndpoint', { name: usage.catalogEndpointName })
+              : t('aiUsagePage.billedToPartnerKey')}
           </p>
         )}
       </div>
@@ -220,142 +234,90 @@ export default function AiUsagePage() {
             output: formatTokens(usage?.monthly.outputTokens ?? 0)
           })}
         />
+        {usage?.credits && (
+          <StatCard
+            icon={Coins}
+            label={t('aiUsagePage.creditsRemaining')}
+            value={formatNumber(usage.credits.remaining)}
+          />
+        )}
       </div>
 
-      {/* Budget configuration */}
-      <div className="rounded-lg border bg-card p-6">
-        <h2 className="text-lg font-semibold mb-4">{t('aiUsagePage.budgetConfiguration')}</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.aIEnabled')}</span>
-            <select
-              value={budget.enabled ? 'true' : 'false'}
-              onChange={(e) => setBudget({ ...budget, enabled: e.target.value === 'true' })}
-              disabled={isLocked('enabled')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('enabled') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            >
-              <option value="true">{t('aiUsagePage.enabled')}</option>
-              <option value="false">{t('aiUsagePage.disabled')}</option>
-            </select>
-            {isLocked('enabled') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
-            <select
-              value={budget.approvalMode}
-              onChange={(e) => setBudget({ ...budget, approvalMode: e.target.value as ApprovalMode })}
-              disabled={isLocked('approvalMode')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('approvalMode') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            >
-              <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
-              <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
-              <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
-              <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {budget.approvalMode === 'per_step' && t('aiUsagePage.eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej')}
-              {budget.approvalMode === 'action_plan' && t('aiUsagePage.aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh')}
-              {budget.approvalMode === 'auto_approve' && t('aiUsagePage.tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ')}
-              {budget.approvalMode === 'hybrid_plan' && t('aiUsagePage.likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist')}
-            </p>
-            {isLocked('approvalMode') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.monthlyBudget')}</span>
-            <input
-              type="number"
-              step="0.01"
-              value={budget.monthlyBudgetDollars}
-              onChange={(e) => setBudget({ ...budget, monthlyBudgetDollars: e.target.value })}
-              placeholder={t('aiUsagePage.noLimit')}
-              disabled={isLocked('monthlyBudgetCents')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('monthlyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {isLocked('monthlyBudgetCents') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.dailyBudget')}</span>
-            <input
-              type="number"
-              step="0.01"
-              value={budget.dailyBudgetDollars}
-              onChange={(e) => setBudget({ ...budget, dailyBudgetDollars: e.target.value })}
-              placeholder={t('aiUsagePage.noLimit')}
-              disabled={isLocked('dailyBudgetCents')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('dailyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {isLocked('dailyBudgetCents') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.maxTurnsPerSession')}</span>
-            <input
-              type="number"
-              value={budget.maxTurnsPerSession}
-              onChange={(e) => setBudget({ ...budget, maxTurnsPerSession: e.target.value })}
-              disabled={isLocked('maxTurnsPerSession')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('maxTurnsPerSession') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {isLocked('maxTurnsPerSession') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.msgsMinPerUser')}</span>
-            <input
-              type="number"
-              value={budget.messagesPerMinutePerUser}
-              onChange={(e) => setBudget({ ...budget, messagesPerMinutePerUser: e.target.value })}
-              disabled={isLocked('messagesPerMinutePerUser')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('messagesPerMinutePerUser') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {isLocked('messagesPerMinutePerUser') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
-          <label className="block">
-            <span className="text-sm text-muted-foreground">{t('aiUsagePage.msgsHrPerOrg')}</span>
-            <input
-              type="number"
-              value={budget.messagesPerHourPerOrg}
-              onChange={(e) => setBudget({ ...budget, messagesPerHourPerOrg: e.target.value })}
-              disabled={isLocked('messagesPerHourPerOrg')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('messagesPerHourPerOrg') ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {isLocked('messagesPerHourPerOrg') && (
-              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
-            )}
-          </label>
+      {usage?.alerts?.fired?.length ? (
+        <p data-testid="ai-budget-fired-rungs" className="text-xs text-muted-foreground">
+          {usage.alerts.fired.map((f) => {
+            const periodKey = PERIOD_LABEL_KEYS[f.period as keyof typeof PERIOD_LABEL_KEYS];
+            return t('aiUsagePage.firedRung', {
+              pct: f.thresholdPct,
+              period: periodKey ? t(/* i18n-dynamic */ periodKey) : f.period,
+              date: formatDate(f.createdAt),
+            });
+          }).join(' · ')}
+        </p>
+      ) : null}
+
+      {/* Effective budget — read-only (#6004). The editor lives on the org
+          settings AI tab; this panel only says what is in force and where it
+          was set, so the page has no way to reach PUT /ai/budget at all. */}
+      {!currentOrgId ? (
+        <p className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="ai-usage-select-org-prompt">
+          {t('aiUsagePage.selectOrgForEffectiveBudget')}{' '}
+          <a href={PARTNER_AI_BUDGETS_HREF} className="font-medium text-primary hover:underline">
+            {t('aiUsagePage.editPartnerWideDefaults')}
+          </a>
+        </p>
+      ) : effectiveBudget ? (
+        <div className="rounded-lg border bg-card p-6" data-testid="ai-effective-budget">
+          <h2 className="text-lg font-semibold">{t('aiUsagePage.effectiveBudget')}</h2>
+          <p className="mt-1 mb-4 text-sm text-muted-foreground">{t('aiUsagePage.effectiveBudgetHelp')}</p>
+          <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {AI_BUDGET_FIELDS.map((field) => {
+              const source = aiBudgetSource(field, effectiveBudget, locked);
+              const chipLabel = t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[source]);
+              const chipClass =
+                source === 'partner'
+                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                  : source === 'organization'
+                    ? 'bg-primary/10 text-primary'
+                    : 'bg-muted text-muted-foreground';
+              const href =
+                source === 'partner'
+                  ? PARTNER_AI_BUDGETS_HREF
+                  : source === 'organization' && currentOrgId
+                    ? `/settings/organizations/${currentOrgId}#ai`
+                    : null;
+              const chipProps = {
+                'data-testid': `ai-effective-budget-source-${field}`,
+                className: `inline-block rounded-full px-2 py-0.5 text-xs ${chipClass}`,
+              };
+              return (
+                <div key={field} data-testid={`ai-effective-budget-row-${field}`}>
+                  <dt className="text-sm text-muted-foreground">
+                    {t(/* i18n-dynamic */ BUDGET_FIELD_LABEL_KEYS[field])}
+                  </dt>
+                  <dd className="mt-1 flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium" data-testid={`ai-effective-budget-value-${field}`}>
+                      {formatBudgetValue(field, effectiveBudget)}
+                    </span>
+                    {href ? (
+                      <a href={href} {...chipProps}>{chipLabel}</a>
+                    ) : (
+                      <span {...chipProps}>{chipLabel}</span>
+                    )}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
         </div>
-        <div className="mt-4 flex items-center gap-3">
-          <button
-            onClick={handleSaveBudget}
-            disabled={saving || allFieldsLocked}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {t('aiUsagePage.saveBudget')}</button>
-          {saveSuccess && <span className="text-sm text-green-500">{t('aiUsagePage.savedSuccessfully')}</span>}
-          {allFieldsLocked && (
-            <span className="text-sm text-amber-600 dark:text-amber-400 italic">
-              {t('aiUsagePage.allBudgetSettingsAreManagedByYourPartner')}</span>
-          )}
-        </div>
-      </div>
+      ) : (
+        // An org IS selected but effective-settings did not come back. Saying
+        // "select an organization" here would be a lie, and rendering nothing
+        // would hide a failed read — so name it.
+        <p className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-sm text-destructive" data-testid="ai-effective-budget-unavailable">
+          {t('aiUsagePage.effectiveBudgetUnavailable')}
+        </p>
+      )}
 
       {/* Session history */}
       <div className="rounded-lg border bg-card">

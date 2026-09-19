@@ -62,7 +62,7 @@ vi.mock('../routes/agentWs', () => ({
   isAgentConnected: vi.fn()
 }));
 
-vi.mock('../services/automationRuntime', () => ({
+vi.mock('../services/cronDue', () => ({
   isCronDue: vi.fn()
 }));
 

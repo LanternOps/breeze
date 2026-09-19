@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, History } from 'lucide-react';
+import { ArrowLeft, History, Copy } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
 import { mappingToRows } from './ScriptFormSchema';
+import ScriptProvenancePanel from './ScriptProvenancePanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims } from '@/lib/authScope';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { cloneScript } from '@/lib/api/scripts';
 import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -32,6 +35,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   const [loading, setLoading] = useState(!!scriptId);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
 
   const isNew = !scriptId;
   const { organizations } = useOrgStore();
@@ -57,7 +61,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       setScript({
         name: scriptData.name,
         description: scriptData.description || '',
-        category: scriptData.category,
+        // Loose-file imports predating the 'Custom' default have no category.
+        category: scriptData.category || 'Custom',
         language: scriptData.language,
         osTypes: scriptData.osTypes,
         content: scriptData.content || '',
@@ -65,6 +70,10 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         timeoutSeconds: scriptData.timeoutSeconds || 300,
         runAs: scriptData.runAs || 'system',
         exitCodeSeverityMapping: mappingToRows(scriptData.exitCodeSeverityMapping),
+        // #5129 — seed the security-review checkboxes from what is already
+        // acknowledged, so an ordinary edit re-submits the existing approval
+        // instead of appearing to revoke it.
+        acknowledgedSecurityPatterns: scriptData.acknowledgedSecurityPatterns ?? [],
         // Seed the "Available to" re-scope picker from the current scope
         // (issue #1734): org_id NULL = partner-wide ("All Orgs"), else a
         // specific org. The picker only renders for partner-scope users.
@@ -163,6 +172,31 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     void navigateTo('/scripts');
   };
 
+  // #4887: duplicate the script being edited and land on the new copy — the
+  // point of duplicating is to edit it now, not to return to the list.
+  const handleDuplicate = async () => {
+    if (!scriptId || duplicating) return;
+    setDuplicating(true);
+    try {
+      const cloned = await runAction<{ id: string }>({
+        request: () => cloneScript(scriptId),
+        errorFallback: t('scriptEditPage.errors.duplicate'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      // runAction only throws on a non-2xx/network failure — a 2xx response
+      // whose body is missing `id` (never happens today: the route always
+      // returns the inserted row) would otherwise silently do nothing but
+      // reset `duplicating`, with no toast and no navigation. Surface it
+      // rather than assume the contract always holds.
+      if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+      else showToast({ message: t('scriptEditPage.errors.duplicate'), type: 'error' });
+    } catch (err) {
+      handleActionError(err, t('scriptEditPage.errors.duplicate'));
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -198,7 +232,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="script-edit-page">
       <Breadcrumbs items={[
         { label: t('scriptEditPage.breadcrumb.scripts'), href: '/scripts' },
         { label: isNew ? t('scriptEditPage.breadcrumb.new') : (script?.name || t('scriptEditPage.breadcrumb.edit')) }
@@ -224,13 +258,24 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           )}
         </div>
         {!isNew && (
-          <a
-            href={`/scripts/${scriptId}/executions`}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
-          >
-            <History className="h-4 w-4" />
-            {t('scriptEditPage.actions.executionHistory')}
-          </a>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleDuplicate()}
+              disabled={duplicating}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Copy className="h-4 w-4" />
+              {t('scriptEditPage.actions.duplicate')}
+            </button>
+            <a
+              href={`/scripts/${scriptId}/executions`}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            >
+              <History className="h-4 w-4" />
+              {t('scriptEditPage.actions.executionHistory')}
+            </a>
+          </div>
         )}
       </div>
 
@@ -239,6 +284,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           {error}
         </div>
       )}
+
+      {!isNew && scriptId && <ScriptProvenancePanel scriptId={scriptId} />}
 
       <ScriptForm
         onSubmit={handleSubmit}

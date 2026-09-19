@@ -3,9 +3,10 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
+import { configPolicyAssignments, configurationPolicies, deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
+import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
 import {
   addManualGroupMemberships,
   evaluateGroupMembership,
@@ -15,8 +16,10 @@ import {
 } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import { PG_UUID_REGEX } from '../utils/uuid';
+import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from '../services/deviceGroupDelete';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -60,6 +63,7 @@ type DeviceGroup = {
   createdAt: string;
   updatedAt: string;
   deviceIds?: string[];
+  policy?: { id: string; name: string };
 };
 
 type GroupMembership = {
@@ -241,7 +245,8 @@ async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean>
 function mapGroupRow(
   group: typeof deviceGroups.$inferSelect,
   deviceCount: number,
-  deviceIds?: string[]
+  deviceIds?: string[],
+  policy?: { id: string; name: string } | null
 ): DeviceGroup {
   const result: DeviceGroup = {
     id: group.id,
@@ -255,7 +260,8 @@ function mapGroupRow(
     parentId: group.parentId,
     deviceCount,
     createdAt: group.createdAt.toISOString(),
-    updatedAt: group.updatedAt.toISOString()
+    updatedAt: group.updatedAt.toISOString(),
+    policy: policy ?? undefined,
   };
   if (deviceIds) {
     result.deviceIds = deviceIds;
@@ -393,11 +399,39 @@ groupRoutes.get(
       }
     }
 
+    // Query policy assignments for these groups
+    const groupPolicyMap = new Map<string, { id: string; name: string }>();
+    if (groupIds.length > 0) {
+      const policyRows = await db
+        .select({
+          groupId: configPolicyAssignments.targetId,
+          policyId: configPolicyAssignments.configPolicyId,
+          policyName: configurationPolicies.name,
+        })
+        .from(configPolicyAssignments)
+        .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+        .where(
+          and(
+            eq(configPolicyAssignments.level, 'device_group'),
+            inArray(configPolicyAssignments.targetId, groupIds),
+            eq(configurationPolicies.status, 'active')
+          )
+        )
+        .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+
+      for (const row of policyRows) {
+        if (!groupPolicyMap.has(row.groupId)) {
+          groupPolicyMap.set(row.groupId, { id: row.policyId, name: row.policyName });
+        }
+      }
+    }
+
     const data = results.map((group) =>
       mapGroupRow(
         group,
         countMap.get(group.id) ?? 0,
-        membershipMap?.get(group.id)
+        membershipMap?.get(group.id),
+        groupPolicyMap.get(group.id)
       )
     );
 
@@ -427,7 +461,31 @@ groupRoutes.get(
 
     const deviceCount = await getDeviceCountForGroup(id);
 
-    return c.json({ data: mapGroupRow(group, deviceCount) });
+    const [assignedPolicy] = await db
+      .select({
+        policyId: configPolicyAssignments.configPolicyId,
+        policyName: configurationPolicies.name,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+      .where(
+        and(
+          eq(configPolicyAssignments.level, 'device_group'),
+          eq(configPolicyAssignments.targetId, id),
+          eq(configurationPolicies.status, 'active')
+        )
+      )
+      .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt)
+      .limit(1);
+
+    return c.json({
+      data: mapGroupRow(
+        group,
+        deviceCount,
+        undefined,
+        assignedPolicy ? { id: assignedPolicy.policyId, name: assignedPolicy.policyName } : null
+      ),
+    });
   }
 );
 
@@ -712,6 +770,7 @@ groupRoutes.patch(
       updates.filterFieldsUsed = filterFieldsUsed;
     }
 
+    let prunedDeviceIds: string[] = [];
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(deviceGroups)
@@ -720,7 +779,14 @@ groupRoutes.patch(
         .returning();
 
       if (siteChanged && row?.siteId) {
-        await pruneGroupMembershipsOutsideSite(row.id, row.siteId, row.orgId, tx);
+        const pruned = await pruneGroupMembershipsOutsideSite(
+          row.id,
+          row.siteId,
+          row.orgId,
+          tx,
+          { deferPeripheralReconciliation: true },
+        );
+        prunedDeviceIds = pruned.deviceIds ?? [];
       }
 
       return row;
@@ -729,6 +795,12 @@ groupRoutes.patch(
     if (!updated) {
       return c.json({ error: 'Failed to update group' }, 500);
     }
+
+    await Promise.all(prunedDeviceIds.map((deviceId) =>
+      schedulePeripheralPolicyDevice(deviceId, 'dynamic_membership_changed').catch((error) => {
+        console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -780,33 +852,35 @@ groupRoutes.delete(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Check for child groups
-    const [childCount] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deviceGroups)
-      .where(eq(deviceGroups.parentId, id));
-
-    if (Number(childCount?.count ?? 0) > 0) {
-      return c.json({ error: 'Cannot delete group with child groups' }, 400);
+    let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+    try {
+      result = await deleteDeviceGroup(id, group.orgId);
+    } catch (err) {
+      if (err instanceof DeviceGroupDeleteError) {
+        if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
+        if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
+        // Contract and quote names/numbers are billing data — disclose each
+        // list only to a caller with that domain's read permission.
+        const perms = c.get('permissions') as UserPermissions | undefined;
+        const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        const canReadQuotes = !!perms && hasPermission(perms, PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
+        return c.json({
+          error: err.message,
+          code: err.code === 'QUOTED_BY_QUOTES' ? 'GROUP_IN_USE_BY_QUOTES' : 'GROUP_IN_USE_BY_CONTRACTS',
+          ...(err.contractCount ? { contractCount: err.contractCount } : {}),
+          ...(err.quoteCount ? { quoteCount: err.quoteCount } : {}),
+          ...(canReadContracts && err.contracts ? { contracts: err.contracts } : {}),
+          ...(canReadQuotes && err.quotes ? { quotes: err.quotes } : {}),
+        }, 409);
+      }
+      throw err;
     }
 
-    // Delete memberships first
-    await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, id));
-
-    // …and the membership audit log, which also FKs device_groups with no
-    // ON DELETE (#3313). Every dynamic group accumulates rows here the first
-    // time its membership materializes, so without this the group can never be
-    // deleted again: the DELETE below raises 23503 and the route 500s.
-    //
-    // These two are the ONLY tables that reference device_groups.id.
-    // config_policy_assignments targets a group through a polymorphic
-    // (level, target_id) pair with no foreign key, so it cannot block the
-    // delete — its orphan-row problem is real but separate, and deliberately
-    // out of scope here.
-    await db.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, id));
-
-    // Delete the group
-    await db.delete(deviceGroups).where(eq(deviceGroups.id, id));
+    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
+      schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
+        console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -1011,6 +1085,10 @@ groupRoutes.delete(
         )
       );
 
+    await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+      console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
+
     writeRouteAudit(c, {
       orgId: group.orgId,
       action: 'device_group.device.remove',
@@ -1060,11 +1138,23 @@ groupRoutes.post(
     }
 
     const filter = group.filterConditions as FilterConditionGroup;
-    const preview = await evaluateFilterWithPreview(filter, {
-      orgId: group.orgId,
-      allowedSiteIds: group.siteId ? [group.siteId] : null,
-      previewLimit: limit
-    });
+    let preview;
+    try {
+      preview = await evaluateFilterWithPreview(filter, {
+        orgId: group.orgId,
+        allowedSiteIds: group.siteId ? [group.siteId] : null,
+        previewLimit: limit
+      });
+    } catch (error) {
+      // The fourth preview endpoint, and the one most likely to time out: a
+      // dynamic group's stored filter is applied to the whole org rather than
+      // being typed interactively, so nothing bounds its cost up front. Same
+      // treatment as the three in routes/filters.ts (#5181) — without it this
+      // endpoint would keep answering the anonymous 500 the issue is about.
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout(group.orgId);
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+    }
 
     return c.json({
       data: {

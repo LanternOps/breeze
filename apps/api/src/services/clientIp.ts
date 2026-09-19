@@ -200,6 +200,10 @@ export function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
   return (
     hasForwardedIpHeaders(c)
     || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
+    // Consumed by effectiveRequestOrigin (same-origin CSRF proof) only from a
+    // trusted peer, so an untrusted peer sending it is the same
+    // misconfiguration signal as the headers above.
+    || Boolean(c.req.header('x-forwarded-host') ?? c.req.header('X-Forwarded-Host'))
   );
 }
 
@@ -225,7 +229,7 @@ function shouldEmitProxyTrustWarnNow(key: string): boolean {
   return true;
 }
 
-const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto';
+const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto/X-Forwarded-Host';
 
 function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
   // Count every occurrence — Prometheus rates are only useful unsampled.
@@ -275,7 +279,13 @@ function warnForwardedHeadersWithTrustDisabled(peerIp: string | undefined): void
 
 export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string {
   if (!shouldTrustProxyHeaders()) {
-    return fallback;
+    // Direct exposure has no trusted forwarding layer, but the TCP peer is
+    // still transport-authentic metadata supplied by Node rather than by an
+    // HTTP header. Preserve that exact address for audit attribution, ticket
+    // binding, allowlists, and limiter identity while continuing to ignore
+    // every client-controlled forwarded header. Non-Node/test shims without
+    // socket metadata retain the caller's explicit fallback.
+    return getImmediatePeerIp(c, fallback) ?? fallback;
   }
 
   const peerIp = getImmediatePeerIp(c, fallback);

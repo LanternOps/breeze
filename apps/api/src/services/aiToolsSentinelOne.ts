@@ -21,7 +21,12 @@ import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess, resolveWritableToolOrgId } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE
+} from './aiToolsSiteScope';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -68,6 +73,30 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      // Site is an app-layer authorization axis. Recompute every status facet
+      // from mapped devices visible to the caller; null/unmapped device rows
+      // cannot be attributed to an allowed site and therefore fail closed.
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, auth);
+      if (allowedDeviceIds?.length === 0) {
+        return JSON.stringify({
+          configured: true,
+          integration,
+          summary: {
+            totalAgents: 0,
+            mappedDevices: 0,
+            infectedAgents: 0,
+            reportedThreatCount: 0,
+            activeThreats: 0,
+            highOrCriticalThreats: 0,
+            pendingActions: 0,
+            completedActions: 0,
+            failedActions: 0
+          },
+          recentActions: [],
+          scopeNote: SITE_SCOPE_EMPTY_NOTE
+        });
+      }
+
       const agentConditions: SQL[] = [eq(s1Agents.integrationId, integration.id)];
       const agentOrgCond = auth.orgCondition(s1Agents.orgId);
       if (agentOrgCond) agentConditions.push(agentOrgCond);
@@ -79,6 +108,12 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
       const actionConditions: SQL[] = [eq(s1Actions.orgId, integration.orgId)];
       const actionOrgCond = auth.orgCondition(s1Actions.orgId);
       if (actionOrgCond) actionConditions.push(actionOrgCond);
+
+      if (allowedDeviceIds) {
+        agentConditions.push(inArray(s1Agents.deviceId, allowedDeviceIds));
+        threatConditions.push(inArray(s1Threats.deviceId, allowedDeviceIds));
+        actionConditions.push(inArray(s1Actions.deviceId, allowedDeviceIds));
+      }
 
       const [agentSummary, threatSummary, actionSummary, recentActions] = await Promise.all([
         db
@@ -222,6 +257,22 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(s1Threats.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds && typeof input.deviceId === 'string' && !frozenDeviceIds.includes(input.deviceId)) {
+        return JSON.stringify({
+          configured: true,
+          integrationId: integration.id,
+          total: 0,
+          threats: [],
+          scopeNote: SITE_SCOPE_EMPTY_NOTE
+        });
+      }
+      const threatDeviceCondition = deviceScopeCondition(auth, s1Threats.deviceId);
+      if (threatDeviceCondition) conditions.push(threatDeviceCondition);
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
       const where = and(...conditions);
@@ -380,7 +431,11 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         integrationId: integration.id,
         requestedBy: auth.user.id,
         action,
-        threatIds
+        threatIds,
+        // Threat ids are not device ids, so the declarative deviceArgs gate
+        // cannot cover this tool — the core resolves each threat's device and
+        // refuses the batch if any is outside this caller's reach (#6096 #1).
+        auth
       });
       if (!result.ok) {
         return JSON.stringify({ error: result.error, details: result.details });

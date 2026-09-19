@@ -28,179 +28,25 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import {
-  actionIntents,
-  aiAgentRuns,
-  aiAgents,
-  aiSessions,
-  alerts,
-  devices,
-} from '../../db/schema';
-import type { NewActionIntent } from '../../db/schema/actionIntents';
+import { actionIntents, aiAgentRuns, aiAgents, aiSessions, alerts, devices, metricAnomalyIncidents } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
+// Lineage builders extracted for reuse by AI Operator P3-0/P3-1 (#5205, W02
+// #5207): see agentRunLineageFixtures.ts's header for what W02 added
+// (insertDeviceCommand) and what it deliberately left alone.
 import {
-  createOrganization,
-  createPartner,
-  createSite,
-  createUser,
-  setupTestEnvironment,
-} from './db-utils';
-
-const SYSTEM_CTX: DbAccessContext = {
-  scope: 'system',
-  orgId: null,
-  accessibleOrgIds: null,
-  accessiblePartnerIds: null,
-  userId: null,
-};
-
-function orgContext(orgId: string, currentPartnerId: string | null): DbAccessContext {
-  return {
-    scope: 'organization',
-    orgId,
-    accessibleOrgIds: [orgId],
-    accessiblePartnerIds: [],
-    userId: null,
-    currentPartnerId,
-  };
-}
-
-/**
- * SQLSTATE lands on `.cause.code` (DrizzleQueryError wraps the pg error and
- * its own `.code`/`.message` carry the query, not the violation), so a plain
- * `.rejects.toThrow(/immutable column changed/)` would miss even when the
- * guard fires — mirror aiAgentRuns.integration.test.ts's unwrapping and pin
- * BOTH the SQLSTATE and the guard's message on the cause.
- */
-async function expectImmutableViolation(fn: () => Promise<unknown>): Promise<void> {
-  let raised: unknown;
-  try {
-    await fn();
-  } catch (err) {
-    raised = err;
-  }
-  expect(raised, 'expected the immutability guard to fire, but the statement succeeded').toBeDefined();
-  const cause = (raised as { cause?: { code?: string; message?: string } })?.cause;
-  expect(cause?.code ?? (raised as { code?: string })?.code).toBe('23000');
-  expect(cause?.message ?? (raised as Error)?.message).toMatch(/immutable column changed/);
-}
-
-function runValues(agentId: string, orgId: string, dedupeKey: string) {
-  return {
-    agentId,
-    orgId,
-    triggerKind: 'alert' as const,
-    dedupeKey,
-    modeAtStart: 'shadow' as const,
-    policySnapshot: { schemaVersion: 1 } as never,
-  };
-}
-
-/** An org with its own live triage agent (mirrors aiAgentRuns.integration.test.ts). */
-async function orgWithAgent() {
-  const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
-  const user = await createUser({ partnerId: partner.id });
-  const [agent] = await withDbAccessContext(SYSTEM_CTX, () =>
-    db
-      .insert(aiAgents)
-      .values({ orgId: org.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
-      .returning(),
-  );
-  return { partner, org, user, agent: agent! };
-}
-
-/** Inserts a device row directly via the admin connection. */
-async function insertDevice(orgId: string, siteId: string) {
-  const adminDb = getTestDb() as any;
-  const unique = randomUUID().slice(0, 8);
-  const [device] = await adminDb
-    .insert(devices)
-    .values({
-      orgId,
-      siteId,
-      agentId: `run-move-agent-${unique}`,
-      hostname: `run-move-host-${unique}`,
-      osType: 'linux',
-      osVersion: '22.04',
-      architecture: 'x86_64',
-      agentVersion: '0.0.0-test',
-      status: 'offline',
-    })
-    .returning();
-  return device as typeof devices.$inferSelect;
-}
-
-/** Full device lineage: alert + ai_session on the device, run linking all three. */
-async function insertLineage(t: {
-  org: { id: string };
-  partner: { id: string };
-  agent: { id: string };
-  device: { id: string };
-}) {
-  const adminDb = getTestDb() as any;
-  const [alert] = await adminDb
-    .insert(alerts)
-    .values({
-      orgId: t.org.id,
-      deviceId: t.device.id,
-      severity: 'medium',
-      title: 'agent-run move semantics fixture alert',
-    })
-    .returning();
-  const [session] = await adminDb
-    .insert(aiSessions)
-    .values({ orgId: t.org.id, deviceId: t.device.id, type: 'general' })
-    .returning();
-  const [run] = await withSystemDbAccessContext(() =>
-    db
-      .insert(aiAgentRuns)
-      .values({
-        ...runValues(t.agent.id, t.org.id, `run-move-lineage-${randomUUID()}`),
-        deviceId: t.device.id,
-        alertId: alert.id,
-        sessionId: session.id,
-      })
-      .returning(),
-  );
-  return { alert, session, run: run! };
-}
-
-/** An agent-originated intent attributed to the run (composite tenant FK live). */
-async function insertAgentIntent(
-  orgId: string,
-  partnerId: string,
-  agentId: string,
-  runId: string,
-): Promise<string> {
-  const sfx = randomUUID().slice(0, 8);
-  const values: NewActionIntent = {
-    orgId,
-    partnerId,
-    requestedByUserId: null,
-    requestingApiKeyId: null,
-    requestingAgentRunId: runId,
-    source: 'ai_agent',
-    originPrincipalKind: 'ai_agent',
-    originPrincipalId: agentId,
-    actionName: 'm365.mailbox.disable',
-    actionVersion: 1,
-    arguments: { mailbox: 'user@example.com' },
-    argumentDigest: 'a'.repeat(64),
-    targetSummary: 'Disable mailbox user@example.com',
-    impactSummary: 'User loses mailbox access immediately',
-    reason: 'Offboarding',
-    riskTier: 3,
-    idempotencyKey: `idem-run-move-${sfx}`,
-    correlationId: randomUUID(),
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-  };
-  const [row] = await withSystemDbAccessContext(() =>
-    db.insert(actionIntents).values(values).returning({ id: actionIntents.id }),
-  );
-  return row!.id;
-}
+  orgContext,
+  expectImmutableViolation,
+  runValues,
+  orgWithAgent,
+  insertDevice,
+  insertLineage,
+  insertAgentIntent,
+  seedTicketRunLineage,
+  expectTicketLineageSevered,
+} from './agentRunLineageFixtures';
 
 describe('agent-run move semantics (owner decision 2026-08-23)', () => {
   it('org_id on ai_agent_runs is immutable even for a dual-org context', async () => {
@@ -293,10 +139,11 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
 
     const app = new Hono();
     app.route('/devices', moveOrgRoutes);
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
     const res = await app.request(`/devices/${device.id}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
 
@@ -322,5 +169,166 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     const [intent] = await adminDb.select().from(actionIntents).where(eq(actionIntents.id, intentId));
     expect(intent.orgId).toBe(orgA.id);
     expect(intent.requestingAgentRunId).toBe(lineage.run.id);
+  });
+
+  it('#3828 branch-review blocker 2: the REAL move route detaches anomaly_incident_id and nulls the reverse pointer', async () => {
+    // Same shape as the previous test, but exercises the anomaly-incident
+    // lineage pair (ai_agent_runs.anomaly_incident_id <-> metric_anomaly_
+    // incidents.agent_run_id) added by wave 6 PR 4 (#3828). Before this fix,
+    // moveOrg.ts's detach statement and breeze_cascade_device_org_id() both
+    // stopped at device_id/alert_id/session_id, so the source-org run kept
+    // anomaly_incident_id pointing at an incident re-stamped to the target
+    // org, and the incident's agent_run_id kept naming a source-org run.
+    const adminDb = getTestDb() as any;
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user, role } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const device = await insertDevice(orgA.id, siteA.id);
+    const [agent] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgents)
+        .values({ orgId: orgA.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
+        .returning(),
+    );
+    const now = new Date();
+    const [incident] = await adminDb
+      .insert(metricAnomalyIncidents)
+      .values({
+        orgId: orgA.id,
+        deviceId: device.id,
+        anomalyType: 'cpu_spike',
+        bucketSeconds: 300,
+        windowStart: now,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        peakScore: '3.2',
+      })
+      .returning();
+    const [run] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgentRuns)
+        .values({
+          ...runValues(agent!.id, orgA.id, `run-move-anomaly-${randomUUID()}`),
+          triggerKind: 'anomaly',
+          deviceId: device.id,
+          anomalyIncidentId: incident!.id,
+        })
+        .returning(),
+    );
+    // The dispatch marker's best-effort back-link, stamped by the subscriber
+    // on admission (Task 3) — set directly here since this test targets only
+    // the move-org detach, not the subscriber.
+    await adminDb
+      .update(metricAnomalyIncidents)
+      .set({ agentRunId: run!.id })
+      .where(eq(metricAnomalyIncidents.id, incident!.id));
+
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    });
+
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+    const res = await app.request(`/devices/${device.id}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+
+    // The incident followed the device to the target org (it's in
+    // getDeviceOrgDenormalizedTables()).
+    const [movedIncident] = await adminDb
+      .select()
+      .from(metricAnomalyIncidents)
+      .where(eq(metricAnomalyIncidents.id, incident!.id));
+    expect(movedIncident.orgId).toBe(orgB.id);
+    // Reverse pointer nulled — it must not keep naming a source-org run now
+    // that the incident lives in the target org.
+    expect(movedIncident.agentRunId).toBeNull();
+
+    // The run stayed home in the source org, with anomaly_incident_id
+    // detached — no cross-tenant reference left.
+    const [movedRun] = await adminDb.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, run!.id));
+    expect(movedRun.orgId).toBe(orgA.id);
+    expect(movedRun.anomalyIncidentId).toBeNull();
+    expect(movedRun.deviceId).toBeNull();
+  });
+
+  // seedTicketRunLineage and expectTicketLineageSevered moved to
+  // ./agentRunLineageFixtures.ts (AI Operator #5205 W02 #5207) — imported above.
+  it('#4215: the REAL move route detaches ticket_id on device-less ticket runs, and only those', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user, role } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const device = await insertDevice(orgA.id, siteA.id);
+    const seeded = await seedTicketRunLineage({ partner, orgA, siteA, user, device });
+
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    });
+
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+    const res = await app.request(`/devices/${device.id}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+
+    await expectTicketLineageSevered(seeded, orgA, orgB);
+  });
+
+  it('#4215: a direct devices.org_id flip (no route) severs ticket_id via breeze_cascade_device_org_id()', async () => {
+    // Attribution. The route case above cannot tell the two detach sites
+    // apart: breeze_cascade_device_org_id() is an AFTER ROW trigger on the
+    // devices UPDATE, so it fires first and the route's own statements then
+    // match nothing. This case removes the route entirely — a bare
+    // `UPDATE devices SET org_id/site_id` on the admin connection, which is
+    // what orgMerge's device re-home and any direct-SQL caller look like
+    // (orgMergeRegistry marks ai_agent_runs leave-for-erasure, so the merge
+    // engine never repoints it and the trigger is the ONLY thing severing
+    // ticket_id there). Without the new migration this fails.
+    const adminDb = getTestDb() as any;
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const device = await insertDevice(orgA.id, siteA.id);
+    const seeded = await seedTicketRunLineage({ partner, orgA, siteA, user, device });
+
+    await adminDb
+      .update(devices)
+      .set({ orgId: orgB.id, siteId: siteB.id })
+      .where(eq(devices.id, device.id));
+
+    const [moved] = await adminDb.select().from(devices).where(eq(devices.id, device.id));
+    expect(moved.orgId, 'fixture: the devices org flip must have landed').toBe(orgB.id);
+
+    await expectTicketLineageSevered(seeded, orgA, orgB);
   });
 });

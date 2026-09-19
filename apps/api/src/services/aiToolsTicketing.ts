@@ -6,17 +6,25 @@
  * All mutations delegate to ticketService — this file is a thin adapter.
  */
 
-import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, tickets } from '../db/schema';
+import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
+// One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
+// does not import this module, so the edge is acyclic.
+import { findAlertWithAccess } from './aiToolsAlerts';
 import type { AiTool, AiToolTier } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   createTicket,
   changeTicketStatus,
   assignTicket,
   addTicketComment,
+  addAiTriageNote,
+  applyAiFieldUpdates,
   TicketServiceError,
   updateTicketFields,
   linkAlertToTicket,
@@ -25,6 +33,7 @@ import {
   editTicketComment,
   deleteTicketComment,
   moveTicketOrg,
+  revalidateTicketAssignee,
   type CreateTicketInput,
   type TicketStatus,
   type UpdateTicketFieldsInput
@@ -38,11 +47,71 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { listChecklist } from './ticketChecklistService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
 function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
+}
+
+/**
+ * P2-4 (#4191): the run id behind an autonomous ai_agent-principal call —
+ * the ONLY reliable signal that this manage_tickets invocation is executing
+ * under the ticket-triage release path (durable Tier-3 release, or an
+ * inline Tier-2 auto-exec dispatch) rather than a live human's attended-chat
+ * session. An attended-chat session always executes as the human's own
+ * `user_session` AuthContext (auth.user.id is a real users.id row) even when
+ * the AI proposed the values — `actorFrom`'s userId is only ever safe to
+ * write into `ticket_comments.user_id` (an FK to `users`) for that case.
+ * `principal.kind === 'ai_agent'` means `auth.user.id` is the AGENT's
+ * synthetic id (agentAuthContext.ts), never a real users row, which is
+ * exactly why update_fields/comment route to the dedicated AI-safe
+ * executors below instead of the shared human-actor ticketService functions.
+ */
+function agentRunIdFrom(auth: AuthContext): string | null {
+  return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
+}
+
+/**
+ * #4209 (W03): the refusal the three users-FK actions return for an ai_agent
+ * principal.
+ *
+ * `assign` writes `tickets.assigned_to`; `update_status` and `create` write
+ * `created_by`/actor columns and emit `actorUserId`. All three go through
+ * `actorFrom(auth)`, whose `auth.user.id` for an ai_agent principal is an
+ * `aiAgents.id` — attribution only, never a `users` row (agentAuthContext.ts).
+ * Writing it into any of those columns forges a foreign key and fails at
+ * runtime with a 23503 the agent cannot interpret.
+ *
+ * The `comment`, `update_fields` and `draft` branches each got a real
+ * agent-principal design (addAiTriageNote, applyAiFieldUpdates, ticket_drafts);
+ * these three did not, so they refuse rather than guess. Supporting them means
+ * designing agent attribution for assignment, status and creation — a product
+ * decision, tracked separately. A stable, typed error code is what lets the
+ * agent's tool loop relay the limitation instead of retrying a 23503.
+ *
+ * Review finding: the payload carries NO `success` key, on purpose. The SDK's
+ * error classifier (`aiAgentSdkTools.ts`, "Detect error responses returned as
+ * JSON strings by tool handlers") flags a result as a tool error only when
+ * `'error' in parsed && !('success' in parsed) && !('data' in parsed) &&
+ * !('configured' in parsed)`. Adding `success: false` would EXEMPT the refusal
+ * from that check, so it would be recorded by `safePostToolUse` as an ordinary
+ * successful tool call and the MCP content block would omit `isError: true` —
+ * a policy refusal indistinguishable from a success in the execution log,
+ * which is precisely the observability this wave exists to add. The bare
+ * `{ error, … }` shape is also what every other refusal in this file uses.
+ */
+function refuseAgentPrincipal(action: string): string {
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
+}
+
+/** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === '23505') return true;
+  return isUniqueViolation((err as { cause?: unknown }).cause);
 }
 
 function serviceErrorToJson(err: unknown): string | null {
@@ -86,9 +155,11 @@ function entryCurrency(entry: { currencyCode?: string | null }): string | null {
  *
  * Site axis: RLS enforces only the org axis, so a site-restricted
  * org user must also be gated on the SITE axis here. After the org-scoped load,
- * a device-bound ticket is resolved only when its device's site is in the
- * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay
- * accessible at org scope — matching getScopedTicketOr404 in the HTTP route.
+ * a device-bound ticket is resolved only when its device is in the caller's
+ * exact-device allowlist AND its site is in the caller's site allowlist
+ * (deviceInSiteScope enforces both axes independently, #6086 finding 6);
+ * deviceless (org-level) tickets stay accessible at org scope — they are not
+ * device-attributable — matching getScopedTicketOr404 in the HTTP route.
  *
  * Returns the ticket row, or null when not found / out of the caller's scope.
  */
@@ -102,18 +173,6 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
     return null;
   }
   return ticket;
-}
-
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  if (!alert) return null;
-  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
-    return null;
-  }
-  return alert;
 }
 
 async function canManageAnyTicketComment(auth: AuthContext): Promise<boolean> {
@@ -256,7 +315,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
         '"log_time_entry" to record a completed time block (requires startedAt + endedAt), ' +
         '"start_timer" to start a running timer (auto-stops any existing timer), ' +
-        '"stop_timer" to stop the currently running timer.',
+        '"stop_timer" to stop the currently running timer, ' +
+        '"link_device" to link a device to a ticket by exact hostname or serial number, ' +
+        '"draft" to store a proposed reply or resolution-note draft for human review.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -278,13 +339,15 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'create_from_alert',
               'edit_comment',
               'delete_comment',
-              'move_org'
+              'move_org',
+              'link_device',
+              'draft'
             ],
             description: 'The action to perform'
           },
           ticketId: {
             type: 'string',
-            description: 'Ticket UUID (required for get/comment/assign/update_status/update_fields/link_alert/unlink_alert/move_org)'
+            description: 'Ticket UUID (required for get/comment/assign/update_status/update_fields/link_alert/unlink_alert/move_org/link_device/draft)'
           },
           alertId: {
             type: 'string',
@@ -334,6 +397,19 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description: 'Field patch for update_fields'
           },
+          hostname: {
+            type: 'string',
+            description: 'Exact device hostname to link (link_device) — resolved within the ticket\'s org'
+          },
+          serial: {
+            type: 'string',
+            description: 'Exact device serial number to link (link_device) — resolved within the ticket\'s org'
+          },
+          kind: {
+            type: 'string',
+            enum: ['reply', 'resolution_note'],
+            description: 'Which draft kind to store (draft): a customer-facing reply or an internal resolution note'
+          },
           overrides: {
             type: 'object',
             description: 'Optional create_from_alert ticket overrides (subject, description, categoryId, priority, assigneeId)'
@@ -375,7 +451,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       }
     },
 
-    handler: async (input, auth) => {
+    handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
       const actor = actorFrom(auth);
 
@@ -389,6 +465,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // their allowed sites (deviceless org-level tickets stay visible).
         const siteCondition = ticketSiteScopeCondition(auth);
         if (siteCondition) conditions.push(siteCondition);
+        // Exact-device axis (#6086 finding 6): a device-bound agent run must not
+        // enumerate a SIBLING device's tickets. Independent of the site axis —
+        // a device-less analysis run carries allowedDeviceIds with no
+        // allowedSiteIds, so the site condition above is undefined for it.
+        // Deviceless (org-level) tickets stay visible: they are not
+        // device-attributable (same carve-out as findTicketWithAccess).
+        const deviceCondition = deviceScopeCondition(auth, tickets.deviceId);
+        if (deviceCondition) conditions.push(or(isNull(tickets.deviceId), deviceCondition)!);
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
@@ -423,11 +507,28 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // defense-in-depth is folded into the single query (no extra round-trip).
         const ticket = await findTicketWithAccess(String(input.ticketId), auth);
         if (!ticket) return JSON.stringify({ error: 'Ticket not found' });
-        return JSON.stringify({ ticket });
+        // #5808 W03 — READ ONLY. Labels and progress, so "summarise where this
+        // ticket stands" works. No per-step detail and no doneByUserId: the
+        // attestation is a compliance record, not context for a summary. There
+        // is deliberately NO tick-off action (spec §6.5, OD-7 A) — an agent
+        // ticking a box it did not perform is a falsified record. The control
+        // that actually enforces that is W01's isInteractiveUserSession gate on
+        // the `done` branch, not the absence of a tool here: an MCP API key
+        // carries its creator's real user id.
+        const checklist = await listChecklist(ticket.id);
+        return JSON.stringify({
+          ticket,
+          checklist: checklist.total === 0 ? null : {
+            done: checklist.done,
+            total: checklist.total,
+            items: checklist.items.map((i) => ({ label: i.label, done: i.done })),
+          },
+        });
       }
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
         if (!input.orgId) return JSON.stringify({ error: 'orgId is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
@@ -438,18 +539,31 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
         // deviceId is centrally gated via the deviceArgs field on the tool
         // registration (aiTools.ts device gate) — no additional check needed here.
-        const ticket = await createTicket(
-          {
-            orgId: String(input.orgId),
-            subject: String(input.subject),
-            description: input.description ? String(input.description) : undefined,
-            deviceId: input.deviceId ? String(input.deviceId) : undefined,
-            priority: input.priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
-            source: 'ai'
-          },
-          actor
-        );
-        return JSON.stringify({ ticket });
+        try {
+          const ticket = await createTicket(
+            {
+              orgId: String(input.orgId),
+              subject: String(input.subject),
+              description: input.description ? String(input.description) : undefined,
+              deviceId: input.deviceId ? String(input.deviceId) : undefined,
+              priority: input.priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
+              source: 'ai'
+            },
+            actor
+          );
+          return JSON.stringify({ ticket });
+        } catch (err) {
+          // #5075 W04 — Service Management 'off' refuses new-ticket creation with
+          // a TicketServiceError(409, 'service_management_off'). Every other
+          // mutating action in this file converts a thrown TicketServiceError to
+          // JSON via serviceErrorToJson instead of letting it escape as an
+          // unhandled rejection; create previously did not, which meant the AI's
+          // tool-call loop received a raw thrown error instead of a message it
+          // could relay to the user.
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── comment ───────────────────────────────────────────────────────────
@@ -459,6 +573,15 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        // P2-4 (#4191): an ai_agent-principal call is the first real writer of
+        // the 6.3 loop-guard columns — route through addAiTriageNote, never
+        // addTicketComment (whose userId FK would reject the agent's
+        // synthetic id). Always internal/private, regardless of `isPublic`.
+        const agentRunId = agentRunIdFrom(auth);
+        if (agentRunId) {
+          const result = await addAiTriageNote(String(input.ticketId), agentRunId, String(input.content), found.orgId);
+          return JSON.stringify({ comment: result.comment });
+        }
         const result = await addTicketComment(
           String(input.ticketId),
           {
@@ -472,6 +595,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── assign ────────────────────────────────────────────────────────────
       if (action === 'assign') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for assign action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -486,6 +610,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
         if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
         // Exactly one of status / statusName must be provided.
@@ -549,6 +674,33 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
         if (typeof parsedFields.value.deviceId === 'string' && !(await deviceInSiteScope(auth, parsedFields.value.deviceId))) {
           return JSON.stringify({ error: 'Device not found or access denied' });
+        }
+        // P2-4 (#4191): an ai_agent-principal call routes through the
+        // CAS-guarded applyAiFieldUpdates — never updateTicketFields, whose
+        // audit-comment insert writes actor.userId into ticket_comments'
+        // users-FK column (the agent's synthetic id is not a users.id row).
+        // Attended-chat (a live human's user_session) is unaffected — this
+        // branch is unreachable for it.
+        const agentRunId = agentRunIdFrom(auth);
+        if (agentRunId) {
+          const updates: Parameters<typeof applyAiFieldUpdates>[2] = {};
+          if (typeof parsedFields.value.categoryId === 'string') {
+            updates.categoryId = { value: parsedFields.value.categoryId, expectedCurrent: found.categoryId };
+          }
+          if (parsedFields.value.priority !== undefined) {
+            updates.priority = { value: parsedFields.value.priority, expectedCurrent: found.priority };
+          }
+          if (Object.keys(updates).length === 0) {
+            return JSON.stringify({ error: 'An AI agent may only update categoryId and priority via update_fields' });
+          }
+          try {
+            const result = await applyAiFieldUpdates(String(input.ticketId), found.orgId, updates, agentRunId);
+            return JSON.stringify({ fields: result });
+          } catch (err) {
+            const json = serviceErrorToJson(err);
+            if (json) return json;
+            throw err;
+          }
         }
         try {
           const ticket = await updateTicketFields(String(input.ticketId), parsedFields.value, actor);
@@ -665,7 +817,18 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access to target organization denied' });
         }
         try {
-          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
+          // P2-4 final review (C1, #4191): the scope_ticket_id tombstone AND
+          // the ticket_drafts cleanup now live INSIDE moveTicketOrg's own
+          // transaction (ticketService.ts) — the one path both this AI-tool
+          // executor and the HTTP route (routes/tickets/moveOrg.ts, which
+          // called moveTicketOrg directly and never ran the old tombstone
+          // here) go through. The tombstone previously done here covered
+          // neither ticket_drafts nor terminal-status intents; both were
+          // fixed at the source instead of patched here.
+          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId),
+            auth.principal.kind === 'ai_agent'
+              ? { kind: 'ai_agent', agentId: auth.principal.agentId, name: auth.user.name }
+              : actor);
           return JSON.stringify({ ticket });
         } catch (err) {
           const json = serviceErrorToJson(err);
@@ -674,8 +837,167 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      // ── link_device (P2-4, #4191) ────────────────────────────────────────
+      if (action === 'link_device') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for link_device action' });
+        const hostname = typeof input.hostname === 'string' ? input.hostname : undefined;
+        const serial = typeof input.serial === 'string' ? input.serial : undefined;
+        if (!hostname && !serial) {
+          return JSON.stringify({ error: 'hostname or serial is required for link_device action' });
+        }
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+
+        // Resolve by exact hostname OR serial number, within the ticket's org,
+        // never an ephemeral (Quick Support) device, never decommissioned
+        // (devices carries no deleted_at — offboarding retires a device via
+        // status='decommissioned' rather than a soft-delete column, and a
+        // decommissioned device is not a sane link target). Zero or multiple
+        // matches is a completed no-op, never an error — the agent's
+        // proposal was ambiguous, not malformed.
+        const identityConditions: SQL[] = [];
+        if (hostname) identityConditions.push(eq(devices.hostname, hostname));
+        if (serial) identityConditions.push(eq(deviceHardware.serialNumber, serial));
+        const matches = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
+          .where(and(
+            eq(devices.orgId, found.orgId),
+            eq(devices.isEphemeral, false),
+            ne(devices.status, 'decommissioned'),
+            or(...identityConditions)
+          ))
+          .limit(2);
+
+        if (matches.length === 0) return JSON.stringify({ linked: false, reason: 'no_match' });
+        if (matches.length > 1) return JSON.stringify({ linked: false, reason: 'multiple_matches' });
+        if (found.deviceId !== null) return JSON.stringify({ linked: false, reason: 'already_linked' });
+
+        const deviceId = matches[0]!.id;
+        // Exact-device/site axes (#6086 finding 6): the identity match above is
+        // org-only, so without this a device-bound run could link (and then
+        // pivot through) a device outside its allowlist. Fails closed on an
+        // unresolvable device; a no-op for unrestricted callers.
+        if (await deviceIdSiteDenied(auth, deviceId)) {
+          return JSON.stringify({ linked: false, reason: 'device_out_of_scope' });
+        }
+        // The `device_id IS NULL` guard in the WHERE (not just the read above)
+        // is the actual CAS — closes the race between two concurrent
+        // link_device calls both passing the "not yet linked" read.
+        const updated = await db
+          .update(tickets)
+          .set({
+            deviceId,
+            fieldProvenance: sql`${tickets.fieldProvenance} || '{"deviceId":"ai_agent"}'::jsonb`,
+            updatedAt: new Date()
+          })
+          .where(and(eq(tickets.id, String(input.ticketId)), eq(tickets.orgId, found.orgId), isNull(tickets.deviceId)))
+          .returning({ id: tickets.id });
+
+        if (updated.length === 0) {
+          return JSON.stringify({ linked: false, reason: 'already_linked' });
+        }
+        await revalidateTicketAssignee(String(input.ticketId), {
+          ...actor,
+          principalKind: isAiAgentPrincipal(auth) ? 'ai_agent' : 'user',
+        });
+        return JSON.stringify({ linked: true, deviceId });
+      }
+
+      // ── draft (P2-4, #4191) ───────────────────────────────────────────────
+      if (action === 'draft') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for draft action' });
+        const kind = input.kind === 'reply' || input.kind === 'resolution_note' ? input.kind : undefined;
+        if (!kind) return JSON.stringify({ error: 'kind (reply or resolution_note) is required for draft action' });
+        if (!input.content) return JSON.stringify({ error: 'content is required for draft action' });
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+
+        const ticketId = String(input.ticketId);
+        const content = String(input.content);
+        const runId = agentRunIdFrom(auth);
+
+        // One transaction: SELECT ... FOR UPDATE the current active draft of
+        // this kind (serializes concurrent writers on the SAME ticket+kind —
+        // ticket_drafts_active_uq is a plain, non-deferrable partial unique on
+        // (ticket_id, kind) WHERE state='active'), SUPERSEDE it first, THEN
+        // insert the new active row — never the reverse. Superseding first is
+        // load-bearing: inserting the new active row before flipping the old
+        // one off 'active' collides with ticket_drafts_active_uq on every
+        // normal supersession (there would be TWO 'active' rows for an
+        // instant), not just the genuine concurrent race below. The new
+        // row's id is minted client-side (crypto.randomUUID(), matching the
+        // house pattern — see clientAiTools.ts/streamingSessionManager.ts)
+        // so the UPDATE can stamp `supersededBy` before the row exists.
+        const insertDraft = async (): Promise<{ id: string }> =>
+          db.transaction(async (tx) => {
+            const [existingActive] = await tx
+              .select({ id: ticketDrafts.id })
+              .from(ticketDrafts)
+              .where(and(
+                eq(ticketDrafts.ticketId, ticketId),
+                eq(ticketDrafts.kind, kind),
+                eq(ticketDrafts.state, 'active')
+              ))
+              .limit(1)
+              .for('update');
+
+            const newDraftId = crypto.randomUUID();
+
+            if (existingActive) {
+              await tx.update(ticketDrafts)
+                .set({ state: 'superseded', supersededBy: newDraftId })
+                .where(eq(ticketDrafts.id, existingActive.id));
+            }
+
+            const [inserted] = await tx.insert(ticketDrafts).values({
+              id: newDraftId,
+              orgId: found.orgId,
+              ticketId,
+              runId,
+              content,
+              kind
+            }).returning({ id: ticketDrafts.id });
+            if (!inserted) throw new TicketServiceError('Failed to store draft', 500);
+
+            return inserted;
+          });
+
+        try {
+          const draft = await insertDraft();
+          return JSON.stringify({ draft });
+        } catch (err) {
+          // Two concurrent writers both read "no active row" under FOR UPDATE
+          // serialization and both tried to insert — the partial unique index
+          // (ticket_drafts_active_uq) catches the loser; retry once so it
+          // supersedes the winner instead of erroring out.
+          if (isUniqueViolation(err)) {
+            const draft = await insertDraft();
+            return JSON.stringify({ draft });
+          }
+          throw err;
+        }
+      }
+
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
+        // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
+        // row, see services/aiTimeEntryProposal.ts) but never create one
+        // inline — the row needs a real `users` owner, which only the release
+        // path (executing as `decided_by_user_id`) can supply. Distinct code
+        // from `agent_principal_unsupported_action` because the correct route
+        // EXISTS; the agent's loop should relay "propose it", not "can't".
+        if (agentRunIdFrom(auth)) {
+          return JSON.stringify({ error: 'agent_principal_requires_intent_release', action });
+        }
+        // A released proposal arrives with the APPROVER's auth and their id
+        // in the context bag (intentReleaseWorker.ts). Refuse rather than
+        // trust if the two ever disagree — the entry's owner is the one
+        // thing this branch must never get wrong.
+        if (context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.startedAt) return JSON.stringify({ error: 'startedAt is required for log_time_entry action' });
         if (!input.endedAt) return JSON.stringify({ error: 'endedAt is required for log_time_entry action' });
         // Site-scope parity: if a ticketId is given, pre-check the ticket is in scope
@@ -694,7 +1016,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth)
+            timeEntryActorFrom(auth),
+            // Provenance: a released AI proposal is `ai_suggested` (#4177) so
+            // invoiceAssembly / time-saved reporting can tell it apart; a
+            // human's own tool call stays the column default.
+            { source: context?.approverRelease ? 'ai_suggested' : 'manual' }
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

@@ -9,10 +9,16 @@ import {
   integer,
   bigint,
   index,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { backupConfigs } from './backup';
 import { users } from './users';
+import {
+  recoveryAuthorizationSubjectChecks,
+  recoveryAuthorizationSubjectColumns,
+} from './recoveryAuthorizationSubject';
 
 // ── C2C Connections ─────────────────────────────────────────────────────────
 
@@ -85,6 +91,10 @@ export const c2cBackupJobs = pgTable(
       .notNull()
       .references(() => c2cBackupConfigs.id),
     status: varchar('status', { length: 20 }).notNull().default('pending'),
+    operationKind: varchar('operation_kind', { length: 16 })
+      .notNull()
+      .default('unknown')
+      .$type<'sync' | 'restore' | 'unknown'>(),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
     itemsProcessed: integer('items_processed').default(0),
@@ -96,11 +106,20 @@ export const c2cBackupJobs = pgTable(
     errorLog: text('error_log'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     orgIdx: index('c2c_jobs_org_idx').on(table.orgId),
     configIdx: index('c2c_jobs_config_idx').on(table.configId),
     statusIdx: index('c2c_jobs_status_idx').on(table.status),
+    authorizationClaimIdx: index('c2c_backup_jobs_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('pending', 'running')`),
+    operationKindCheck: check(
+      'c2c_backup_jobs_operation_kind_chk',
+      sql`${table.operationKind} IN ('sync', 'restore', 'unknown')`,
+    ),
+    ...recoveryAuthorizationSubjectChecks('c2c_backup_jobs', table),
   })
 );
 

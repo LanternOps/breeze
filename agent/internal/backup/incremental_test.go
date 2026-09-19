@@ -2,12 +2,12 @@ package backup
 
 import (
 	"context"
+	"os"
 	"path"
 	pathpkg "path/filepath"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // TestDecideFile is the decision-table unit test: table-driven coverage of
@@ -94,14 +94,6 @@ func TestDecideFile(t *testing.T) {
 			},
 			wantResult: decideUpload,
 		},
-		{
-			name: "system-state staging file never referenced, even with a matching entry",
-			file: backupFile{sourcePath: unchangedPath, size: int64(len("same content")), modTime: baseTime, systemState: true},
-			prev: map[string]SnapshotFile{
-				unchangedPath: {SourcePath: unchangedPath, BackupPath: "snapshots/old/files/unchanged.txt.gz", Size: int64(len("same content")), ModTime: baseTime, Checksum: unchangedSum},
-			},
-			wantResult: decideUpload,
-		},
 	}
 
 	for _, tt := range tests {
@@ -155,7 +147,7 @@ func TestDecideFile_NilPrevAlwaysUploads(t *testing.T) {
 // empty destination is not an error, just "nothing to dedupe against yet".
 func TestPreviousManifest_NoSnapshots(t *testing.T) {
 	provider := newMockProvider()
-	snap, reason := previousManifest(context.Background(), provider)
+	snap, reason := previousManifest(context.Background(), provider, "device-a")
 	if snap != nil {
 		t.Fatalf("expected nil snapshot for an empty destination, got %+v", snap)
 	}
@@ -165,23 +157,27 @@ func TestPreviousManifest_NoSnapshots(t *testing.T) {
 }
 
 // TestPreviousManifest_PicksNewest proves previousManifest returns the
-// newest of several completed snapshots (by Timestamp), not just any one.
+// newest of several completed snapshots (by Timestamp) THAT MATCH the
+// caller's identity, not just any one.
 func TestPreviousManifest_PicksNewest(t *testing.T) {
 	provider := newMockProvider()
+	const identity = "device-a"
 	older := &Snapshot{
-		ID:        "snapshot-older",
-		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Files:     []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-older/files/a.txt.gz", Size: 1}},
+		ID:             "snapshot-older",
+		Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		BackupIdentity: identity,
+		Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-older/files/a.txt.gz", Size: 1}},
 	}
 	newer := &Snapshot{
-		ID:        "snapshot-newer",
-		Timestamp: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
-		Files:     []SnapshotFile{{SourcePath: "/data/b.txt", BackupPath: "snapshots/snapshot-newer/files/b.txt.gz", Size: 2}},
+		ID:             "snapshot-newer",
+		Timestamp:      time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		BackupIdentity: identity,
+		Files:          []SnapshotFile{{SourcePath: "/data/b.txt", BackupPath: "snapshots/snapshot-newer/files/b.txt.gz", Size: 2}},
 	}
 	storeManifest(t, provider, older)
 	storeManifest(t, provider, newer)
 
-	snap, reason := previousManifest(context.Background(), provider)
+	snap, reason := previousManifest(context.Background(), provider, identity)
 	if snap == nil {
 		t.Fatalf("expected a snapshot, got nil (reason: %s)", reason)
 	}
@@ -192,12 +188,14 @@ func TestPreviousManifest_PicksNewest(t *testing.T) {
 
 // TestPreviousManifest_ListFailureFailsOpen proves any fetch/parse problem
 // collapses to (nil, reason) rather than propagating an error the caller
-// might mistake for a reason to fail the run.
+// might mistake for a reason to fail the run. Identity is non-empty here so
+// the failure exercised is the ListSnapshots error path, not the separate
+// empty-identity short-circuit (see TestPreviousManifest_NoCallerIdentityNeverMatches).
 func TestPreviousManifest_ListFailureFailsOpen(t *testing.T) {
 	provider := newMockProvider()
 	provider.listErr = context.DeadlineExceeded
 
-	snap, reason := previousManifest(context.Background(), provider)
+	snap, reason := previousManifest(context.Background(), provider, "device-a")
 	if snap != nil {
 		t.Fatalf("expected nil snapshot on a list failure, got %+v", snap)
 	}
@@ -214,12 +212,187 @@ func TestPreviousManifest_CorruptManifestFailsOpen(t *testing.T) {
 	provider := newMockProvider()
 	provider.files[path.Join(snapshotRootDir, "snapshot-bad", snapshotManifestKey)] = []byte("not json")
 
-	snap, reason := previousManifest(context.Background(), provider)
+	snap, reason := previousManifest(context.Background(), provider, "device-a")
 	if snap != nil {
 		t.Fatalf("expected nil snapshot when a manifest fails to decode, got %+v", snap)
 	}
 	if reason == "" {
 		t.Error("expected a non-empty reason describing the failure")
+	}
+}
+
+// TestPreviousManifest_SkipsForeignIdentity_PicksOwnNewest is D6's core
+// unit proof: the newest snapshot in the bucket belongs to a DIFFERENT
+// device/destination/run-kind (BackupIdentity mismatch) — exactly the
+// proven-live scenario where a Windows device's snapshot sorted last and a
+// Linux device's run picked it as its own incremental-dedupe base.
+// previousManifest must keep scanning backward and return the newest
+// snapshot that actually matches THIS run's identity, never the foreign one.
+func TestPreviousManifest_SkipsForeignIdentity_PicksOwnNewest(t *testing.T) {
+	provider := newMockProvider()
+	const myIdentity = "s3|bucket-1|device-a|file"
+	const foreignIdentity = "s3|bucket-1|device-b|file"
+
+	mine := &Snapshot{
+		ID:             "snapshot-mine",
+		Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		BackupIdentity: myIdentity,
+		Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-mine/files/a.txt.gz", Size: 1}},
+	}
+	foreign := &Snapshot{
+		ID:             "snapshot-foreign-newer",
+		Timestamp:      time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		BackupIdentity: foreignIdentity,
+		Files:          []SnapshotFile{{SourcePath: "/data/b.txt", BackupPath: "snapshots/snapshot-foreign-newer/files/b.txt.gz", Size: 2}},
+	}
+	storeManifest(t, provider, mine)
+	storeManifest(t, provider, foreign)
+
+	snap, reason := previousManifest(context.Background(), provider, myIdentity)
+	if snap == nil {
+		t.Fatalf("expected a matching snapshot, got nil (reason: %s)", reason)
+	}
+	if snap.ID != "snapshot-mine" {
+		t.Fatalf("previousManifest picked %q, want this run's own snapshot %q (must not pick the newer foreign one)", snap.ID, "snapshot-mine")
+	}
+}
+
+// TestPreviousManifest_OnlyForeignIdentities_NoMatch proves the fail-open
+// reason text when every candidate belongs to a different identity:
+// previousManifest must never fall back to picking a foreign snapshot just
+// because it's the only one available — that IS the bug (D6).
+func TestPreviousManifest_OnlyForeignIdentities_NoMatch(t *testing.T) {
+	provider := newMockProvider()
+	foreign := &Snapshot{
+		ID:             "snapshot-foreign",
+		Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		BackupIdentity: "device-b",
+		Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-foreign/files/a.txt.gz", Size: 1}},
+	}
+	storeManifest(t, provider, foreign)
+
+	snap, reason := previousManifest(context.Background(), provider, "device-a")
+	if snap != nil {
+		t.Fatalf("expected nil (no matching identity), got %+v", snap)
+	}
+	if !strings.Contains(reason, "no matching previous snapshot") {
+		t.Errorf("reason = %q, want it to mention %q", reason, "no matching previous snapshot")
+	}
+}
+
+// TestPreviousManifest_LegacyManifestWithoutIdentityNeverMatches proves the
+// documented safe default for a manifest written before BackupIdentity
+// existed: an empty BackupIdentity must never match a current run's
+// identity, no matter what that identity is. Fail-open to a full backup,
+// never "assume the unlabeled one is mine".
+func TestPreviousManifest_LegacyManifestWithoutIdentityNeverMatches(t *testing.T) {
+	provider := newMockProvider()
+	legacy := &Snapshot{
+		ID:        "snapshot-legacy",
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		// BackupIdentity intentionally left unset — predates the field.
+		Files: []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-legacy/files/a.txt.gz", Size: 1}},
+	}
+	storeManifest(t, provider, legacy)
+
+	snap, reason := previousManifest(context.Background(), provider, "device-a")
+	if snap != nil {
+		t.Fatalf("expected nil for a legacy manifest with no BackupIdentity, got %+v", snap)
+	}
+	if reason == "" {
+		t.Error("expected a non-empty reason")
+	}
+}
+
+// TestPreviousManifest_NoCallerIdentityNeverMatches proves the other half
+// of the fail-open contract: when THIS run has no known identity at all
+// (empty string — e.g. BackupConfig.AgentID never got wired through),
+// previousManifest must never claim any candidate as a match — not even a
+// snapshot this same process produced earlier under the same empty
+// identity — since an unstamped run cannot prove whose snapshot it is
+// either way.
+func TestPreviousManifest_NoCallerIdentityNeverMatches(t *testing.T) {
+	provider := newMockProvider()
+	unstamped := &Snapshot{
+		ID:        "snapshot-unstamped",
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Files:     []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snapshot-unstamped/files/a.txt.gz", Size: 1}},
+	}
+	storeManifest(t, provider, unstamped)
+
+	snap, reason := previousManifest(context.Background(), provider, "")
+	if snap != nil {
+		t.Fatalf("expected nil when this run has no known identity, got %+v", snap)
+	}
+	if reason == "" {
+		t.Error("expected a non-empty reason")
+	}
+}
+
+// TestIncrementalDedupeBase_ScopedToBackupIdentity is D6's end-to-end proof,
+// exercising the real createSnapshotWithProgress + previousManifest
+// pipeline: two devices (identities A and B) share one bucket. Run 1
+// (identity A) backs up a file; a foreign run (identity B) lands strictly
+// after it — the exact scenario where "just take the newest snapshot"
+// would have picked the foreign run as identity A's dedupe base. Run 2
+// (identity A again, the same file unchanged) must still resolve run 1 as
+// its base, referencing the file rather than re-uploading it.
+func TestIncrementalDedupeBase_ScopedToBackupIdentity(t *testing.T) {
+	provider := newMockProvider()
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	const identityA = "s3|bucket|device-a|file"
+	const identityB = "s3|bucket|device-b|file"
+
+	f1 := createTempFile(t, tmpDir, "f1.txt", "one")
+	if err := os.Chtimes(f1, modTime, modTime); err != nil {
+		t.Fatalf("test setup: Chtimes failed: %v", err)
+	}
+	run1Files := []backupFile{{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime}}
+
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, withRunIdentity(identityA))
+	if err != nil {
+		t.Fatalf("run 1 (identity A) failed: %v", err)
+	}
+	if snapshot1.BackupIdentity != identityA {
+		t.Fatalf("run 1 BackupIdentity = %q, want %q", snapshot1.BackupIdentity, identityA)
+	}
+
+	// A foreign device's run lands strictly after run 1 — ListSnapshots now
+	// reports it as the newest snapshot in the whole bucket.
+	fB := createTempFile(t, tmpDir, "fb.txt", "foreign-device-file")
+	runBFiles := []backupFile{{sourcePath: fB, snapshotPath: "path_0/fb.txt", size: int64(len("foreign-device-file")), modTime: modTime}}
+	snapshotB, err := createSnapshotWithProgress(context.Background(), provider, runBFiles, nil, nil, nil, nil, withRunIdentity(identityB))
+	if err != nil {
+		t.Fatalf("foreign run (identity B) failed: %v", err)
+	}
+
+	prev, reason := previousManifest(context.Background(), provider, identityA)
+	if prev == nil {
+		t.Fatalf("expected run 2 (identity A) to find run 1 as its base, got none: %s", reason)
+	}
+	if prev.ID != snapshot1.ID {
+		t.Fatalf("previousManifest picked %q, want run 1's snapshot %q (must not pick the newer foreign run %q)", prev.ID, snapshot1.ID, snapshotB.ID)
+	}
+
+	run2Files := []backupFile{{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime}} // unchanged
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, withRunIdentity(identityA))
+	if err != nil {
+		t.Fatalf("run 2 (identity A) failed: %v", err)
+	}
+	if snapshot2.BaseSnapshotID != snapshot1.ID {
+		t.Fatalf("run 2 BaseSnapshotID = %q, want %q", snapshot2.BaseSnapshotID, snapshot1.ID)
+	}
+
+	referencedFiles := 0
+	for _, f := range snapshot2.Files {
+		if isReferenceEntry(f, snapshot2.ID) {
+			referencedFiles++
+		}
+	}
+	if referencedFiles != len(run2Files) {
+		t.Fatalf("run 2 referencedFiles = %d, want %d (every unchanged file referenced from run 1, none re-uploaded / referenced from the foreign run)", referencedFiles, len(run2Files))
 	}
 }
 
@@ -236,6 +409,12 @@ func TestIsReferenceEntry(t *testing.T) {
 		{"own prefix -> not a reference", "snapshots/snap-A/files/f.txt.gz", "snap-A", false},
 		{"older prefix -> reference", "snapshots/snap-OLD/files/f.txt.gz", "snap-A", true},
 		{"unrelated prefix -> reference", "snapshots/snap-B/files/f.txt.gz", "snap-A", true},
+		// Review finding #3 (PR #5520): a content-less entry (symlink/dir)
+		// always has an empty BackupPath — "" trivially fails a HasPrefix
+		// check against ANY non-empty own-prefix, which used to make it
+		// look like a reference into some other snapshot. It never is one:
+		// it's rebuilt fresh every run (see decideFile's kind!="" branch).
+		{"empty backupPath (content-less entry) -> never a reference", "", "snap-A", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -247,109 +426,85 @@ func TestIsReferenceEntry(t *testing.T) {
 	}
 }
 
-// TestMarkSystemStateFiles proves the staging-dir exclusion flags exactly
-// the files under stagingDir, leaving everything else untouched.
-func TestMarkSystemStateFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	stagingDir := pathpkg.Join(tmpDir, "staging")
-	files := []backupFile{
-		{sourcePath: pathpkg.Join(stagingDir, "registry.dat")},
-		{sourcePath: pathpkg.Join(stagingDir, "sub", "boot.cfg")},
-		{sourcePath: pathpkg.Join(tmpDir, "unrelated", "doc.txt")},
-		// A sibling directory that merely shares stagingDir as a string
-		// prefix must NOT match (path-boundary correctness).
-		{sourcePath: stagingDir + "-not-actually-inside" + string(pathpkg.Separator) + "f.txt"},
-	}
+// NOTE: TestMarkSystemStateFiles/TestMarkSystemStateFiles_EmptyStagingDirNoOp/
+// TestSystemStateArtifactsMissing used to live here, covering
+// markSystemStateFiles/isUnderDir/systemStateArtifactsMissing — all removed
+// in incremental.go (see the NOTE there) now that system-state artifacts are
+// published directly from the manifest (snapshot.go's publishSystemState)
+// rather than discovered via the ordinary file walk.
 
-	if marked := markSystemStateFiles(files, stagingDir); marked != 2 {
-		t.Errorf("markSystemStateFiles marked %d files, want 2 — the count is what "+
-			"systemStateArtifactsMissing uses to detect an uncaptured manifest", marked)
-	}
+func TestFetchServerOwnedBase(t *testing.T) {
+	const myIdentity = "s3|bucket-1|device-a|file"
 
-	if !files[0].systemState {
-		t.Error("file directly under stagingDir should be marked systemState")
-	}
-	if !files[1].systemState {
-		t.Error("file nested under stagingDir should be marked systemState")
-	}
-	if files[2].systemState {
-		t.Error("file outside stagingDir must not be marked systemState")
-	}
-	if files[3].systemState {
-		t.Error("a path that merely shares stagingDir as a string prefix must not be marked systemState")
-	}
+	t.Run("valid base with matching identity", func(t *testing.T) {
+		provider := newMockProvider()
+		base := &Snapshot{
+			ID:             "snap-base",
+			Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			BackupIdentity: myIdentity,
+			Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snap-base/files/a.txt.gz", Size: 1}},
+		}
+		storeManifest(t, provider, base)
+
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		if snap == nil {
+			t.Fatalf("expected a matching snapshot, got nil (reason: %s)", reason)
+		}
+		if snap.ID != "snap-base" {
+			t.Fatalf("fetchServerOwnedBase picked %q, want %q", snap.ID, "snap-base")
+		}
+	})
+
+	t.Run("identity mismatch falls back to full run", func(t *testing.T) {
+		provider := newMockProvider()
+		base := &Snapshot{
+			ID:             "snap-base",
+			Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			BackupIdentity: "s3|bucket-1|device-b|file",
+			Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snap-base/files/a.txt.gz", Size: 1}},
+		}
+		storeManifest(t, provider, base)
+
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil on identity mismatch, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+
+	t.Run("empty baseSnapshotId means full run", func(t *testing.T) {
+		provider := newMockProvider()
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil for empty baseSnapshotId, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+
+	t.Run("404 (manifest never uploaded) falls back to full run", func(t *testing.T) {
+		provider := newMockProvider()
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-missing", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil on download failure, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
 }
 
-// TestMarkSystemStateFiles_EmptyStagingDirNoOp proves the common case (no
-// system-state collection this run) leaves every file untouched.
-func TestMarkSystemStateFiles_EmptyStagingDirNoOp(t *testing.T) {
-	files := []backupFile{{sourcePath: "/data/a.txt"}}
-	if marked := markSystemStateFiles(files, ""); marked != 0 {
-		t.Errorf("markSystemStateFiles with an empty stagingDir marked %d files, want 0", marked)
-	}
-	if files[0].systemState {
-		t.Error("markSystemStateFiles with an empty stagingDir must not mark anything")
-	}
-}
-
-// TestSystemStateArtifactsMissing is the backstop for #3026's SYMPTOM rather
-// than its cause: a job that reports success while the restore point is missing
-// the system state its manifest advertises. #3026 was one route there; the
-// detector has to fire for any of them, and stay silent otherwise.
-func TestSystemStateArtifactsMissing(t *testing.T) {
-	withArtifacts := &systemstate.SystemStateManifest{
-		Artifacts: []systemstate.Artifact{{Name: "registry"}, {Name: "boot"}},
-	}
-
-	tests := []struct {
-		name        string
-		manifest    *systemstate.SystemStateManifest
-		markedFiles int
-		want        bool
-	}{
-		{
-			// The #3026 signature: manifest recorded, staging walk produced
-			// nothing that matched it.
-			name:        "manifest with artifacts but nothing captured is reported",
-			manifest:    withArtifacts,
-			markedFiles: 0,
-			want:        true,
-		},
-		{
-			name:        "manifest with artifacts and files captured is healthy",
-			manifest:    withArtifacts,
-			markedFiles: 2,
-			want:        false,
-		},
-		{
-			// Partial capture is a different problem and deliberately out of
-			// scope here — this detector only claims "none at all".
-			name:        "a single captured file is enough to clear the check",
-			manifest:    withArtifacts,
-			markedFiles: 1,
-			want:        false,
-		},
-		{
-			name:        "no system state collected this run is not a divergence",
-			manifest:    nil,
-			markedFiles: 0,
-			want:        false,
-		},
-		{
-			// Nothing to match, so reporting would fire on every such run and
-			// train operators to ignore the warning.
-			name:        "a manifest describing no artifacts is not a divergence",
-			manifest:    &systemstate.SystemStateManifest{},
-			markedFiles: 0,
-			want:        false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := systemStateArtifactsMissing(tt.manifest, tt.markedFiles); got != tt.want {
-				t.Errorf("systemStateArtifactsMissing = %v, want %v", got, tt.want)
-			}
-		})
+// W02: content-less entries (symlinks/directories) are rebuilt from the live
+// filesystem on every run — decideFile must never reference them, even when
+// an entry with the same key exists in the previous manifest.
+func TestDecideFile_ContentlessAlwaysUploadPath(t *testing.T) {
+	link := backupFile{sourcePath: "/bin", snapshotPath: "path_0/bin", kind: KindSymlink, linkTarget: "usr/bin"}
+	prev := map[string]SnapshotFile{"/bin": {SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/lib"}}
+	decision, entry := decideFile(link, prev)
+	if decision != decideUpload || entry.BackupPath != "" {
+		t.Fatalf("decision=%v entry=%+v; content-less entries never dedupe by reference", decision, entry)
 	}
 }

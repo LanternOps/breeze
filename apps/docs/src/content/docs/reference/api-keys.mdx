@@ -75,7 +75,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
 Scopes restrict which API operations a key can perform. When a route is protected by `requireApiKeyScope()`, the key must include at least one of the required scopes.
 
 - A key with an **empty scopes array** (`[]`) can access unsecured endpoints but will be denied by any scope-protected route.
-- The **wildcard scope** `"*"` grants access to all scope-protected endpoints.
+- There is **no wildcard scope**. Requesting `"*"` as a scope is rejected with a 400 (`Wildcard API key scopes are not supported`) — list every scope the key needs explicitly.
 
 ```json
 {
@@ -245,10 +245,10 @@ Enrollment keys are purpose-built tokens for agent onboarding. They are tied to 
 
 ### Key Format
 
-Enrollment keys are 64-character hex strings generated from 32 random bytes. Before storage, the key is hashed with SHA-256 using a server-side pepper (configured via `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET` environment variable).
+Enrollment keys are 64-character hex strings generated from 32 random bytes. Before storage, the key is hashed with SHA-256 using a server-side pepper configured via the `ENROLLMENT_KEY_PEPPER` environment variable. `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, and `JWT_SECRET` are only consulted as legacy fallbacks when *verifying* keys hashed before an upgrade — new keys are always hashed with `ENROLLMENT_KEY_PEPPER`.
 
 <Aside type="danger">
-  In production, at least one pepper environment variable must be set. The server will refuse to start without it.
+  In production, `ENROLLMENT_KEY_PEPPER` must be set. The server will refuse to start without it.
 </Aside>
 
 ### Creating an Enrollment Key
@@ -280,17 +280,17 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 | `siteId` | `string (uuid)` | No | `null` | Pin enrolled agents to a specific site. |
 | `name` | `string` | Yes | -- | Human-readable label (1-255 characters). |
 | `maxUsage` | `integer` | No | `1` | Maximum number of agents that can enroll with this key (1-100,000). |
-| `expiresAt` | `string (datetime)` | No | Now + TTL | ISO 8601 expiration. Defaults to the current time plus `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default: 60 minutes). |
+| `expiresAt` | `string (datetime)` | No | Now + TTL | ISO 8601 expiration. Defaults to the current time plus `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default: 30 days). |
 
 <Aside>
-  The default TTL can be changed by setting the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If not set, enrollment keys expire 60 minutes after creation.
+  The default TTL can be changed by setting the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If not set, enrollment keys expire 30 days (43200 minutes) after creation.
 </Aside>
 
 ### TTL and Max Usage
 
 Enrollment keys have two expiration mechanisms:
 
-- **TTL (`expiresAt`)**: After this timestamp, the key cannot be used regardless of remaining usage. The default is 60 minutes from creation.
+- **TTL (`expiresAt`)**: After this timestamp, the key cannot be used regardless of remaining usage. The default is 30 days from creation.
 - **Max usage (`maxUsage`)**: Limits the number of agents that can enroll with this key. Each successful enrollment increments `usageCount`. Once `usageCount` reaches `maxUsage`, the key is exhausted.
 
 These constraints work together. A key with `maxUsage: 50` and a 24-hour TTL will stop accepting enrollments when either 50 agents have used it or 24 hours have passed, whichever comes first.

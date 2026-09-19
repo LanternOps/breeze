@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -169,12 +170,15 @@ type darwinUninstallScriptOptions struct {
 // freshly-deleted directory.
 func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
 	lines := []string{
+		macosuninstall.Functions,
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
-		fmt.Sprintf("launchctl bootout system/%s", shQuote(opts.WatchdogLabel)),
+		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.WatchdogLabel)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
-		fmt.Sprintf("launchctl bootout system/%s || launchctl unload %s", shQuote(opts.Label), shQuote(opts.PlistPath)),
-		fmt.Sprintf("rm -f %s", shQuote(opts.PlistPath)),
-		fmt.Sprintf("rm -f %s", shQuote(opts.BinaryPath)),
+		"breeze_stop_helpers || exit 1",
+		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.Label)),
+		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.PlistPath)),
+		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.BinaryPath)),
+		"breeze_remove_auxiliary || exit 1",
 	}
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.ConfigDir)))
@@ -182,16 +186,13 @@ func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
 	return strings.Join(lines, "\n")
 }
 
-// prepareSelfUninstallDarwin removes the watchdog, user helper, plists, the
-// watchdog binary, and (optionally) config in-process, then hands the removal
-// of the agent's own daemon + binary to a detached shell.
+// prepareSelfUninstallDarwin neutralizes the watchdog in-process, then hands
+// helper jobs, package artifacts and optional config removal to a detached shell.
 func prepareSelfUninstallDarwin(removeConfig bool) error {
 	const (
 		label            = "com.breeze.agent"
-		userLabel        = "com.breeze.agent-user"
 		watchdogLabel    = "com.breeze.watchdog"
 		plistDst         = "/Library/LaunchDaemons/com.breeze.agent.plist"
-		userPlistDst     = "/Library/LaunchAgents/com.breeze.agent-user.plist"
 		watchdogPlistDst = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
 		binaryPath       = "/usr/local/bin/breeze-agent"
 		watchdogBinary   = "/usr/local/bin/breeze-watchdog"
@@ -204,9 +205,6 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 		log.Warn("launchctl bootout watchdog failed, trying legacy unload", "error", err.Error())
 		_ = exec.Command("launchctl", "unload", watchdogPlistDst).Run()
 	}
-	if err := exec.Command("launchctl", "bootout", "system/"+userLabel).Run(); err != nil {
-		_ = exec.Command("launchctl", "unload", userPlistDst).Run()
-	}
 
 	// Disable our own daemon (safe while running) so that if the detached
 	// helper never runs — blocked, reboot inside the window — the host comes
@@ -216,7 +214,6 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 	}
 
 	removeFileLogged(watchdogPlistDst)
-	removeFileLogged(userPlistDst)
 	removeFileLogged(watchdogBinary)
 
 	// Booting out our own daemon kills this process, so it (plus the removal

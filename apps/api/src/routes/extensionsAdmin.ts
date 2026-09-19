@@ -37,6 +37,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
+import { requireMfa } from '../middleware/auth';
 import {
   checkExtensionCompatibility,
   type CompatibilityResult,
@@ -187,8 +188,8 @@ export function createExtensionsAdminRoutes(deps: ExtensionsAdminDeps): Hono {
     });
   });
 
-  routes.post('/:name/enable', (c) => applyEnabled(c, deps, true));
-  routes.post('/:name/disable', (c) => applyEnabled(c, deps, false));
+  routes.post('/:name/enable', requireMfa(), (c) => applyEnabled(c, deps, true));
+  routes.post('/:name/disable', requireMfa(), (c) => applyEnabled(c, deps, false));
 
   return routes;
 }

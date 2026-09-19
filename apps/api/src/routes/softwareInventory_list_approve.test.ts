@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
     mode: 'softwarePolicies.mode',
     isActive: 'softwarePolicies.isActive',
     rules: 'softwarePolicies.rules',
+    approvalGeneration: 'softwarePolicies.approvalGeneration',
   },
   configurationPolicies: {
     id: 'configurationPolicies.id',
@@ -360,10 +361,11 @@ describe('software inventory routes', () => {
         rules: { software: [{ name: 'Firefox', vendor: 'Mozilla' }], allowUnknown: false },
       }]);
       // Update policy rules
+      const approveSetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
       vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
+        set: approveSetSpy,
       } as any);
       // ensureDefaultConfigPolicyLink:
       // Config policy select
@@ -405,6 +407,11 @@ describe('software inventory routes', () => {
       expect(recordSoftwarePolicyAudit).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'inventory_approve', policyId: POLICY_ID }),
       );
+
+      // Site-ceiling gate contract §3/finding 2: adding to the allowlist is a
+      // governing edit a queued compliance job needs to detect.
+      const approveSetArg = (approveSetSpy.mock.calls as any[])[0][0];
+      expect(approveSetArg.approvalGeneration).toBeDefined();
     });
 
     it('returns 400 when org context missing', async () => {

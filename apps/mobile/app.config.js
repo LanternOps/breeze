@@ -1,10 +1,11 @@
+const { assertReleaseApiUrl } = require('./src/config/apiUrl');
 const { resolveAssociatedDomains } = require('./src/config/associatedDomains');
 const { resolveSentryDsn } = require('./src/config/sentryDsn');
 
 /**
  * Dynamic config layered over `app.json`.
  *
- * This file does two jobs, and the second one is a build gate.
+ * This file does three jobs, and two of them are build gates.
  *
  * 1. `ios.associatedDomains` — a self-hosted build can add its own domain.
  *    Apple binds Associated Domains into the signed entitlement, so the list is
@@ -27,13 +28,21 @@ const { resolveSentryDsn } = require('./src/config/sentryDsn');
  *    why the mobile Sentry project sat at zero events for 90 days — it cannot
  *    be skipped by pressing ⌘B or Archive. Non-release builds are untouched.
  *
+ * 3. `EXPO_PUBLIC_API_URL` — the same treatment, for the same reason, on the
+ *    variable that decides whether the app can reach a server at all. A release
+ *    build with no API URL (or one pointing at `localhost`) compiles
+ *    `http://localhost:3001` into the IPA and fails every request on a real
+ *    device, silently. See `src/config/apiUrl.js`. Unlike the DSN it publishes
+ *    nothing — it is only a gate.
+ *
  * Plain CommonJS on purpose: Expo transpiles this file but not the modules it
  * requires, so the resolvers next door have to stay `.js` too.
  */
 module.exports = ({ config }) => {
-  // Runs before the spread so a release build with no DSN fails here, rather
-  // than producing a config that quietly ships without telemetry.
+  // Both run before the spread so a release build that is missing either one
+  // fails here, rather than producing a config that quietly ships broken.
   const sentryDsn = resolveSentryDsn(process.env);
+  assertReleaseApiUrl(process.env);
 
   return {
     ...config,

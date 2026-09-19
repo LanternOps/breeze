@@ -5,9 +5,11 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const CONFIG_ID = '33333333-3333-4333-8333-333333333333';
+const CATALOG_ENTRY_ID = '44444444-4444-4444-8444-444444444444';
+const CATALOG_REVISION_ID = '55555555-5555-4555-8555-555555555555';
 const API_KEY = 'sk-ant-api03-unit-test-key-1234567890';
 
-const { anthropicState, captureExceptionMock, dbState } = vi.hoisted(() => {
+const { anthropicState, captureExceptionMock, dbState, catalogState } = vi.hoisted(() => {
   class MockAnthropicApiError extends Error {
     constructor(message: string, readonly status?: number) {
       super(message);
@@ -32,6 +34,10 @@ const { anthropicState, captureExceptionMock, dbState } = vi.hoisted(() => {
       updateWheres: [] as unknown[],
       deleteWheres: [] as unknown[],
     },
+    catalogState: {
+      catalogEnabled: true,
+      getListedProviderByEntryId: vi.fn(),
+    },
   };
 });
 
@@ -53,6 +59,30 @@ vi.mock('./aiModel', () => ({
 vi.mock('./sentry', () => ({
   captureException: captureExceptionMock,
 }));
+
+vi.mock('./llmProviderCatalog', () => ({
+  getListedProviderByEntryId: catalogState.getListedProviderByEntryId,
+}));
+
+// Only the feature flag is stubbed. `buildCatalogEndpointSnapshot` stays REAL:
+// it is the single shared definition of "usable endpoint + wire model", and a
+// hand-rolled copy here would let this file's probe assertions pass against a
+// mapping the resolver no longer performs.
+vi.mock('./llm/llmConfigResolver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./llm/llmConfigResolver')>()),
+  isLlmProviderCatalogEnabled: () => catalogState.catalogEnabled,
+}));
+
+vi.mock('./llm/guardedLlmFetch', () => {
+  class MockLlmEgressViolationError extends Error {
+    readonly status = 502;
+    readonly code = 'llm_egress_blocked';
+  }
+  return {
+    buildGuardedLlmFetch: vi.fn(() => 'guarded-fetch-sentinel'),
+    LlmEgressViolationError: MockLlmEgressViolationError,
+  };
+});
 
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -99,7 +129,7 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { decryptSecret } from './secretCrypto';
+import { decryptSecret, encryptSecret } from './secretCrypto';
 import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
 import {
   deletePartnerLlmConfig,
@@ -107,7 +137,9 @@ import {
   PartnerLlmError,
   savePartnerLlmKey,
   updatePartnerLlmConfig,
+  updatePartnerLlmEndpoint,
 } from './partnerLlmConfig';
+import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmFetch';
 import { captureException } from './sentry';
 
 const originalEncryptionEnv = {
@@ -153,7 +185,35 @@ beforeEach(() => {
   dbState.updateWheres.length = 0;
   dbState.deleteWheres.length = 0;
   anthropicState.create.mockResolvedValue({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
+  catalogState.catalogEnabled = true;
+  catalogState.getListedProviderByEntryId.mockReset();
+  vi.mocked(buildGuardedLlmFetch).mockClear();
+  vi.mocked(buildGuardedLlmFetch).mockReturnValue('guarded-fetch-sentinel' as never);
 });
+
+function listedProvider(overrides: Record<string, unknown> = {}) {
+  return {
+    entryId: CATALOG_ENTRY_ID,
+    slug: 'openrouter',
+    name: 'OpenRouter',
+    revisionId: CATALOG_REVISION_ID,
+    revision: 3,
+    baseUrl: 'https://openrouter.ai/api/v1',
+    authMode: 'x-api-key' as const,
+    modelMap: {
+      'claude-sonnet-4-6': {
+        providerModel: 'anthropic/claude-sonnet-4-6',
+        inputCentsPerM: 300,
+        outputCentsPerM: 1500,
+        cacheReadCentsPerM: 30,
+        cacheWriteCentsPerM: 375,
+      },
+    },
+    dataNote: null as string | null,
+    verifiedModels: ['claude-sonnet-4-6'],
+    ...overrides,
+  };
+}
 
 afterAll(() => {
   if (originalEncryptionEnv.key === undefined) delete process.env.APP_ENCRYPTION_KEY;
@@ -275,6 +335,10 @@ describe('savePartnerLlmKey', () => {
 
   it('re-encrypts against the existing row id and increments the version on replacement', async () => {
     dbState.insertResults.push([]);
+    // First select: the pre-probe lookup of the partner's currently-selected
+    // endpoint (none here, so the probe targets direct Anthropic as before).
+    dbState.selectResults.push([{ catalogEntryId: null, defaultModel: 'claude-haiku-4-5' }]);
+    // Second select: the existing insert/update flow's on-conflict fallback.
     dbState.selectResults.push([{ id: CONFIG_ID, defaultModel: 'claude-haiku-4-5' }]);
     dbState.updateResults.push([{ configVersion: 8 }]);
 
@@ -293,6 +357,58 @@ describe('savePartnerLlmKey', () => {
       params: [PARTNER_ID, CONFIG_ID],
     });
     expect(result).toMatchObject({ model: 'claude-haiku-4-5', configVersion: 8 });
+  });
+
+  it('probes the currently-selected catalog endpoint instead of direct Anthropic when rotating the key', async () => {
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
+    dbState.insertResults.push([]);
+    dbState.selectResults.push([{ id: CONFIG_ID, defaultModel: 'claude-sonnet-4-6' }]);
+    dbState.updateResults.push([{ configVersion: 4 }]);
+
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+
+    expect(catalogState.getListedProviderByEntryId).toHaveBeenCalledWith(CATALOG_ENTRY_ID);
+    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }),
+    );
+    expect(anthropicState.constructorOptions).toEqual([{
+      baseURL: 'https://openrouter.ai/api/v1',
+      apiKey: API_KEY,
+      authToken: null,
+      fetch: 'guarded-fetch-sentinel',
+    }]);
+    expect(anthropicState.create).toHaveBeenCalledWith({
+      model: 'anthropic/claude-sonnet-4-6',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'ping' }],
+    });
+  });
+
+  it('rejects a key rotation when the currently-selected catalog endpoint was delisted, without persisting', async () => {
+    catalogState.getListedProviderByEntryId.mockResolvedValue(null);
+    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
+
+    await expect(
+      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(dbState.insertedValues).toHaveLength(0);
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('rejects a key rotation targeting a catalog endpoint while catalog selection is disabled', async () => {
+    catalogState.catalogEnabled = false;
+    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
+
+    await expect(
+      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(dbState.insertedValues).toHaveLength(0);
   });
 });
 
@@ -335,11 +451,38 @@ describe('getPartnerLlmStatus', () => {
       status: 'active',
       verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
       lastError: null,
+      catalogEntryId: null,
     }]);
 
     await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
       configured: true,
       defaultModel: null,
+      catalogEntryId: null,
+    });
+  });
+
+  it('surfaces the selected catalog entry id', async () => {
+    dbState.selectResults.push([{
+      provider: 'anthropic',
+      keyLast4: '7890',
+      defaultModel: 'claude-sonnet-4-6',
+      status: 'active',
+      verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
+      lastError: null,
+      catalogEntryId: CATALOG_ENTRY_ID,
+    }]);
+
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
+      catalogEntryId: CATALOG_ENTRY_ID,
+    });
+  });
+
+  it('reports catalogEntryId null when unconfigured', async () => {
+    dbState.selectResults.push([]);
+
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
+      configured: false,
+      catalogEntryId: null,
     });
   });
 });
@@ -355,6 +498,201 @@ describe('deletePartnerLlmConfig', () => {
     expect(compileSql(dbState.deleteWheres[0])).toEqual({
       sql: '"partner_llm_configs"."partner_id" = $1',
       params: [PARTNER_ID],
+    });
+  });
+});
+
+function encryptedApiKeyRow(): string {
+  const encrypted = encryptSecret(API_KEY, { aad: apiKeyAad(CONFIG_ID) });
+  if (!encrypted) throw new Error('test setup: could not encrypt fixture API key');
+  return encrypted;
+}
+
+describe('updatePartnerLlmEndpoint', () => {
+  it('rejects when no Anthropic key is connected yet', async () => {
+    dbState.selectResults.push([]);
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('reverts to direct Anthropic without probing when catalogEntryId is null', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    dbState.updateResults.push([{ configVersion: 5 }]);
+
+    const result = await updatePartnerLlmEndpoint({
+      partnerId: PARTNER_ID,
+      catalogEntryId: null,
+      acknowledgeDataNote: false,
+      userId: USER_ID,
+    });
+
+    expect(result).toEqual({ catalogEntryId: null, configVersion: 5, slug: null, revision: null });
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
+    expect(dbState.updateSets[0]).toMatchObject({ catalogEntryId: null });
+    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
+      sql: '"partner_llm_configs"."config_version" + 1',
+      params: [],
+    });
+  });
+
+  it('rejects selecting a delisted catalog entry, without persisting', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(null);
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('requires acknowledgeDataNote when the active revision carries a data note', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(
+      listedProvider({ dataNote: 'Prompts transit OpenRouter.' }),
+    );
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: false,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
+
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('does not require consent when the active revision carries no data note', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    dbState.updateResults.push([{ configVersion: 2 }]);
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: false,
+        userId: USER_ID,
+      }),
+    ).resolves.toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID, configVersion: 2 });
+  });
+
+  it('rejects when the model configured for this partner is not verified on the entry', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-haiku-4-5' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('rejects selection while catalog selection is disabled, without persisting', async () => {
+    catalogState.catalogEnabled = false;
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('probes the selected endpoint through the guarded client and persists nothing on probe failure', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rejected', 401));
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
+
+    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }),
+    );
+    expect(anthropicState.create).toHaveBeenCalledWith({
+      model: 'anthropic/claude-sonnet-4-6',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'ping' }],
+    });
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('maps a blocked-egress probe failure to a 503 without persisting', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    anthropicState.create.mockRejectedValue(new LlmEgressViolationError('blocked'));
+
+    await expect(
+      updatePartnerLlmEndpoint({
+        partnerId: PARTNER_ID,
+        catalogEntryId: CATALOG_ENTRY_ID,
+        acknowledgeDataNote: true,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 503 });
+
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('sets catalogEntryId and bumps configVersion on a successful probe, returning slug + revision for auditing', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    dbState.updateResults.push([{ configVersion: 6 }]);
+
+    const result = await updatePartnerLlmEndpoint({
+      partnerId: PARTNER_ID,
+      catalogEntryId: CATALOG_ENTRY_ID,
+      acknowledgeDataNote: true,
+      userId: USER_ID,
+    });
+
+    expect(result).toEqual({
+      catalogEntryId: CATALOG_ENTRY_ID,
+      configVersion: 6,
+      slug: 'openrouter',
+      revision: 3,
+    });
+    expect(dbState.updateSets[0]).toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID });
+    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
+      sql: '"partner_llm_configs"."config_version" + 1',
+      params: [],
     });
   });
 });

@@ -1,37 +1,20 @@
 /**
- * Integration test — remote-session consent deny/bypass teardown + audit
+ * Remote-session consent integration coverage.
  *
- * Exercises the real deny path (POST /remote/sessions/:id/deny) against the
- * actual test DB running as breeze_app. Verifies:
- *   1. reason='user'  → status='denied', endedAt set,
- *      audit_logs row action='session_consent_denied'
- *   2. reason='policy_proceed' → status='denied', endedAt set,
- *      audit_logs row action='session_consent_bypassed'
- *   3. State guard: deny on a non-connecting session → 400
- *
- * Run:
- *   set -a; . ./.env.test; set +a
- *   PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH \
- *     pnpm --filter @breeze/api exec vitest run -c vitest.integration.config.ts \
- *     src/__tests__/integration/remote-session-consent.integration.test.ts
+ * Endpoint consent verdicts arrive only through the authenticated agent
+ * command-result channel. A user JWT — including the session owner's — must
+ * not be able to report an answer or denial on the endpoint's behalf.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 
 import './setup';
 import { getTestDb } from './setup';
-import {
-  setupTestEnvironment,
-} from './db-utils';
+import { setupTestEnvironment } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
 
-// The offer route (exercised below to assert the prompt partner-name
-// fix) sends the start_desktop command over a real agent WebSocket connection,
-// which no test agent is connected to accept. Mock only `sendCommandToAgent` so
-// we can capture the payload the route builds — everything else in this file
-// (the deny-path tests above) hits the real DB/services untouched, since the
-// deny route never imports agentWs.
 const { sendCommandToAgentMock } = vi.hoisted(() => ({
   sendCommandToAgentMock: vi.fn((_agentId: string, _command: unknown) => true),
 }));
@@ -40,9 +23,6 @@ vi.mock('../../routes/agentWs', async (importOriginal) => {
   return { ...actual, sendCommandToAgent: sendCommandToAgentMock };
 });
 
-// The offer route also gates on the remote-access capability policy before
-// building the prompt. Mock it to an unconditional allow so this test stays
-// focused on the prompt partner-name fix, not policy resolution.
 vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/remoteAccessPolicy')>();
   return {
@@ -55,71 +35,67 @@ vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => {
 });
 
 import { remoteRoutes } from '../../routes/remote';
-import { devices, remoteSessions, auditLogs } from '../../db/schema';
+import { devices, remoteSessions, users } from '../../db/schema';
 
-// ============================================================
-// Helpers
-// ============================================================
-
-/** Insert a minimal device into the test DB (superuser connection). */
 async function insertDevice(orgId: string, siteId: string): Promise<string> {
-  const tdb = getTestDb();
   const agentId = `agent-consent-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const [row] = await tdb
-    .insert(devices)
-    .values({
-      orgId,
-      siteId,
-      agentId,
-      hostname: `consent-test-host-${agentId}`,
-      displayName: 'Consent Test Host',
-      osType: 'windows',
-      osVersion: '11',
-      osBuild: '22000',
-      architecture: 'x86_64',
-      agentVersion: '0.0.0-test',
-      status: 'online',
-      enrolledAt: new Date(),
-    })
-    .returning({ id: devices.id });
+  const [row] = await getTestDb().insert(devices).values({
+    orgId,
+    siteId,
+    agentId,
+    hostname: `consent-test-host-${agentId}`,
+    displayName: 'Consent Test Host',
+    osType: 'windows',
+    osVersion: '11',
+    osBuild: '22000',
+    architecture: 'x86_64',
+    agentVersion: '0.0.0-test',
+    status: 'online',
+    // The desktop-start capability gate refuses any device that has not
+    // reported revocation-lease support on a heartbeat (503
+    // `agent_upgrade_required`). This fixture stands in for an up-to-date
+    // agent; the gate itself is covered by remoteRevocationLease.integration.
+    revocationLeaseProtocolVersion: 1,
+    enrolledAt: new Date(),
+  }).returning({ id: devices.id });
   if (!row) throw new Error('insertDevice: no row returned');
   return row.id;
 }
 
-/** Insert a remote_session in the given status (superuser connection). */
-async function insertSession(opts: {
+async function insertSession(input: {
   deviceId: string;
   orgId: string;
   userId: string;
-  status?: 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed' | 'denied';
+  status?: 'pending' | 'connecting';
 }): Promise<string> {
-  const tdb = getTestDb();
-  const [row] = await tdb
-    .insert(remoteSessions)
-    .values({
-      deviceId: opts.deviceId,
-      orgId: opts.orgId,
-      userId: opts.userId,
-      type: 'desktop',
-      status: opts.status ?? 'connecting',
-      iceCandidates: [],
-    })
-    .returning({ id: remoteSessions.id });
+  // A desktop session with no revocation-lease baseline cannot be issued a
+  // lease, so every desktop-start dispatch site refuses it with 503
+  // `lease_unavailable`. `createRemoteSession` sets this; a row inserted
+  // directly by a fixture has to snapshot the live epoch itself.
+  const [live] = await getTestDb()
+    .select({ permissionsEpoch: users.permissionsEpoch })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1);
+  const [row] = await getTestDb().insert(remoteSessions).values({
+    deviceId: input.deviceId,
+    orgId: input.orgId,
+    userId: input.userId,
+    type: 'desktop',
+    status: input.status ?? 'connecting',
+    permissionsEpochSnapshot: Number(live!.permissionsEpoch),
+    iceCandidates: [],
+  }).returning({ id: remoteSessions.id });
   if (!row) throw new Error('insertSession: no row returned');
   return row.id;
 }
 
-/** Create a Hono app with the real remoteRoutes mounted. */
 function buildApp() {
   const app = new Hono();
   app.route('/remote', remoteRoutes);
   return app;
 }
 
-/**
- * Mint a token for the given environment with mfa:true so the
- * requireMfa() guard on remoteRoutes is satisfied.
- */
 async function mintMfaToken(env: Awaited<ReturnType<typeof setupTestEnvironment>>) {
   return createAccessToken({
     sub: env.user.id,
@@ -128,188 +104,60 @@ async function mintMfaToken(env: Awaited<ReturnType<typeof setupTestEnvironment>
     orgId: env.organization.id,
     partnerId: env.partner.id,
     scope: 'organization' as const,
-    mfa: true, // satisfies requireMfa() on the remote route group
-    // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
-    // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: 'it-session',
   });
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
-describe('POST /remote/sessions/:id/deny — consent teardown + audit', () => {
-  let app: Hono;
-
-  beforeEach(() => {
-    app = buildApp();
-  });
-
-  // --------------------------------------------------------
-  // Case 1: user denial → session_consent_denied
-  // --------------------------------------------------------
-  it('reason=user → status=denied, endedAt set, audit action=session_consent_denied', async () => {
+describe('retired user-authenticated endpoint consent verdicts', () => {
+  it.each([
+    ['answer', { answer: 'v=0\r\n', consentReason: 'user' }],
+    ['deny', { reason: 'user' }],
+  ])('does not let the session owner submit an agent %s verdict', async (route, body) => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
-    const tdb = getTestDb();
-
     const deviceId = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({
       deviceId,
       orgId: env.organization.id,
       userId: env.user.id,
+    });
+
+    const res = await buildApp().request(`/remote/sessions/${sessionId}/${route}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(404);
+    const [unchanged] = await getTestDb().select({
+      status: remoteSessions.status,
+      answer: remoteSessions.webrtcAnswer,
+      endedAt: remoteSessions.endedAt,
+    }).from(remoteSessions).where(eq(remoteSessions.id, sessionId)).limit(1);
+    expect(unchanged).toMatchObject({ status: 'connecting', answer: null, endedAt: null });
+  });
+
+  it('rejects an incomplete desktop-start generation binding at the database boundary', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+
+    await expect(getTestDb().insert(remoteSessions).values({
+      deviceId,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      type: 'desktop',
       status: 'connecting',
-    });
-
-    const res = await app.request(`/remote/sessions/${sessionId}/deny`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ reason: 'user' }),
-    });
-
-    expect(res.status).toBe(200);
-    const body = await res.json() as { id: string; status: string; endedAt: string | null };
-    expect(body.status).toBe('denied');
-    expect(body.endedAt).not.toBeNull();
-
-    // Verify the DB row was updated (query via superuser connection)
-    const [sessionRow] = await tdb
-      .select({ status: remoteSessions.status, endedAt: remoteSessions.endedAt })
-      .from(remoteSessions)
-      .where(eq(remoteSessions.id, sessionId))
-      .limit(1);
-    expect(sessionRow?.status).toBe('denied');
-    expect(sessionRow?.endedAt).not.toBeNull();
-
-    // Verify audit log — filter by resourceId=sessionId so the append-only
-    // table's prior rows don't interfere with this assertion.
-    const auditRows = await tdb
-      .select({ action: auditLogs.action, resourceType: auditLogs.resourceType, resourceId: auditLogs.resourceId, details: auditLogs.details })
-      .from(auditLogs)
-      .where(
-        and(
-          eq(auditLogs.resourceId, sessionId),
-          eq(auditLogs.action, 'session_consent_denied'),
-        )
-      );
-
-    expect(auditRows.length).toBeGreaterThanOrEqual(1);
-    const auditRow = auditRows[0]!;
-    expect(auditRow.resourceType).toBe('remote_session');
-    expect(auditRow.resourceId).toBe(sessionId);
-    const details = auditRow.details as Record<string, unknown>;
-    expect(details.reason).toBe('user');
-    expect(details.sessionId).toBe(sessionId);
-  });
-
-  // --------------------------------------------------------
-  // Case 2: bypass reason → session_consent_bypassed
-  // --------------------------------------------------------
-  it('reason=policy_proceed → status=denied, audit action=session_consent_bypassed', async () => {
-    const env = await setupTestEnvironment({ scope: 'organization' });
-    const token = await mintMfaToken(env);
-    const tdb = getTestDb();
-
-    const deviceId = await insertDevice(env.organization.id, env.site.id);
-    const sessionId = await insertSession({
-      deviceId,
-      orgId: env.organization.id,
-      userId: env.user.id,
-      status: 'connecting',
-    });
-
-    const res = await app.request(`/remote/sessions/${sessionId}/deny`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ reason: 'policy_proceed' }),
-    });
-
-    expect(res.status).toBe(200);
-    const body = await res.json() as { status: string; endedAt: string | null };
-    expect(body.status).toBe('denied');
-    expect(body.endedAt).not.toBeNull();
-
-    // Verify the DB row
-    const [sessionRow] = await tdb
-      .select({ status: remoteSessions.status, endedAt: remoteSessions.endedAt })
-      .from(remoteSessions)
-      .where(eq(remoteSessions.id, sessionId))
-      .limit(1);
-    expect(sessionRow?.status).toBe('denied');
-    expect(sessionRow?.endedAt).not.toBeNull();
-
-    // Verify audit — must be 'session_consent_bypassed', NOT 'session_consent_denied'
-    const auditRows = await tdb
-      .select({ action: auditLogs.action, resourceType: auditLogs.resourceType, details: auditLogs.details })
-      .from(auditLogs)
-      .where(
-        and(
-          eq(auditLogs.resourceId, sessionId),
-          eq(auditLogs.action, 'session_consent_bypassed'),
-        )
-      );
-
-    expect(auditRows.length).toBeGreaterThanOrEqual(1);
-    const auditRow = auditRows[0]!;
-    expect(auditRow.resourceType).toBe('remote_session');
-    const details = auditRow.details as Record<string, unknown>;
-    expect(details.reason).toBe('policy_proceed');
-
-    // Double-check no 'session_consent_denied' was emitted for this session
-    const deniedAuditRows = await tdb
-      .select({ id: auditLogs.id })
-      .from(auditLogs)
-      .where(
-        and(
-          eq(auditLogs.resourceId, sessionId),
-          eq(auditLogs.action, 'session_consent_denied'),
-        )
-      );
-    expect(deniedAuditRows.length).toBe(0);
-  });
-
-  // --------------------------------------------------------
-  // Case 3: state guard — deny on non-connecting session → 400
-  // --------------------------------------------------------
-  it('deny on an active session → 400 (state guard)', async () => {
-    const env = await setupTestEnvironment({ scope: 'organization' });
-    const token = await mintMfaToken(env);
-
-    const deviceId = await insertDevice(env.organization.id, env.site.id);
-    // Seed a session already in 'active' — deny should be rejected
-    const sessionId = await insertSession({
-      deviceId,
-      orgId: env.organization.id,
-      userId: env.user.id,
-      status: 'active',
-    });
-
-    const res = await app.request(`/remote/sessions/${sessionId}/deny`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ reason: 'user' }),
-    });
-
-    expect(res.status).toBe(400);
-    const body = await res.json() as { error: string; status: string };
-    expect(body.error).toMatch(/current state/i);
-    expect(body.status).toBe('active');
+      desktopStartCommandId: `desk-start-${randomUUID()}-${randomUUID()}`,
+      desktopPromptMode: null,
+      iceCandidates: [],
+    })).rejects.toMatchObject({ cause: { code: '23514' } });
   });
 });
 
-describe('POST /remote/sessions/:id/offer — prompt identity uses the PARTNER (MSP) name', () => {
+describe('POST /remote/sessions/:id/offer prompt identity', () => {
   let app: Hono;
 
   beforeEach(() => {
@@ -317,13 +165,12 @@ describe('POST /remote/sessions/:id/offer — prompt identity uses the PARTNER (
     sendCommandToAgentMock.mockClear();
   });
 
-  it('ships prompt.orgName as the seeded partner name, not the client org name', async () => {
+  it('ships the partner name rather than the client organization name', async () => {
     const env = await setupTestEnvironment({
       scope: 'organization',
       partnerOptions: { name: 'Olive Technology' },
     });
     const token = await mintMfaToken(env);
-
     const deviceId = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({
       deviceId,
@@ -334,23 +181,23 @@ describe('POST /remote/sessions/:id/offer — prompt identity uses the PARTNER (
 
     const res = await app.request(`/remote/sessions/${sessionId}/offer`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ offer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n' }),
     });
 
     expect(res.status).toBe(200);
-    expect(sendCommandToAgentMock).toHaveBeenCalledTimes(1);
-
     const [, command] = sendCommandToAgentMock.mock.calls[0]!;
-    // Identity fields are flat on the prompt block — the shape the agent's
-    // ipc.DesktopPrompt and the assist app actually deserialize.
-    const prompt = (command as { payload: { prompt?: { orgName: string | null } } })
-      .payload.prompt;
-    expect(prompt).toBeDefined();
+    const prompt = (command as { payload: { prompt?: { orgName: string | null; mode: string } } }).payload.prompt;
     expect(prompt?.orgName).toBe('Olive Technology');
     expect(prompt?.orgName).not.toBe(env.organization.name);
+    const [stored] = await getTestDb().select({
+      commandId: remoteSessions.desktopStartCommandId,
+      promptMode: remoteSessions.desktopPromptMode,
+    }).from(remoteSessions).where(eq(remoteSessions.id, sessionId)).limit(1);
+    expect(stored).toEqual({
+      commandId: (command as { id: string }).id,
+      promptMode: prompt?.mode,
+    });
+    expect(stored?.commandId).toMatch(new RegExp(`^desk-start-${sessionId}-`));
   });
 });

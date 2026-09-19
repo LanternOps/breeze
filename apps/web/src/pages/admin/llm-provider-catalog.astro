@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import LlmProviderCatalog from '../../components/admin/LlmProviderCatalog';
+---
+
+<DashboardLayout titleKey="titles.adminLlmProviderCatalog">
+  <LlmProviderCatalog client:load />
+</DashboardLayout>

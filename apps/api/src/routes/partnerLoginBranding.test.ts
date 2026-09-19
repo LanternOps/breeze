@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbSelectResult, dbUpsertReturning, auditSpy } = vi.hoisted(() => ({
+const { authRef, dbSelectResult, dbUpsertReturning, auditSpy, gateState } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -14,7 +14,12 @@ const { authRef, dbSelectResult, dbUpsertReturning, auditSpy } = vi.hoisted(() =
   },
   dbSelectResult: vi.fn(),
   dbUpsertReturning: vi.fn(),
-  auditSpy: vi.fn()
+  auditSpy: vi.fn(),
+  gateState: {
+    permissionAllowed: true,
+    mfaSatisfied: true,
+    permissionRegistrations: [] as Array<[string, string]>,
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -30,7 +35,22 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Not authenticated' }, 401);
     }
     await next();
-  }
+  },
+  requirePermission: (resource: string, action: string) => {
+    gateState.permissionRegistrations.push([resource, action]);
+    return async (c: any, next: any) => {
+      if (!gateState.permissionAllowed) {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+      await next();
+    };
+  },
+  requireMfa: () => async (c: any, next: any) => {
+    if (!gateState.mfaSatisfied) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    await next();
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -92,6 +112,8 @@ describe('partner login branding routes (#2183)', () => {
     vi.clearAllMocks();
     vi.mocked(authMiddleware);
     resetAuth();
+    gateState.permissionAllowed = true;
+    gateState.mfaSatisfied = true;
   });
 
   it('GET returns null data when unset', async () => {
@@ -175,6 +197,37 @@ describe('partner login branding routes (#2183)', () => {
     });
 
     expect(res.status).toBe(403);
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('PUT denies a full-org read-only partner before validation or persistence', async () => {
+    gateState.permissionAllowed = false;
+
+    expect(gateState.permissionRegistrations).toContainEqual(['organizations', 'write']);
+
+    const res = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: 'invalid-before-validation' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(dbUpsertReturning).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('PUT requires satisfied MFA before validation or persistence', async () => {
+    gateState.mfaSatisfied = false;
+
+    const res = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: 'invalid-before-validation' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    expect(dbUpsertReturning).not.toHaveBeenCalled();
     expect(auditSpy).not.toHaveBeenCalled();
   });
 

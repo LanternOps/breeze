@@ -12,13 +12,21 @@ import {
   USER_STATUSES,
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
+import { DEVICE_ROLES } from './deviceRoles';
+import { alertRuleConditionSchema } from './alertRuleConditions';
+import { automationActionSchema, automationTriggerSchema } from './automationActions';
+
+// #5289 — moved to a leaf module to break a barrel cycle; see that file's header.
+export * from './automationActions';
 
 export * from './reliability';
 export * from './businessEmail';
+export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
+export * from './warrantyInlineSettings';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';
@@ -27,22 +35,21 @@ export * from './contracts';
 export * from './mlFeedback';
 export * from './quotes';
 export * from './contractTemplates';
+export * from './scriptProposals';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
+export * from './deviceRoles';
+export * from './deviceFunctions';
+export * from './customFieldImport';
+export * from './alertRuleConditions';
 
 // ============================================
 // Device Roles
 // ============================================
-
-export const DEVICE_ROLES = [
-  'workstation', 'server', 'printer', 'router', 'switch',
-  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-] as const;
-export type DeviceRole = typeof DEVICE_ROLES[number];
 
 // Orthogonal virtualization attribute (issue #1387). A virtual/VDI box is still
 // a workstation (or server) — virtualization is a SECOND targeting axis, not a
@@ -212,67 +219,6 @@ export const executeScriptSchema = z.object({
 // ============================================
 // Automation Validators
 // ============================================
-
-export const automationTriggerSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('schedule'),
-    cron: z.string(),
-    timezone: z.string().default('UTC')
-  }),
-  z.object({
-    type: z.literal('event'),
-    event: z.string(),
-    durationMinutes: z.number().optional()
-  }),
-  z.object({
-    type: z.literal('webhook'),
-    secret: z.string().min(1)
-  }),
-  z.object({
-    type: z.literal('manual')
-  })
-]);
-
-export const automationActionSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('run_script'),
-    scriptId: z.string().guid(),
-    parameters: z.record(z.string(), z.unknown()).optional(),
-    runAs: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('send_notification'),
-    notificationChannelId: z.string().guid(),
-    title: z.string().optional(),
-    message: z.string().optional(),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-  }),
-  z.object({
-    type: z.literal('create_alert'),
-    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-    alertMessage: z.string(),
-    alertTitle: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('execute_command'),
-    command: z.string(),
-    shell: z.enum(['bash', 'powershell', 'cmd']).optional(),
-  }),
-  z.object({
-    type: z.literal('deploy_software'),
-    catalogId: z.string().guid(),
-  }),
-  // AI agents wave 3d (#3824): a system-managed action, seeded alongside a
-  // triage agent — never authored in the UI. It carries NO config on
-  // purpose: the agent is resolved through automations.managed_by_agent_id
-  // and the device comes from the triggering event's binding, so severity/
-  // site/tag filtering has exactly one home (the agent policy) and cannot
-  // drift against the automation row. `.strict()` so a caller cannot
-  // smuggle an agentId past that resolution.
-  z.object({
-    type: z.literal('ai_triage'),
-  }).strict(),
-]);
 
 export const createAutomationSchema = z.object({
   name: z.string().min(1).max(255),
@@ -532,6 +478,11 @@ export const createConfigPolicySchema = z.object({
   // from the caller's own partner_id — a client-supplied partner id is NEVER
   // trusted. orgId is ignored when ownerScope is 'partner'.
   ownerScope: z.enum(['organization', 'partner']).optional(),
+  // One-level, create-only inheritance (#5080). Validated server-side against
+  // the ownership rule (same org, or partner-wide of the org's partner) and by
+  // the configuration_policies_parent_guard constraint trigger. Deliberately
+  // absent from updateConfigPolicySchema: parent_policy_id is immutable.
+  parentPolicyId: z.string().guid().optional(),
 });
 
 export const updateConfigPolicySchema = z.object({
@@ -586,8 +537,35 @@ export const configFeatureInlineSettingsSchema = z
     }
   });
 
+/**
+ * `device_lifecycle` inline settings (#2787 item 4): "permanently delete
+ * removed devices N days after removal".
+ *
+ * Pure JSONB (Pattern B) — no normalized table, same posture as pam /
+ * vulnerability. `.strict()` so an unknown key is rejected rather than
+ * persisted-and-echoed as if it took effect.
+ *
+ * `purgeRemovedAfterDays` is deliberately THREE-valued:
+ *   - absent   → the policy exists but says nothing; nothing is purged.
+ *   - null     → explicitly off. Meaningful in its own right: an org-level
+ *                link with null OVERRIDES a partner-wide window, which is how
+ *                one customer opts out of an MSP-wide retention rule.
+ *   - 1..3650  → the retention window in days.
+ *
+ * The floor is 1, not 0: this setting drives an IRREVERSIBLE delete, so
+ * "purge immediately" must not be expressible by a stray zero. The ceiling is
+ * ten years, past which the feature is indistinguishable from "off".
+ */
+export const deviceLifecycleInlineSettingsSchema = z
+  .object({
+    purgeRemovedAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
+  })
+  .strict();
+
+export type DeviceLifecycleInlineSettings = z.infer<typeof deviceLifecycleInlineSettingsSchema>;
+
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability', 'device_lifecycle', 'monitors']),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: configFeatureInlineSettingsSchema.optional(),
 }).refine(
@@ -669,6 +647,13 @@ export const ringAutoApproveSchema = z.object({
   // first-seen otherwise (#2218). null = inherit deferralDays. Optional for
   // the same old-shape-preservation reason as thirdPartyApps.
   thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().optional(),
+  // Opt-in to auto-approving patches with no severity rating (severity IS NULL
+  // or the 'unknown' sentinel) — issue #3758. Fail-closed default: unrated
+  // patches never auto-approve unless this is explicitly true. OPTIONAL (no
+  // default) for the same old-shape-preservation reason as thirdPartyApps: an
+  // omitted value means "writer predates this field" and is preserved by
+  // mergeRingAutoApproveWrite, not reset to false.
+  autoApproveUnrated: z.boolean().optional(),
 }).superRefine((data, ctx) => {
   if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
     ctx.addIssue({
@@ -703,9 +688,11 @@ export function mergeRingAutoApproveWrite(
   deferralDays: number;
   thirdPartyApps: boolean;
   thirdPartyDeferralDays: number | null;
+  autoApproveUnrated: boolean;
 } {
   let storedThirdPartyApps = false;
   let storedThirdPartyDeferralDays: number | null = null;
+  let storedAutoApproveUnrated = false;
   if (storedRaw && typeof storedRaw === 'object') {
     const stored = storedRaw as Record<string, unknown>;
     const storedSeverities = Array.isArray(stored.severities)
@@ -720,6 +707,7 @@ export function mergeRingAutoApproveWrite(
       typeof rawTp === 'number' && Number.isInteger(rawTp) && rawTp >= 0 && rawTp <= 365
         ? rawTp
         : null;
+    storedAutoApproveUnrated = stored.autoApproveUnrated === true;
   }
   return {
     enabled: incoming.enabled,
@@ -730,6 +718,7 @@ export function mergeRingAutoApproveWrite(
       incoming.thirdPartyDeferralDays !== undefined
         ? incoming.thirdPartyDeferralDays
         : storedThirdPartyDeferralDays,
+    autoApproveUnrated: incoming.autoApproveUnrated ?? storedAutoApproveUnrated,
   };
 }
 
@@ -743,10 +732,22 @@ export const patchInlineSettingsSchema = z.object({
   scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
   scheduleDayOfMonth: z.number().int().min(1).max(28).default(1),
+  // #5128 W3: what a scheduled install does when the device is offline at
+  // dispatch. 'queue' (the default) persists the install_patches command with a
+  // delivery deadline of min(patch TTL, next occurrence) so it runs on the
+  // device's next check-in; 'skip' is the pre-#5128 behaviour of recording the
+  // device as skipped and moving on.
+  offlineBehavior: z.enum(['skip', 'queue']).default('queue'),
   rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window']).default('if_required'),
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
   rebootDelayMinutes: z.number().int().min(1).max(1440).default(15),
+  // #3207: end-user reboot deferral budget. `rebootAllowDeferral` is the opt-in;
+  // there is deliberately no "don't warn the user" switch — #3197 made at least
+  // one warning an invariant and a silence toggle would re-create that defect.
+  rebootAllowDeferral: z.boolean().default(false),
+  rebootMaxDeferrals: z.number().int().min(0).max(10).default(3),
+  rebootDeferralMinutes: z.number().int().min(5).max(1440).default(60),
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
@@ -765,6 +766,35 @@ export const patchInlineSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sources'],
       message: 'The selected patch sources (firmware/drivers) have no patch provider yet and would approve nothing. Include at least one of: os, third_party, custom.',
+    });
+  }
+
+  // #3207: deferral enabled with a zero budget would render a "Postpone"
+  // affordance that can never be used — a UI lie, not a policy.
+  if (data.rebootAllowDeferral && data.rebootMaxDeferrals === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootMaxDeferrals'],
+      message: 'rebootMaxDeferrals must be at least 1 when deferral is enabled.',
+    });
+  }
+
+  // 10080 minutes (7 days) is the agent's own ceiling on a scheduled reboot
+  // (handlers_patch.go rejects delayMinutes outside 1-10080). The API sets the
+  // hard deadline to delay + maxDeferrals x deferralMinutes, so the WHOLE sum
+  // has to stay inside that horizon: bounding only the deferral product would
+  // let a 1440-minute warning delay push the real deadline a day past it, and
+  // this comment would then be promising something the check did not deliver.
+  // With deferral off there is no deferral horizon at all and
+  // rebootDelayMinutes is bounded by its own 1-1440 range instead.
+  if (
+    data.rebootAllowDeferral
+    && data.rebootDelayMinutes + data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootDeferralMinutes'],
+      message: 'rebootDelayMinutes + rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
   }
 
@@ -844,87 +874,6 @@ export const onedriveHelperInlineSettingsSchema = z.object({
   libraries: z.array(onedriveLibraryMappingSchema).max(100).default([]),
 });
 
-// Canonical write-path schema for server-evaluated alert rule conditions.
-// Extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance,
-// cert_expiry) have evaluator handlers but known payload/unit bugs — they are
-// write-blocked until fixed (see plans/monitoring/2026-07-30 follow-ups). `custom`
-// has no handler at all. Reads of existing rows remain tolerant (no parse on read).
-// Every metric name the threshold evaluator resolves to a device_metrics column
-// (METRIC_NAME_MAP in apps/api/src/services/alertConditions/utils.ts). The
-// `*Percent` / `memory` / `processes` aliases are accepted, not advertised: the
-// AlertRuleTab dropdown offers only cpu/ram/disk for NEW rules, but AI-authored
-// and pre-consolidation rows carry the aliases, and a narrower enum here would
-// hard-400 an otherwise untouched Alerts tab on save.
-export const ALERT_METRIC_NAMES = [
-  'cpu', 'cpuPercent',
-  'ram', 'ramPercent', 'memory',
-  'disk', 'diskPercent',
-  'processCount', 'processes',
-] as const;
-
-const metricConditionSchema = z.object({
-  // `threshold` is the evaluator's OWN canonical name for this handler
-  // (handlers/threshold.ts declares `type: 'threshold'` with `aliases: ['metric']`)
-  // and the pre-consolidation AI tool docs advertised it, so stored rows carry
-  // it. Canonicalize to `metric` — the spelling every other surface (editor,
-  // decompose, docs) uses — exactly as `status` is folded into `offline` below.
-  type: z.enum(['metric', 'threshold']).transform(() => 'metric' as const),
-  metric: z.enum(ALERT_METRIC_NAMES),
-  // `neq` is included because the evaluator supports it — threshold.ts's own
-  // validate() accepts gt/gte/lt/lte/eq/neq. The editor has always offered
-  // "Not Equal", so omitting it here 400s a save the evaluator would have run.
-  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
-  value: z.number(),
-  // Sustained window, in MINUTES, that the threshold handler averages samples
-  // over (`cond.durationMinutes || 1`, handlers/threshold.ts). The old
-  // `duration` (seconds) field is deliberately gone: no metric handler ever
-  // read it, so it advertised a sustained window that silently did nothing,
-  // while Zod's strip mode silently dropped the durationMinutes the evaluator
-  // DOES honour — degrading a sustained rule to a 1-minute window on edit.
-  durationMinutes: z.number().int().min(1).max(10080).optional(),
-});
-
-// Unlike the metric handler, the OFFLINE handler really does read a legacy
-// `duration` field (handlers/offline.ts resolveDurationMinutes, for rows the old
-// editor saved as `{type:'status', duration:N}`). Accept it and fold it into the
-// canonical `durationMinutes` — stripping it would silently reset such a rule to
-// the handler's 5-minute default the first time its policy is re-saved.
-const offlineConditionSchema = z.object({
-  type: z.enum(['offline', 'status']).transform(() => 'offline' as const),
-  durationMinutes: z.number().int().min(1).max(10080).optional(),
-  duration: z.number().int().min(1).max(10080).optional(),
-}).transform(({ duration, durationMinutes, ...rest }) => {
-  const resolved = durationMinutes ?? duration;
-  return resolved === undefined ? rest : { ...rest, durationMinutes: resolved };
-});
-
-const eventLogConditionSchema = z.object({
-  type: z.literal('event_log'),
-  category: z.enum(['security', 'hardware', 'application', 'system']),
-  level: z.enum(['warning', 'error', 'critical']),
-  sourcePattern: z.string().max(500).optional(),
-  messagePattern: z.string().max(500).optional(),
-  countThreshold: z.number().int().min(1).max(10000).default(1),
-  windowMinutes: z.number().int().min(1).max(1440).default(15),
-});
-
-// discriminatedUnion, not union: with a plain union every member fails on a
-// malformed condition and Zod surfaces a bare `invalid_union` whose message is
-// "Invalid input" — the HTTP and AI surfaces then tell the caller nothing about
-// WHICH field is wrong. Discriminating on `type` picks exactly one member and
-// reports that member's own issue (e.g. the metric enum message), and an
-// unrecognised `type` gets a message naming every accepted type.
-//
-// Zod 4 supports a discriminator that is an enum with a `.transform()` (the
-// `metric|threshold` and `offline|status` aliases below) and an option that is
-// itself a piped object schema (offline's duration fold) — both are exercised
-// by alertRuleConditions.test.ts, which is what keeps this switch honest.
-export const alertRuleConditionSchema = z.discriminatedUnion('type', [
-  metricConditionSchema,
-  offlineConditionSchema,
-  eventLogConditionSchema,
-]);
-
 export const alertRuleItemSchema = z.object({
   name: z.string().min(1).max(200),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
@@ -935,6 +884,18 @@ export const alertRuleItemSchema = z.object({
   titleTemplate: z.string().max(500).optional(),
   messageTemplate: z.string().max(2000).optional(),
   sortOrder: z.number().int().min(0).optional(),
+  // #5289 delivery parity: a config-policy alert rule could never say WHERE it
+  // notifies or WHICH escalation policy it uses, so those alerts silently fell
+  // back to org defaults while the standalone alert-rule path honoured both.
+  escalationPolicyId: z.string().uuid().nullable().optional(),
+  // `.nullable()` matches its siblings above and, critically, the READ path:
+  // assembleInlineSettings returns the raw column, which is NULL whenever the
+  // rule never set channels (config_policy_alert_rules.notification_channel_ids
+  // is nullable, decomposeInlineSettings writes `?? null`). Without it, reading
+  // a link and saving it straight back — the retire path, and every editor
+  // round trip — threw `expected array, received null` (#5653).
+  notificationChannelIds: z.array(z.string().uuid()).max(20).nullable().optional(),
+  rationale: z.string().trim().max(2000).nullable().optional(),
 });
 
 export const alertRuleInlineSettingsSchema = z.object({
@@ -985,6 +946,7 @@ export const monitoringInlineSettingsSchema = z.object({
     autoRestart: z.boolean().default(false),
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
     restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
+    rationale: z.string().trim().max(2000).nullable().optional(),
   })).max(200).default([]),
   // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
   // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
@@ -1052,6 +1014,16 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().g
 
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentGraduation';
+export * from './aiAgentSchedules';
+export * from './aiOperator';
+export * from './orgNarrative';
+export * from './fleetDesign';
+export * from './fleetDesignApply';
+export * from './aiPatchPlan';
+export * from './ticketTriage';
+export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Tenant Variable Validators (#3409)
@@ -1072,6 +1044,9 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './partnerTicketingSettings';
+export * from './auditRetention';
+export * from './ticketPushPreferences';
 export * from './clientAiDlp';
 export * from './quickSupport';
 
@@ -1103,3 +1078,96 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export {
+  deliverableCadenceSchema,
+  deliverableCompletionModeSchema,
+  createDeliverableSchema,
+  updateDeliverableSchema,
+  listDeliverablesQuerySchema,
+  reportRunEvidenceRefSchema,
+  documentEvidenceRefSchema,
+  evidenceRefSchema,
+  addEvidenceSchema,
+  deliverOccurrenceSchema,
+  waiveOccurrenceSchema,
+  rescheduleOccurrenceSchema,
+  listOccurrencesQuerySchema,
+  type CreateDeliverableInput,
+  type UpdateDeliverableInput,
+  type DeliverOccurrenceInput,
+  type WaiveOccurrenceInput,
+  type RescheduleOccurrenceInput,
+  type AddEvidenceInput,
+  type EvidenceRef,
+} from './serviceDeliverables';
+export {
+  CHECKLIST_ITEM_SOURCES,
+  checklistItemSourceSchema,
+  checklistItemCreateSchema,
+  checklistItemPatchSchema,
+  checklistReorderSchema,
+  type ChecklistItemSource,
+  type ChecklistItemCreateInput,
+  type ChecklistItemPatchInput,
+  type ChecklistReorderInput,
+  checklistTemplateOwnerScopeSchema,
+  createChecklistTemplateSchema,
+  updateChecklistTemplateSchema,
+  createChecklistTemplateItemSchema,
+  updateChecklistTemplateItemSchema,
+  checklistTemplateItemReorderSchema,
+  listChecklistTemplatesQuerySchema,
+  applyChecklistTemplateSchema,
+  type ChecklistTemplateOwnerScope,
+  type CreateChecklistTemplateInput,
+  type UpdateChecklistTemplateInput,
+  type CreateChecklistTemplateItemInput,
+  type UpdateChecklistTemplateItemInput,
+  type ChecklistTemplateItemReorderInput,
+  type ListChecklistTemplatesQuery,
+  type ApplyChecklistTemplateInput,
+} from './ticketChecklists';
+export {
+  templateOwnerScopeSchema,
+  createTemplateItemSchema,
+  updateTemplateItemSchema,
+  createTemplateSetSchema,
+  updateTemplateSetSchema,
+  listTemplateSetsQuerySchema,
+  applyTemplateSetSchema,
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  type ManagedEvidenceReportType,
+  type CreateTemplateItemInput,
+  type UpdateTemplateItemInput,
+  type CreateTemplateSetInput,
+  type UpdateTemplateSetInput,
+  type ApplyTemplateSetInput,
+  type TemplateOwnerScope,
+} from './deliverableTemplates';
+export {
+  keyDateKindSchema,
+  createKeyDateSchema,
+  updateKeyDateSchema,
+  type CreateKeyDateInput,
+  type UpdateKeyDateInput,
+} from './orgKeyDates';
+export {
+  orgDocumentCategorySchema,
+  uploadDocumentMetaSchema,
+  replaceDocumentMetaSchema,
+  updateDocumentSchema,
+  listDocumentsQuerySchema,
+  type OrgDocumentCategory,
+  type UploadDocumentMeta,
+  type ReplaceDocumentMeta,
+  type UpdateDocumentInput,
+  type ListDocumentsQuery,
+} from './orgDocuments';
+
+// #5289 — monitor definitions. monitors.ts imports automationActionSchema from
+// the ./automationActions leaf (never from this barrel), so this re-export
+// carries no initialisation-order hazard.
+export * from './monitors';
+
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+export * from './toolSources';

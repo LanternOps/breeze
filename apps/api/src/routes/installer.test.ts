@@ -37,13 +37,21 @@ vi.mock("../services/enrollmentDefaults", () => ({
 // ============================================================
 
 import { Hono } from "hono";
-import { installerRoutes } from "./installer";
+import { installerRoutes, childEnrollmentKeyTtlMinutes } from "./installer";
 import { db } from "../db";
 
 function makeApp() {
   const app = new Hono();
   app.route("/api/v1/installer", installerRoutes);
   return app;
+}
+
+/** Terminal shape for a Drizzle `.limit(1).for('share')` locking select. */
+function shareLockedRows<T>(rows: T[]) {
+  return { for: (mode: string) => {
+    expect(mode).toBe('share');
+    return Promise.resolve(rows);
+  } };
 }
 
 beforeEach(() => {
@@ -62,6 +70,7 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
     token: "HHHHHHHHHH",
     orgId: "backup-url-org",
     parentEnrollmentKeyId: "backup-url-parent-key",
+    parentCredentialGeneration: 1,
     siteId: "backup-url-site",
     maxUsage: 1,
     consumedCount: 0,
@@ -79,11 +88,12 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
     .mockReturnValueOnce({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{
+          limit: () => shareLockedRows([{
             id: "backup-url-parent-key",
             name: "Backup URL parent",
             orgId: "backup-url-org",
             siteId: "backup-url-site",
+            credentialGeneration: 1,
             keySecretHash: "parent-secret-hash",
             expiresAt: new Date(Date.now() + 60_000),
           }]),
@@ -123,7 +133,71 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
   return await res.json() as Record<string, unknown>;
 }
 
+// #4126 follow-up: the human "Add Device" create route
+// (routes/enrollmentKeys.ts) raised its no-env-set fallback to 43200 minutes
+// (30 days), but this child-key TTL was missed and stayed at `24 * 60` (1
+// day) — a self-hoster who sets neither env var got 30-day keys from Add
+// Device but 1-day installer child keys.
+describe("childEnrollmentKeyTtlMinutes", () => {
+  const orig = process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES;
+    else process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES = orig;
+  });
+
+  it("falls back to 43200 minutes (30 days) — matching the human route — when the env var is unset", () => {
+    delete process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES;
+    expect(childEnrollmentKeyTtlMinutes()).toBe(43200);
+  });
+
+  it("falls back to 43200 when the env var is an empty string (#2776 compose gotcha)", () => {
+    process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES = "";
+    expect(childEnrollmentKeyTtlMinutes()).toBe(43200);
+  });
+
+  it("still honors an explicit CHILD_ENROLLMENT_KEY_TTL_MINUTES override", () => {
+    process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES = "90";
+    expect(childEnrollmentKeyTtlMinutes()).toBe(90);
+  });
+});
+
 describe("POST /api/v1/installer/bootstrap", () => {
+  it("rejects a token from a superseded parent credential epoch before minting a child", async () => {
+    const tokenRow = {
+      id: "stale-token",
+      token: "SSSSSSSSSS",
+      orgId: "stale-org",
+      parentEnrollmentKeyId: "stale-parent",
+      parentCredentialGeneration: 1,
+      siteId: "stale-site",
+      maxUsage: 1,
+      consumedCount: 0,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
+      } as any)
+      .mockReturnValueOnce({
+        // The generation predicate is evaluated by Postgres in production;
+        // an empty locked result models the parent now being at epoch 2.
+        from: () => ({ where: () => ({ limit: () => shareLockedRows([]) }) }),
+      } as any);
+
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": tokenRow.token },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "token invalid, expired, or already used",
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it("includes backupServerUrl when AGENT_BACKUP_SERVER_URL is set", async () => {
     process.env.AGENT_BACKUP_SERVER_URL = "https://new.example.com";
     const body = await redeemBootstrapOk();
@@ -287,7 +361,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -357,7 +431,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -382,10 +456,10 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(res.status).toBe(200);
     expect(capturedChildKeyValues).not.toBeNull();
     const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
-    // Clamped to the 60-minute cap, NOT the 1440-minute (24h) default.
+    // Clamped to the 60-minute cap, NOT the 43200-minute (30-day) default.
     expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
     expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
-    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-cap", 1440);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-cap", 43200);
   });
 
   it("does not shorten the child key TTL when the partner cap is above the CHILD_ENROLLMENT_KEY_TTL_MINUTES default (no-op clamp)", async () => {
@@ -406,7 +480,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -431,9 +505,9 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(res.status).toBe(200);
     expect(capturedChildKeyValues).not.toBeNull();
     const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
-    // Unchanged: still the full 1440-minute (24h) default.
-    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
-    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+    // Unchanged: still the full 43200-minute (30-day) default.
+    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 43199 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 43201 * 60 * 1000);
   });
 
   // #2776 regression. docker-compose threads CHILD_ENROLLMENT_KEY_TTL_MINUTES
@@ -443,7 +517,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
   // `Number(process.env.X ?? 24 * 60)` read yielded 0 there (`??` doesn't fire
   // on '', Number('') === 0), so every redeemed child enrollment key was born
   // already expired and agent enrollment stopped working entirely on upgrade.
-  it("an EMPTY CHILD_ENROLLMENT_KEY_TTL_MINUTES falls back to 24h, not 0 (#2776)", async () => {
+  it("an EMPTY CHILD_ENROLLMENT_KEY_TTL_MINUTES falls back to the shared 30-day default, not 0 (#2776)", async () => {
     vi.stubEnv("CHILD_ENROLLMENT_KEY_TTL_MINUTES", "");
     process.env.PUBLIC_API_URL = "https://us.2breeze.app";
 
@@ -460,7 +534,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -482,12 +556,12 @@ describe("POST /api/v1/installer/bootstrap", () => {
     const after = Date.now();
 
     expect(res.status).toBe(200);
-    // The value handed to the cap clamp is the 24h default, never 0.
-    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-env", 1440);
+    // The value handed to the cap clamp is the shared 30-day default, never 0.
+    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-env", 43200);
     const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
     expect(childExpiresAt.getTime()).toBeGreaterThan(after);
-    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
-    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 43199 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 43201 * 60 * 1000);
 
     vi.unstubAllEnvs();
   });
@@ -527,7 +601,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -619,7 +693,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any);
 
@@ -692,7 +766,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -770,7 +844,7 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
         from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
       } as any)
       .mockReturnValueOnce({
-        from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }),
+        from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }),
       } as any)
       .mockReturnValueOnce({
         from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }),

@@ -28,6 +28,10 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Commit source changes and record the audit before enqueueing discovery.
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/discover\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
@@ -49,6 +53,49 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // around each DB op, so we must NOT pin a request transaction across the call.
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/import\/?$/ },
+  // Task 5 (2026-08-29-quickbooks-customer-item-mapping) — entity-mapping
+  // reconciliation and sync routes. GET .../mappings and GET
+  // .../income-accounts call the QBO list APIs inside the handler
+  // (listMappingProposals / listRemoteIncomeAccountsForPartner); PUT
+  // .../mappings calls the same provider list to verify a `confirmed`
+  // decision before writing (saveMappingDecision); POST .../mappings/sync
+  // calls provider.upsertCustomer/upsertItem (syncMappedEntity).
+  //
+  // Each of those services takes a `runInDbContext` runner from the route
+  // (`(fn) => withAuthDbAccessContext(auth, fn)`) and RE-ENTERS it per DB
+  // phase, asserting at entry that no context is already open
+  // (services/accounting/dbContextGuard.ts). Registering the route here is
+  // what makes that assertion satisfiable: the auth middleware would
+  // otherwise open one request transaction for the whole handler, which
+  // `runOutsideDbContext` cannot close — it only re-routes the ALS lookup.
+  // An earlier revision of this comment claimed these services already kept
+  // short contexts; they did not, and the routes wrapped the whole call in a
+  // single `withAuthDbAccessContext`.
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/income-accounts\/?$/ },
+  { method: 'PUT', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/sync\/?$/ },
+  // Phase C Task 2 (2026-09-01-quickbooks-phase-c-invoice-push) — on-demand
+  // realm settings refresh. refreshRealmSettings (accountingConnectionService.ts)
+  // calls provider.fetchRealmSettings, a real outbound QuickBooks HTTP call, and
+  // manages its own short DB access contexts around it — the same treatment as
+  // the mapping routes above.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/refresh\/?$/ },
+  // Phase C Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual
+  // invoice push and remote-candidate search. `pushInvoiceToAccounting`
+  // (accountingInvoicePush.ts) and `resolveConnectionAndToken` +
+  // `listRemoteCustomers`/`listRemoteItems` (accountingMappingService.ts) both
+  // make a real outbound QuickBooks HTTP call, and both take the route's
+  // `runInDbContext` runner (see the mapping-routes comment above). For the
+  // push coordinator the split is not just about the connection hold: its
+  // Phase 2 sync-state writes (the mapping row's error marker / remote ref)
+  // must COMMIT independently, or they roll back with the caller when the
+  // push then throws — and the retry double-books the invoice in QuickBooks.
+  // `push-bulk` is NOT registered here: it only enqueues to Redis
+  // (`enqueueAccountingInvoicePush`) and never calls QuickBooks itself, so it
+  // keeps the normal ambient request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/invoices\/[^/]+\/push\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/remote-candidates\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short
@@ -63,6 +110,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // 30s readyTimeout). testSftpConnection wraps each DB op in its own short
   // withDbAccessContext, so the socket is never held across an open transaction.
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-sftp\/test\/?$/ },
+  // #2787 bulk restore — the one route here that opts out for CONNECTION-HOLD
+  // reasons without making an outbound HTTP call. `runBulkIsolated` opens one
+  // short RLS transaction per device (up to 500), and the ambient request
+  // transaction the auth middleware would otherwise open cannot be closed by
+  // `runOutsideDbContext` — it only re-routes the ALS lookup. Left in place it
+  // pins one pooled connection, plus every devices/device_commands row lock the
+  // loop takes, until the last item finishes (#1105), and a Postgres-level
+  // error late in the batch silently rolls back every "succeeded" item before
+  // it. `bulk/permanent-delete` is deliberately ABSENT: it only validates and
+  // enqueues, so it keeps the ambient transaction (same call as
+  // `quotes/bulk-send`).
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request
@@ -151,6 +210,64 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // The handler reads the device row through a short `withAuthDbAccessContext`
   // block and makes the agent call outside any context.
   { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
+  // #3922 — LLM provider catalog fidelity verification. The handler runs the
+  // full two-stage harness against an operator-supplied provider endpoint: a
+  // direct tool_use/tool_result round-trip (60s client timeout) AND a real
+  // Agent SDK subprocess session (150s timeout). Holding a pooled connection
+  // idle-in-transaction for up to minutes per call is the #1105 pool-poison
+  // class, and `safeFetch`'s own `assertOutsideHeldDbContext` tripwire throws
+  // in CI when it is called inside a held context — which the guarded fetch in
+  // the harness would do on every verification. The handler reads the revision
+  // and writes the verification through the service's own short
+  // `withSystemDbAccessContext` blocks, with the harness call between them.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
+  // #3905 — quote send and re-send. `sendQuote`/`resendQuote` take a FOR UPDATE
+  // lock on the quote (and, when sending a revision, on its PARENT) and the
+  // handler then renders the proposal PDF and runs the outbound mail
+  // round-trip. Held inside the request transaction that was: a pooled
+  // connection pinned idle-in-transaction for the whole render + SMTP/Mailgun
+  // call (the #1105 pool-poison class), AND — worse — the parent quote's row
+  // locked while the customer still holds a live accept link for it, so their
+  // own POST /accept blocked behind our mail server. The handlers now open a
+  // short `withAuthDbAccessContext` block for the state transition and run the
+  // returned deferred (services/quoteLifecycle.ts, DeferredQuoteEmail) after it
+  // COMMITS, so no lock and no connection is held across delivery.
+  //
+  // `bulk-send` is deliberately ABSENT: `runBulkIsolated` already gives each
+  // item its own short transaction, and the per-item deferred runs after that
+  // item commits — the ambient request transaction it keeps holds no quote lock.
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/send\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/resend\/?$/ },
+  // #3922 review round 2 — revision AUTHORING is the second network-touching
+  // route on this surface, and the quieter one. `createRevision` runs
+  // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,
+  // which is a real `dns.lookup` against a host the operator chose, BEFORE any
+  // of its DB work. A blackholed or merely slow resolver therefore held a
+  // pooled connection idle-in-transaction for the whole resolution — the
+  // #1105 pool-poison class without a single byte of payload leaving the box.
+  // `createRevision` wraps its reads and its insert in their own short
+  // `withSystemDbAccessContext` block, run strictly AFTER the URL check, so
+  // the handler needs no ambient transaction at all.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/[^/]+\/revisions\/?$/ },
+  // Task A9 (tool-catalog W1) — the tool test-call route dispatches a real
+  // outbound MCP call via executeTenantTool (the remote server's own
+  // latency, no bounded timeout on our side beyond the client's). The
+  // handler wraps its lookups in a short withAuthDbAccessContext block and
+  // resolver/executor manage their own short system-scoped contexts around
+  // the network call, so the ambient request transaction must not be held
+  // across it.
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/tools\/[^/]+\/test\/?$/ },
+  // #6098 — sync-github fetches the GitHub release + manifest
+  // (RELEASE_FETCH_TIMEOUT_MS=30s) via syncFromGitHub. authMiddleware
+  // previously wrapped the whole handler in the request's ambient
+  // withDbAccessContext (scope=system, from requireScope("system")), pinning
+  // a pooled connection idle-in-transaction across that fetch — the same
+  // class of hazard the boot-time syncBinaries() call had. binarySync's
+  // writes (upsertVersion et al.) now open their own short
+  // withSystemDbAccessContext around just the write, so the handler needs no
+  // ambient context; writeRouteAudit already manages its own (via
+  // createAuditLogAsync's runOutsideDbContext + withSystemDbAccessContext).
+  { method: 'POST', pattern: /^\/api\/v1\/agent-versions\/sync-github\/?$/ },
 ];
 
 /**

@@ -55,6 +55,40 @@ func TestMarshalBackupRunResultKeepsDiagnosticsOnFailure(t *testing.T) {
 	}
 }
 
+// TestMarshalBackupRunResultFailedSystemImageRunOmitsNullSnapshot is the D11
+// wire-shape regression: a system-state-only run whose collection fails
+// (backup.go's RunBackupContext) reaches here with job.Snapshot nil and
+// Status "failed". apps/api/src/routes/backup/resultSchemas.ts models the
+// result's `snapshot` field as `backupSnapshotResultSchema.optional()` — Zod's
+// `.optional()` accepts a MISSING key but rejects an explicit `null` — so
+// before BackupJob.Snapshot carried `omitempty` this body's `"snapshot":null`
+// 400'd the whole result at the API and the real failure reason in Stderr
+// never reached the job record. This package cannot import the API's zod
+// schema, so this locks in the wire shape the API actually accepts: the key
+// must be absent, not present-and-null.
+func TestMarshalBackupRunResultFailedSystemImageRunOmitsNullSnapshot(t *testing.T) {
+	job := &backup.BackupJob{
+		ID:     "job-2",
+		Status: "failed",
+		// Snapshot deliberately left nil — a fail-loud system-state-only run
+		// never reaches createSnapshot.
+	}
+
+	result := marshalBackupRunResult(job, errors.New(
+		"system state collection missing required artifact(s) [registry] - image would not be restorable"))
+
+	if result.Success {
+		t.Fatal("a failed run must not be reported as successful")
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &decoded); err != nil {
+		t.Fatalf("failed run must carry a parseable job body, got %q: %v", result.Stdout, err)
+	}
+	if _, present := decoded["snapshot"]; present {
+		t.Fatalf(`job body must omit "snapshot" entirely when nil, not send it as null: %s`, result.Stdout)
+	}
+}
+
 // A nil job (the early returns before the job exists — no provider, no paths,
 // already running) must still deliver the reason rather than an empty body.
 func TestMarshalBackupRunResultWithNoJob(t *testing.T) {

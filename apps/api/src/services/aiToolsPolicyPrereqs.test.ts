@@ -2,10 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // db is mocked so the handler never touches Postgres. The insert/update mocks
 // double as spies that assert we never WRITE a fail-open autoApprove shape.
-const { insertMock, updateMock, selectMock } = vi.hoisted(() => ({
+const { insertMock, updateMock, selectMock, resolvePolicyDeviceIdsMock, schedulePolicyDevicesMock } = vi.hoisted(() => ({
   insertMock: vi.fn(),
   updateMock: vi.fn(),
   selectMock: vi.fn(),
+  resolvePolicyDeviceIdsMock: vi.fn().mockResolvedValue(['device-1']),
+  schedulePolicyDevicesMock: vi.fn().mockResolvedValue(['job-1']),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: resolvePolicyDeviceIdsMock,
+  schedulePeripheralPolicyDevices: schedulePolicyDevicesMock,
 }));
 
 vi.mock('../db', () => ({
@@ -40,6 +47,8 @@ vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
 vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
   auditSoftwarePolicyToolEvent: vi.fn(),
   summarizeEnforcementChange: vi.fn(() => ({})),
+  remediationOptionsArmsAutoInstall: vi.fn(() => false),
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE: 'AI_AUTO_INSTALL_REFUSAL_MESSAGE (mocked)',
 }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
 vi.mock('../db/schema/backup', () => ({ backupConfigs: {} }));
@@ -288,6 +297,7 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
       deferralDays: 0,
       thirdPartyApps: true,
       thirdPartyDeferralDays: 12,
+      autoApproveUnrated: false,
     });
   });
 
@@ -546,6 +556,28 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
+
+  // Site-ceiling gate contract §3/finding 2: this AI-tool write is a second
+  // (non-route) write path to backup_configs and needs its own bump.
+  it('bumps approvalGeneration on update (site-ceiling gate contract §3)', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    });
+    mockUpdate();
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, name: 'Renamed backup' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.approvalGeneration).toBeDefined();
+  });
 });
 
 /**
@@ -663,6 +695,7 @@ describe('manage_peripheral_policies create (#2814 — first reachable)', () => 
     expect(values.action).toBe('block');
     expect(values.deviceClass).toBe('storage');
     expect(values.orgId).toBe(ORG_ID);
+    expect(schedulePolicyDevicesMock).toHaveBeenCalledWith(['device-1'], 'ai-prereq-create');
   });
 
   it('refuses to create without action_type rather than defaulting the enforcement mode', async () => {

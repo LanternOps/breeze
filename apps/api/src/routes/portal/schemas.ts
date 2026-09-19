@@ -1,5 +1,7 @@
 import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
+import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
+import { PORTAL_RATE_LIMIT_REDIS_KEYS } from '../../services/portal/rateLimit';
 
 // ============================================
 // Types
@@ -9,6 +11,7 @@ export type PortalSession = {
   token: string;
   portalUserId: string;
   orgId: string;
+  authEpoch: number;
   createdAt: Date;
   expiresAt: Date;
 };
@@ -20,16 +23,41 @@ export type PortalAuthContext = {
     orgName?: string | null;
     email: string;
     name: string | null;
+    /**
+     * The CONTACT this login belongs to (#3258 W03), or null when it has none
+     * (Entra SSO provisioning and the Outlook add-in's "create contact" both
+     * mint logins without one).
+     *
+     * REQUIRED, not optional. Portal ticket ownership is
+     * `submitted_by = me OR requester_contact_id = my contact`, so a context
+     * built without this field does not fail — it silently narrows every read
+     * back to login-only ownership and the customer stops seeing the tickets
+     * they emailed in. Making it required means `portalAuthMiddleware` is the
+     * only thing that can produce a PortalAuthContext, and every test double
+     * has to state which case it is modelling.
+     */
+    contactId: string | null;
     receiveNotifications: boolean;
     status: string;
   };
   token: string;
   authMethod: 'bearer' | 'cookie';
+  /**
+   * Org -> partner -> UTC timezone chain, resolved once by
+   * `portalAuthMiddleware` (`services/portal/timezone.ts`). Read models must
+   * never resolve this themselves — they consume `auth.timezone`.
+   */
+  timezone: string;
 };
 
 declare module 'hono' {
   interface ContextVariableMap {
     portalAuth: PortalAuthContext;
+    portalAuthAuditIdentity?: {
+      userId: string;
+      orgId: string;
+      email: string;
+    };
   }
 }
 
@@ -42,9 +70,7 @@ export const SESSION_TTL_SECONDS = Math.floor(SESSION_TTL_MS / 1000);
 export const RESET_TTL_MS = 1000 * 60 * 60;
 export const PORTAL_SESSION_CAP = 20000;
 export const PORTAL_RESET_TOKEN_CAP = 20000;
-export const PORTAL_RATE_BUCKET_CAP = 50000;
 export const STATE_SWEEP_INTERVAL_MS = 60 * 1000;
-export const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 export const PORTAL_SESSION_COOKIE_NAME = 'breeze_portal_session';
 export const PORTAL_SESSION_COOKIE_PATH = '/';
 export const CSRF_HEADER_NAME = 'x-breeze-csrf';
@@ -55,16 +81,23 @@ export const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export const INVITE_TTL_SECONDS = Math.floor(INVITE_TTL_MS / 1000);
 export const PORTAL_INVITE_TOKEN_CAP = 20000;
 
-export const PORTAL_USE_REDIS =
-  process.env.PORTAL_STATE_BACKEND === 'redis' || process.env.NODE_ENV === 'production';
+// The state-backend switch and the rate limiter live in the services layer
+// (services/portal/rateLimit.ts) so services can use them without importing
+// route modules; re-exported here for the routes that always read them from
+// schemas.
+export {
+  PORTAL_RATE_BUCKET_CAP,
+  PORTAL_USE_REDIS,
+  RATE_LIMIT_SWEEP_INTERVAL_MS,
+} from '../../services/portal/rateLimit';
 
 export const PORTAL_REDIS_KEYS = {
   session: (token: string) => `portal:session:${token}`,
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
   inviteToken: (hash: string) => `portal:invite:${hash}`,
-  rlAttempts: (key: string) => `portal:rl:attempts:${key}`,
-  rlBlock: (key: string) => `portal:rl:block:${key}`,
+  rlAttempts: PORTAL_RATE_LIMIT_REDIS_KEYS.attempts,
+  rlBlock: PORTAL_RATE_LIMIT_REDIS_KEYS.block,
 };
 
 export const LOGIN_RATE_LIMIT = {
@@ -83,6 +116,17 @@ export const RESET_PASSWORD_RATE_LIMIT = {
   windowMs: 15 * 60 * 1000,
   maxAttempts: 10,
   blockMs: 30 * 60 * 1000
+} as const;
+
+// #4797: throttles POST /profile/password's current-password guesses. Unlike
+// the anonymous login/reset limits above, this route is already
+// session-authed, so the key is the portal user id alone (see profile.ts) —
+// mirrors the 5-attempts/5-min bucket `requireCurrentPasswordStepUp` uses for
+// the equivalent /auth/* surface (apps/api/src/routes/auth/helpers.ts).
+export const PASSWORD_CHANGE_RATE_LIMIT = {
+  windowMs: 5 * 60 * 1000,
+  maxAttempts: 5,
+  blockMs: 15 * 60 * 1000
 } as const;
 
 // ============================================
@@ -120,6 +164,38 @@ export const listSchema = z.object({
   limit: z.string().optional()
 });
 
+export const supportUsageQuerySchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+    .optional(),
+});
+
+export const portalReportListSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20)
+});
+
+// reportsSelfService imports the portal state constants above. Deferring this
+// schema's construction avoids eagerly reading its canonical type list while
+// that module cycle is still being initialized.
+export const portalReportGenerateSchema = z.lazy(() => z.object({
+  type: z.enum(PORTAL_REPORT_TYPES)
+}));
+
+export const portalReportRunParamSchema = z.object({
+  id: z.string().guid()
+});
+
+// Service deliverables W04 (spec §8).
+export const portalDeliverableParamSchema = z.object({ deliverableId: z.string().guid() });
+export const portalDocumentParamSchema = z.object({ id: z.string().guid() });
+// Spec §8 publishes the last 24 occurrences; the cap lives in the read model
+// too, so a crafted query string cannot widen the window.
+export const portalOccurrenceListSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(24).default(24)
+});
+
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 
 // Phase 2 (ticket intake forms): subject/description become optional when a
@@ -155,6 +231,12 @@ export const ticketParamSchema = z.object({
   id: z.string().guid()
 });
 
+// W08 #3902 — portal attachment content route params.
+export const portalAttachmentParamSchema = z.object({
+  id: z.string().guid(),
+  attachmentId: z.string().guid()
+});
+
 export const ticketCommentParamSchema = z.object({
   id: z.string().guid(),
   commentId: z.string().guid()
@@ -182,7 +264,10 @@ export const checkinSchema = z.object({
 export const updateProfileSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   receiveNotifications: z.boolean().optional(),
-  password: z.string().min(8).optional()
+  // Password changes require current-password proof and session revocation on
+  // POST /profile/password. Keep the legacy field explicit so it is rejected
+  // rather than silently stripped as an unknown compatibility property.
+  password: z.never().optional()
 });
 
 export const changePasswordSchema = z.object({

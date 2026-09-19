@@ -64,15 +64,22 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { alertRules, alerts, alertTemplates, automationRunDeviceResults, automationRuns, automations, devices, sites } from '../../db/schema';
+import { alertRules, alerts, alertTemplates, automationRunDeviceResults, automationRuns, automations, devices, notificationChannels, sites } from '../../db/schema';
 import { queueEventTriggers } from '../../jobs/automationWorker';
-import { createAutomationRunRecord, executeAutomationRun } from '../../services/automationRuntime';
+import {
+  createAutomationRunRecord,
+  executeAutomationRun,
+  replaceAutomationResourceBindings,
+  resolveAutomationReferencesForOwner,
+  type AutomationAction,
+} from '../../services/automationRuntime';
 import { resolvePolicyRemediationAutomationIdForOrg } from '../../services/policyEvaluationService';
 import type { BreezeEvent } from '../../services/eventBus';
 import { createOrganization, createPartner } from './db-utils';
 
 const createdAutomations: string[] = [];
 const createdDevices: string[] = [];
+const createdNotificationChannels: string[] = [];
 const createdSites: string[] = [];
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -89,7 +96,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (createdAutomations.length === 0 && createdDevices.length === 0) return;
+  if (createdAutomations.length === 0 && createdDevices.length === 0 && createdNotificationChannels.length === 0) return;
   await withDbAccessContext(SYSTEM_CTX, async () => {
     if (createdAutomations.length > 0) {
       await db
@@ -98,6 +105,9 @@ afterEach(async () => {
     }
     for (const id of createdAutomations) {
       await db.delete(automations).where(eq(automations.id, id));
+    }
+    for (const id of createdNotificationChannels) {
+      await db.delete(notificationChannels).where(eq(notificationChannels.id, id));
     }
     if (createdDevices.length > 0) {
       // Alert rows (created by the execution-attribution tests) hold a device
@@ -113,6 +123,7 @@ afterEach(async () => {
   });
   createdAutomations.length = 0;
   createdDevices.length = 0;
+  createdNotificationChannels.length = 0;
   createdSites.length = 0;
 });
 
@@ -534,10 +545,28 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
     const deviceA = await seedDevice(org.id, 'fail-a');
     const deviceB = await seedDevice(org.id, 'fail-b');
 
-    // A send_notification action pointing at a channel that does not exist:
-    // executeSendNotificationAction returns {success:false} deterministically
-    // (no throw), so every device fails without any external dependency.
-    const bogusChannelId = '00000000-0000-4000-8000-0000000000ff';
+    // Use a legitimately owned channel so admission and its durable binding
+    // both succeed. The automation runtime deliberately has no direct
+    // PagerDuty sender, so execution returns {success:false} deterministically
+    // without making an external request.
+    const [unsupportedChannel] = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(notificationChannels)
+        .values({
+          orgId: null,
+          partnerId: partner.id,
+          name: 'Runtime failure fixture',
+          type: 'pagerduty',
+          config: { routingKey: 'not-used-by-automation-runtime' },
+          enabled: true,
+        })
+        .returning({ id: notificationChannels.id }),
+    );
+    if (!unsupportedChannel) throw new Error('Notification channel fixture failed');
+    createdNotificationChannels.push(unsupportedChannel.id);
+    const failingActions: AutomationAction[] = [
+      { type: 'send_notification', notificationChannelId: unsupportedChannel.id },
+    ];
     const [automation] = await withDbAccessContext(partnerContext(partner.id, []), () =>
       db
         .insert(automations)
@@ -546,13 +575,33 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
           orgId: null,
           partnerId: partner.id,
           trigger: { type: 'manual' },
-          actions: [{ type: 'send_notification', notificationChannelId: bogusChannelId }],
+          actions: failingActions,
           onFailure: 'continue',
           enabled: true,
         })
         .returning(),
     );
     createdAutomations.push(automation!.id);
+
+    // This fixture inserts directly instead of using the HTTP create route,
+    // so explicitly perform the same transactional reference admission and
+    // durable binding replacement as production creation.
+    await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db.transaction(async (tx) => {
+        const resolved = await resolveAutomationReferencesForOwner(
+          tx,
+          { orgId: null, partnerId: partner.id },
+          failingActions,
+          automation!.notificationTargets ?? undefined,
+        );
+        await replaceAutomationResourceBindings(
+          tx,
+          automation!.id,
+          { orgId: null, partnerId: partner.id },
+          resolved,
+        );
+      }),
+    );
 
     const { run, targetDeviceIds } = await withDbAccessContext(SYSTEM_CTX, () =>
       createAutomationRunRecord({ automation: automation!, triggeredBy: 'manual:test' }),
@@ -581,8 +630,11 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
       const row = deviceResultRows.find((r) => r.deviceId === deviceId);
       expect(row).toBeDefined();
       expect(row!.status).toBe('failed');
-      // First failing action's message is captured as the row error.
-      expect(row!.error).toContain('Notification channel not found');
+      // Under the reconciled action-results model the device row's error is the
+      // failing action's OUTCOME message, not the dispatch log line. Proven
+      // against real Postgres (D6, fix commit fb9a6aeea): asserting the old
+      // dispatch-log string fails, printing exactly this outcome string.
+      expect(row!.error).toContain('Notification channel type pagerduty is not implemented');
       expect(row!.completedAt).not.toBeNull();
     }
   });

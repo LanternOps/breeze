@@ -6,7 +6,8 @@
  * resolving a partner-wide automation's configured target set and creating
  * one `ai_agent_runs` row per fleet device for a single alert. This suite
  * carries the real BullMQ payload through its strict wire schema and executes
- * it against real Postgres, while retaining an unmanaged fan-out control.
+ * it against real Postgres, including unmanaged event-device binding and
+ * cross-partner rejection (#5240).
  *
  * This file must live under `src/__tests__/integration/`; anywhere else it
  * runs in ZERO CI jobs.
@@ -31,6 +32,7 @@ import {
   aiAgentRuns,
   aiAgents,
   alerts,
+  automationActionResults,
   automationRunDeviceResults,
   automationRuns,
   automations,
@@ -51,6 +53,7 @@ import {
   type AgentRunEnqueuer,
 } from '../../services/aiAgents/runService';
 import { resolveAutomationTargetDeviceIds } from '../../services/automationRuntime';
+import { handleAgentRunTerminalForAutomation } from '../../services/automationTerminalEvidence';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 type ExecuteRunJobData = Extract<AutomationQueueJobData, { type: 'execute-run' }>;
@@ -356,6 +359,10 @@ describe('managed AI-triage event binding against real Postgres', () => {
       automationRunId: runId,
       alertRuleId: alert.ruleId,
       managedByAgentId: fixture.agent.id,
+      // AI patch agent W04 (#5750): a rule-less alert resolves to no template
+      // category, so the classifier fails closed and triage keeps it — with
+      // the reason recorded on the run.
+      patchWorkFallbackReason: 'not_patch_work',
     });
   });
 
@@ -373,9 +380,68 @@ describe('managed AI-triage event binding against real Postgres', () => {
     const runId = requireRunId(result);
     await executeQueuedRun(runId);
 
-    const runs = await withSystemDbAccessContext(() =>
+    const loadRun = () => withSystemDbAccessContext(() =>
       db.select().from(automationRuns).where(eq(automationRuns.id, runId)),
     );
+    const loadDeviceResults = () => withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(automationRunDeviceResults)
+        .where(eq(automationRunDeviceResults.runId, runId)),
+    );
+
+    // #5290 — enqueueing the child agent run is NOT a completed remediation.
+    // The action stays queued (carrying the agent-run correlation) and the run
+    // aggregates as still running with nothing succeeded yet; before #5290 this
+    // read `completed` / devicesSucceeded 1 for a triage that had not run.
+    const agentRuns = await allAgentRuns();
+    expect(agentRuns).toHaveLength(1);
+    const agentRunId = agentRuns[0]!.id;
+
+    const queuedRuns = await loadRun();
+    expect(queuedRuns).toHaveLength(1);
+    expect(queuedRuns[0]).toMatchObject({
+      devicesTargeted: 1,
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+      status: 'running',
+    });
+
+    const actionResults = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(automationActionResults)
+        .where(eq(automationActionResults.runId, runId)),
+    );
+    expect(actionResults).toHaveLength(1);
+    expect(actionResults[0]).toMatchObject({
+      deviceId: fixture.deviceA1.id,
+      orgId: fixture.orgA.id,
+      actionType: 'ai_triage',
+      status: 'queued',
+      agentRunId,
+    });
+
+    const queuedDeviceResults = await loadDeviceResults();
+    expect(queuedDeviceResults).toHaveLength(1);
+    expect(queuedDeviceResults[0]).toMatchObject({
+      runId,
+      deviceId: fixture.deviceA1.id,
+      orgId: fixture.orgA.id,
+    });
+    expect(queuedDeviceResults[0]!.status).not.toBe('success');
+
+    // The child run's own terminal event — delivered by the durable
+    // `ai.agent.run.*` subscriber — is what terminalises the action and lets
+    // the run aggregate to completed with exactly the alert device succeeded.
+    await withSystemDbAccessContext(() =>
+      handleAgentRunTerminalForAutomation({
+        type: 'ai.agent.run.completed',
+        payload: { runId: agentRunId },
+      }),
+    );
+
+    const runs = await loadRun();
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
       devicesTargeted: 1,
@@ -384,12 +450,7 @@ describe('managed AI-triage event binding against real Postgres', () => {
       status: 'completed',
     });
 
-    const deviceResults = await withSystemDbAccessContext(() =>
-      db
-        .select()
-        .from(automationRunDeviceResults)
-        .where(eq(automationRunDeviceResults.runId, runId)),
-    );
+    const deviceResults = await loadDeviceResults();
     expect(deviceResults).toHaveLength(1);
     expect(deviceResults[0]).toMatchObject({
       runId,
@@ -521,7 +582,7 @@ describe('managed AI-triage event binding against real Postgres', () => {
     expect(await allAgentRuns()).toEqual([]);
   });
 
-  it('an unmanaged event automation still fans out across the partner fleet', async () => {
+  it('an unmanaged event automation binds to the event device (no fleet fan-out, #5240)', async () => {
     const fixture = await seedFixture();
     const alert = await seedAlert(fixture.orgA.id, fixture.deviceA1.id);
     const [unmanagedAutomation] = await withSystemDbAccessContext(() =>
@@ -537,7 +598,7 @@ describe('managed AI-triage event binding against real Postgres', () => {
           actions: [{
             type: 'create_alert',
             alertSeverity: 'low',
-            alertMessage: 'Unmanaged fan-out control',
+            alertMessage: 'Unmanaged event-device binding',
           }],
           onFailure: 'stop',
           createdBy: fixture.user.id,
@@ -552,15 +613,13 @@ describe('managed AI-triage event binding against real Postgres', () => {
       deviceId: fixture.deviceA1.id,
       severity: 'critical',
       title: 'Critical integration-test alert',
-      message: 'Unmanaged automations retain pre-wave-3d fan-out',
+      message: 'Unmanaged automations target only the event device',
     });
     const runId = requireRunId(result);
     const jobData = await queuedExecuteRun(runId);
 
-    expect([...(jobData.targetDeviceIds ?? [])].sort()).toEqual(
-      [...fixture.fleetDeviceIds].sort(),
-    );
-    expect(jobData.targetDeviceIds).toHaveLength(4);
+    expect(jobData.targetDeviceIds).toEqual([fixture.deviceA1.id]);
+    expect(jobData.targetDeviceIds).toHaveLength(1);
     expect('triggerContext' in jobData).toBe(false);
 
     const [automationRun] = await withSystemDbAccessContext(() =>
@@ -569,10 +628,67 @@ describe('managed AI-triage event binding against real Postgres', () => {
     expect(automationRun).toMatchObject({
       id: runId,
       automationId: unmanagedAutomation.id,
-      devicesTargeted: 4,
+      devicesTargeted: 1,
       devicesSucceeded: 0,
       devicesFailed: 0,
       status: 'running',
     });
+  });
+
+  it('an unmanaged event automation rejects an event device in a different partner (#5240)', async () => {
+    const fixture = await seedFixture();
+    const foreignDevice = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org.id });
+      const suffix = randomUUID().slice(0, 8);
+      const [device] = await db.insert(devices).values({
+        orgId: org.id,
+        siteId: site.id,
+        agentId: `triage-foreign-${suffix}`,
+        hostname: `triage-foreign-${suffix}`,
+        osType: 'linux',
+        osVersion: '22.04',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        status: 'online',
+      }).returning({ id: devices.id, orgId: devices.orgId });
+      if (!device) throw new Error('failed to insert foreign-partner device');
+      return device;
+    });
+    const alert = await seedAlert(foreignDevice.orgId, foreignDevice.id);
+    const [unmanagedAutomation] = await withSystemDbAccessContext(() =>
+      db
+        .insert(automations)
+        .values({
+          orgId: null,
+          partnerId: fixture.partner.id,
+          managedByAgentId: null,
+          name: 'Unmanaged partner-wide alert automation',
+          enabled: true,
+          trigger: { type: 'event', eventType: 'alert.triggered' },
+          actions: [{
+            type: 'create_alert',
+            alertSeverity: 'low',
+            alertMessage: 'Unmanaged event-device binding',
+          }],
+          onFailure: 'stop',
+          createdBy: fixture.user.id,
+        })
+        .returning(),
+    );
+    if (!unmanagedAutomation) throw new Error('failed to insert unmanaged automation');
+
+    const { result } = await triggerEvent(unmanagedAutomation.id, {
+      alertId: alert.alertId,
+      ruleId: alert.ruleId,
+      deviceId: foreignDevice.id,
+      severity: 'critical',
+      title: 'Different-partner alert',
+      message: 'The event device is outside the automation partner',
+    });
+
+    expect(result.skipped).toBe('event_device_outside_automation_scope');
+    expect(await allAutomationRuns()).toEqual([]);
   });
 });

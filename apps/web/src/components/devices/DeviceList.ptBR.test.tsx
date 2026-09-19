@@ -62,12 +62,12 @@ describe('DeviceList — pt-BR presentation', () => {
     expect(screen.getByText('CPU %')).toBeInTheDocument();
     expect(screen.getByText('RAM %')).toBeInTheDocument();
     expect(screen.getByText('Visto por último')).toBeInTheDocument();
-    expect(screen.getByText('Ativo')).toBeInTheDocument();
+    expect(screen.getByText("Online")).toBeInTheDocument();
     expect(screen.getByLabelText('Desconhecido')).toBeInTheDocument();
     expect(screen.getByLabelText('Selecionar host-a')).toBeInTheDocument();
     expect(screen.getByText('há 4 min.')).toBeInTheDocument();
 
-    for (const englishResidue of ['Device', 'Organization', 'Site', 'Role', 'Up', 'Unknown', '4m ago']) {
+    for (const englishResidue of ['Device', 'Organization', 'Site', 'Role', 'Unknown', '4m ago']) {
       expect(screen.queryByText(englishResidue)).toBeNull();
     }
   });

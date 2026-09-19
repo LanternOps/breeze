@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ENV_SCHEMA_KEYS } from './validate';
 
 // apps/api/src/config -> repo root is 4 levels up (same as proxyTrustCompose.test.ts).
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -90,9 +91,15 @@ const ROOT_ALLOWLIST: Record<string, string> = {
     'no consumer — the shipped business-email gate reads SIGNUP_REQUIRE_BUSINESS_EMAIL / SIGNUP_BUSINESS_EMAIL_CONTACT_URL instead',
 };
 
-// The digest-pinned droplet stack. Its api block is well-maintained; after
-// wiring the parity gaps, nothing here needs an intentional exception.
-const PROD_ALLOWLIST: Record<string, string> = {};
+// The digest-pinned droplet stack. Its api block is well-maintained; the two
+// entries below are the prod-side counterpart of GRAFANA_ADMIN_USER/PASSWORD
+// in ROOT_ALLOWLIST above — consumed by the optional docker-compose.monitoring.yml
+// overlay (see scripts/prod/deploy.sh's ENABLE_MONITORING), never by
+// deploy/docker-compose.prod.yml itself (#4362).
+const PROD_ALLOWLIST: Record<string, string> = {
+  GRAFANA_ADMIN_PASSWORD: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+  POSTGRES_EXPORTER_DSN: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+};
 
 interface Pair {
   name: string;
@@ -201,6 +208,141 @@ describe.each(PAIRS)('.env.example ↔ compose parity: $name', ({ envExample, co
       `These vars are BOTH referenced in ${compose} and allow-listed — drop them from the allow-list:\n  ` +
         redundant.join('\n  '),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The parity check above is one-directional: it starts from
+ * `documentedEnvExampleVars()`, i.e. names already IN `.env.example`. A
+ * variable that `validate.ts` accepts (is in `ENV_SCHEMA_KEYS`) but that
+ * nobody ever added to `.env.example` is invisible to it — not caught by any
+ * allow-list, because the guard never looks at it in the first place. That is
+ * exactly how `LLM_PROVIDER_CATALOG_ENABLED` (#4113/#4116) shipped validated
+ * in `validate.ts` but unmapped in `docker-compose.yml` and undocumented in
+ * `.env.example`: the parity suite above stayed green throughout, because it
+ * only ever iterated the (incomplete) `.env.example` list.
+ *
+ * Closing that gap for every one of the ~90 `ENV_SCHEMA_KEYS` is a separate,
+ * larger audit (a first pass turned up ~24 pre-existing schema keys that are
+ * validated but not documented in the root `.env.example` — mostly
+ * hosted-only integrations such as STRIPE_*, QBO_*, DELEGANT_*, CF_ACCESS_*,
+ * MCP_LLM_*, each needing its own classification before it could safely join
+ * an allow-list) and is out of scope for this fix. This block instead pins
+ * the one flag this fix is about, on both axes, so it cannot silently
+ * regress again — found by the 2026-08-28 pre-release sweep
+ * (docs/testing/release-sweeps/).
+ */
+describe('LLM_PROVIDER_CATALOG_ENABLED regression (#4113/#4116)', () => {
+  const REPO_ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+
+  it('is declared in the validate.ts schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('LLM_PROVIDER_CATALOG_ENABLED');
+  });
+
+  it('is documented in the root .env.example', () => {
+    expect(documentedEnvExampleVars('.env.example')).toContain('LLM_PROVIDER_CATALOG_ENABLED');
+  });
+
+  it('is threaded through a docker-compose.yml service environment block', () => {
+    expect(isReferencedInCompose('LLM_PROVIDER_CATALOG_ENABLED', REPO_ROOT_COMPOSE)).toBe(true);
+  });
+});
+
+/**
+ * QuickBooks (final-review finding I). The Phase C sandbox walkthrough needed a
+ * manual container override for exactly this reason: all five QBO_* vars were
+ * validated in `validate.ts` and read by `config/env.ts`, but documented
+ * nowhere and mapped into no service block — so setting them in `.env` was a
+ * silent no-op and the integration simply stayed dark. Pinned on all three axes,
+ * for both the self-host and droplet compose files, so they cannot drift apart
+ * again.
+ */
+describe('QuickBooks QBO_* env plumbing (finding I)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const QBO_VARS = [
+    'QBO_CLIENT_ID',
+    'QBO_CLIENT_SECRET',
+    'QBO_REDIRECT_URI',
+    'QBO_ENVIRONMENT',
+    'QBO_WEBHOOK_VERIFIER_TOKEN',
+  ] as const;
+
+  it.each(QBO_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
+  });
+});
+
+/**
+ * Partner sending domains (spec 2026-09-17 §11). Pinned on all four axes for
+ * the same reason QBO_* is: a variable that validate.ts accepts but that no
+ * compose file maps is a silent no-op — setting it in .env does nothing and the
+ * feature just stays dark, which is indistinguishable from "not configured yet".
+ */
+describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const EMAIL_DOMAINS_VARS = [
+    'EMAIL_DOMAINS_PROVIDER',
+    'EMAIL_DOMAINS_STATIC_ALLOWED',
+    'EMAIL_DOMAINS_RESEND_API_KEY',
+    'EMAIL_DOMAINS_RESEND_SENDING_KEY',
+    'EMAIL_DOMAINS_REGION',
+    'EMAIL_DOMAINS_MAX_PER_PARTNER',
+    'EMAIL_DOMAINS_DAILY_SEND_CAP',
+    'EMAIL_DOMAINS_PARTNER_ALLOWLIST',
+    'EMAIL_DOMAINS_DENYLIST',
+    'EMAIL_DOMAINS_WEBHOOK_SECRET',
+    'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE',
+    'EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES',
+    'EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS',
+  ] as const;
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  // The three thresholds must ship COMMENTED OUT (or empty). readAutoSuspendConfig
+  // treats any non-empty value as "the operator configured this", which turns
+  // auto-suspension ON for a self-hoster who merely copied the example file —
+  // the exact opposite of the off-by-default guarantee the same comment block
+  // promises them.
+  it.each([
+    ['.env.example'],
+    ['deploy/.env.example'],
+  ])('%s does not ship an ACTIVE auto-suspend threshold', (relPath) => {
+    const text = readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
+    const active = text.split('\n').filter((line) =>
+      /^\s*EMAIL_DOMAINS_AUTOSUSPEND_[A-Z_]+=\s*\S/.test(line));
+    expect(active, `active auto-suspend assignments in ${relPath}`).toEqual([]);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is documented in deploy/.env.example', (name) => {
+    expect(documentedEnvExampleVars('deploy/.env.example')).toContain(name);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
   });
 });
 

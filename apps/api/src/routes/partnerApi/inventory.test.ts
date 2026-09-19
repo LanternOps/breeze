@@ -195,12 +195,45 @@ describe('partner reconstruction inventory exports', () => {
     const printer = {
       id: '76666666-6666-4666-8666-666666666667', type: 'printer', name: 'front-office-printer',
       address: '10.0.0.25', macAddress: '00:aa:bb:cc:dd:ef', manufacturer: 'HP', model: 'LaserJet',
+      url: null, source: 'manual',
     };
     results.push([]);
     results.push([{ ...siteInventoryRow(), networkEquipment: [printer], networkEquipmentCount: 1 }]);
     const response = await request('/partner-api/device-inventory');
     expect(response.status).toBe(200);
     expect((await response.json()).data[0].networkEquipment).toEqual([printer]);
+  });
+
+  // #5213 W03 — a website/service asset has no IP: `address` must come back
+  // null (not the string "null"), and the type filter + strict response
+  // schema must both know the two new asset types or the export fails closed.
+  it('exports approved website assets with a url, source, and a null address', async () => {
+    const website = {
+      id: '76666666-6666-4666-8666-666666666668', type: 'website', name: 'Shop',
+      address: null, macAddress: null, manufacturer: null, model: null,
+      url: 'https://shop.example', source: 'manual',
+    };
+    results.push([]);
+    results.push([{ ...siteInventoryRow(), networkEquipment: [website], networkEquipmentCount: 1 }]);
+    const response = await request('/partner-api/device-inventory');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].networkEquipment).toEqual([website]);
+  });
+
+  it('falls back to the url when a website asset has no label or hostname source value', async () => {
+    // The SQL projection already does COALESCE(label, hostname, url) for
+    // `name` — this asserts the response schema doesn't reject that value
+    // (a URL can be a long string, still under the 255-char name cap here).
+    const website = {
+      id: '76666666-6666-4666-8666-666666666669', type: 'service', name: 'https://api.internal.example',
+      address: null, macAddress: null, manufacturer: null, model: null,
+      url: 'https://api.internal.example', source: 'scan',
+    };
+    results.push([]);
+    results.push([{ ...siteInventoryRow(), networkEquipment: [website], networkEquipmentCount: 1 }]);
+    const response = await request('/partner-api/device-inventory');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].networkEquipment).toEqual([website]);
   });
 
   it('omits IP history whose current interface endpoint is missing', async () => {

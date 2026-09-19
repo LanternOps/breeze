@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { softwareInventoryReportSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -116,6 +117,36 @@ const ipEntrySchema = z.object({
 // and negatives fail .min(0), so bad input is caught either way.
 const uint64Counter = z.number().min(0).refine(Number.isInteger, 'expected integer');
 
+const agentHealthStateSchema = z.enum(['healthy', 'warning', 'error', 'unknown']);
+const agentHealthComponentSchema = z.object({
+  state: agentHealthStateSchema,
+  reason: z.string().max(512).optional(),
+}).strict();
+const agentHealthComponentsSchema = z.record(
+  z.string().min(1).max(100),
+  agentHealthComponentSchema,
+).superRefine((components, ctx) => {
+  if (Object.keys(components).length > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 100,
+      inclusive: true,
+      origin: 'object',
+      message: 'Too many health components',
+    });
+  }
+});
+
+const agentHealthObservationWireV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  deviceId: z.string().uuid().optional(),
+  agentVersion: z.string().min(1).max(64),
+  overall: agentHealthStateSchema,
+  metricsAvailable: z.boolean().nullable(),
+  components: agentHealthComponentsSchema,
+  observedAt: z.string().datetime({ offset: true }),
+}).strict();
+
 export const heartbeatSchema = z.object({
   metrics: z.object({
     cpuPercent: z.number(),
@@ -149,6 +180,10 @@ export const heartbeatSchema = z.object({
     processCount: z.number().int().optional().catch(undefined)
   }).optional(),
   metricsAvailable: z.boolean().optional().catch(undefined),
+  // Self-health is independent from reachability. Old maps, malformed values,
+  // and future schema versions are dropped locally so they can never reject
+  // an otherwise valid heartbeat.
+  healthStatus: agentHealthObservationWireV1Schema.optional().catch(undefined),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
@@ -160,6 +195,10 @@ export const heartbeatSchema = z.object({
   // Installed breeze-backup version, reported by the agent so
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
+  rollbackComponentVersions: z.record(
+    z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
+    z.string().min(1).max(20),
+  ).optional().catch(undefined),
   // #2288 — the control-plane base URL the agent used for this heartbeat.
   serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({
@@ -170,6 +209,43 @@ export const heartbeatSchema = z.object({
     detectedAt: z.string().datetime({ offset: true }).optional().catch(undefined)
   }).optional().catch(undefined),
   pendingReboot: z.boolean().optional().catch(undefined),
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // THREE-WAY on purpose, and the server persists each case differently:
+  //   absent  -> no news. A pre-#3207 agent omits the key entirely and must
+  //              never wipe the console's view of a live schedule.
+  //   null    -> news: nothing is scheduled any more (cancelled, or the
+  //              restart already fired). Clears the stored columns.
+  //   object  -> the current schedule.
+  // `.nullish()` (not `.optional()`) is what keeps null distinguishable from
+  // absent; the outer `.catch(undefined)` degrades a malformed snapshot to
+  // "no news" rather than 400-ing a heartbeat over an informational field.
+  //
+  // `scheduledAt` is the only REQUIRED member: it is the anchor of the whole
+  // snapshot, so a bad timestamp must invalidate the object rather than store
+  // a restart with no time. Every other member degrades to undefined (stored
+  // NULL) independently.
+  rebootStatus: z.object({
+    scheduledAt: z.string().datetime({ offset: true }),
+    deadline: z.string().datetime({ offset: true }).optional().catch(undefined),
+    // Bounded pattern rather than a hard enum. The agent echoes back whatever
+    // `source` the server put on the schedule_reboot command ('patch_job',
+    // 'maintenance_window', or the agent's own 'manual' default), so an enum
+    // here would silently drop the ENTIRE snapshot the first time a new
+    // server-side producer ships ahead of an API deploy — and it would buy no
+    // provenance anyway, since a compromised agent can claim any allowed
+    // value. The console maps known tokens to localized labels and falls back
+    // to a generic label for anything else, so this is never rendered raw.
+    // Width matches devices.reboot_source varchar(32).
+    source: z.string().regex(/^[a-z0-9_]{1,32}$/).optional().catch(undefined),
+    // Upper bound mirrors MAX_REBOOT_DEFERRALS in services/patchRebootHandler
+    // (10) — inlined rather than imported to keep this schema module free of
+    // the db-touching service graph. The devices CHECK constraints deliberately
+    // enforce only non-negativity, so raising that ceiling later is an API-side
+    // change, not a migration.
+    deferralsUsed: z.number().int().min(0).max(10).optional().catch(undefined),
+    maxDeferrals: z.number().int().min(0).max(10).optional().catch(undefined),
+  }).nullish().catch(undefined),
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
   deviceRole: z.enum(DEVICE_ROLES).optional().catch(undefined),
@@ -252,21 +328,82 @@ export const heartbeatSchema = z.object({
   }).optional().catch(undefined),
   // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
   // handshake. Old agents omit this object entirely; a capable agent sends
-  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
-  // the whole object (.catch) rather than 400-ing the heartbeat, since the
-  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
+  // independently rather than 400-ing the heartbeat, since the route treats
+  // every omitted/unrecognized value as capability zero anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
     // route treats anything other than exactly 1 as "not capable" anyway.
     scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
+    // Device-control capability claims are tolerant informational fields.
+    // Each malformed field drops independently without rejecting the beat.
+    peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
+    rollbackProtocolVersion: z.number().int().optional().catch(undefined),
+    pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    // Revocation lease (fail-closed desktop session revalidation). Same
+    // tolerant contract: a malformed value drops this field alone, since the
+    // route treats anything other than exactly 1 as "not capable".
+    revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
+    desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliation: z.object({
+      unresolvedCount: z.number().int().nonnegative(),
+      quarantinedCount: z.number().int().nonnegative(),
+      awaitingAcknowledgementCount: z.number().int().nonnegative(),
+      receivedObservationPendingCount: z.number().int().nonnegative().optional(),
+      blockingReason: z.enum([
+        'resolver_unavailable',
+        'binding_unresolved',
+        'enqueue_failed',
+        'acknowledgement_unavailable',
+        'quarantined',
+        'outbox_unreadable',
+        'received_observation_transport',
+      ]).refine((value) => value.length <= 64).optional(),
+    }).optional().catch(undefined),
+  }).optional().catch(undefined),
+  // Signed rollback progress is informational and restart-resend safe. A
+  // malformed optional observation must never take the ordinary heartbeat
+  // offline; the server simply withholds an acknowledgement for that value.
+  rollbackObservation: z.object({
+    schemaVersion: z.literal(1),
+    observationId: z.string().regex(/^[a-f0-9]{64}$/),
+    rollbackId: z.string().uuid(),
+    deviceId: z.string().uuid(),
+    phase: z.enum([
+      'received',
+      'downloaded',
+      'verified',
+      'staged',
+      'swapped',
+      'restart_requested',
+      'healthy',
+      'failed',
+      'recovered',
+    ]),
+    currentVersion: z.string().min(1).max(100),
+    componentVersions: z.record(z.string().min(1).max(64), z.string().min(1).max(100)),
+    observedAt: z.string().datetime({ offset: true }),
+    errorCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
-  // agent believes it needs to migrate hosted↔self-host. Informational: a bad
-  // value drops (.catch) rather than 400-ing the heartbeat.
+  // agent believes it needs to migrate hosted↔self-host. Since #4072 this is
+  // NOT merely informational: a reported edition is the capability signal
+  // that gates update-offer delivery (agentAcceptsServedEdition), and a
+  // value swallowed here makes the agent look silent — which on a hosted
+  // server means offers are withheld from a ≥0.105.0 build. The .catch is
+  // still correct (a future third edition must degrade to "silent", not
+  // 400 the heartbeat), but changes here are offer-load-bearing.
   agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
   migrationRequired: z.boolean().optional().catch(undefined),
+  // Bare-metal recovery W04a: the rebuild engine leaves a marker on the
+  // restored disk; the agent sends it until the server acknowledges the
+  // check-in (recoveryMarkerAck: true in the response), then deletes it.
+  recoveryMarker: z.object({
+    recoveryId: z.string().uuid(),
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+  }).optional().catch(undefined),
 });
 
 // ============================================
@@ -561,18 +698,7 @@ export const updateHardwareSchema = z.object({
   gpuModel: z.string().optional()
 });
 
-export const updateSoftwareSchema = z.object({
-  software: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    vendor: z.string().optional(),
-    installDate: z.string().optional(),
-    installLocation: z.string().optional(),
-    uninstallString: z.string().optional(),
-    fileHash: z.string().max(128).optional(),
-    hashAlgorithm: z.string().max(10).optional(),
-  })).max(10000)
-});
+export const updateSoftwareSchema = softwareInventoryReportSchema;
 
 export const updateDisksSchema = z.object({
   disks: z.array(z.object({

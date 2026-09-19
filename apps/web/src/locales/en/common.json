@@ -1,8 +1,20 @@
 {
+  "lists": {
+    "separator": ", "
+  },
+  "aiInitiator": {
+    "assistant": "AI assistant",
+    "agent": "AI agent",
+    "originUnavailable": "Origin not available",
+    "openSession": "Open conversation",
+    "openAgentRun": "Open agent run",
+    "tool": "Tool: {{name}}",
+    "occurredAt": "Occurred {{time}}"
+  },
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
-    "devices": "Devices",
+    "devices": "Devices & Assets",
     "alerts": "Alerts",
     "approvals": "Approvals",
     "pendingApprovals": "{{count}} pending approvals",
@@ -15,32 +27,28 @@
     "patches": "Patches",
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
-    "fleet": "Fleet",
-    "aiWorkspace": "AI Workspace",
     "aiForOffice": "AI for Office",
     "networkMonitor": "Network Monitor",
+    "jobs": "Jobs",
+    "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
-    "security": "Security",
     "edr": "EDR",
     "dnsSecurity": "DNS Security",
     "pam": "PAM",
     "userRisk": "User Risk",
     "sensitiveData": "Sensitive Data",
     "peripherals": "Peripherals",
-    "aiRiskEngine": "AI Risk Engine",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Compliance Baselines",
     "quotes": "Quotes",
     "invoices": "Invoices",
     "contracts": "Contracts",
+    "agreements": "Agreements",
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
-    "softwareLibrary": "Software Library",
-    "softwarePolicies": "Software Policies",
     "deviceGroups": "Device Groups",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
-    "backup": "Backup",
     "cloudBackup": "Cloud Backup",
     "disasterRecovery": "Disaster Recovery",
     "reports": "Reports",
@@ -48,9 +56,15 @@
     "auditTrail": "Audit Trail",
     "eventLogs": "Event Logs",
     "partner": "Partner",
+    "billing": "Billing",
     "organizations": "Organizations",
-    "aiUsageBudget": "AI Usage & Budget",
+    "aiUsage": "AI Usage",
+    "scriptAuthoring": "Script authoring",
+    "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",
+    "aiAgentRuns": "AI Agent Runs",
+    "aiImpact": "AI Impact",
+    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -59,18 +73,31 @@
     "sso": "SSO",
     "accessReviews": "Access Reviews",
     "enrollmentKeys": "Enrollment Keys",
-    "deletionRequests": "Deletion requests",
+    "deletionRequests": "Deletion Requests",
     "quarantinedDevices": "Quarantined Devices",
     "thirdPartyCatalog": "Third-Party Catalog",
-    "connectedAppsAdmin": "Connected Apps (admin)",
-    "sectionAiFleet": "AI & Fleet",
-    "sectionMonitoring": "Monitoring",
+    "connectedAppsAdmin": "Connected Apps",
     "sectionSecurity": "Security",
-    "sectionOperations": "Operations",
     "sectionBackup": "Backup",
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings",
-    "sectionExtensions": "Extensions"
+    "sectionExtensions": "Extensions",
+    "llmProviderCatalog": "LLM Provider Catalog",
+    "aiKillSwitch": "AI Kill Switch",
+    "sectionAi": "AI",
+    "sectionFleetManagement": "Fleet Management",
+    "sectionBilling": "Billing",
+    "sectionAdministration": "Administration",
+    "fleetOrchestration": "Fleet Orchestration",
+    "aiAssistant": "AI Assistant",
+    "software": "Software",
+    "securityOverview": "Overview",
+    "aiRisk": "AI Risk",
+    "deviceBackup": "Device Backup",
+    "sectionServiceDesk": "Service Desk",
+    "serviceManagement": "Service Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Deliverable Templates"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -161,6 +188,19 @@
     "none": "None",
     "optional": "Optional",
     "required": "Required"
+  },
+  "runContext": {
+    "label": "Run as",
+    "scriptDefault": "Script default",
+    "scriptDefaultNamed": "Script default ({{context}})",
+    "system": "System",
+    "user": "Logged-in user",
+    "elevated": "Elevated",
+    "unknown": "Not recorded",
+    "userInSession": "Logged-in user (session {{session}})",
+    "sessionLabel": "Target session",
+    "sessionAny": "Any active session",
+    "effectiveLabel": "Run context"
   },
   "shared": {
     "accessDenied": {
@@ -352,6 +392,9 @@
       "criticalPending": "{{count}} critical patches pending",
       "criticalPending_one": "{{count}} critical patch pending",
       "criticalPending_other": "{{count}} critical patches pending",
+      "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
+      "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
+      "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet"
     },
     "vuln": {
@@ -687,7 +730,19 @@
         "scripts": "Scripts",
         "alerts": "Alerts",
         "users": "Users",
-        "settings": "Settings"
+        "settings": "Settings",
+        "recent-devices": "Recent devices",
+        "recent-pages": "Recently visited"
+      },
+      "actions": {
+        "newDevice": "New device",
+        "newDeviceDescription": "Add a device to your fleet",
+        "runScript": "Run script",
+        "runScriptDescription": "Execute a script on devices",
+        "alertRules": "Alert rules",
+        "alertRulesDescription": "Manage alerting in Configuration Policies",
+        "keyboardShortcuts": "Keyboard shortcuts",
+        "keyboardShortcutsDescription": "Every key and chord, on one card"
       }
     },
     "notifications": {
@@ -727,7 +782,10 @@
       "collapse": "Collapse sidebar",
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
-      "closeMenu": "Close menu"
+      "closeMenu": "Close menu",
+      "recentDevices": "Recent devices",
+      "hideRecentDevices": "Hide recent devices",
+      "showRecentDevices": "Show recent devices"
     },
     "orgRequired": {
       "title": "Select an organization",
@@ -738,6 +796,20 @@
       "title": "Couldn't load your organizations",
       "description": "Something went wrong loading your organization list. Check your connection and try again.",
       "retry": "Retry"
+    },
+    "shortcuts": {
+      "title": "Keyboard shortcuts",
+      "general": "General",
+      "goTo": "Go to",
+      "goToHint": "Press g, release, then the key.",
+      "then": "then",
+      "search": "Search Breeze",
+      "searchSlash": "Search (also opens with this key)",
+      "cycleSidebar": "Cycle the sidebar mode",
+      "help": "Open the help panel",
+      "showThis": "Show this card",
+      "close": "Close a dialog or menu",
+      "typingNote": "Single-key shortcuts pause while you are typing in a field."
     }
   },
   "migrationBanner": {
@@ -886,7 +958,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Interval (s)",
-          "timeout": "Timeout (s)"
+          "timeout": "Timeout (s)",
+          "target": "Target URL"
         },
         "labels": {
           "lastChecked": "Last checked: {{time}}",
@@ -914,6 +987,20 @@
           "httpCheck": "HTTP Check",
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Port"
+        },
+        "targetResetNote": "Changing the URL resets the TLS observation.",
+        "saved": "Monitor updated",
+        "certificate": {
+          "title": "Certificate",
+          "issuer": "Issuer",
+          "expires": "Expires",
+          "observedHost": "Observed host",
+          "state": "State",
+          "states": {
+            "observed": "Observed",
+            "handshakeFailed": "Handshake failed",
+            "notTls": "No TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1626,6 +1713,12 @@
         "editEntry": "Edit entry {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Billable: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "From location",
+        "remote_session": "From remote session",
+        "support_session": "From Quick Support"
       }
     },
     "snmp": {
@@ -1758,7 +1851,9 @@
         "assetsDescription": "Unified view of SNMP polling and network checks per discovered asset.",
         "table": {
           "asset": "Asset",
-          "overall": "Overall"
+          "overall": "Overall",
+          "reachability": "Reachability",
+          "collection": "Collection"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1810,7 +1905,29 @@
         "disabling": "Disabling...",
         "yesDisable": "Yes, disable",
         "monitoringNotActive": "Monitoring is not active for this asset.",
-        "saving": "Saving..."
+        "saving": "Saving...",
+        "openSettings": "Settings…",
+        "reachability": {
+          "responding": "Responding",
+          "notResponding": "Not responding",
+          "unverified": "Unverified",
+          "sources": {
+            "networkCheck": "network check",
+            "probe": "check now",
+            "scan": "scan",
+            "unifi": "UniFi",
+            "snmp": "SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Collecting",
+          "partial": "Partial",
+          "no_template": "No template",
+          "failing": "Failing",
+          "paused": "Paused",
+          "never_polled": "Never polled",
+          "not_configured": "Not configured"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2014,7 +2131,8 @@
           "notMember": "No longer affected by this finding",
           "decommissioned": "Device is removed",
           "timeout": "Timed out after 30 minutes",
-          "dispatchEnqueueFailed": "Never dispatched — queueing failed"
+          "dispatchEnqueueFailed": "Never dispatched — queueing failed",
+          "maintenanceWindow": "Device is in a maintenance window"
         },
         "viewProgress": "View progress",
         "errors": {
@@ -2404,6 +2522,21 @@
     "link": "What's new"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}",
+    "approximateFailed": "≈ total unavailable — could not load exchange rates",
+    "approximateUnavailableMissing": "≈ total unavailable — no {{target}} exchange rate for {{codes}}",
+    "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
+    "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Your role will require two-factor authentication. Enrol by {{date}}.",
+    "cta": "Set up 2FA",
+    "dismiss": "Dismiss two-factor authentication reminder"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Multi-factor authentication is not required for your team. Password-only sessions can run scripts, move devices and change policies.",
+    "cta": "Require MFA",
+    "dismiss": "Dismiss the MFA policy reminder for today"
   }
 }

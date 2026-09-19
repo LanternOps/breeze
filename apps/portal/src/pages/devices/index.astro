@@ -1,10 +1,10 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
-import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
-import DeviceList from '../../components/portal/DeviceList';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+import DevicesPage, { type DevicesPageLifecycle } from '../../components/portal/DevicesPage';
 import { portalApi } from '../../lib/api';
-import { buildServerApiConfig } from '../../lib/server';
+import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
 
 const response = await portalApi.getDevices(
   { page: 1, limit: 100 },
@@ -15,8 +15,47 @@ if (response.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
 }
+
+// The list is gated on Self-service, which 403s with PORTAL_SELF_SERVICE_DISABLED.
+// DeviceList answers ANY error with "We couldn't load your devices just now", so
+// a deliberate switch-off used to read as an outage (#4932). Genuine failures
+// still fall through to the list's own copy.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+
+// The hardware lifecycle plan rides along as a second tab. Branding decides
+// whether to ask for it at all (no request for the common case); the route's
+// own gate (PORTAL_REPORTS_DISABLED / PORTAL_LIFECYCLE_DISABLED) has the final
+// say and hides the tab rather than bouncing the whole page. A plan that has
+// not been generated yet (PORTAL_REPORT_NOT_GENERATED) is data: the tab shows
+// its own empty state with a Refresh button.
+const branding = await loadPortalBranding(Astro.request);
+let lifecycle: DevicesPageLifecycle | null = null;
+if (branding.enableLifecycle) {
+  const lifecycleResponse = await portalApi.getHardwareLifecycleLatest(
+    buildServerApiConfig(Astro.request),
+  );
+  if (lifecycleResponse.statusCode === 401) {
+    return redirectToLoginAfter401(Astro);
+  }
+  if (!isPortalPageDisabled(lifecycleResponse)) {
+    lifecycle = {
+      run: lifecycleResponse.data?.run ?? null,
+      summary: lifecycleResponse.data?.summary ?? null,
+    };
+  }
+}
 ---
 
 <PortalLayout title="Devices">
-  <DeviceList devices={response.data ?? []} error={response.error} />
+  {/* client:load so the hash-driven tab state and DeviceList's scroll-and-
+      highlight mount effect (a link landing here as /devices#<deviceId> from
+      the lifecycle plan table) actually run. */}
+  <DevicesPage
+    devices={response.data ?? []}
+    error={response.error}
+    lifecycle={lifecycle}
+    client:load
+  />
 </PortalLayout>

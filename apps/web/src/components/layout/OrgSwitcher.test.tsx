@@ -9,8 +9,10 @@ const {
   selectAllOrgsMock,
   fetchOrganizationsMock,
   waitForPendingRefreshMock,
+  navigateToMock,
   mockStoreRef,
 } = vi.hoisted(() => ({
+  navigateToMock: vi.fn().mockResolvedValue('soft'),
   selectOrganizationMock: vi.fn(),
   selectAllOrgsMock: vi.fn(),
   fetchOrganizationsMock: vi.fn(),
@@ -24,6 +26,10 @@ const {
 vi.mock('@/stores/auth', () => ({
   waitForPendingRefresh: waitForPendingRefreshMock
 }));
+
+// The switch is a soft (view-transition) navigation now, never a reload.
+vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
+vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 
 let mockStoreState: {
   currentOrgId: string | null;
@@ -156,12 +162,13 @@ describe('OrgSwitcher (unified control)', () => {
 
     expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
     // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
-    await waitFor(() => expect(hrefSetter).toHaveBeenCalledWith('/devices'));
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
     expect(reloadMock).not.toHaveBeenCalled();
+    expect(hrefSetter).not.toHaveBeenCalled();
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
   });
 
-  it('reloads in place when switching orgs from a non-detail page', async () => {
+  it('soft-navigates in place (no reload) when switching orgs from a non-detail page', async () => {
     const { reloadMock, hrefSetter } = stubLocation('/devices');
 
     render(<OrgSwitcher />);
@@ -169,9 +176,24 @@ describe('OrgSwitcher (unified control)', () => {
     openDropdownAndClickOrg('Org B');
 
     expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
-    await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
+    expect(reloadMock).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
+  });
+
+  it('clears the switching spinner once the soft navigation settles (the island persists across it)', async () => {
+    stubLocation('/devices');
+    let settle: () => void = () => {};
+    navigateToMock.mockImplementationOnce(() => new Promise<'soft'>((resolve) => { settle = () => resolve('soft'); }));
+
+    render(<OrgSwitcher />);
+    openDropdownAndClickOrg('Org B');
+
+    const trigger = screen.getByTestId('org-switcher-trigger');
+    await waitFor(() => expect(trigger).toHaveProperty('disabled', true));
+    settle();
+    await waitFor(() => expect(trigger).toHaveProperty('disabled', false));
   });
 
   it('does nothing when clicking the already-selected organization', () => {
@@ -218,7 +240,7 @@ describe('OrgSwitcher (unified control)', () => {
     expect(screen.queryByTestId('org-scope-all')).toBeNull();
   });
 
-  it('clicking the fleet row clears the selection and reloads', async () => {
+  it('clicking the fleet row clears the selection and soft-navigates', async () => {
     const { reloadMock } = stubLocation('/devices');
 
     render(<OrgSwitcher />);
@@ -226,7 +248,8 @@ describe('OrgSwitcher (unified control)', () => {
     fireEvent.click(screen.getByTestId('org-option-all'));
 
     expect(selectAllOrgsMock).toHaveBeenCalled();
-    await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
+    expect(reloadMock).not.toHaveBeenCalled();
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
   });
 

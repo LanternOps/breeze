@@ -5,11 +5,31 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    execute: vi.fn(),
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db)),
   },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+const authorizationMocks = vi.hoisted(() => ({
+  capture: vi.fn(),
+  authorize: vi.fn(),
+}));
+
+vi.mock('./recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: authorizationMocks.capture,
+  authorizeQueuedRecoveryWork: authorizationMocks.authorize,
+  RecoveryAuthorizationDeniedError: class RecoveryAuthorizationDeniedError extends Error {
+    readonly retriable = false;
+    constructor(readonly code: string) { super(code); }
+  },
+  RecoveryAuthorizationTransientError: class RecoveryAuthorizationTransientError extends Error {
+    readonly retriable = true;
+    constructor(readonly code: string) { super(code); }
+  },
 }));
 
 vi.mock('./commandQueue', () => ({
@@ -30,7 +50,18 @@ vi.mock('../jobs/drExecutionWorker', () => ({
 import { db } from '../db';
 import { queueCommandForExecution } from './commandQueue';
 import { enqueueDrExecutionReconcile } from '../jobs/drExecutionWorker';
-import { createDrExecutionAndEnqueue, reconcileDrExecution } from './drExecutionService';
+import {
+  classifyDrExecutionAuthorizationError,
+  createDrExecutionAndEnqueue,
+  DrRecoveryAuthorizationDeniedError,
+  reconcileDrExecution,
+  resolveDrGroupAuthorizationRefs,
+} from './drExecutionService';
+import {
+  RecoveryAuthorizationDeniedError,
+  RecoveryAuthorizationTransientError,
+} from './recoveryAuthorizationSubject';
+import { ResilienceAuthorizationError } from './resilienceSiteAuthorization';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PLAN_ID = '22222222-2222-2222-2222-222222222222';
@@ -84,26 +115,105 @@ function groupRow() {
 describe('drExecutionService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.execute).mockReset();
+    vi.mocked(db.transaction).mockReset();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db));
+    vi.mocked(db.execute).mockResolvedValue({ rows: [] } as any);
+    authorizationMocks.capture.mockResolvedValue({
+      authorizationPrincipalKind: 'user_session',
+      authorizationPrincipalId: 'user-1',
+      authorizationGrantRevision: 'grant-1',
+      authorizationState: 'pending',
+      authorizationDenialCode: null,
+      authorizationCheckedAt: null,
+    });
+    authorizationMocks.authorize.mockResolvedValue({ subject: {}, resources: { resources: [] } });
+  });
+
+  it('resolves every target and explicit source before authorization', async () => {
+    const refs = await resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      devices: [DEVICE_ID, '66666666-6666-6666-6666-666666666666'],
+      restoreConfig: {
+        commandType: 'bmr_recover',
+        payload: {
+          sourceSnapshotId: '77777777-7777-7777-7777-777777777777',
+          recoveryTokenId: '88888888-8888-8888-8888-888888888888',
+        },
+      },
+    }, ORG_ID, { resolveProviderSnapshotId: vi.fn() });
+
+    expect(refs).toEqual([
+      { kind: 'device', id: DEVICE_ID, role: 'target' },
+      { kind: 'device', id: '66666666-6666-6666-6666-666666666666', role: 'target' },
+      { kind: 'snapshot', id: '77777777-7777-7777-7777-777777777777', role: 'source' },
+      { kind: 'recovery_token', id: '88888888-8888-8888-8888-888888888888', role: 'source' },
+    ]);
+  });
+
+  it('fails closed when a provider snapshot id is ambiguous', async () => {
+    await expect(resolveDrGroupAuthorizationRefs(groupRow(), ORG_ID, {
+      resolveProviderSnapshotId: vi.fn().mockRejectedValue(new Error('ambiguous_snapshot_reference')),
+    })).rejects.toThrow('ambiguous_snapshot_reference');
+  });
+
+  it('fails the entire group when any target device id is malformed', async () => {
+    await expect(resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      devices: [DEVICE_ID, 'malformed-device'],
+    }, ORG_ID, {
+      resolveProviderSnapshotId: vi.fn().mockResolvedValue('77777777-7777-7777-7777-777777777777'),
+    })).rejects.toThrow('resource_not_found');
+  });
+
+  it('normalizes duplicate target ids to one authorization and command identity', async () => {
+    const refs = await resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      devices: [DEVICE_ID, DEVICE_ID],
+    }, ORG_ID, {
+      resolveProviderSnapshotId: vi.fn().mockResolvedValue('77777777-7777-7777-7777-777777777777'),
+    });
+
+    expect(refs.filter((ref) => ref.kind === 'device')).toEqual([
+      { kind: 'device', id: DEVICE_ID, role: 'target' },
+    ]);
   });
 
   it('creates a DR execution with initial manifest and enqueues reconciliation', async () => {
-    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([groupRow()]) as any);
-    vi.mocked(db.insert).mockImplementationOnce(() => createInsertChain([{
+    const insertChain = createInsertChain([{
       id: EXECUTION_ID,
       planId: PLAN_ID,
       orgId: ORG_ID,
       executionType: 'rehearsal',
       status: 'pending',
-    }]) as any);
+    }]);
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{
+        id: '77777777-7777-7777-7777-777777777777',
+        snapshotId: 'snap-1',
+      }]) as any);
+    vi.mocked(db.insert).mockImplementationOnce(() => insertChain as any);
 
     const execution = await createDrExecutionAndEnqueue({
       planId: PLAN_ID,
       orgId: ORG_ID,
       executionType: 'rehearsal',
       initiatedBy: 'user-1',
+      auth: { principal: { kind: 'user_session' } } as any,
     });
 
     expect(execution?.id).toBe(EXECUTION_ID);
+    expect(authorizationMocks.capture).toHaveBeenCalled();
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({
+      authorizationPrincipalKind: 'user_session',
+      authorizationPrincipalId: 'user-1',
+      authorizationGrantRevision: 'grant-1',
+      authorizationState: 'pending',
+    }));
     expect(enqueueDrExecutionReconcile).toHaveBeenCalledWith(EXECUTION_ID);
   });
 
@@ -121,7 +231,11 @@ describe('drExecutionService', () => {
         results: null,
         createdAt: new Date('2026-03-30T00:00:00.000Z'),
       }]) as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any);
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{
+        id: '77777777-7777-7777-7777-777777777777',
+        snapshotId: 'snap-1',
+      }]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
       command: {
         id: 'cmd-1',
@@ -147,7 +261,98 @@ describe('drExecutionService', () => {
       // cross-tenant guard so a foreign device id in devices[] is refused.
       { userId: 'user-1', expectedOrgId: ORG_ID }
     );
-    expect(execution?.status).toBe('running');
-    expect(enqueueDrExecutionReconcile).toHaveBeenCalledWith(EXECUTION_ID, 2000);
+    expect(execution.execution?.status).toBe('running');
+    expect(execution?.nextDelayMs).toBe(2000);
+    expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
+  });
+
+  it('durably denies revoked authority before any command or running transition', async () => {
+    const deniedExecution = {
+      id: EXECUTION_ID,
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      executionType: 'rehearsal',
+      status: 'pending',
+      startedAt: new Date('2026-03-30T00:00:00.000Z'),
+      completedAt: null,
+      initiatedBy: 'user-1',
+      results: { authorizedDeviceIds: [DEVICE_ID] },
+      createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      authorizationPrincipalKind: 'user_session',
+      authorizationPrincipalId: 'user-1',
+      authorizationGrantRevision: 'grant-1',
+      authorizationState: 'pending',
+      authorizationDenialCode: null,
+      authorizationCheckedAt: null,
+    };
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([deniedExecution]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{
+        id: '77777777-7777-7777-7777-777777777777',
+        snapshotId: 'snap-1',
+      }]) as any);
+    authorizationMocks.authorize.mockRejectedValueOnce(Object.assign(new Error('base_permission_denied'), {
+      code: 'base_permission_denied',
+      retriable: false,
+    }));
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([{
+      ...deniedExecution,
+      status: 'failed',
+      authorizationState: 'denied',
+      authorizationDenialCode: 'base_permission_denied',
+    }]) as any);
+
+    const outcome = await reconcileDrExecution(EXECUTION_ID);
+
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(outcome.execution?.status).toBe('failed');
+    expect(outcome.execution?.authorizationState).toBe('denied');
+    expect(outcome.nextDelayMs).toBeNull();
+  });
+});
+
+// ── #3653 ───────────────────────────────────────────────────────────────────
+// The DR execute route previously let these escape to the global Hono handler,
+// which renders every non-HTTPException as a 500. The site barrier still held
+// (it throws before the execution row is written) but the caller was told the
+// server had broken, and every denial raised a Sentry event.
+describe('classifyDrExecutionAuthorizationError', () => {
+  it('carries a resilience denial status and code through unchanged', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new ResilienceAuthorizationError(403, 'site_access_denied'),
+    )).toEqual({ status: 403, code: 'site_access_denied' });
+
+    expect(classifyDrExecutionAuthorizationError(
+      new ResilienceAuthorizationError(404, 'resource_not_found'),
+    )).toEqual({ status: 404, code: 'resource_not_found' });
+  });
+
+  it('reports a recovery-subject denial as 403', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new RecoveryAuthorizationDeniedError('base_permission_denied'),
+    )).toEqual({ status: 403, code: 'base_permission_denied' });
+  });
+
+  it('reports an unavailable authorization dependency as 503, not a denial', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new RecoveryAuthorizationTransientError('authorization_dependency_unavailable'),
+    )).toEqual({ status: 503, code: 'authorization_dependency_unavailable' });
+  });
+
+  it('separates an unresolvable plan reference from a site denial', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new DrRecoveryAuthorizationDeniedError('resource_not_found'),
+    )).toEqual({ status: 404, code: 'resource_not_found' });
+
+    expect(classifyDrExecutionAuthorizationError(
+      new DrRecoveryAuthorizationDeniedError('ambiguous_snapshot_reference'),
+    )).toEqual({ status: 400, code: 'ambiguous_snapshot_reference' });
+  });
+
+  it('returns null for anything else so real faults keep propagating', () => {
+    expect(classifyDrExecutionAuthorizationError(new Error('redis is on fire'))).toBeNull();
+    expect(classifyDrExecutionAuthorizationError('nope')).toBeNull();
+    expect(classifyDrExecutionAuthorizationError(undefined)).toBeNull();
   });
 });

@@ -94,7 +94,9 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
     expect(firstText(res)).toContain('approval_required');
     // postToolUse still records the denied attempt (isError = true).
     expect(onPostToolUse).toHaveBeenCalledWith(
-      'm365_reset_password', expect.any(Object), expect.stringContaining('approval_required'), true, 0, undefined,
+      // Trailing `undefined`s are `sealed` and `handoff` (#5107) — an ordinary
+      // denial is neither a sealed-credential result nor an approval handoff.
+      'm365_reset_password', expect.any(Object), expect.stringContaining('approval_required'), true, 0, undefined, undefined,
     );
   });
 
@@ -116,6 +118,8 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
       JSON.stringify({ data: { reset: true } }),
       false,
       expect.any(Number),
+      // `sealed`, then `handoff` (#5107) — a normal success is neither.
+      undefined,
       undefined,
     );
   });

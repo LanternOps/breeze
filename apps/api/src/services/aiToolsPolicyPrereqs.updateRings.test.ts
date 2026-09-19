@@ -32,9 +32,15 @@ vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
 vi.mock('../db/schema/backup', () => ({ backupConfigs: {}, backupProfiles: {} }));
 vi.mock('../db/schema/configurationPolicies', () => ({ configPolicyBackupSettings: {} }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: vi.fn(async () => []),
+  schedulePeripheralPolicyDevices: vi.fn(async () => undefined),
+}));
 vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
   auditSoftwarePolicyToolEvent: vi.fn(),
   summarizeEnforcementChange: vi.fn(() => ({})),
+  remediationOptionsArmsAutoInstall: vi.fn(() => false),
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE: 'AI_AUTO_INSTALL_REFUSAL_MESSAGE (mocked)',
 }));
 
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';

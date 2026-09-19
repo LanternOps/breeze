@@ -217,9 +217,9 @@ describe('AddDeviceModal', () => {
     // the parent POST must NOT carry it (PR #739 review finding #1).
     expect(createBody.ttlMinutes).toBeUndefined();
 
-    // Default 24h (1440) flows to the installer (child) download URL.
+    // Default 30 days (43200) flows to the installer (child) download URL.
     const dlCall = fetchWithAuthMock.mock.calls[1];
-    expect(String(dlCall[0])).toContain('ttlMinutes=1440');
+    expect(String(dlCall[0])).toContain('ttlMinutes=43200');
   });
 
   // #2992 — the parent key must NOT carry the device count. max_usage is an
@@ -338,7 +338,7 @@ describe('AddDeviceModal', () => {
       expect(screen.getByDisplayValue(/public-download/)).toBeDefined();
     });
 
-    expect(screen.getByText(/Valid for 1 download/)).toBeDefined();
+    expect(screen.getByText(/Valid for 50 downloads/)).toBeDefined();
 
     // ttlMinutes goes on the installer-link (child) body, not the parent POST.
     const createCall = fetchWithAuthMock.mock.calls[0];
@@ -525,12 +525,12 @@ describe('AddDeviceModal', () => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/devices/onboarding-token',
         // #1108: the request now carries a device count → maxUsage.
-        // #2777: …and an explicit TTL (default 24h) with the JSON content type
+        // #2777: …and an explicit TTL (default 30 days) with the JSON content type
         // the route's strict validator requires.
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 1, ttlMinutes: 1440 }),
+          body: JSON.stringify({ count: 50, ttlMinutes: 43200 }),
         })
       );
     });
@@ -593,7 +593,7 @@ describe('AddDeviceModal', () => {
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 5, ttlMinutes: 1440 }),
+          body: JSON.stringify({ count: 5, ttlMinutes: 43200 }),
         })
       );
     });
@@ -687,8 +687,8 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
-    expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('1440');
-    expect((screen.getByTestId('device-count') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('43200');
+    expect((screen.getByTestId('device-count') as HTMLInputElement).value).toBe('50');
     expect(optionLabels('link-ttl')).toEqual([
       '1 hour',
       '24 hours',

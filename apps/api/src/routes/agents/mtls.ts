@@ -1,15 +1,15 @@
+import { lockMfaPolicySettings } from '../../services/mfaPolicyActivation';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { lookup as dnsLookup } from 'dns/promises';
-import { isIP } from 'net';
 import { db, withSystemDbAccessContext } from '../../db';
 import { isAgentTenantActive } from '../../services/tenantStatus';
 import { devices, organizations, deviceMtlsCertificates } from '../../db/schema';
-import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, type AuthContext } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
@@ -27,6 +27,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
+import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../../services/ipRanges';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import {
   getAgentMtlsBindingMode,
@@ -142,13 +143,19 @@ async function validateLogForwardingTarget(rawUrl: string | undefined): Promise<
   if (!hostname) {
     return ['Elasticsearch URL hostname is required'];
   }
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  // Shared with every other URL validator (`ipRanges.classifyNonRoutableHostname`)
+  // so the list of loopback aliases cannot drift between them. `.internal` is
+  // deliberately NOT refused: a self-host operator may name a cluster in a
+  // corporate `.internal` zone, and the address checks below still apply to it.
+  const hostnameKind = classifyNonRoutableHostname(hostname);
+  if (hostnameKind === 'loopback' || hostnameKind === 'mdns-local' || hostnameKind === 'metadata') {
     return ['Elasticsearch URL cannot target localhost or local network hostnames'];
   }
 
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0) {
-    return isPrivateIp(hostname)
+  // `isIpLiteralHost` also recognises the `inet_aton` short/octal/hex spellings
+  // of an IPv4 address, which a `net.isIP` gate would route to the DNS branch.
+  if (isIpLiteralHost(hostname)) {
+    return isPrivateIp(canonicalIpLiteral(hostname))
       ? ['Elasticsearch URL cannot target private, loopback, link-local, or reserved addresses']
       : [];
   }
@@ -1499,6 +1506,12 @@ mtlsRoutes.post(
 
 mtlsRoutes.get('/quarantined', authMiddleware, requirePermission('devices', 'read'), async (c) => {
   const auth = c.get('auth') as { orgId?: string; orgCondition?: (col: any) => any };
+  const permissions = c.get('permissions') as { allowedSiteIds?: string[] };
+  const siteCondition = permissions.allowedSiteIds === undefined
+    ? undefined
+    : permissions.allowedSiteIds.length === 0
+      ? sql`false`
+      : inArray(devices.siteId, permissions.allowedSiteIds);
 
   const rows = await db
     .select({
@@ -1513,7 +1526,8 @@ mtlsRoutes.get('/quarantined', authMiddleware, requirePermission('devices', 'rea
     .where(
       and(
         eq(devices.status, 'quarantined'),
-        auth.orgCondition ? auth.orgCondition(devices.orgId) : undefined
+        auth.orgCondition ? auth.orgCondition(devices.orgId) : undefined,
+        siteCondition,
       )
     )
     .orderBy(desc(devices.quarantinedAt))
@@ -1522,14 +1536,15 @@ mtlsRoutes.get('/quarantined', authMiddleware, requirePermission('devices', 'rea
   return c.json({ devices: rows });
 });
 
-mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'write'), zValidator('param', deviceIdParamSchema), async (c) => {
+mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'write'), requireMfa(), zValidator('param', deviceIdParamSchema), async (c) => {
   const { id: deviceId } = c.req.valid('param');
-  const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
+  const auth = c.get('auth') as AuthContext;
 
   const [device] = await db
     .select({
       id: devices.id,
       orgId: devices.orgId,
+      siteId: devices.siteId,
       agentId: devices.agentId,
       hostname: devices.hostname,
       status: devices.status,
@@ -1542,17 +1557,22 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  if (auth.canAccessOrg && !auth.canAccessOrg(device.orgId)) {
-    return c.json({ error: 'Not authorized' }, 403);
+  if (!auth.canAccessOrg(device.orgId)) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const permissions = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
+  if (!permissions || (permissions.allowedSiteIds !== undefined && (
+    typeof device.siteId !== 'string' || !permissions.allowedSiteIds.includes(device.siteId)
+  ))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   if (device.status !== 'quarantined') {
     return c.json({ error: 'Device is not quarantined' }, 400);
   }
 
-  const mtlsCert = await issueMtlsCertForDevice(device.id, device.orgId);
-
-  await db
+  const approved = await db
     .update(devices)
     .set({
       status: 'online',
@@ -1560,7 +1580,24 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
       quarantinedReason: null,
       updatedAt: new Date(),
     })
-    .where(eq(devices.id, device.id));
+    .where(and(
+      eq(devices.id, device.id),
+      eq(devices.orgId, device.orgId),
+      eq(devices.status, 'quarantined'),
+      device.siteId === null
+        ? isNull(devices.siteId)
+        : eq(devices.siteId, device.siteId),
+      permissions.allowedSiteIds === undefined
+        ? undefined
+        : inArray(devices.siteId, permissions.allowedSiteIds),
+    ))
+    .returning({ id: devices.id });
+
+  if (approved.length !== 1) {
+    return c.json({ error: 'Device quarantine state changed' }, 409);
+  }
+
+  const mtlsCert = await issueMtlsCertForDevice(device.id, device.orgId);
 
   writeAuditEvent(c, {
     orgId: device.orgId,
@@ -1579,14 +1616,15 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
   });
 });
 
-mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write'), zValidator('param', deviceIdParamSchema), async (c) => {
+mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write'), requireMfa(), zValidator('param', deviceIdParamSchema), async (c) => {
   const { id: deviceId } = c.req.valid('param');
-  const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
+  const auth = c.get('auth') as AuthContext;
 
   const [device] = await db
     .select({
       id: devices.id,
       orgId: devices.orgId,
+      siteId: devices.siteId,
       agentId: devices.agentId,
       hostname: devices.hostname,
       status: devices.status,
@@ -1599,21 +1637,45 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  if (auth.canAccessOrg && !auth.canAccessOrg(device.orgId)) {
-    return c.json({ error: 'Not authorized' }, 403);
+  if (!auth.canAccessOrg(device.orgId)) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const permissions = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
+  if (!permissions || (permissions.allowedSiteIds !== undefined && (
+    typeof device.siteId !== 'string' || !permissions.allowedSiteIds.includes(device.siteId)
+  ))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   if (device.status !== 'quarantined') {
     return c.json({ error: 'Device is not quarantined' }, 400);
   }
 
-  await db
+  const denied = await db
     .update(devices)
     .set({
       status: 'decommissioned',
+      // #2787 item 4 — same removal stamp every other decommission path writes.
+      decommissionedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(devices.id, device.id));
+    .where(and(
+      eq(devices.id, device.id),
+      eq(devices.orgId, device.orgId),
+      eq(devices.status, 'quarantined'),
+      device.siteId === null
+        ? isNull(devices.siteId)
+        : eq(devices.siteId, device.siteId),
+      permissions.allowedSiteIds === undefined
+        ? undefined
+        : inArray(devices.siteId, permissions.allowedSiteIds),
+    ))
+    .returning({ id: devices.id });
+
+  if (denied.length !== 1) {
+    return c.json({ error: 'Device quarantine state changed' }, 409);
+  }
 
   // Tear down any live remote-control session to a device we're decommissioning.
   // Never throws; a TEARDOWN_FAILED is recorded in the audit trail below.
@@ -1652,6 +1714,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)
@@ -1730,6 +1793,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)
@@ -1825,6 +1889,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)

@@ -4,14 +4,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeviceClassSegment } from './DeviceClassSegment';
 
 describe('DeviceClassSegment', () => {
-  const counts = { all: 12, agent: 10, network: 2 };
+  const counts = { all: 15, agent: 10, network: 2, manual: 3 };
 
-  it('renders the three segments with their counts', () => {
+  it('renders the four segments with their counts', () => {
     render(<DeviceClassSegment value="all" counts={counts} onChange={() => {}} />);
     expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('All');
-    expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('12');
+    expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('15');
     expect(screen.getByTestId('device-class-segment-agent')).toHaveTextContent('10');
     expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('2');
+    expect(screen.getByTestId('device-class-segment-manual')).toHaveTextContent('3');
   });
 
   it('marks the active segment as pressed', () => {

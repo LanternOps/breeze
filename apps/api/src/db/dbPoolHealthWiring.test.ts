@@ -55,14 +55,12 @@ describe('db pool-health watchdog bootstrap wiring (index.ts)', () => {
     // console regardless.
     const start = indexSource.indexOf("app.get('/health/ready'");
     expect(start).toBeGreaterThan(-1);
-    // Bound the block at the NEXT top-level route registration rather than at a
-    // named one: `/ready` is mounted with `app.route(...)`, not `app.get(...)`,
-    // so an `indexOf` on a specific handler returns -1 and silently widens the
-    // slice to the rest of the file.
+    // Bound the alias registration at the next route. The detailed response is
+    // constructed by the shared readiness handler, not inline in index.ts.
     const next = indexSource.slice(start + 1).search(/\napp\.(get|post|route|use)\(/);
     const readyBlock = indexSource.slice(start, next === -1 ? undefined : start + 1 + next);
 
-    expect(readyBlock).toContain('const allOk = Object.values(checks)');
+    expect(readyBlock).toContain("app.get('/health/ready', readinessHandler)");
     expect(readyBlock).not.toMatch(/DbPoolHealth/);
     expect(readyBlock).not.toMatch(/poolHealth/i);
     expect(readyBlock).not.toMatch(/connectTimeout/i);

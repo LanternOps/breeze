@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import Animated, {
@@ -18,9 +18,17 @@ interface Props {
   size?: number;
   stroke?: number;
   onExpire?: () => void;
+  /**
+   * Content centered inside the ring (#5115). Previously this component
+   * rendered as a bare outline with nothing inside it — reported as looking
+   * like a stray loading spinner rather than an expiry indicator. Passing
+   * the requester avatar here keeps the countdown visual while making the
+   * ring read as decoration around an identity, not content of its own.
+   */
+  children?: ReactNode;
 }
 
-export function CountdownRing({ expiresAt, size = 56, stroke = 3, onExpire }: Props) {
+export function CountdownRing({ expiresAt, size = 56, stroke = 3, onExpire, children }: Props) {
   const theme = useApprovalTheme('dark');
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -48,7 +56,7 @@ export function CountdownRing({ expiresAt, size = 56, stroke = 3, onExpire }: Pr
   }));
 
   return (
-    <View>
+    <View style={{ width: size, height: size }}>
       <Svg width={size} height={size}>
         <Circle
           cx={size / 2}
@@ -71,6 +79,22 @@ export function CountdownRing({ expiresAt, size = 56, stroke = 3, onExpire }: Pr
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
+      {children ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {children}
+        </View>
+      ) : null}
     </View>
   );
 }

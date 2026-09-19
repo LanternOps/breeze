@@ -55,8 +55,8 @@ function mockEndpoints(options: { profiles?: ProfileSeed[]; changes?: unknown[];
       }
       return Promise.resolve(jsonResponse({ data: options.profiles }));
     }
-    if (url.startsWith('/devices')) {
-      return Promise.resolve(jsonResponse({ data: [] }));
+    if (url.startsWith('/devices/options?')) {
+      return Promise.resolve(jsonResponse({ data: [], page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } }));
     }
     if (url.startsWith('/network/changes')) {
       return Promise.resolve(jsonResponse({ data: options.changes ?? [] }));
@@ -270,8 +270,8 @@ describe('NetworkChangesPanel empty state', () => {
       if (url.startsWith('/discovery/profiles')) {
         return profilesPromise;
       }
-      if (url.startsWith('/devices')) {
-        return Promise.resolve(jsonResponse({ data: [] }));
+      if (url.startsWith('/devices/options?')) {
+        return Promise.resolve(jsonResponse({ data: [], page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } }));
       }
       if (url.startsWith('/network/changes')) {
         return Promise.resolve(jsonResponse({ data: [] }));

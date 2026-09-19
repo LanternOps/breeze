@@ -8,9 +8,11 @@ import {
 } from './stateStore';
 import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import {
+  checkExtensionMigrationParity,
   reconcileExtensionMigrations,
   type MigratableExtension,
 } from './migrator';
+import { hashSql } from '../db/autoMigrate';
 
 /**
  * Unit-runner tests (NO database). Only behaviour that decides WHETHER to touch
@@ -173,5 +175,60 @@ describe('reconcileExtensionMigrations — gates and validation (no DB)', () => 
         'replace',
       ),
     ).rejects.toThrow(/not permitted|must not|transaction/i);
+  });
+});
+
+/**
+ * `checkExtensionMigrationParity` — the `mode: 'worker'` read-only
+ * counterpart to `reconcileExtensionMigrations` (wave 3.5d-b, #4086). Unlike
+ * that function, this one takes no lock and runs no transaction — it is a
+ * single `SELECT`, so a minimal fake exposing just `.unsafe()` is enough
+ * (no need for the integration suite's real Postgres).
+ */
+describe('checkExtensionMigrationParity', () => {
+  function fakeSql(rows: Array<{ filename: string; checksum: string }>): postgres.Sql {
+    return { unsafe: async () => rows } as unknown as postgres.Sql;
+  }
+
+  const fileA = { filename: '0001-init.sql', sql: 'CREATE TABLE demo_x (id int);' };
+  const fileB = { filename: '0002-add-column.sql', sql: 'ALTER TABLE demo_x ADD COLUMN y int;' };
+
+  it('reports no missing/mismatched entries when the ledger fully matches', async () => {
+    const sql = fakeSql([
+      { filename: 'demo/0001-init.sql', checksum: hashSql(fileA.sql) },
+      { filename: 'demo/0002-add-column.sql', checksum: hashSql(fileB.sql) },
+    ]);
+
+    const result = await checkExtensionMigrationParity({ name: 'demo', migrations: [fileA, fileB] }, sql);
+
+    expect(result).toEqual({ missing: [], mismatched: [] });
+  });
+
+  it('reports a file absent from the ledger as missing', async () => {
+    const sql = fakeSql([{ filename: 'demo/0001-init.sql', checksum: hashSql(fileA.sql) }]);
+
+    const result = await checkExtensionMigrationParity({ name: 'demo', migrations: [fileA, fileB] }, sql);
+
+    expect(result.missing).toEqual(['demo/0002-add-column.sql']);
+    expect(result.mismatched).toEqual([]);
+  });
+
+  it('reports a present file whose checksum no longer matches as mismatched', async () => {
+    const sql = fakeSql([
+      { filename: 'demo/0001-init.sql', checksum: 'stale-checksum-from-a-different-file-content' },
+    ]);
+
+    const result = await checkExtensionMigrationParity({ name: 'demo', migrations: [fileA] }, sql);
+
+    expect(result.missing).toEqual([]);
+    expect(result.mismatched).toEqual(['demo/0001-init.sql']);
+  });
+
+  it('reports empty parity for an extension with no on-disk migrations', async () => {
+    const sql = fakeSql([]);
+
+    const result = await checkExtensionMigrationParity({ name: 'demo', migrations: [] }, sql);
+
+    expect(result).toEqual({ missing: [], mismatched: [] });
   });
 });

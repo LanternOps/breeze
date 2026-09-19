@@ -187,169 +187,28 @@ describe('policyManagement routes', () => {
   });
 
   // ----------------------------------------------------------------
-  // POST /:id/activate (actions.ts)
+  // Retired legacy execution routes (security hardening): POST
+  // /:id/activate, /:id/evaluate, and /:id/remediate bypassed the MFA +
+  // automations:write + site-scoped-target authority contract enforced by
+  // the modern manual automation trigger (`POST /automations/:id/trigger`).
+  // They are removed outright rather than replaced — callers migrate to the
+  // automation trigger endpoint. Hono's default "no matching route" behavior
+  // for an unregistered path is a 404, so that is what a caller now gets.
   // ----------------------------------------------------------------
-  describe('POST /policies/:id/activate', () => {
-    it('should activate a policy', async () => {
-      const policy = makePolicy({ enabled: false });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: true }])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.enabled).toBe(true);
-    });
-
-    it('should write a policy.activate audit event', async () => {
-      const policy = makePolicy({ enabled: false });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: true }])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      expect(writeRouteAudit).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: 'policy.activate',
-          resourceType: 'policy',
-          resourceId: POLICY_ID,
-          resourceName: policy.name,
-          orgId: ORG_ID,
-        })
-      );
-    });
-
-    it('should return 404 for non-existent policy', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(404);
-    });
-
-    // ----------------------------------------------------------------
-    // Partner-wide dual-ownership gate (#2129): a policy with orgId null +
-    // partnerId set is only mutable by a partner-scope caller whose
-    // partnerOrgAccess is 'all' (or system scope). PR review flagged this
-    // app-layer 403 as unit-untested — only real-DB integration suites (not
-    // run in the required CI job) covered it.
-    // ----------------------------------------------------------------
-    it('should return 403 activating a partner-wide policy when the partner caller lacks partnerOrgAccess=all', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', {
-          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
-          scope: 'partner',
-          orgId: null,
-          partnerId: PARTNER_ID,
-          partnerOrgAccess: 'selected',
-          accessibleOrgIds: [ORG_ID],
-          canAccessOrg: (orgId: string) => orgId === ORG_ID
+  describe('retired legacy policy execution routes', () => {
+    it.each(['activate', 'evaluate', 'remediate'])(
+      'POST /policies/:id/%s no longer exists (404, no db access)',
+      async (action) => {
+        const res = await app.request(`/policies/${POLICY_ID}/${action}`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' }
         });
-        return next();
-      });
 
-      const policy = makePolicy({ orgId: null, partnerId: PARTNER_ID, enabled: false });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(403);
-      const body = await res.json();
-      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
-      expect(db.update).not.toHaveBeenCalled();
-    });
-
-    it('should allow activating a partner-wide policy when the partner caller has partnerOrgAccess=all and a matching partnerId', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', {
-          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
-          scope: 'partner',
-          orgId: null,
-          partnerId: PARTNER_ID,
-          partnerOrgAccess: 'all',
-          accessibleOrgIds: [ORG_ID],
-          canAccessOrg: (orgId: string) => orgId === ORG_ID
-        });
-        return next();
-      });
-
-      const policy = makePolicy({ orgId: null, partnerId: PARTNER_ID, enabled: false });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: true }])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.enabled).toBe(true);
-      expect(db.update).toHaveBeenCalledTimes(1);
-    });
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      }
+    );
   });
 
   // ----------------------------------------------------------------
@@ -420,117 +279,15 @@ describe('policyManagement routes', () => {
   });
 
   // ----------------------------------------------------------------
-  // POST /:id/evaluate (actions.ts)
-  // ----------------------------------------------------------------
-  describe('POST /policies/:id/evaluate', () => {
-    it('should evaluate an enabled policy', async () => {
-      const policy = makePolicy({ enabled: true });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/evaluate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.devicesEvaluated).toBe(5);
-    });
-
-    it('should reject evaluating a disabled policy', async () => {
-      const policy = makePolicy({ enabled: false });
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/evaluate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toContain('disabled');
-    });
-
-    it('should return 404 for non-existent policy', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/evaluate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // ----------------------------------------------------------------
-  // POST /:id/remediate (actions.ts)
-  // ----------------------------------------------------------------
-  describe('POST /policies/:id/remediate', () => {
-    it('should return 400 when no remediation automation configured', async () => {
-      const policy = makePolicy();
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([policy])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/remediate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toContain('No remediation automation');
-    });
-
-    it('should return 404 for non-existent policy', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/policies/${POLICY_ID}/remediate`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // ----------------------------------------------------------------
   // RBAC permission gate (added with the requirePermission fix). requireScope
-  // alone only checks tenancy tier, so a read-only role would pass. Each action
-  // route now also requires a devices permission; assert a caller lacking it
-  // gets 403 before any policy state is read or mutated.
+  // alone only checks tenancy tier, so a read-only role would pass. The
+  // surviving action route (deactivate) still requires a devices permission;
+  // assert a caller lacking it gets 403 before any policy state is read or
+  // mutated. (activate/evaluate/remediate are retired above — they 404
+  // before any permission gate runs at all.)
   // ----------------------------------------------------------------
   describe('RBAC permission gate', () => {
-    it.each(['activate', 'deactivate', 'evaluate', 'remediate'])(
+    it.each(['deactivate'])(
       'should return 403 on POST /:id/%s when caller lacks the required permission',
       async (action) => {
         (globalThis as any).__denyPermission = true;

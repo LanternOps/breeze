@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ShieldCheck, RefreshCw } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import "../../lib/i18n";
 
 type ComplianceRow = {
@@ -41,9 +42,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 function formatTimestamp(value: string | null, timezone?: string): string {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatDateTime(value, { timeZone: timezone });
 }
 
 export default function DeviceComplianceTab({

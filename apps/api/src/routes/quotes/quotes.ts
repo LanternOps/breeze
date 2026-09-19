@@ -15,6 +15,7 @@ import {
   createQuote, cloneQuote, reviseQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
+  refreshQuoteDeviceCounts, quoteDeviceSetEstimate,
 } from '../../services/quoteService';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
@@ -244,6 +245,16 @@ quoteCrudRoutes.patch('/:id/lines/:lineId/move', scopes, writePerm, zValidator('
 });
 quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), async (c) => {
   try { const p = c.req.valid('param'); await removeLine(p.id, p.lineId, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.post('/:id/lines/refresh-device-counts', scopes, writePerm, zValidator('param', idParam), async (c) => {
+  try { return c.json({ data: await refreshQuoteDeviceCounts(c.req.valid('param').id, quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+// Read permission is quotes:read, not devices:read, following the contract
+// estimate precedent: quote access entitles the caller to the derived count.
+quoteCrudRoutes.get('/:id/device-set-estimate', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  try { return c.json({ data: await quoteDeviceSetEstimate(c.req.valid('param').id, quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 

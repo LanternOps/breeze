@@ -1,0 +1,457 @@
+package heartbeat
+
+import (
+	"encoding/json"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/workerpool"
+)
+
+// #3525 script_cancel: bypass lane, structured outcome, helper fan-out.
+
+// newTestHeartbeatWithPool builds a Heartbeat whose worker pool is as small as
+// production can legitimately get: MaxConcurrentCommands clamps to a floor of 1
+// (config/validate.go).
+func newTestHeartbeatWithPool(workers, queue int) *Heartbeat {
+	h := &Heartbeat{
+		executor: executor.New(nil),
+		pool:     workerpool.New(workers, queue),
+	}
+	h.accepting.Store(true)
+	return h
+}
+
+func cancelCommand(id, executionID string, graceSeconds int) Command {
+	return Command{
+		ID:   id,
+		Type: tools.CmdScriptCancel,
+		Payload: map[string]any{
+			"executionId":  executionID,
+			"graceSeconds": float64(graceSeconds),
+		},
+	}
+}
+
+// cancelPayload decodes the structured body tools.NewSuccessResult marshals
+// into Stdout. That is the wire the server reads it off.
+func cancelPayload(t *testing.T, result tools.CommandResult) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+		t.Fatalf("result carried no structured payload (%v): %+v", err, result)
+	}
+	return payload
+}
+
+func outcomeOf(t *testing.T, result tools.CommandResult) string {
+	t.Helper()
+	outcome, _ := cancelPayload(t, result)["outcome"].(string)
+	return outcome
+}
+
+// saturatePool blocks every worker AND fills the queue, so any further Submit
+// is rejected outright ("command rejected, worker pool full").
+//
+// Each worker signals when it has actually picked its task up, rather than the
+// test sleeping and hoping: a fixed sleep under CI contention can leave the
+// pool un-saturated and turn these into false passes (or false failures).
+func saturatePool(t *testing.T, h *Heartbeat, workers, queue int) {
+	t.Helper()
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
+
+	picked := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		if !h.pool.Submit(func() { picked <- struct{}{}; <-blocker }) {
+			t.Fatalf("could not occupy worker %d", i)
+		}
+	}
+	for i := 0; i < workers; i++ {
+		select {
+		case <-picked:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("worker %d never picked up its task", i)
+		}
+	}
+	// Every worker is now parked, so these can only sit in the queue.
+	for i := 0; i < queue; i++ {
+		if !h.pool.Submit(func() { <-blocker }) {
+			t.Fatalf("could not fill queue slot %d", i)
+		}
+	}
+	// Proof the pool really is saturated: the next submit must be rejected.
+	if h.pool.Submit(func() {}) {
+		t.Fatal("the pool accepted another task; it is not saturated and these tests would prove nothing")
+	}
+}
+
+func TestScriptCancelBypassesTheWorkerPool(t *testing.T) {
+	// A cancel that goes through the pool queues behind the very script it must
+	// stop — or is rejected outright once the queue is full.
+	h := newTestHeartbeatWithPool(1, 1)
+	saturatePool(t, h, 1, 1)
+
+	done := make(chan tools.CommandResult, 1)
+	go func() { done <- h.executeCommandViaPool(cancelCommand("cmd-bypass", "no-such-exec", 0)) }()
+
+	select {
+	case result := <-done:
+		if result.Status != "completed" {
+			t.Fatalf("cancel starved behind the pool: %+v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel never completed while the worker pool was saturated")
+	}
+}
+
+func TestScriptListRunningBypassesTheWorkerPool(t *testing.T) {
+	h := newTestHeartbeatWithPool(1, 1)
+	saturatePool(t, h, 1, 1)
+
+	done := make(chan tools.CommandResult, 1)
+	go func() {
+		done <- h.executeCommandViaPool(Command{ID: "cmd-list", Type: tools.CmdScriptListRunning})
+	}()
+	select {
+	case result := <-done:
+		if result.Status != "completed" {
+			t.Fatalf("script_list_running starved behind the pool: %+v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("script_list_running never completed while the worker pool was saturated")
+	}
+}
+
+func TestOrdinaryCommandsStillGoThroughTheWorkerPool(t *testing.T) {
+	// The bypass must stay narrow: a saturated pool still rejects a script, or
+	// the pool stops bounding concurrency at all.
+	h := newTestHeartbeatWithPool(1, 1)
+	saturatePool(t, h, 1, 1)
+
+	result := h.executeCommandViaPool(Command{ID: "cmd-script", Type: tools.CmdScript, Payload: map[string]any{"content": "echo hi"}})
+	if result.Status != "failed" || result.Error != "command rejected, worker pool full" {
+		t.Fatalf("a script slipped past the saturated pool: %+v", result)
+	}
+}
+
+func TestScriptCancelReportsNotFoundAsASuccessResult(t *testing.T) {
+	// An unknown id used to return tools.NewErrorResult, which the server cannot
+	// distinguish from a failed kill — and the two close the execution's
+	// cancel_state differently (unconfirmed vs failed).
+	h := newTestHeartbeat(nil)
+	result := handleScriptCancel(h, cancelCommand("cmd-nf", "nonexistent", 5))
+	if result.Status != "completed" {
+		t.Fatalf("want a success result carrying the outcome, got %+v", result)
+	}
+	if got := outcomeOf(t, result); got != "not_found" {
+		t.Fatalf("outcome = %q, want not_found", got)
+	}
+	if payload := cancelPayload(t, result); payload["cancelled"] != false {
+		t.Fatalf("cancelled = %v for not_found; only a proven stop may claim true", payload["cancelled"])
+	}
+}
+
+func TestScriptCancelReportsTerminatedForARunningScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	h := newTestHeartbeat(nil)
+	scriptDone := make(chan tools.CommandResult, 1)
+	go func() {
+		scriptDone <- handleScript(h, Command{
+			ID:   "cmd-run-1",
+			Type: tools.CmdScript,
+			Payload: map[string]any{
+				"content":        "for _ in $(seq 1 600); do sleep 0.1; done",
+				"language":       "bash",
+				"timeoutSeconds": 120,
+			},
+		})
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.executor.ListRunning()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("script never registered as running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	result := handleScriptCancel(h, cancelCommand("cmd-cancel-1", "cmd-run-1", 0))
+	if result.Status != "completed" {
+		t.Fatalf("cancel failed: %+v", result)
+	}
+	if got := outcomeOf(t, result); got != "terminated" {
+		t.Fatalf("outcome = %q, want terminated", got)
+	}
+	if cancelPayload(t, result)["cancelled"] != true {
+		t.Fatal("cancelled = false after a proven termination")
+	}
+
+	select {
+	case <-scriptDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the script kept running after a terminated cancel")
+	}
+}
+
+func TestCancelledScriptResultCarriesTheMarkerOnTheWire(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	// Closer 1 of the server state machine reads result.cancelled and
+	// result.cancelledByCommandId as siblings of status/exitCode. If the marker
+	// stops at the executor boundary, a confirmed cancel can never be proven by
+	// the script's OWN result and every race resolves as `unconfirmed`.
+	h := newTestHeartbeat(nil)
+	scriptDone := make(chan tools.CommandResult, 1)
+	go func() {
+		scriptDone <- handleScript(h, Command{
+			ID:   "cmd-marker",
+			Type: tools.CmdScript,
+			Payload: map[string]any{
+				"content":        "for _ in $(seq 1 600); do sleep 0.1; done",
+				"language":       "bash",
+				"timeoutSeconds": 120,
+			},
+		})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.executor.ListRunning()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("script never registered as running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := outcomeOf(t, handleScriptCancel(h, cancelCommand("cc-1", "cmd-marker", 0))); got != "terminated" {
+		t.Fatalf("cancel outcome = %q, want terminated", got)
+	}
+
+	var scriptResult tools.CommandResult
+	select {
+	case scriptResult = <-scriptDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the script never returned a result")
+	}
+	if !scriptResult.Cancelled {
+		t.Fatalf("script result carries no cancellation marker: %+v", scriptResult)
+	}
+	if scriptResult.CancelledByCommandID != "cc-1" {
+		t.Fatalf("cancelledByCommandId = %q, want cc-1", scriptResult.CancelledByCommandID)
+	}
+
+	ws := toWSCommandResult("cmd-marker", scriptResult)
+	if !ws.Cancelled || ws.CancelledByCommandID != "cc-1" {
+		t.Fatalf("the marker was dropped converting to the WebSocket result: %+v", ws)
+	}
+}
+
+func TestHelperCancellationMarkerCrossesTheIPCHop(t *testing.T) {
+	// A runAs=user script is killed inside the HELPER's executor, so its marker
+	// reaches the server only if executeViaUserHelper lifts it out of the
+	// nested result onto the top-level command result.
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "marker-hop", []string{"run_as_user"})
+
+	go func() {
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			return
+		}
+		resultPayload, _ := json.Marshal(map[string]any{
+			"exitCode":             -1,
+			"stdout":               "",
+			"stderr":               "",
+			"cancelled":            true,
+			"cancelledByCommandId": "cc-helper",
+		})
+		payload, _ := json.Marshal(ipc.IPCCommandResult{CommandID: env.ID, Status: "failed", Result: resultPayload})
+		_ = clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeCommandResult, Payload: payload})
+	}()
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	result := h.executeViaUserHelper(session, Command{
+		ID:      "cmd-helper-script",
+		Type:    tools.CmdScript,
+		Payload: map[string]any{"content": "sleep 60", "language": "bash", "timeoutSeconds": 120},
+	}, 10)
+
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	if !result.Cancelled {
+		t.Fatalf("the helper's cancellation marker was dropped at the IPC hop: %+v", result)
+	}
+	if result.CancelledByCommandID != "cc-helper" {
+		t.Fatalf("cancelledByCommandId = %q, want cc-helper", result.CancelledByCommandID)
+	}
+}
+
+func TestScriptCancelMalformedPayloadStaysAnError(t *testing.T) {
+	h := newTestHeartbeat(nil)
+	result := handleScriptCancel(h, Command{ID: "cmd-bad", Type: tools.CmdScriptCancel, Payload: map[string]any{}})
+	if result.Status != "failed" {
+		t.Fatalf("a malformed payload must still fail the command, got %+v", result)
+	}
+}
+
+// respondToHelperCancel plays a user helper answering one script_cancel with
+// the given structured outcome.
+func respondToHelperCancel(clientIPC *ipc.Conn, executionID, outcome string, cancelled bool) {
+	go func() {
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			return
+		}
+		resultPayload, _ := json.Marshal(map[string]any{
+			"executionId": executionID,
+			"outcome":     outcome,
+			"cancelled":   cancelled,
+		})
+		payload, _ := json.Marshal(ipc.IPCCommandResult{CommandID: env.ID, Status: "completed", Result: resultPayload})
+		_ = clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeCommandResult, Payload: payload})
+	}()
+}
+
+func TestNotFoundMeansNoHelperAndNoLocalExecutorHasIt(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "helper-owns", []string{"run_as_user"})
+
+	respondToHelperCancel(clientIPC, "cmd-9", "terminated", true)
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	result := handleScriptCancel(h, cancelCommand("cmd-9", "cmd-9", 0))
+
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	got := outcomeOf(t, result)
+	if got == "not_found" {
+		t.Fatal("reported not_found while a helper still owned the process")
+	}
+	if got != "terminated" {
+		t.Fatalf("outcome = %q, want the helper's terminated", got)
+	}
+}
+
+func TestHelperNotFoundOnlyWinsWhenEveryHelperAgrees(t *testing.T) {
+	// One helper answers not_found, the other cannot be reached at all. The
+	// unreachable helper may still own the process, so the combined answer must
+	// not be not_found — that would let the server revert the execution as if
+	// nothing had ever been running.
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	answering := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-a", []string{"run_as_user"})
+
+	respondToHelperCancel(clientIPC, "cmd-x", "not_found", false)
+	go answering.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	deadServer, deadClient := createTestSocketPair(t)
+	deadSession := sessionbroker.NewSession(ipc.NewConn(deadServer), 1001, "1001", "bob", "quartz", "helper-dead", []string{"run_as_user"})
+	_ = deadServer.Close()
+	_ = deadClient.Close()
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, answering, deadSession))
+	result := handleScriptCancel(h, cancelCommand("cmd-x", "cmd-x", 0))
+
+	_ = answering.Close()
+	_ = clientIPC.Close()
+
+	// An unreachable helper grades kill_failed, which the server records as
+	// `failed` — not the `unconfirmed` revert that not_found would cause.
+	if got := outcomeOf(t, result); got != "kill_failed" {
+		t.Fatalf("outcome = %q, want kill_failed when one helper could not be reached: %+v", got, result)
+	}
+}
+
+func TestEveryHelperSayingNotFoundIsNotFound(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-only", []string{"run_as_user"})
+
+	respondToHelperCancel(clientIPC, "cmd-y", "not_found", false)
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	result := handleScriptCancel(h, cancelCommand("cmd-y", "cmd-y", 0))
+
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	if got := outcomeOf(t, result); got != "not_found" {
+		t.Fatalf("outcome = %q, want not_found when the only helper also has no such execution", got)
+	}
+}
+
+func TestHelperIsNotConsultedWhenTheLocalExecutorHandledTheCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-idle", []string{"run_as_user"})
+	consulted := make(chan struct{}, 1)
+	go func() {
+		_ = clientIPC.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := clientIPC.Recv(); err == nil {
+			consulted <- struct{}{}
+		}
+	}()
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	go func() {
+		_, _ = h.executor.Execute(executor.ScriptExecution{
+			ID:         "local-1",
+			ScriptType: executor.ScriptTypeBash,
+			Script:     "for _ in $(seq 1 600); do sleep 0.1; done",
+			Timeout:    120,
+		})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.executor.ListRunning()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("script never registered as running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	result := handleScriptCancel(h, cancelCommand("cmd-local", "local-1", 0))
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	if got := outcomeOf(t, result); got != "terminated" {
+		t.Fatalf("outcome = %q, want terminated", got)
+	}
+	select {
+	case <-consulted:
+		t.Fatal("fanned out to a user helper although the local executor owned the execution")
+	default:
+	}
+}
+
+func TestHelperIPCTimeoutExceedsTheMaximumGrace(t *testing.T) {
+	// Max grace is 30s; the helper IPC wait used to be 10s+5s = 15s, so a 30s
+	// grace would time out the IPC before the helper finished escalating.
+	if got := helperCommandTimeout(scriptCancelHelperTimeoutSeconds); got <= executor.MaxGraceSeconds*time.Second {
+		t.Fatalf("helper cancel IPC timeout %v must exceed the %ds max grace", got, executor.MaxGraceSeconds)
+	}
+}

@@ -2,16 +2,13 @@ import { Pressable, Text, View } from 'react-native';
 
 import { useApprovalTheme, spacing, radii, type } from '../../../theme';
 import { haptic } from '../../../lib/motion';
+// Chip copy lives in a pure `.ts` sibling so it is unit-testable — the mobile
+// Vitest config includes only `src/**/*.test.ts`, never `.tsx` (#5362).
+import { COLD_OPEN_SUGGESTIONS } from './coldOpenSuggestions';
 
 interface Props {
   onPick: (text: string) => void;
 }
-
-const SUGGESTIONS = [
-  'What broke last night?',
-  'Show fleet status',
-  'What ran via MCP today?',
-] as const;
 
 export function ColdOpenChips({ onPick }: Props) {
   const theme = useApprovalTheme('dark');
@@ -27,7 +24,7 @@ export function ColdOpenChips({ onPick }: Props) {
         Ask Breeze.
       </Text>
       <View style={{ gap: spacing[2] }}>
-        {SUGGESTIONS.map((s) => (
+        {COLD_OPEN_SUGGESTIONS.map((s) => (
           <Pressable
             key={s}
             onPress={() => {

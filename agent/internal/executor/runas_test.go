@@ -127,6 +127,17 @@ func TestExecuteBashScriptAsCurrentUser(t *testing.T) {
 	}
 }
 
+// interpreterColdStartTimeoutSeconds is the execution budget for a test that
+// spawns a real interpreter on every CI platform. The first python spawn on a
+// cold windows-latest runner has overrun a 10s budget (#5631: Actions runs
+// 34629262570, 34653983980) — a cold interpreter load, likely compounded by
+// on-access scanning and the other package test binaries go test runs in
+// parallel. The test asserts executor behaviour (environment reaches the
+// script, exit code is captured), not interpreter latency, so the budget is
+// deliberately generous: a healthy run still finishes in well under a second,
+// and a genuinely hung executor still fails, just later.
+const interpreterColdStartTimeoutSeconds = 120
+
 func TestExecutePythonScript(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
@@ -137,14 +148,14 @@ func TestExecutePythonScript(t *testing.T) {
 		ID:         "exec-python",
 		ScriptType: ScriptTypePython,
 		Script:     "import os; print(os.getenv('BREEZE_EXECUTION_ID', 'missing'))",
-		Timeout:    10,
+		Timeout:    interpreterColdStartTimeoutSeconds,
 	})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.ExitCode != 0 {
-		t.Fatalf("exit code %d, stderr: %s", result.ExitCode, result.Stderr)
+		t.Fatalf("exit code %d, error: %q, stderr: %s", result.ExitCode, result.Error, result.Stderr)
 	}
 	if !strings.Contains(result.Stdout, "exec-python") {
 		t.Fatalf("expected BREEZE_EXECUTION_ID in output, got %q", result.Stdout)
@@ -296,16 +307,11 @@ func TestExecuteTimestamps(t *testing.T) {
 	}
 }
 
-func TestCancelNonexistentExecution(t *testing.T) {
-	e := newTestExecutor()
-	err := e.Cancel("nonexistent-id")
-	if err == nil {
-		t.Fatal("expected error cancelling nonexistent execution")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
+// An unknown execution id is no longer an error — it is the structured
+// CancelNotFound outcome, asserted by
+// TestCancelReportsNotFoundForAnUnknownID in cancel_test.go. The server needs
+// to tell "we have no such execution" apart from "the kill failed" (#3525),
+// and an error string cannot carry that.
 
 func TestListRunningEmpty(t *testing.T) {
 	e := newTestExecutor()

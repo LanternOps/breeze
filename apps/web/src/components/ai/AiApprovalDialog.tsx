@@ -13,6 +13,9 @@ import { useTranslation } from "react-i18next";
 import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
 import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
+import { useRunContextLabel } from "../common/RunContext";
+import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
+import type { AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -49,13 +52,24 @@ interface AiApprovalDialogProps {
    * requester is NOT an eligible approver (multi-approver org), this card
    * shows a waiting state only. When the server fanned the approval row out
    * to the requester (sole-operator branch), selfApprovalRequestId is set
-   * and the card offers an inline L3 self-approve: WebAuthn ceremony
-   * (Touch ID / Windows Hello) + proof POST — satisfying, not bypassing,
-   * the decide handler's assurance-level >= 3 gate.
+   * and the card offers an inline self-approve. Whether that runs a WebAuthn
+   * ceremony (Touch ID / Windows Hello) + proof POST depends on
+   * `approvalScope`: four_eyes always does, satisfying — not bypassing — the
+   * decide handler's assurance-level >= 3 gate; supervised does not, because
+   * that gate no longer applies to it (#5600).
    */
   intentBacked?: boolean;
   /** The viewer's own fanned-out approval row (sole-operator case). */
   selfApprovalRequestId?: string;
+  /**
+   * The intent's server-classified approval scope (#5600). `'supervised'` means
+   * this self-approve IS the whole authorization and the server no longer
+   * requires an L3 WebAuthn proof for it, so the decide helper skips the
+   * ceremony (retrying with it only if an enforcing partner policy answers
+   * `step_up_required`). `'four_eyes'` — and an absent scope, e.g. an older
+   * server — keeps the always-ceremony behaviour.
+   */
+  approvalScope?: AiApprovalScope;
   /**
    * The intent's real server-side expiry (ISO). When present, the countdown is
    * anchored to it rather than a mount-relative constant — so the card cannot
@@ -64,8 +78,62 @@ interface AiApprovalDialogProps {
    * AUTO_DENY_MS behavior.
    */
   intentExpiresAt?: string;
+  /**
+   * #4888 — the run context a script launch will execute in, resolved
+   * server-side (assistant override, else the script's saved default).
+   * Rendered as its own always-visible row rather than left inside the
+   * collapsed parameter JSON: an assistant choosing SYSTEM for a script whose
+   * saved default is the logged-in user is a privilege escalation, and the
+   * person approving it is the one control that stands between the model's
+   * choice and a machine-level run. Absent for every non-script tool.
+   */
+  scriptRunContext?: AiScriptRunContext | null;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
+}
+
+/**
+ * The run-context row. Deliberately NOT collapsible and NOT part of the
+ * parameter blob — an approver skimming the card must see the privilege level
+ * without expanding anything. The override case gets the louder styling
+ * because "the assistant asked for SYSTEM even though this script normally
+ * runs as the user" is the sentence the whole feature exists to put in front
+ * of a human.
+ */
+export function RunContextRow({ ctx }: { ctx: AiScriptRunContext }) {
+  const { t } = useTranslation("ai");
+  const runContextLabel = useRunContextLabel();
+  const label = runContextLabel(ctx.effectiveRunAs, ctx.targetSessionId);
+  const overriddenDefault =
+    ctx.chosenByAssistant && ctx.scriptDefaultRunAs != null
+      && ctx.scriptDefaultRunAs !== ctx.effectiveRunAs
+      ? ctx.scriptDefaultRunAs
+      : null;
+
+  return (
+    <div
+      data-testid="approval-run-context"
+      className={cn(
+        "mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs",
+        overriddenDefault
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+          : "border-border bg-muted/40 text-gray-700 dark:text-gray-300",
+      )}
+    >
+      <ShieldAlert className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      <span className="opacity-70">{t("aiApprovalDialog.runContextLabel")}</span>
+      <span className="font-semibold">{label}</span>
+      <span className="opacity-70">
+        {overriddenDefault
+          ? t("aiApprovalDialog.runContextOverrides", {
+              context: runContextLabel(overriddenDefault),
+            })
+          : ctx.chosenByAssistant
+            ? t("aiApprovalDialog.runContextChosenByAssistant")
+            : t("aiApprovalDialog.runContextScriptDefault")}
+      </span>
+    </div>
+  );
 }
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -179,7 +247,9 @@ export default function AiApprovalDialog({
   onReject,
   intentBacked,
   selfApprovalRequestId,
+  approvalScope,
   intentExpiresAt,
+  scriptRunContext,
   onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
@@ -211,7 +281,10 @@ export default function AiApprovalDialog({
     decideStateRef.current = intentDecideState;
   }, [intentDecideState]);
 
-  const handleIntentDecision = async (decision: "approve" | "deny") => {
+  const handleIntentDecision = async (
+    decision: "approve" | "deny",
+    opts?: { acknowledgedPatterns?: string[] },
+  ) => {
     // Deny must stay reachable from `needs_device` (it needs no WebAuthn
     // proof — the helper skips the ceremony and the server's L3 gate only
     // guards `approved`). Only an in-flight or already-settled decision
@@ -228,7 +301,16 @@ export default function AiApprovalDialog({
     setIntentDecideState("deciding");
     setIntentError(null);
     try {
-      const outcome = await decideIntentApproval(selfApprovalRequestId, decision);
+      const outcome = await decideIntentApproval(
+        selfApprovalRequestId,
+        decision,
+        undefined,
+        approvalScope,
+        // Only ever passed for a proposal-backed run's Approve — omitted
+        // entirely (not even as `undefined`) so a plain intent decide keeps
+        // calling with its original 4 arguments.
+        ...(opts?.acknowledgedPatterns ? [opts] : []),
+      );
       if (outcome === "needs_device") {
         setIntentDecideState("needs_device");
         return;
@@ -349,6 +431,18 @@ export default function AiApprovalDialog({
 
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
+  // W03 (#5612): a proposal-backed run_script carries only a proposal id and
+  // a device list in `input` — spec §2.1 names that raw JSON dump as the
+  // defect being fixed, since the approver never sees the code or the
+  // reviewer's findings that way. The card REPLACES the dump, it never sits
+  // above it.
+  const proposalId = typeof input.proposalId === "string" ? input.proposalId : null;
+  // A four-eyes card whose viewer is NOT the fanned-out approver has no way to
+  // act on it here (handleIntentDecision no-ops without selfApprovalRequestId)
+  // — force the card read-only rather than trust the DTO's own `canDecide`,
+  // which reflects role/permission only, not "is this the approval row fanned
+  // out to you". Someone else decides it on the /approvals surface instead.
+  const proposalReadOnly = Boolean(intentBacked) && !canSelfDecide;
 
   const isUrgent = showCountdown && remainingMs < 30_000;
 
@@ -422,21 +516,39 @@ export default function AiApprovalDialog({
         </p>
       )}
 
+      {scriptRunContext && <RunContextRow ctx={scriptRunContext} />}
+
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 
-      {hasVisibleInput && (
-        <details className="mt-2 group">
-          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
-            {t("aiApprovalDialog.showParameters")}
-          </summary>
-          <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
-            {JSON.stringify(visibleInput, null, 2)}
-          </pre>
-        </details>
+      {proposalId ? (
+        <ScriptProposalApprovalCard
+          proposalId={proposalId}
+          readOnly={proposalReadOnly}
+          onApprove={(acknowledgedPatterns) =>
+            intentBacked
+              ? void handleIntentDecision("approve", { acknowledgedPatterns })
+              : onApprove()
+          }
+          onReject={() => (intentBacked ? void handleIntentDecision("deny") : onReject())}
+          onChanged={onIntentDecided}
+        />
+      ) : (
+        hasVisibleInput && (
+          <details className="mt-2 group">
+            <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
+              {t("aiApprovalDialog.showParameters")}
+            </summary>
+            <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+              {JSON.stringify(visibleInput, null, 2)}
+            </pre>
+          </details>
+        )
       )}
 
-      {/* Legacy (non-intent) Tier-2 path — unchanged. */}
-      {!intentBacked && (
+      {/* Legacy (non-intent) Tier-2 path — unchanged, but suppressed for a
+          proposal-backed run: the card above already owns Approve/Reject via
+          its own onApprove/onReject callbacks. */}
+      {!intentBacked && !proposalId && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -472,8 +584,13 @@ export default function AiApprovalDialog({
           `needs_device` state only APPROVE is impossible (no registered
           authenticator ⇒ no L3 proof). Deny needs no proof at all, so it must
           survive — otherwise the user's only exits from `needs_device` are
-          registering an authenticator or waiting out the 5-minute expiry. */}
+          registering an authenticator or waiting out the 5-minute expiry.
+
+          Suppressed for a proposal-backed run: the card's own Approve/Deny
+          buttons call handleIntentDecision directly (see onApprove/onReject
+          above), so this row would otherwise duplicate them. */}
       {canSelfDecide &&
+        !proposalId &&
         intentDecideState !== "decided" &&
         intentDecideState !== "unavailable" && (
         <div className="mt-3 flex gap-2">

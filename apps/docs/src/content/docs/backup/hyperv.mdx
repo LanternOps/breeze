@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Breeze can discover, back up, and restore Hyper-V virtual machines directly from the Backup dashboard. VM backups support both application-consistent and crash-consistent modes, and incremental backups via Resilient Change Tracking (RCT).
+Breeze can discover, back up, and restore Hyper-V virtual machines directly from the Backup dashboard. Every backup is a full `Export-VM` of the VM, in either application-consistent or crash-consistent mode — there is no incremental backup and no use of Resilient Change Tracking (RCT).
 
 ---
 
@@ -17,10 +17,14 @@ Breeze can discover, back up, and restore Hyper-V virtual machines directly from
 Before you can back up VMs, Breeze needs to discover what's running on your Hyper-V hosts.
 
 <Steps>
-1. Go to **Operations > Backup > Hyper-V**.
+1. Go to **Backup > Device Backup > Hyper-V**.
 2. Click **Discover VMs** for the host device you want to scan.
 3. Breeze queries the Hyper-V host and populates the VM list.
 </Steps>
+
+<Aside type="caution">
+  Discovery is not automatic. A profile protects every VM on an assigned host, but only against the **discovered** inventory — scheduled runs don't query the host themselves. Run **Discover VMs** again after creating a new VM, or it won't be backed up until you do.
+</Aside>
 
 The VM list shows:
 
@@ -31,9 +35,8 @@ The VM list shows:
 | **CPU count** | Number of virtual processors assigned |
 | **Memory** | Allocated memory in MB |
 | **VHD count** | Number of virtual hard disks |
-| **RCT enabled** | Whether Resilient Change Tracking is available for incremental backups |
 
-Use the search box and state filter to find specific VMs.
+Use the search box and state filter to find specific VMs. There's no VM pick-list for backup — a profile protects everything discovered on its assigned hosts minus whatever you exclude (see [Scheduled Backup](#scheduled-backup) below).
 
 ---
 
@@ -44,21 +47,24 @@ Use the search box and state filter to find specific VMs.
 <Steps>
 1. On the **Hyper-V** tab, find the VM you want to back up.
 2. Click the **Backup** button on the VM row.
-3. Choose the export destination path.
-4. Select the consistency type:
-   - **Application-consistent** (default) — uses Hyper-V's VSS integration for a clean snapshot. Best for VMs running databases or Exchange.
-   - **Crash-consistent** — saves the VM state before export. Faster, but equivalent to pulling the power plug.
-5. Confirm to start the export.
+3. Select the consistency type:
+   - **Application-consistent** (default) — uses Hyper-V's own VSS integration. Because the running VM's memory state is captured as part of the export, a VM restored from an application-consistent backup comes back in **Saved** state, not Off.
+   - **Crash-consistent** — the agent saves the VM (`Save-VM`), exports it, then resumes it (`Start-VM`), minimizing how long the source VM is paused.
+4. Confirm to start the export.
 </Steps>
 
 The backup job appears in the Recent Jobs feed on the Overview tab.
 
+<Aside type="caution" title="No export destination path">
+  There's no field to choose where the export goes. Breeze stages it on the Hyper-V host's **system drive**, under the Windows system temp folder, before uploading — so a VM export needs free space on the system drive roughly equal to the VM's size. A configurable path and cleanup of the staging directory are tracked in [issue #5460](https://github.com/LanternOps/breeze/issues/5460).
+</Aside>
+
 ### Scheduled Backup
 
-To back up VMs automatically, create a [backup policy](/backup/policies/) with the **Hyper-V** mode. By default, all VMs on assigned hosts are included. Configure exclude lists in the policy to skip specific VMs (e.g., test or development VMs).
+To back up VMs automatically, create a [backup policy](/backup/policies/) with the **Hyper-V** mode. By default, every VM on an assigned host is included; there's no VM pick-list. Add VMs to the policy's exclude list to skip specific ones (e.g., test or development VMs).
 
 <Aside type="note">
-  Hyper-V mode uses **all-by-default targeting**. Newly created VMs on a host are automatically included in the next scheduled backup run. Add them to the exclude list if they shouldn't be backed up.
+  Hyper-V mode uses **all-by-default targeting**, but it's all-by-default against the **discovered** inventory, not a live scan of the host — see the discovery note above. A VM created after the last discovery scan isn't protected by a scheduled run until you discover it.
 </Aside>
 
 ---
@@ -76,11 +82,11 @@ Expand a VM row to see its checkpoint (snapshot) tree. Each checkpoint shows its
 2. The restore dialog walks you through:
    - **Select snapshot** — choose which backup snapshot to restore from
    - **Target host** — pick the Hyper-V host to import the VM onto (can be a different host)
-   - **VM name and ID** — keep the original name or rename. Toggle whether to generate a new VM ID.
+   - **VM name and ID** — keep the original name or rename. Toggle whether to generate a new VM ID (on by default).
 3. Review the settings and confirm.
 </Steps>
 
-The restore imports the exported VM onto the target host with a new VM ID (unless you chose to keep the original). The VM is created in an **Off** state — start it manually when you're ready.
+The restore does an `Import-VM -Copy` into the target host's **default** virtual machine and virtual hard disk paths — there's no option to import somewhere else today. Budget roughly **twice** the VM's size in free space on the host's system drive: the export is downloaded, then copied into place. The imported VM comes back in whatever state its backup captured — **Saved** for an application-consistent backup, **Off** for a crash-consistent one — start it manually when you're ready.
 
 ### Restore as New VM
 

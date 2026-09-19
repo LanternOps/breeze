@@ -181,6 +181,7 @@
     "title": "Titel",
     "severity": "Schweregrad",
     "status": "Status",
+    "aiVerdict": "KI-Einschätzung",
     "triggered": "Ausgelöst",
     "actions": "Aktionen",
     "noAlertsMatchYourFilters": "Keine Benachrichtigungen entsprechen Ihren Filtern.",
@@ -521,6 +522,25 @@
     "deleteFailed": "Vorlage konnte nicht gelöscht werden.",
     "deleted": "Vorlage gelöscht"
   },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Handlungsbedarf",
+      "transient_self_healed": "Selbst behoben",
+      "recurring_pattern": "Wiederkehrendes Muster",
+      "duplicate_of_group": "Duplikat",
+      "needs_human": "Manuelle Prüfung nötig"
+    },
+    "confidence": "{{pct}} % Konfidenz",
+    "feedbackUp": "Diese Einschätzung war hilfreich",
+    "feedbackDown": "Diese Einschätzung war nicht hilfreich",
+    "feedbackThanks": "Danke für Ihr Feedback",
+    "feedbackTaken": "Für diese Einschätzung wurde bereits Feedback abgegeben",
+    "feedbackFailed": "Feedback konnte nicht gespeichert werden",
+    "feedbackBy": "Feedback von {{name}}",
+    "hideNoise": "KI-Rauschen ausblenden",
+    "suggestionPending": "KI hat eine Aktion vorgeschlagen — in Freigaben prüfen",
+    "none": "Noch keine KI-Einschätzung"
+  },
   "alertsPage": {
     "loadingAlerts": "Benachrichtigungen werden geladen...",
     "tryAgain": "Versuchen Sie es erneut",
@@ -598,6 +618,7 @@
     "tabs": {
       "alerts": "Warnungen",
       "correlations": "Korrelationen",
+      "monitors": "Monitore",
       "rules": "Regeln",
       "channels": "Kanäle"
     }

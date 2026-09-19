@@ -182,7 +182,9 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     // corrected here, not relaxed — the exact key set is still pinned, and the
     // `name` slot is asserted to be present on every line (this seed leaves it
     // null, which is exactly the "description only" case #3319 kept working).
-    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,unitPrice')).toBe(true);
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,ticketNumber,unitPrice')).toBe(true);
+    // W08 (#4562): ticketNumber joins the DTO; source_type/source_id must still never appear.
+    expect(lines.every((line) => !('sourceType' in line) && !('sourceId' in line))).toBe(true);
     expect(lines.every((line) => 'name' in line)).toBe(true);
   });
 

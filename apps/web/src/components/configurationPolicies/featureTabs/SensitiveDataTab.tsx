@@ -100,13 +100,19 @@ export default function SensitiveDataTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
+  parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const DETECTION_CLASSES = createDetectionClasses();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  // #5080: inheritance display — mirrors PamTab.tsx. `effectiveLink` seeds the
+  // form from the parent's settings when this policy has no override of its
+  // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
+  // whenever isInherited is true.
+  const isInherited = !!parentLink && !existingLink;
+  const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<SensitiveDataSettings>(() => {
-    const stored = existingLink?.inlineSettings as
+    const stored = effectiveLink?.inlineSettings as
       | Partial<SensitiveDataSettings>
       | undefined;
     return normalizeSensitiveData({ ...defaults, ...stored });
@@ -116,15 +122,16 @@ export default function SensitiveDataTab({
   const [newFileType, setNewFileType] = useState("");
   const [newSuppressId, setNewSuppressId] = useState("");
   useEffect(() => {
-    if (existingLink?.inlineSettings) {
+    const link = existingLink ?? parentLink;
+    if (link?.inlineSettings) {
       setSettings((prev) =>
         normalizeSensitiveData({
           ...prev,
-          ...(existingLink.inlineSettings as Partial<SensitiveDataSettings>),
+          ...(link.inlineSettings as Partial<SensitiveDataSettings>),
         }),
       );
     }
-  }, [existingLink]);
+  }, [existingLink, parentLink]);
   const meta = FEATURE_META.sensitive_data;
   const update = <K extends keyof SensitiveDataSettings>(
     key: K,
@@ -165,7 +172,7 @@ export default function SensitiveDataTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "sensitive_data",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "sensitive_data");
@@ -175,16 +182,33 @@ export default function SensitiveDataTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "sensitive_data");
   };
+  // Revert = delete the child's own override link, falling back to the
+  // parent's (spec "Semantics"). Reported via onLinkChanged like every other
+  // remove path, so the detail page's own featureLinks state doesn't go stale.
+  const handleRevert = async () => {
+    if (!existingLink) return;
+    const ok = await remove(existingLink.id);
+    if (ok) onLinkChanged(null, "sensitive_data");
+  };
   return (
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
       icon={<ScanSearch className="h-5 w-5" />}
-      isConfigured={!!existingLink}
+      isConfigured={!!existingLink || isInherited}
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink ? handleRemove : undefined}
+      // Gated on THIS FEATURE's own parentLink, not the policy-level
+      // linkedPolicyId the older inline tabs use — see SecurityTab.tsx for the
+      // rationale (a policy-level gate would show "Revert to Parent" when the
+      // parent has no link for this feature, reverting to nothing).
+      onRemove={!parentLink ? handleRemove : undefined}
+      isInherited={isInherited}
+      onOverride={isInherited ? handleSave : undefined}
+      onRevert={
+        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
+      }
     >
       {/* Detection Classes */}
       <div>

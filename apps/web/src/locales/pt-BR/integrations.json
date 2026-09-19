@@ -42,6 +42,9 @@
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
       "grantsVerifiedAt": "Permissões verificadas"
     },
+    "upgrade": {
+      "banner": "Novas permissões do Microsoft 365 são necessárias para Acesso Condicional, Pontuação de Segurança e visibilidade de funções de administrador. Um administrador global precisa aprová-las."
+    },
     "actions": {
       "connect": "Conectar",
       "reconsent": "Conceder novamente",
@@ -53,7 +56,32 @@
       "retestSucceeded": "O novo teste da conexão foi concluído.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
-      "disconnectSucceeded": "A conexão do Breeze foi desconectada."
+      "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
+      "approveNewPermissions": "Aprovar novas permissões",
+      "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões.",
+      "syncNow": "Sincronizar agora",
+      "syncFailed": "Não foi possível solicitar a sincronização do locatário.",
+      "syncSucceeded": "Sincronização do locatário solicitada."
+    },
+    "sync": {
+      "lastSynced": "Última sincronização {{relative}}",
+      "counts": "{{users}} usuários · {{devices}} dispositivos",
+      "never": "Ainda não sincronizado",
+      "chips": {
+        "partial": "{{domain}}: parcial",
+        "needsConsent": "{{domain}}: precisa de consentimento",
+        "throttled": "{{domain}}: limitado",
+        "error": "{{domain}}: erro",
+        "unlicensed": "A atividade de entrada exige o Entra ID P1"
+      },
+      "domains": {
+        "users": "Usuários",
+        "signin_activity": "Atividade de entrada",
+        "intune_devices": "Dispositivos do Intune",
+        "ca_policies": "Acesso Condicional",
+        "skus": "Licenças",
+        "secure_score": "Pontuação de segurança"
+      }
     },
     "errors": {
       "consent_expired": "A sessão de consentimento expirou. Inicie o consentimento novamente.",
@@ -708,7 +736,53 @@
     "customerFailedCount_one": "{{count}} cliente não pôde ser importado",
     "customerFailedCount_other": "{{count}} clientes não puderam ser importados"
   },
+  "quickbooksMapping": {
+    "mappingTitle": "Mapeamento de clientes e itens",
+    "customers": "Clientes",
+    "items": "Itens",
+    "loadMappings": "Carregar mapeamentos",
+    "refreshMappings": "Atualizar mapeamentos",
+    "suggestedMatch": "Correspondência sugerida",
+    "ambiguousMatch": "Correspondência ambígua",
+    "noMatch": "Nenhuma correspondência",
+    "linkedMatch": "Vinculado",
+    "confirmed": "Confirmado",
+    "createNew": "Criar novo",
+    "unlink": "Desvincular",
+    "syncNow": "Sincronizar agora",
+    "notSynced": "Não sincronizado",
+    "notSyncedHint": "Confirmado no Breeze, ainda não enviado ao QuickBooks",
+    "inQuickbooks": "No QuickBooks",
+    "syncFailed": "Falha na sincronização",
+    "incomeAccount": "Conta de receita",
+    "incomeAccountRequired": "Defina uma conta de receita padrão antes de criar ou sincronizar itens no QuickBooks.",
+    "saveIncomeAccount": "Salvar conta de receita",
+    "mappingSaved": "Mapeamento salvo.",
+    "entitySynced": "Sincronizado com o QuickBooks.",
+    "confirmMatch": "Confirmar correspondência",
+    "noProposals": "Ainda não há registros para mapear. Carregue os mapeamentos para começar.",
+    "failedToLoadMappings": "Não foi possível carregar os mapeamentos do QuickBooks.",
+    "failedToLoadIncomeAccounts": "Não foi possível carregar as contas de receita.",
+    "failedToSaveMapping": "Não foi possível salvar o mapeamento.",
+    "failedToSyncEntity": "Não foi possível sincronizar com o QuickBooks.",
+    "failedToSaveIncomeAccount": "Não foi possível salvar a conta de receita.",
+    "incomeAccountSaved": "Conta de receita salva.",
+    "searchPlaceholder": "Pesquisar no QuickBooks",
+    "searching": "Pesquisando…",
+    "noCandidates": "Nenhuma correspondência no QuickBooks para essa pesquisa.",
+    "failedToSearchCandidates": "Falha ao pesquisar no QuickBooks.",
+    "syncedWithTaxVariance": "Sincronizado com diferença de imposto"
+  },
   "quickbooksIntegration": {
+    "owedTitle": "Operações pendentes do QuickBooks",
+    "owedLoadError": "Não foi possível carregar as operações pendentes. Recarregue a página para tentar novamente.",
+    "owedCount": "Operações pendentes: {{total}}",
+    "owedEmpty": "Nenhuma operação pendente",
+    "owedDelete": "Excluir pagamento",
+    "owedPush": "Enviar pagamento",
+    "owedViewInvoice": "Ver fatura",
+    "owedInvoiceUnavailable": "Fatura indisponível",
+    "owedAge": "Tempo de espera: {{minutes}} min",
     "quickbooksConnected": "QuickBooks conectados.",
     "quickbooksConnectionFailedPleaseTryAgain": "A conexão do QuickBooks falhou. Por favor, tente novamente.",
     "failedToStartTheQuickBooksConnection": "Falha ao iniciar a conexão do QuickBooks.",
@@ -734,7 +808,30 @@
     "reconnectQuickBooks": "Reconectar ao QuickBooks",
     "connectToQuickBooks": "Conectar ao QuickBooks",
     "automaticOnIssue": "Automático ao emitir",
-    "manual": "Manual"
+    "manual": "Manual",
+    "refreshSettings": "Atualizar configurações",
+    "settingsRefreshed": "Configurações do QuickBooks atualizadas.",
+    "failedToRefreshSettings": "Falha ao atualizar as configurações do QuickBooks.",
+    "homeCurrency": "Moeda base",
+    "multiCurrency": "Multimoeda",
+    "multiCurrencyUnknown": "Desconhecido — atualize as configurações para verificar",
+    "pullPayments": "Sincronização de pagamentos",
+    "pullPaymentsDescription": "Traga de volta para as faturas do Breeze os pagamentos registrados no QuickBooks.",
+    "pullPaymentsEnabled": "Os pagamentos serão sincronizados a partir do QuickBooks",
+    "pullPaymentsDisabled": "Os pagamentos não serão mais sincronizados a partir do QuickBooks",
+    "failedToUpdatePullPayments": "Não foi possível atualizar a configuração de sincronização de pagamentos.",
+    "pushPayments": "Envio de pagamentos",
+    "pushPaymentsDescription": "Enviar ao QuickBooks os pagamentos registrados no Breeze e removê-los quando forem estornados.",
+    "pushPaymentsEnabled": "Os pagamentos serão enviados ao QuickBooks",
+    "pushPaymentsDisabled": "Os pagamentos não serão mais enviados ao QuickBooks",
+    "failedToUpdatePushPayments": "Não foi possível atualizar a configuração de envio de pagamentos.",
+    "lastPaymentSync": "Última sincronização de pagamentos",
+    "never": "Nunca",
+    "syncNow": "Sincronizar agora",
+    "syncNowQueued": "Sincronização de pagamentos na fila.",
+    "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
+    "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão: ative Sincronização de pagamentos ou Envio de pagamentos para sincronizar agora.",
+    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
   },
   "securityIntegration": {
     "notConfigured": "Não configurado ",
@@ -814,7 +911,11 @@
     "couldNotRefresh": "Não foi possível atualizar os dados da conta Stripe.",
     "notCached": "Moeda ainda não armazenada em cache — atualize para buscá-la no Stripe.",
     "staleCache": "Não foi possível acessar o Stripe — exibindo os últimos detalhes da conta em cache.",
-    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá."
+    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá.",
+    "reconciliationError": "A reconciliação de estornos de pagamento não está em execução: {{reason}} Substitua a chave Stripe por uma que possa ler Eventos.",
+    "revocationCredentialUnavailable": "Não foi possível cancelar {{count}} link(s) de pagamento on-line porque a chave do Stripe que os criou não está mais disponível. Esses links ainda podem ser pagáveis no Stripe — cancele-os no seu painel do Stripe e reemita as faturas.",
+    "revocationChargedRepair": "{{count}} link(s) de pagamento on-line foram pagos depois que o Breeze pediu ao Stripe para cancelá-los. O dinheiro é real — concilie esses pagamentos (e reembolse se a fatura já tiver sido quitada de outra forma).",
+    "revocationBlocked": "Não foi possível cancelar {{count}} link(s) de pagamento on-line — o Stripe recusou a solicitação com a chave cadastrada. Salve uma chave do Stripe válida para tentar novamente, ou cancele os links no seu painel do Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",

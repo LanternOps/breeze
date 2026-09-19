@@ -1,0 +1,13 @@
+# Draft prerelease tags cut from a candidate branch whose commit is not yet
+# reachable from main.
+#
+# FORMAT  <tag><TAB><exact tag commit><TAB><integration ref><TAB><note>
+#
+# A row authorizes only a draft prerelease candidate with exact-version and
+# SHA-addressed artifacts. It does NOT authorize publication, deployment,
+# rollout, or latest/major/minor floating tags. Release creation and promotion
+# read the authoritative copy from origin/main; an unmerged branch cannot
+# authorize itself.
+v0.109.0-rc.1	d473815e434141135b23a6cf51fca715e8218938	#4105/#4060	Track E lab candidate
+v0.109.0-rc.2	fb1731e97c0d61a8c6d82420694daf186cfa44fa	#4105/#4060	Track E lab candidate
+v0.109.0-rc.3	a11d432a6e68288eceef050933483c231f5d40dc	#4105/#4060	Track E accepted lab-evidence candidate

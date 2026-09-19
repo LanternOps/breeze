@@ -49,12 +49,24 @@ export type LineUpdate = Partial<{
   quantity: number;
   unitPrice: number;
   taxable: boolean;
+  customerVisible: boolean;
   recurrence: QuoteLineRecurrence;
+  termMonths: number | null;
+  sortOrder: number;
   unitCost: number | null;
   sku: string | null;
   partNumber: string | null;
+  procurementSource: string | null;
+  vendorSku: string | null;
+  manufacturer: string | null;
   imageId: string | null;
   depositEligible: boolean;
+  deviceRoles: string[];
+  deviceGroupId: string;
+  siteId: string | null;
+  includedQuantity: number | null;
+  overageMode: 'bill' | 'flag' | null;
+  overageUnitPrice: number | null;
 }>;
 
 

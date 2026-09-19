@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useHashTab } from '@/lib/useHashState';
+import { Plus } from 'lucide-react';
+import { useHashState, useHashTab } from '@/lib/useHashState';
 import MonitoringAssetsDashboard from './MonitoringAssetsDashboard';
 import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
 import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
+import AddNetworkAssetModal from '../devices/AddNetworkAssetModal';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -20,6 +22,11 @@ export default function MonitoringPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
+  // Manual network asset (#5213 W02) — second entry point, mirroring the one
+  // on the Devices page. Own hash entry, same modal.
+  const [showAddNetworkAsset, setShowAddNetworkAsset] = useHashState<boolean>(false, (h) =>
+    h === 'add-network-asset' ? true : undefined,
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -47,11 +54,30 @@ export default function MonitoringPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{t('longTail.monitoring.MonitoringPage.title')}</h1>
-        <p className="text-muted-foreground">
-          {t('longTail.monitoring.MonitoringPage.description')}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.monitoring.MonitoringPage.title')}</h1>
+          <p className="text-muted-foreground">
+            {t('longTail.monitoring.MonitoringPage.description')}
+          </p>
+        </div>
+        {/* Second entry point for the manual-network-asset modal (#5213 W02),
+            alongside the Devices page one. Assets-tab only — Checks and
+            Templates aren't asset-creation surfaces. */}
+        {activeTab === 'assets' && (
+          <button
+            type="button"
+            data-testid="monitoring-page-add-network-asset"
+            onClick={() => {
+              window.location.hash = 'add-network-asset';
+              setShowAddNetworkAsset(true);
+            }}
+            className="flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            {t('devices:devicesPage.addMenu.addNetworkAsset')}
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -96,6 +122,14 @@ export default function MonitoringPage() {
           />
         </div>
       )}
+
+      <AddNetworkAssetModal
+        isOpen={showAddNetworkAsset}
+        onClose={() => {
+          window.location.hash = '';
+          setShowAddNetworkAsset(false);
+        }}
+      />
     </div>
   );
 }

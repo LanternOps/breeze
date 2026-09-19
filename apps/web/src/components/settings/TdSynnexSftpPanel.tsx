@@ -9,6 +9,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 // The API masks a populated password as this sentinel. It must never be echoed
 // back on save (the service skips it, but the input is kept empty regardless so
@@ -425,7 +426,7 @@ function TdSynnexSftpPanel() {
           <div>
             <dt className="text-xs text-muted-foreground">{t('tdSynnexSftpPanel.when')}</dt>
             <dd data-testid="td-synnex-sftp-sync-at">
-              {status?.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString() : '-'}
+              {status?.lastSyncAt ? formatDateTime(status.lastSyncAt) : '-'}
             </dd>
           </div>
           <div>

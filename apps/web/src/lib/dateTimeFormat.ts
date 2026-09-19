@@ -1,5 +1,5 @@
 import type { TimeFormat } from '@breeze/shared';
-import { normalizeTimeFormat, readTimeFormatPreference } from './appearance';
+import { normalizeTimeFormat, readResolvedTimeFormatPreference } from './appearance';
 import { resolvedFormattingLocale } from './i18n/format';
 
 type DateInput = string | number | Date | null | undefined;
@@ -64,8 +64,17 @@ function fallbackFor(value: DateInput, fallback?: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function getEffectiveTimeFormat(explicit?: TimeFormat | null): TimeFormat | undefined {
-  return normalizeTimeFormat(explicit) ?? readTimeFormatPreference();
+/**
+ * Resolves the hour cycle to format with, in priority order: an explicit
+ * per-call override, then the user's stored appearance preference, then the
+ * browser/OS's own 24h-vs-12h convention. Falling through all the way to
+ * browser detection (rather than stopping at "nothing stored") matters
+ * because otherwise an unset preference silently inherited the app UI
+ * locale's default hour cycle instead of the user's actual environment —
+ * e.g. a 24h-clock browser rendered AM/PM on the English UI locale (#4231).
+ */
+export function getEffectiveTimeFormat(explicit?: TimeFormat | null): TimeFormat {
+  return normalizeTimeFormat(explicit) ?? readResolvedTimeFormatPreference();
 }
 
 function formatIncludesTime(options: Intl.DateTimeFormatOptions, mode: FormatMode): boolean {
@@ -129,4 +138,38 @@ export function formatDate(value: DateInput, options: UserDateTimeFormatOptions 
     locale,
     intlOptions
   );
+}
+
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 3_600_000],
+  ['month', 30 * 24 * 3_600_000],
+  ['day', 24 * 3_600_000],
+  ['hour', 3_600_000],
+  ['minute', 60_000],
+];
+
+/**
+ * "3 hours ago" / "in 5 minutes", in the user's formatting locale.
+ *
+ * Anything inside a minute renders as the locale's "now" rather than
+ * "0 seconds ago", because a sync that finished 12 seconds ago and one that
+ * finished 50 seconds ago are the same fact to the reader.
+ */
+export function formatRelativeTime(
+  value: DateInput,
+  options: { now?: Date; locale?: Intl.LocalesArgument; fallback?: string } = {}
+): string {
+  const date = parseDate(value);
+  if (!date) return fallbackFor(value, options.fallback);
+  const locale = options.locale ?? resolvedFormattingLocale();
+  const deltaMs = date.getTime() - (options.now ?? new Date()).getTime();
+  try {
+    const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+    for (const [unit, ms] of RELATIVE_UNITS) {
+      if (Math.abs(deltaMs) >= ms) return formatter.format(Math.round(deltaMs / ms), unit);
+    }
+    return formatter.format(0, 'second');
+  } catch {
+    return fallbackFor(value, options.fallback);
+  }
 }

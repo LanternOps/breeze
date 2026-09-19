@@ -7,6 +7,7 @@
  * - configure_network_baseline (Tier 2): Create/update network baseline configuration
  * - get_ip_history (Tier 1): Query historical IP assignments
  * - network_discovery (Tier 3): Initiate a network discovery scan
+ * - get_network_asset_reachability (Tier 1): Sourced, dated reachability for a discovered asset
  */
 
 import { isIP } from 'node:net';
@@ -14,17 +15,27 @@ import { db } from '../db';
 import {
   devices,
   deviceIpHistory,
+  discoveredAssets,
   networkBaselines,
   networkChangeEvents,
   sites,
+  type NetworkBaselineScanSchedule,
 } from '../db/schema';
-import { eq, and, desc, gte, lte, SQL } from 'drizzle-orm';
+import { loadReachability } from './assetReachabilityLoader';
+import { deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
+import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule,
 } from './networkBaseline';
+import {
+  BaselineAuthorityUnsupportedError,
+  buildBaselineAuthorityEnvelope,
+  type BaselineAuthorityEnvelope,
+} from './networkBaselineAuthority';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -50,6 +61,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -59,19 +73,41 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
+/**
+ * Site is an application-layer authorization axis; organization RLS does not
+ * enforce it. `allowedSiteIds === undefined` is the explicit unrestricted
+ * sentinel. Any restricted context that cannot prove access fails closed.
+ */
+function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined): boolean {
+  if (auth.allowedSiteIds === undefined) return false;
+  return !auth.canAccessSite || !auth.canAccessSite(siteId);
 }
+
 
 // ============================================
 // Registration
 // ============================================
+
+/**
+ * SEC-2026-09-05-146 — same arming contract as the REST routes: an enabled
+ * recurring schedule created or changed through the AI/MCP tool is bound to the
+ * calling principal's live authority. Returns null when the schedule is
+ * disabled (nothing dispatches, so nothing needs an owner).
+ */
+async function armScheduleAuthority(
+  auth: AuthContext,
+  effect: { orgId: string; siteId: string; subnet: string; scanSchedule: NetworkBaselineScanSchedule },
+): Promise<BaselineAuthorityEnvelope | null> {
+  if (!effect.scanSchedule.enabled) return null;
+  return buildBaselineAuthorityEnvelope(auth, effect);
+}
 
 export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -114,9 +150,29 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ events: [], count: 0 });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
+
+      // Exact-device axis (#6096 I4) — UNCONDITIONAL, beside the site block and
+      // never inside it: a device-LESS analysis run carries `allowedDeviceIds`
+      // with no site axis at all. Change events name a device by
+      // `linkedDeviceId`, so a device-bound run would otherwise read every
+      // sibling finding at its own site. `inArray` also drops UNLINKED rows
+      // (rogue devices never matched to a fleet device): SQL `IN` is never true
+      // for NULL, and such a row is not attributable to the run's device.
+      const changeDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (changeDeviceScope) conditions.push(changeDeviceScope);
+
       if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
 
       const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
+      if (siteId && siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
+      }
       if (siteId) conditions.push(eq(networkChangeEvents.siteId, siteId));
 
       const baselineId = typeof input.baseline_id === 'string' ? input.baseline_id : undefined;
@@ -177,6 +233,18 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const conditions: SQL[] = [eq(networkChangeEvents.id, eventId)];
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Event not found or access denied' });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
+      // Exact-device axis (#6096 I4): acknowledging is a write on a finding
+      // about a specific device. Same shape as get_network_changes above —
+      // applied whether or not the site axis is set, and excluding unlinked
+      // rows for a device-restricted caller.
+      const ackDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (ackDeviceScope) conditions.push(ackDeviceScope);
 
       const [event] = await db
         .select()
@@ -185,6 +253,17 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!event) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+
+      // Defense in depth for malformed/stale fixtures and future query edits.
+      if (siteAccessDenied(auth, event.siteId)) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+      // Same, on the device axis: an unlinked (NULL) or sibling-linked event is
+      // outside a device-restricted caller's reach.
+      if (auth.allowedDeviceIds
+        && (!event.linkedDeviceId || !auth.allowedDeviceIds.includes(event.linkedDeviceId))) {
         return JSON.stringify({ error: 'Event not found or access denied' });
       }
 
@@ -244,9 +323,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       };
 
       if (baselineId) {
+        if (auth.allowedSiteIds !== undefined && auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
         const conditions: SQL[] = [eq(networkBaselines.id, baselineId)];
         const orgCondition = auth.orgCondition(networkBaselines.orgId);
         if (orgCondition) conditions.push(orgCondition);
+        if (auth.allowedSiteIds !== undefined) {
+          conditions.push(inArray(networkBaselines.siteId, auth.allowedSiteIds));
+        }
 
         const [baseline] = await db
           .select()
@@ -255,6 +340,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
 
         if (!baseline) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
+
+        // Defense in depth: never mutate a row outside the current site ceiling.
+        if (siteAccessDenied(auth, baseline.siteId)) {
           return JSON.stringify({ error: 'Baseline not found or access denied' });
         }
 
@@ -275,11 +365,31 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
         });
 
+        // SEC-146: re-arm the authority envelope and bump the generation for the
+        // changed schedule. Also the re-approval path for a legacy row.
+        let envelope: BaselineAuthorityEnvelope | null;
+        try {
+          envelope = await armScheduleAuthority(auth, {
+            orgId: baseline.orgId,
+            siteId: baseline.siteId,
+            subnet: baseline.subnet,
+            scanSchedule: nextSchedule,
+          });
+        } catch (error) {
+          if (error instanceof BaselineAuthorityUnsupportedError) {
+            return JSON.stringify({ error: error.message });
+          }
+          throw error;
+        }
+
         await db
           .update(networkBaselines)
           .set({
             scanSchedule: nextSchedule,
             alertSettings: nextAlertSettings,
+            ...(envelope ?? {}),
+            authorityGeneration: (baseline.authorityGeneration ?? 0) + 1,
+            scheduleBlockedReason: null,
             updatedAt: new Date()
           })
           .where(eq(networkBaselines.id, baseline.id));
@@ -297,6 +407,10 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       if (!auth.canAccessOrg(orgId)) {
         return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+
+      if (siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
       }
 
       const [site] = await db
@@ -326,6 +440,22 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // createCatalogItem in catalogService.ts). Suppressing the conflict at the
       // statement level keeps the transaction healthy; zero returned rows means
       // a baseline already exists for this org/site/subnet.
+      // SEC-146: bind the new recurring schedule to the calling principal.
+      let createEnvelope: BaselineAuthorityEnvelope | null;
+      try {
+        createEnvelope = await armScheduleAuthority(auth, {
+          orgId,
+          siteId,
+          subnet,
+          scanSchedule: nextSchedule,
+        });
+      } catch (error) {
+        if (error instanceof BaselineAuthorityUnsupportedError) {
+          return JSON.stringify({ error: error.message });
+        }
+        throw error;
+      }
+
       const [created] = await db
         .insert(networkBaselines)
         .values({
@@ -335,6 +465,9 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           knownDevices: [],
           scanSchedule: nextSchedule,
           alertSettings: nextAlertSettings,
+          ...(createEnvelope ?? {}),
+          authorityGeneration: createEnvelope ? 1 : 0,
+          scheduleBlockedReason: null,
           updatedAt: new Date()
         })
         .onConflictDoNothing()
@@ -459,9 +592,31 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           gte(deviceIpHistory.lastSeen, targetTime),
         ];
 
+        if (auth.allowedSiteIds !== undefined) {
+          if (auth.allowedSiteIds.length === 0) {
+            return JSON.stringify({
+              mode: 'reverse_lookup',
+              ip_address: ipAddress,
+              at_time: atTime,
+              results: [],
+              count: 0,
+            });
+          }
+          conditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+        }
+
         const orgCondition = auth.orgCondition(deviceIpHistory.orgId);
         if (orgCondition) {
           conditions.push(orgCondition);
+        }
+
+        // Exact-device axis (#6086): "which device held this IP" is otherwise
+        // answered org-wide, so a device-bound run learns about siblings. The
+        // axis is independent of the site block above — a device-less analysis
+        // run carries `allowedDeviceIds` with no `allowedSiteIds` at all.
+        const deviceCondition = deviceScopeCondition(auth, deviceIpHistory.deviceId);
+        if (deviceCondition) {
+          conditions.push(deviceCondition);
         }
 
         if (interfaceName) {
@@ -483,11 +638,17 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deviceIpHistory.firstSeen))
           .limit(limit);
 
+        const visibleResults = filterToDeviceScope(
+          auth,
+          results.filter((row) => !siteAccessDenied(auth, row.device.siteId)),
+          (row) => row.device.id,
+        );
+
         return JSON.stringify({
           mode: 'reverse_lookup',
           ip_address: ipAddress,
           at_time: atTime,
-          results: results.map((row) => ({
+          results: visibleResults.map((row) => ({
             device: {
               id: row.device.id,
               hostname: row.device.hostname,
@@ -501,7 +662,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
               isActive: row.ipHistory.isActive,
             },
           })),
-          count: results.length,
+          count: visibleResults.length,
         });
       }
 
@@ -516,7 +677,77 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // 5. network_discovery - Tier 3 (requires approval)
+  // 5. get_network_asset_reachability - Tier 1 (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_network_asset_reachability',
+      description:
+        'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, '
+        + 'with the SOURCE of the evidence and how old it is. Always state the source and age when answering — '
+        + '"responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has '
+        + 'checked the device recently; report it as unverified, not as down.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          asset_id: { type: 'string', description: 'Discovered asset UUID' },
+        },
+        required: ['asset_id'],
+      },
+    },
+    handler: async (input, auth) => {
+      const assetId = typeof input.asset_id === 'string' ? input.asset_id : '';
+      if (!assetId) return JSON.stringify({ error: 'asset_id is required' });
+
+      // Org axis via RLS + the explicit predicate; site axis app-layer, fail closed.
+      const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+      const orgCondition = auth.orgCondition(discoveredAssets.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) return JSON.stringify({ error: 'Asset not found or access denied' });
+        conditions.push(inArray(discoveredAssets.siteId, auth.allowedSiteIds));
+      }
+      // Exact-device axis, independent of the site axis (a device-LESS run has
+      // no `allowedSiteIds`). `inArray` is never true for NULL, so an asset not
+      // linked to a Breeze device is invisible to a device-restricted run —
+      // same fail-closed rule as `assertMonitorSiteAccess` (#6086).
+      const assetDeviceCondition = deviceScopeCondition(auth, discoveredAssets.linkedDeviceId);
+      if (assetDeviceCondition) conditions.push(assetDeviceCondition);
+
+      const [asset] = await db
+        .select({
+          id: discoveredAssets.id,
+          label: discoveredAssets.label,
+          hostname: discoveredAssets.hostname,
+          ipAddress: discoveredAssets.ipAddress,
+          assetType: discoveredAssets.assetType,
+          siteId: discoveredAssets.siteId,
+        })
+        .from(discoveredAssets)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!asset) return JSON.stringify({ error: 'Asset not found or access denied' });
+      if (siteAccessDenied(auth, asset.siteId)) return JSON.stringify({ error: 'Asset not found or access denied' });
+
+      const reachability = (await loadReachability([asset.id])).get(asset.id) ?? null;
+
+      return JSON.stringify({
+        asset: {
+          id: asset.id,
+          name: asset.label ?? asset.hostname ?? asset.ipAddress ?? asset.id,
+          assetType: asset.assetType,
+          ipAddress: asset.ipAddress,
+        },
+        reachability,
+      });
+    },
+  });
+
+  // ============================================
+  // 6. network_discovery - Tier 3 (requires approval)
   // ============================================
 
   registerTool({
@@ -541,8 +772,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'network_discovery', {
+      const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
         subnet: input.subnet,
         scanType: input.scanType ?? 'ping'
       }, { userId: auth.user.id, timeoutMs: 120000 });

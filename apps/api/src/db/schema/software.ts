@@ -10,7 +10,8 @@ import {
   bigint,
   date,
   index,
-  uniqueIndex
+  uniqueIndex,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
@@ -18,6 +19,9 @@ import { devices } from './devices';
 import { users } from './users';
 import { maintenanceWindows } from './maintenance';
 import { deploymentStatusEnum } from './deployments';
+// #5505 W03: one-way edge only — softwarePolicies.ts does not import ./software,
+// so this introduces no import cycle.
+import { softwarePolicies } from './softwarePolicies';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -98,16 +102,28 @@ export const softwareDeployments = pgTable('software_deployments', {
   scheduledAt: timestamp('scheduled_at'),
   maintenanceWindowId: uuid('maintenance_window_id').references(() => maintenanceWindows.id),
   options: jsonb('options'),
+  // SHA-256 of the executable dependency fields approved at deployment
+  // creation. Nullable only for legacy rows, which dispatch/retry fail closed.
+  dependencyFingerprint: varchar('dependency_fingerprint', { length: 64 }),
   createdBy: uuid('created_by').references(() => users.id),
   // Dispatch claim marker: set when the per-device dispatch actually runs.
   // The scheduler claims rows via `SET dispatched_at = now() WHERE dispatched_at IS NULL`
   // so scheduled deployments are never double-dispatched across API instances.
   dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  // #5505 W03 (contract D7): set when this deployment was created BY a software
+  // policy's autoInstall remediation rather than by an operator. Stamped by the
+  // INSERT in createSoftwareDeployment, never patched afterwards. ON DELETE SET
+  // NULL (migration 2026-10-16-193100) is load-bearing: a partner-wide policy is
+  // referenced by deployments in every child org, so a NO ACTION FK would abort
+  // an org or partner erasure with 23503. The remediation worker dedupes
+  // in-flight policy-owned work on this column.
+  softwarePolicyId: uuid('software_policy_id').references(() => softwarePolicies.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdx: index('software_deployments_org_id_idx').on(table.orgId),
   versionIdx: index('software_deployments_version_id_idx').on(table.softwareVersionId),
   installMethodIdx: index('software_deployments_install_method_idx').on(table.installMethodId),
+  softwarePolicyIdx: index('software_deployments_software_policy_idx').on(table.softwarePolicyId),
   scheduleIdx: index('software_deployments_schedule_idx').on(table.scheduleType, table.scheduledAt)
 }));
 
@@ -128,7 +144,63 @@ export const deploymentResults = pgTable('deployment_results', {
 }, (table) => ({
   deploymentIdx: index('deployment_results_deployment_id_idx').on(table.deploymentId),
   deviceIdx: index('deployment_results_device_id_idx').on(table.deviceId),
-  statusIdx: index('deployment_results_status_idx').on(table.status)
+  statusIdx: index('deployment_results_status_idx').on(table.status),
+  // #5777: covers softwareDeploymentSiteScopePredicate's correlated
+  // EXISTS/NOT EXISTS over (deployment_id, device_id). See migration
+  // 2026-10-20-120000-deployment-results-deployment-device-index.sql.
+  deploymentDeviceIdx: index('deployment_results_deployment_id_device_id_idx').on(table.deploymentId, table.deviceId)
+}));
+
+export const softwareInventoryObservations = pgTable('software_inventory_observations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull(),
+  schemaVersion: integer('schema_version').notNull(),
+  collectorVersion: varchar('collector_version', { length: 64 }).notNull(),
+  agentVersion: varchar('agent_version', { length: 64 }),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  completeness: varchar('completeness', { length: 16 }).notNull(),
+  truncated: boolean('truncated').notNull().default(false),
+  claimedItemCount: integer('claimed_item_count').notNull(),
+  actualItemCount: integer('actual_item_count').notNull(),
+  expectedSources: jsonb('expected_sources').$type<string[]>().notNull(),
+  succeededSources: jsonb('succeeded_sources').$type<string[]>().notNull(),
+  failedSources: jsonb('failed_sources').$type<Array<{ source: string; code: string }>>().notNull(),
+  items: jsonb('items').$type<unknown[]>().notNull(),
+  reportDigest: varchar('report_digest', { length: 64 }).notNull(),
+  acceptedForInventory: boolean('accepted_for_inventory').notNull(),
+  absenceResolutionEligible: boolean('absence_resolution_eligible').notNull(),
+  reasonCode: varchar('reason_code', { length: 64 }).notNull(),
+  visibleItemCount: integer('visible_item_count').notNull(),
+}, (table) => ({
+  identityOwnerUq: uniqueIndex('software_inventory_observations_identity_owner_uq').on(table.id, table.orgId, table.deviceId),
+  deviceReceivedIdx: index('software_inventory_observations_device_received_idx').on(table.deviceId, table.receivedAt, table.id),
+  orgReceivedIdx: index('software_inventory_observations_org_received_idx').on(table.orgId, table.receivedAt),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'software_inventory_observations_device_org_fkey',
+  }).onUpdate('cascade').onDelete('cascade'),
+}));
+
+export const deviceSoftwareInventoryState = pgTable('device_software_inventory_state', {
+  deviceId: uuid('device_id').primaryKey(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  latestObservationId: uuid('latest_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  latestAcceptedObservationId: uuid('latest_accepted_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  visibleObservationId: uuid('visible_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  hasAcceptedV2: boolean('has_accepted_v2').notNull().default(false),
+  visibleItemCount: integer('visible_item_count').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgIdx: index('device_software_inventory_state_org_idx').on(table.orgId),
+  latestAcceptedIdx: index('device_software_inventory_state_latest_accepted_idx').on(table.latestAcceptedObservationId),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_software_inventory_state_device_org_fkey',
+  }).onUpdate('cascade').onDelete('cascade'),
 }));
 
 export const softwareInventory = pgTable('software_inventory', {
@@ -146,12 +218,14 @@ export const softwareInventory = pgTable('software_inventory', {
   lastSeen: timestamp('last_seen'),
   fileHash: varchar('file_hash', { length: 128 }),
   hashAlgorithm: varchar('hash_algorithm', { length: 10 }),
+  observationId: uuid('observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
 }, (table) => ({
   deviceIdx: index('software_inventory_device_id_idx').on(table.deviceId),
   catalogIdx: index('software_inventory_catalog_id_idx').on(table.catalogId),
   nameIdx: index('software_inventory_name_idx').on(table.name),
   nameVendorIdx: index('software_inventory_name_vendor_idx').on(table.name, table.vendor),
   nameTrgmIdx: index('software_inventory_name_trgm_idx').using('gin', sql`name gin_trgm_ops`),
+  observationIdx: index('software_inventory_observation_id_idx').on(table.observationId).where(sql`observation_id IS NOT NULL`),
 }));
 
 // Chunked-upload sessions for software package installers (issue #2951).

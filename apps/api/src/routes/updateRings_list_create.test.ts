@@ -322,7 +322,8 @@ describe('updateRings routes', () => {
         severities: ['critical'],
         deferralDays: 2,
         thirdPartyApps: false,
-        thirdPartyDeferralDays: null
+        thirdPartyDeferralDays: null,
+        autoApproveUnrated: false
       });
     });
 

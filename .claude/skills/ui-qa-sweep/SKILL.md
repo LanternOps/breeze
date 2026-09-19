@@ -41,6 +41,12 @@ bug, not a pass.
    (not just at the end), with a running UI/UX observations sub-log.
 7. **File issues** — use the `github-issues` skill; one focused issue per defect,
    dedupe against open issues first, link to the log.
+8. **Tear down** — `pnpm wt-stack down` (or the same-`-f` `docker compose ...
+   down -v --remove-orphans` for a compose-mode stack) from the worktree that
+   created it, then `docker compose ls -a` to confirm nothing from this sweep
+   is still up. State in the final summary what you left running and why.
+   Nothing reaps a stack for you — full checklist: `worktree-stack` skill →
+   "Tear down when done".
 
 Use `TaskCreate` to track the checklist so progress survives context limits.
 Prefer dispatching this sweep to a background agent (it is long-running and

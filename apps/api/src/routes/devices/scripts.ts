@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { scriptExecutions, scripts } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
@@ -37,6 +37,28 @@ scriptsRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #5318 — the device Scripts tab now renders the same status labels as
+        // the scripts pages, which qualify a terminal status with the cancel
+        // outcome ("your stop request arrived too late" / "stop failed").
+        // Already exposed at this permission level by GET /scripts/executions/:id.
+        cancelState: scriptExecutions.cancelState,
+        // #4885 — the "Run again" action needs the runtime values the
+        // execution was submitted with. Already exposed at the same
+        // SCRIPTS_READ permission level by GET /scripts/:id/executions and
+        // GET /scripts/executions/:id, so this adds no new exposure — just
+        // parity for the device-scoped history list.
+        parameters: scriptExecutions.parameters,
+        // #4888 — the run context this execution actually used, so the device
+        // Scripts tab can show SYSTEM vs the logged-in user instead of leaving
+        // the operator to guess. NULL on rows written before the column.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
+        aiInitiatorKind: scriptExecutions.aiInitiatorKind,
+        // Presence only. The ids themselves are an authorization decision, not a
+        // projection: an ai_sessions transcript is owner-bound (aiAgent.ts:229),
+        // and a device that moved tenants can hold a pointer into the source org.
+        // Disclosure happens in GET /devices/:id/ai-origin, per-row, on demand.
+        hasAiOrigin: sql<boolean>`(${scriptExecutions.aiSessionId} IS NOT NULL OR ${scriptExecutions.aiAgentRunId} IS NOT NULL)`,
         startedAt: scriptExecutions.startedAt,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt

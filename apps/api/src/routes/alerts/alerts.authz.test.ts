@@ -198,6 +198,17 @@ vi.mock('./helpers', () => ({
   ensureOrgAccess: vi.fn(() => true),
   getAlertWithOrgCheck: vi.fn(),
 }));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
 
 import { alertsRoutes, attachAlertCorrelationSummaries } from './alerts';
 import { getAlertWithOrgCheck } from './helpers';
@@ -228,6 +239,24 @@ describe('alert state-change authz (Finding #6)', () => {
   it('403 on POST /alerts/:id/acknowledge without ALERTS_ACKNOWLEDGE', async () => {
     const res = await makeApp().request(`/alerts/${ALERT_ID}/acknowledge`, { method: 'POST' });
     expect(res.status).toBe(403);
+  });
+
+  it.each(['/alerts/summary', `/alerts/${ALERT_ID}`, `/alerts/${ALERT_ID}/tickets`])(
+    'denies %s without alert read before querying or enriching alerts', async (path) => {
+      grantedRef.current.add('tickets:read');
+      const res = await makeApp().request(path);
+      expect(res.status).toBe(403);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(getAlertWithOrgCheck).not.toHaveBeenCalled();
+      expect(dbMock.update).not.toHaveBeenCalled();
+    }
+  );
+
+  it('linked tickets still require ticket read when alert read is granted', async () => {
+    grantedRef.current.add('alerts:read');
+    const res = await makeApp().request(`/alerts/${ALERT_ID}/tickets`);
+    expect(res.status).toBe(403);
+    expect(getAlertWithOrgCheck).not.toHaveBeenCalled();
   });
 
   it('403 on POST /alerts/:id/resolve without ALERTS_WRITE', async () => {
@@ -708,12 +737,17 @@ describe('alert dismiss', () => {
     expect(row.dismissedBy).toBe('u-1');
   });
 
-  it('400 when the alert is already dismissed', async () => {
+  it('409 when the alert is already dismissed', async () => {
     (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
       state.alerts.find((a) => a.id === ALERT_DISMISSED)
     );
     const res = await makeApp().request(`/alerts/${ALERT_DISMISSED}/dismiss`, { method: 'POST' });
-    expect(res.status).toBe(400);
+    // 409, not the 400 this returned before #4293. Once the UPDATE became a
+    // compare-and-swap that answers 409 when it loses, keeping this branch at 400
+    // would have made the response code depend purely on whether the other dismissal
+    // landed before or after this request's pre-read — the split #4099 and #4288
+    // removed from resolve and acknowledge respectively.
+    expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Alert is already dismissed' });
   });
 

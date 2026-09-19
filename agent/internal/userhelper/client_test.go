@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -89,10 +90,119 @@ func TestExecuteScriptListRunningUsesSharedExecutor(t *testing.T) {
 		t.Fatalf("expected completed cancel status, got %s (%s)", cancelResult.Status, cancelResult.Error)
 	}
 
+	// #3525: the agent grades every helper's STRUCTURED outcome. A helper that
+	// answers `completed` with no recognisable `outcome` is graded kill_failed,
+	// so asserting only the status would let this whole branch regress to the
+	// old always-`cancelled: true` shape without any test noticing.
+	var cancelPayload struct {
+		ExecutionID string `json:"executionId"`
+		Outcome     string `json:"outcome"`
+		Cancelled   bool   `json:"cancelled"`
+	}
+	if err := json.Unmarshal(cancelResult.Result, &cancelPayload); err != nil {
+		t.Fatalf("unmarshal cancel result: %v", err)
+	}
+	if cancelPayload.Outcome != string(executor.CancelTerminated) {
+		t.Fatalf("cancel outcome = %q, want terminated", cancelPayload.Outcome)
+	}
+	if !cancelPayload.Cancelled {
+		t.Fatal("cancelled = false after a proven termination")
+	}
+	if cancelPayload.ExecutionID != "exec-1" {
+		t.Fatalf("executionId = %q, want exec-1", cancelPayload.ExecutionID)
+	}
+
 	<-done
 	waitForCondition(t, 2*time.Second, func() bool {
 		return c.executor.GetRunningCount() == 0
 	})
+}
+
+// TestExecuteScriptExtractsCustomFieldsBeforeSanitizeOutput is the
+// regression guard for the Critical finding in PR #4781's review: this
+// executeScript call site is the helper PROCESS that actually runs a
+// runAs:user script, so it is the only place that can extract markers from
+// genuinely raw stdout for that path — extracting after the IPC round trip
+// (in the main agent) would run on stdout this same function has already
+// sanitized, corrupting any marker whose JSON contains a token/secret/
+// password-shaped key exactly like the marker below.
+func TestExecuteScriptExtractsCustomFieldsBeforeSanitizeOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution test requires Unix/macOS shell")
+	}
+
+	c := New("/tmp/test.sock", ipc.HelperRoleUser)
+
+	result := c.executeScript(ipc.IPCCommand{
+		CommandID: "exec-custom-fields",
+		Type:      tools.CmdScript,
+		Payload: marshalPayload(t, map[string]any{
+			"language":       "bash",
+			"content":        `echo 'scanning'; echo '::breeze:custom-fields:: {"vault_token_id":"abcdefgh"}'; echo 'done'`,
+			"timeoutSeconds": 10,
+		}),
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+
+	var payload struct {
+		Stdout            string `json:"stdout"`
+		CustomFieldWrites struct {
+			SchemaVersion int            `json:"schemaVersion"`
+			Fields        map[string]any `json:"fields"`
+		} `json:"customFieldWrites"`
+	}
+	if err := json.Unmarshal(result.Result, &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if strings.Contains(payload.Stdout, "::breeze:custom-fields::") {
+		t.Fatalf("marker line must be stripped from the helper's own stdout, got %q", payload.Stdout)
+	}
+	if payload.CustomFieldWrites.SchemaVersion != 1 {
+		t.Fatalf("schemaVersion = %d, want 1 (envelope missing entirely: %+v)", payload.CustomFieldWrites.SchemaVersion, payload)
+	}
+	if payload.CustomFieldWrites.Fields["vault_token_id"] != "abcdefgh" {
+		t.Fatalf(
+			"fields[vault_token_id] = %#v, want the intact secret-shaped value — "+
+				"if this is corrupted or missing, extraction ran AFTER SanitizeOutput instead of before it",
+			payload.CustomFieldWrites.Fields["vault_token_id"],
+		)
+	}
+}
+
+// TestExecuteScriptNoMarkerOmitsCustomFieldWrites confirms the no-marker case
+// doesn't add an empty/spurious customFieldWrites key to the IPC payload.
+func TestExecuteScriptNoMarkerOmitsCustomFieldWrites(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution test requires Unix/macOS shell")
+	}
+
+	c := New("/tmp/test.sock", ipc.HelperRoleUser)
+
+	result := c.executeScript(ipc.IPCCommand{
+		CommandID: "exec-no-custom-fields",
+		Type:      tools.CmdScript,
+		Payload: marshalPayload(t, map[string]any{
+			"language":       "bash",
+			"content":        `echo 'hello from breeze'`,
+			"timeoutSeconds": 10,
+		}),
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(result.Result, &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if _, present := payload["customFieldWrites"]; present {
+		t.Fatalf("expected no customFieldWrites key when no marker was printed, got %#v", payload["customFieldWrites"])
+	}
 }
 
 func TestExecuteProcessCapturesAccentedUTF8Output(t *testing.T) {

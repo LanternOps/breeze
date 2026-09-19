@@ -9,7 +9,7 @@ import { AiMessage } from './AiMessage';
 
 interface Props {
   messages: ChatMessage[];
-  inFlightTool: { toolUseId: string; toolName: string } | null;
+  inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   onRetry?: (messageId: string) => void;
 }
 

@@ -14,7 +14,7 @@ import { acknowledgeAlerts } from '../../services/api';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { SearchSheet } from '../search/SearchSheet';
 import type { MobileSearchResult } from '../../services/search';
 import { haptic } from '../../lib/motion';
@@ -27,7 +27,9 @@ import {
   bulkActionLabel,
   emptyPendingAcks,
   endAck,
+  markAckConfirmed,
   reconcileSelection,
+  releaseStaleAcks,
   toggleSelection,
   visibleAlerts,
 } from './pendingAcks';
@@ -41,6 +43,7 @@ import {
 } from './undoAck';
 import { UndoToast } from '../../components/UndoToast';
 import { FilterChip } from './components/FilterChip';
+import { FindingsRow } from './components/FindingsRow';
 import { Hero } from './components/Hero';
 import { IssueRow } from './components/IssueRow';
 import { OrgRow } from './components/OrgRow';
@@ -63,6 +66,17 @@ type Nav = NativeStackNavigationProp<SystemsStackParamList, 'Systems'>;
  * on a phone, one-handed, in a list, stops being unrecoverable.
  */
 const UNDO_WINDOW_MS = 5000;
+
+/**
+ * Bounded retry schedule for the post-ack refresh that satisfies the
+ * fetch-generation release condition (#3782). A single `refresh()` call can
+ * itself fail to land a fresh `activeAlerts` snapshot (transient rejection,
+ * or coalescing into an in-flight fetch that also rejects) — this retries a
+ * few times before giving up and deferring to the ambient triggers
+ * (push/WS/focus/pull), rather than leaving a confirmed-acknowledged row
+ * hidden with no time bound.
+ */
+const ACK_REFRESH_RETRY_DELAYS_MS = [0, 2000, 5000];
 
 // Inline magnifying glass — see SearchSheet for the input-decorating sibling.
 // 16px sizing here matches the right-edge of the Hero copy block.
@@ -134,17 +148,19 @@ export function SystemsScreen() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [undo, setUndo] = useState(emptyUndo);
-  const [toast, setToast] = useState<
-    { kind: 'success' | 'error'; text: string } | null
-  >(null);
+  const { show: showToast } = useToast();
 
   const {
     summary,
     activeIssues,
     recent,
     orgRollups,
+    findingsCount,
+    findingsOrgIds,
+    activeFindingsSummary,
     filterOrgId,
     filterOrgName,
+    filterOrgDeviceCounts,
     setFilterOrgId,
     loading,
     refreshing,
@@ -153,7 +169,18 @@ export function SystemsScreen() {
     devicesTruncated,
     refresh,
     refreshIfStale,
+    activeAlertsGeneration,
+    getActiveAlertsGeneration,
   } = useSystemsData();
+
+  // Release any pending ack whose confirmed generation has been superseded,
+  // whenever a fresh `activeAlerts` snapshot lands — from ANY caller (push,
+  // WS, tab-focus, or the acknowledge's own refresh). See #3782 and the
+  // `pendingAcks` module doc for why this can't just be "after refresh()
+  // resolves".
+  useEffect(() => {
+    setPendingAcks((p) => releaseStaleAcks(p, activeAlertsGeneration));
+  }, [activeAlertsGeneration]);
 
   const onRefresh = useCallback(() => {
     track('systems_pulled_to_refresh');
@@ -168,10 +195,21 @@ export function SystemsScreen() {
     [setFilterOrgId],
   );
 
-  // Hero stays whole-fleet even when filtered, so the user keeps the
-  // global context. Filter affects issues + recent + the orgs section
-  // visibility only.
-  const hero = deriveHeroState(summary, activeIssues);
+  // With an org filter active, the hero describes that org's own devices and
+  // issues rather than the fleet (#5105) — otherwise it read "77 devices"
+  // while only "Morning Fresh Dairy" was filtered below it.
+  const hero = deriveHeroState(
+    summary,
+    activeIssues,
+    filterOrgId && filterOrgName
+      ? {
+          name: filterOrgName,
+          devices: filterOrgDeviceCounts ?? { total: 0, online: 0, offline: 0, maintenance: 0 },
+        }
+      : null,
+    findingsCount,
+    findingsOrgIds,
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -234,7 +272,7 @@ export function SystemsScreen() {
         // acknowledge. The next authoritative fetch is what resolves them.
         toRestore = failed;
         if (unknown.length > 0) {
-          setToast({
+          showToast({
             kind: 'error',
             text: `Couldn't confirm ${unknown.length}. Checking again.`,
           });
@@ -244,46 +282,65 @@ export function SystemsScreen() {
           // later, after the operator has moved on, is noise announcing
           // something they were already told.
         } else if (acknowledged.length === 0) {
-          setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+          showToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
         } else {
           // Never claim the full count when some were refused.
-          setToast({
+          showToast({
             kind: 'error',
             text: `Acknowledged ${acknowledged.length}, ${failed.length} failed.`,
           });
         }
-        // Successful ids stay hidden until the refetch supplies the new truth,
-        // so the list cannot flash the old rows back.
+        // Successful ids stay hidden until a fresh fetch supplies the new
+        // truth, so the list cannot flash the old rows back.
         setPendingAcks((p) => endAck(p, failed));
-        // Un-hide unconditionally, DELIBERATELY, despite `refresh()` being an
-        // unreliable signal of freshness (it swallows its own failures and
-        // resolves either way).
-        //
-        // Gating the un-hide on the refetch is the obvious fix and it is worse:
-        // when this refresh coalesces into one already in flight it reports no
-        // fresh read, nothing else releases these ids, and the rows stay hidden
-        // for the life of the screen. A briefly stale visible row is recoverable;
-        // a permanently concealed active alert is not, and this list is how an
-        // operator learns an alert exists.
-        //
-        // The real fix is to release a pending ack when a NEWER alerts snapshot
-        // lands, whoever fetched it — a fetch generation the pendingAcks map can
-        // compare against — rather than tying release to this one call. That is
-        // a change to the data layer, not to this call site. See the PR thread.
-        await refresh();
-        // Release the confirmed ones AND the unknown ones: the refetch above is
-        // now the authority for both. Holding `unknown` past the refresh would
-        // conceal a still-active alert for the life of the screen, which is the
-        // one outcome worse than showing a briefly stale row.
-        setPendingAcks((p) => endAck(p, [...acknowledged, ...unknown]));
+        // Mark the confirmed AND unknown ids to release once a strictly NEWER
+        // activeAlerts snapshot lands than the one current right now — proof
+        // the server's true state for these ids has actually been observed,
+        // rather than trusting `refresh()` resolving (unreliable: it swallows
+        // its own failures and can coalesce into an unrelated in-flight
+        // call). `unknown` ids are included for the same reason as before:
+        // the request may well have committed them server-side, and holding
+        // them past a fresh fetch would conceal a still-active alert for the
+        // life of the screen. Read via the ref-backed getter, not a value
+        // captured when this callback was created — acknowledgeAlerts can
+        // take 13-15s, during which an unrelated fetch may have already
+        // bumped the generation, and stamping with a stale pre-await value
+        // would let that earlier fetch (which predates this ack's own
+        // confirmation) wrongly satisfy the release condition. See #3782.
+        const generationAtConfirm = getActiveAlertsGeneration();
+        setPendingAcks((p) =>
+          markAckConfirmed(p, [...acknowledged, ...unknown], generationAtConfirm)
+        );
+        // Kick a refresh so the release condition above gets satisfied.
+        // Un-hiding itself happens automatically via the generation-watching
+        // effect, off whichever fetch actually lands the fresh snapshot,
+        // coalesced or not — this call's return value is never used for
+        // that. But THIS specific fetch can itself fail to advance the
+        // generation (a transient rejection on `activeAlerts`, or coalescing
+        // into an in-flight fetch that also rejects it), and nothing else is
+        // guaranteed to retry soon: WS/push only fire on unrelated activity,
+        // and focus-refresh is behind a 60s debounce. Left unbounded, that
+        // is a permanently concealed active alert — the exact outcome #3782
+        // exists to prevent, just moved one step later. So retry with a
+        // short bounded backoff until the generation clears the bar just
+        // recorded, then give up and defer to those ambient triggers.
+        void (async () => {
+          for (const delayMs of ACK_REFRESH_RETRY_DELAYS_MS) {
+            if (delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+            await refresh();
+            if (getActiveAlertsGeneration() > generationAtConfirm) return;
+          }
+        })();
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');
-        setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        showToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
         setPendingAcks((p) => endAck(p, toRestore));
       }
     },
-    [refresh]
+    [refresh, getActiveAlertsGeneration]
   );
 
   // The dispatch path is reached from a timer, an unmount and a replacing
@@ -378,8 +435,9 @@ export function SystemsScreen() {
   // that `cancelUndo` could no longer retract, and nothing released
   // `pendingAcks`, so a failed alert stayed hidden with no error shown.
   // `dispatchAcknowledge` already does that reconciliation — surfaces errors,
-  // restores the failed ids, and releases the successful ones after a refresh —
-  // so the fix is to route through it rather than re-implement it here.
+  // restores the failed ids, and releases the successful ones once a fresh
+  // activeAlerts fetch proves it (#3782) — so the fix is to route through it
+  // rather than re-implement it here.
   const flushHeldAcknowledgesMounted = useCallback(() => {
     const { state, ids } = flushAllUndo(undoRef.current);
     undoRef.current = state;
@@ -448,7 +506,7 @@ export function SystemsScreen() {
     setSheetAlert(null);
     try {
       await dispatch(acknowledgeAlertAsync(targetId)).unwrap();
-      setToast({ kind: 'success', text: 'Acknowledged.' });
+      showToast({ kind: 'success', text: 'Acknowledged.' });
     } catch (err) {
       const msg =
         err instanceof Error
@@ -456,7 +514,7 @@ export function SystemsScreen() {
           : typeof err === 'string'
             ? err
             : 'Could not acknowledge alert.';
-      setToast({ kind: 'error', text: msg });
+      showToast({ kind: 'error', text: msg });
     }
   }, [dispatch, sheetAlert]);
 
@@ -464,7 +522,7 @@ export function SystemsScreen() {
     if (!sheetAlert) return;
     Clipboard.setString(sheetAlert.id);
     setSheetAlert(null);
-    setToast({ kind: 'success', text: 'Copied alert ID.' });
+    showToast({ kind: 'success', text: 'Copied alert ID.' });
   }, [sheetAlert]);
 
   const onSelectSearchResult = useCallback(
@@ -500,7 +558,7 @@ export function SystemsScreen() {
         reportInternalError(err, 'ai-session-open-from-search');
         const msg = 'Could not load that conversation.';
         dispatch(setChatError(msg));
-        setToast({ kind: 'error', text: msg });
+        showToast({ kind: 'error', text: msg });
       }
     },
     [dispatch, navigation],
@@ -508,8 +566,8 @@ export function SystemsScreen() {
 
   const showOrgs = !filterOrgId && orgRollups.length > 0;
   const showRecent = recent.length > 0;
-  const showActiveIssues = visibleIssues.length > 0;
-  const showActiveSkeleton = loading && activeIssues.length === 0;
+  const showActiveIssues = visibleIssues.length > 0 || activeFindingsSummary.length > 0;
+  const showActiveSkeleton = loading && activeIssues.length === 0 && activeFindingsSummary.length === 0;
   // Every section can hide independently, and the org filter suppresses the
   // Organizations list outright — so a filtered org with nothing outstanding
   // rendered a completely blank page under the chip, indistinguishable from a
@@ -587,7 +645,7 @@ export function SystemsScreen() {
               orgName: filterOrgName,
             })
           }
-          accessibilityRole="button"
+          accessibilityRole="link"
           accessibilityLabel="View all devices"
           style={{
             marginHorizontal: spacing[6],
@@ -606,7 +664,13 @@ export function SystemsScreen() {
           <Text style={{ ...type.bodyMd, color: theme.textHi }}>
             {filterOrgName ? `${filterOrgName} devices` : 'All devices'}
           </Text>
-          <Text style={{ ...type.meta, color: theme.textLo }}>View</Text>
+          {/* #5115: this row navigates like a link, but "View" in low-emphasis
+              textLo read as inert label text rather than a tappable
+              affordance — brand color + a chevron make the link legible. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[1] }}>
+            <Text style={{ ...type.meta, color: theme.brand }}>View</Text>
+            <Text style={{ ...type.meta, color: theme.brand }}>›</Text>
+          </View>
         </Pressable>
 
         {filterOrgId && filterOrgName ? (
@@ -686,7 +750,29 @@ export function SystemsScreen() {
                 onSwipeAcknowledge={() => scheduleAcknowledge([alert.id])}
                 selectable={selecting}
                 selected={selected.has(alert.id)}
-                showDivider={idx < visibleIssues.length - 1}
+                showDivider={idx < visibleIssues.length - 1 || activeFindingsSummary.length > 0}
+                dividerColor={theme.border}
+              />
+            ))}
+            {/*
+              Open fleet-hygiene findings (#5139 / #5117 decision 1) — one
+              summary row per org, visually distinct from alert rows (no
+              severity dot, "Finding" label). The counts endpoint returns
+              aggregate counts rather than individual finding records, so
+              there is no per-finding row or tap-through yet (later item).
+            */}
+            {activeFindingsSummary.map((finding, idx) => (
+              <FindingsRow
+                key={finding.orgId}
+                orgName={finding.orgName}
+                count={finding.count}
+                onPress={() =>
+                  navigation.navigate('SystemsFindings', {
+                    orgId: finding.orgId,
+                    orgName: finding.orgName,
+                  })
+                }
+                showDivider={idx < activeFindingsSummary.length - 1}
                 dividerColor={theme.border}
               />
             ))}
@@ -808,13 +894,6 @@ export function SystemsScreen() {
         onSelect={onSelectSearchResult}
       />
 
-      <Toast
-        visible={!!toast}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        bottomOffset={insets.bottom + spacing[16]}
-      />
       {undoBatch ? (
         <UndoToast
           // Keyed by token so a replacing batch remounts the timer instead of

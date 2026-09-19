@@ -94,6 +94,11 @@ export interface FleetFindingRun {
   id: string;
   actionKind: 'script' | 'command';
   scriptId: string | null;
+  /**
+   * Operator-chosen run context (#4888). NULL = the script's saved default,
+   * which is what the dispatcher resolves it to.
+   */
+  runAs: 'system' | 'user' | 'elevated' | null;
   commandType: string | null;
   status: FleetRunStatus;
   targetCount: number;
@@ -215,6 +220,59 @@ function serializeFinding(row: RawFindingRow): FleetFindingRow {
   };
 }
 
+/**
+ * Fetch member deviceIds-in-scope per finding for a SCOPE-restricted caller (site
+ * axis, exact-device axis, or both — each narrows independently),
+ * shared by `listFleetFindings` and `getFleetFindingCounts` so the two don't
+ * drift (both apply the exact same "member device in an allowed site" test —
+ * see the module doc's warning about dual-map drift between call sites).
+ *
+ * Returns `null` — with NO query issued — when there is nothing to check
+ * (either allowlist empty, or no candidate findings): callers must treat that
+ * as "nothing visible" and return their own empty result, matching the
+ * existing fail-closed contract (an empty site allowlist can never match).
+ */
+async function findingDeviceIdsForCaller(
+  candidateFindingIds: readonly string[],
+  auth: AuthContext
+): Promise<Map<string, Set<string>> | null> {
+  const { allowedSiteIds, allowedDeviceIds } = auth;
+  if (candidateFindingIds.length === 0) return null;
+  // An empty allowlist on EITHER axis can never match — fail closed with no query.
+  if (allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) return null;
+
+  const memberConditions: SQL[] = [inArray(fleetFindingDevices.findingId, candidateFindingIds)];
+  if (allowedSiteIds) memberConditions.push(inArray(devices.siteId, allowedSiteIds));
+  // Exact-device axis, INDEPENDENT of the site branch: a device-less analysis run
+  // carries `allowedDeviceIds` with no `allowedSiteIds`, so a site-keyed guard is
+  // a silent no-op for it and this file read the whole org (audit §1.2).
+  if (allowedDeviceIds) memberConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
+
+  const memberRows = await db
+    .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
+    .from(fleetFindingDevices)
+    .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+    .where(and(...memberConditions));
+
+  const deviceIdsByFinding = new Map<string, Set<string>>();
+  for (const m of memberRows) {
+    const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
+    set.add(m.deviceId);
+    deviceIdsByFinding.set(m.findingId, set);
+  }
+  return deviceIdsByFinding;
+}
+
+/**
+ * True when the caller is narrowed on EITHER app-layer device axis. The two are
+ * independent: a site-restricted human carries only `allowedSiteIds`, a
+ * device-bound/device-less agent run only `allowedDeviceIds`, and a guard that
+ * tests one is a silent no-op for the other shape.
+ */
+function callerIsScopeRestricted(auth: AuthContext): boolean {
+  return auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined;
+}
+
 function buildOrgCondition(auth: AuthContext, requestedOrgId: string | undefined): SQL | undefined {
   if (requestedOrgId) {
     return eq(fleetFindings.orgId, requestedOrgId);
@@ -276,25 +334,12 @@ export async function listFleetFindings(
 
   let scoped = rows;
 
-  if (auth.allowedSiteIds !== undefined) {
-    const allowedSiteIds = auth.allowedSiteIds;
+  if (callerIsScopeRestricted(auth)) {
     const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsForCaller(candidateIds, auth);
 
-    if (allowedSiteIds.length === 0 || candidateIds.length === 0) {
+    if (deviceIdsByFinding === null) {
       return { findings: [], total: 0 };
-    }
-
-    const memberRows = await db
-      .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
-      .from(fleetFindingDevices)
-      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-      .where(and(inArray(fleetFindingDevices.findingId, candidateIds), inArray(devices.siteId, allowedSiteIds)));
-
-    const deviceIdsByFinding = new Map<string, Set<string>>();
-    for (const m of memberRows) {
-      const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
-      set.add(m.deviceId);
-      deviceIdsByFinding.set(m.findingId, set);
     }
 
     scoped = rows
@@ -306,6 +351,58 @@ export async function listFleetFindings(
   const page = scoped.slice(filters.offset, filters.offset + filters.limit);
 
   return { findings: page.map(serializeFinding), total };
+}
+
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Open-finding counts per org (+ fleet total), for the mobile Systems tab
+ * (#5139 / #5117 decision 1): folds fleet-hygiene findings into the same
+ * "issue count" the AI's `get_fleet_findings` tool already reports, so a
+ * technician opening Systems sees the same picture.
+ *
+ * Only `status = 'open'` counts — acknowledged/dismissed/resolved findings
+ * are already being worked or closed out and must not inflate the count a
+ * technician is triaging against.
+ *
+ * Scoping mirrors `listFleetFindings`: `auth.orgCondition` narrows the SQL
+ * fetch, and a site-restricted caller (`auth.allowedSiteIds` set) gets the
+ * result narrowed further to findings with at least one member device in an
+ * allowed site — same fail-closed semantics (a finding with zero in-scope
+ * members must not inflate a count the caller cannot otherwise see).
+ */
+export async function getFleetFindingCounts(auth: AuthContext): Promise<FleetFindingCounts> {
+  const conditions: SQL[] = [eq(fleetFindings.status, 'open')];
+  const orgCondition = auth.orgCondition(fleetFindings.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+
+  const rows = (await db
+    .select({ id: fleetFindings.id, orgId: fleetFindings.orgId })
+    .from(fleetFindings)
+    .where(and(...conditions))) as Array<{ id: string; orgId: string }>;
+
+  let scoped = rows;
+
+  if (callerIsScopeRestricted(auth)) {
+    const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsForCaller(candidateIds, auth);
+
+    if (deviceIdsByFinding === null) {
+      return { total: 0, byOrg: {} };
+    }
+
+    scoped = rows.filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0);
+  }
+
+  const byOrg: Record<string, number> = {};
+  for (const r of scoped) {
+    byOrg[r.orgId] = (byOrg[r.orgId] ?? 0) + 1;
+  }
+
+  return { total: scoped.length, byOrg };
 }
 
 /**
@@ -347,12 +444,14 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
     .where(eq(fleetFindingDevices.findingId, id))
     .orderBy(desc(fleetFindingDevices.lastSeenAt));
 
-  const allowedSiteIds = auth.allowedSiteIds;
-  const filteredMembers = allowedSiteIds === undefined
-    ? memberRows
-    : memberRows.filter((m) => allowedSiteIds.includes(m.siteId));
+  const { allowedSiteIds, allowedDeviceIds } = auth;
+  const filteredMembers = memberRows.filter((m) => (
+    (!allowedSiteIds || allowedSiteIds.includes(m.siteId))
+    // Exact-device axis, independent of the site branch (audit §1.2).
+    && (!allowedDeviceIds || allowedDeviceIds.includes(m.deviceId))
+  ));
 
-  if (allowedSiteIds !== undefined && filteredMembers.length === 0) {
+  if (callerIsScopeRestricted(auth) && filteredMembers.length === 0) {
     // Zero-member-in-scope — omit, mirroring the list endpoint.
     return null;
   }
@@ -362,6 +461,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       id: fleetRemediationRuns.id,
       actionKind: fleetRemediationRuns.actionKind,
       scriptId: fleetRemediationRuns.scriptId,
+      runAs: fleetRemediationRuns.runAs,
       commandType: fleetRemediationRuns.commandType,
       status: fleetRemediationRuns.status,
       targetCount: fleetRemediationRuns.targetCount,
@@ -396,6 +496,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       id: r.id,
       actionKind: r.actionKind,
       scriptId: r.scriptId ?? null,
+      runAs: r.runAs ?? null,
       commandType: r.commandType ?? null,
       status: r.status,
       targetCount: r.targetCount,
@@ -464,13 +565,14 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
     .from(fleetRemediationRunTargets)
     .where(eq(fleetRemediationRunTargets.runId, runId));
 
-  const allowedSiteIds = auth.allowedSiteIds;
-  const visibleTargets =
-    allowedSiteIds === undefined
-      ? targetRows
-      : targetRows.filter((t) => t.siteIdSnapshot && allowedSiteIds.includes(t.siteIdSnapshot));
+  const { allowedSiteIds, allowedDeviceIds } = auth;
+  const visibleTargets = targetRows.filter((t) => (
+    (!allowedSiteIds || (!!t.siteIdSnapshot && allowedSiteIds.includes(t.siteIdSnapshot)))
+    // Exact-device axis, independent of the site branch (audit §1.2).
+    && (!allowedDeviceIds || allowedDeviceIds.includes(t.targetDeviceUuid))
+  ));
 
-  if (allowedSiteIds !== undefined && visibleTargets.length === 0) return null;
+  if (callerIsScopeRestricted(auth) && visibleTargets.length === 0) return null;
 
   return {
     id: run.id,
@@ -479,6 +581,7 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
     findingRevision: run.findingRevision,
     actionKind: run.actionKind,
     scriptId: run.scriptId ?? null,
+    runAs: run.runAs ?? null,
     commandType: run.commandType ?? null,
     parameterSnapshot: (run.parameterSnapshot ?? {}) as Record<string, unknown>,
     status: run.status,
@@ -560,20 +663,19 @@ export async function applyFleetFindingLifecycle(
   // those, so the write path must fail closed identically — otherwise a
   // finding that is invisible on read is still acknowledgeable, and the 200
   // response body leaks its evidence.
-  const allowedSiteIds = auth.allowedSiteIds;
-  if (allowedSiteIds !== undefined) {
-    const [inScopeMember] = allowedSiteIds.length === 0
+  const { allowedSiteIds, allowedDeviceIds } = auth;
+  if (callerIsScopeRestricted(auth)) {
+    const probeConditions: SQL[] = [eq(fleetFindingDevices.findingId, id)];
+    if (allowedSiteIds) probeConditions.push(inArray(devices.siteId, allowedSiteIds));
+    // Exact-device axis, independent of the site branch (audit §1.2).
+    if (allowedDeviceIds) probeConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
+    const [inScopeMember] = allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0
       ? []
       : await db
           .select({ deviceId: fleetFindingDevices.deviceId })
           .from(fleetFindingDevices)
           .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-          .where(
-            and(
-              eq(fleetFindingDevices.findingId, id),
-              inArray(devices.siteId, allowedSiteIds)
-            )
-          )
+          .where(and(...probeConditions))
           .limit(1);
 
     if (!inScopeMember) {

@@ -19,6 +19,11 @@ export type NetworkBaseline = {
   knownDevices: Array<Record<string, unknown>>;
   scanSchedule: NetworkBaselineScanSchedule;
   alertSettings: NetworkBaselineAlertSettings;
+  /**
+   * SEC-2026-09-05-146: why the recurring scan was not dispatched. Non-null
+   * means the schedule is armed-but-blocked; re-saving it re-arms the authority.
+   */
+  scheduleBlockedReason: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -157,6 +162,7 @@ export function mapNetworkBaseline(raw: unknown): NetworkBaseline | null {
       : [],
     scanSchedule: parseScanSchedule(row.scanSchedule),
     alertSettings: parseAlertSettings(row.alertSettings),
+    scheduleBlockedReason: asString(row.scheduleBlockedReason),
     createdAt,
     updatedAt
   };

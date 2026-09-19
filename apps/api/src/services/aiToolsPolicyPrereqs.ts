@@ -16,6 +16,8 @@ import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { bumpApprovalGeneration } from './approvalGeneration';
 import {
   ringAutoApproveSchema,
   mergeRingAutoApproveWrite,
@@ -25,9 +27,15 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE,
+  remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
+import {
+  resolvePeripheralPolicyDeviceIds,
+  schedulePeripheralPolicyDevices,
+} from '../jobs/peripheralJobs';
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -353,7 +361,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },
           rules: { type: 'object', description: 'Rules definition: { software: [{ name, vendor?, minVersion?, maxVersion?, catalogId?, reason? }], allowUnknown?: false }' },
           enforceMode: { type: 'boolean', description: 'Whether to enforce (block/uninstall) or just alert (default: false)' },
-          remediationOptions: { type: 'object', description: '{ autoUninstall?: false, notifyUser?: true, gracePeriod?: number, cooldownMinutes?: 30, maintenanceWindowOnly?: false }' },
+          remediationOptions: { type: 'object', description: '{ autoUninstall?: false, notifyUser?: true, gracePeriod?: number, cooldownMinutes?: 30, maintenanceWindowOnly?: false }. autoInstall is NOT settable via AI tools — arming software installation requires a human operator with devices.execute and MFA.' },
           isActive: { type: 'boolean', description: 'Active state (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -362,6 +370,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_software_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -420,6 +432,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.mode) return JSON.stringify({ error: 'mode is required (allowlist, blocklist, or audit)' });
 
+        // Contract-A D4: AI callers may never arm software installation.
+        if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+          return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+        }
+
         const rows = await db.insert(softwarePolicies).values({
           orgId: owner.orgId,
           partnerId: owner.partnerId,
@@ -472,7 +489,17 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
         }
 
-        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        // Contract-A D4: AI callers may never arm software installation.
+        if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+          return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+        }
+
+        const updates: Record<string, unknown> = {
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: this AI-tool write bypasses
+          // routes/softwarePolicies.ts, so it needs its own bump.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.description === 'string') updates.description = input.description;
         if (typeof input.mode === 'string') updates.mode = input.mode;
@@ -493,7 +520,9 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           details: {
             // Derived from the columns actually written, not raw `input` (which
             // also carries routing keys like `action`/`policyId`).
-            updatedFields: Object.keys(updates).filter((field) => field !== 'updatedAt'),
+            updatedFields: Object.keys(updates).filter(
+              (field) => field !== 'updatedAt' && field !== 'approvalGeneration'
+            ),
             ...summarizeEnforcementChange(input),
           },
         });
@@ -531,6 +560,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_peripheral_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -590,6 +623,9 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const policy = rows[0];
         if (!policy) return JSON.stringify({ error: 'Failed to create peripheral policy' });
 
+        const affectedDeviceIds = await resolvePeripheralPolicyDeviceIds(policy);
+        await schedulePeripheralPolicyDevices(affectedDeviceIds, 'ai-prereq-create');
+
         return JSON.stringify({
           success: true,
           policyId: policy.id,
@@ -613,6 +649,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
+        const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(existing);
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.deviceClass === 'string') updates.deviceClass = input.deviceClass;
@@ -621,6 +659,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         await db.update(peripheralPolicies).set(updates).where(eq(peripheralPolicies.id, existing.id));
+        const updatedSnapshot = { ...existing, ...updates };
+        const newDeviceIds = await resolvePeripheralPolicyDeviceIds(updatedSnapshot);
+        await schedulePeripheralPolicyDevices(
+          [...new Set([...oldDeviceIds, ...newDeviceIds])],
+          'ai-prereq-update',
+        );
         return JSON.stringify({ success: true, message: `Peripheral policy "${existing.name}" updated` });
       }
 
@@ -653,6 +697,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_profiles', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'list') {
         const where = backupProfileWhere(auth);
@@ -828,6 +876,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_configs', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -916,7 +968,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(backupConfigs).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Backup config not found or access denied' });
 
-        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        const updates: Record<string, unknown> = {
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: this AI-tool write is a second
+          // (non-route) write path to backup_configs and needs its own bump.
+          approvalGeneration: bumpApprovalGeneration(backupConfigs.approvalGeneration),
+        };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.type === 'string') updates.type = input.type;
         if (typeof input.provider === 'string') updates.provider = input.provider;

@@ -16,6 +16,7 @@ function bound(overrides?: {
       userId: 'user-1',
       partnerId: 'partner-1',
       boundAuthEpoch: 3,
+      boundMfaEpoch: 3,
       mfaVerifiedAt: new Date(),
       ...overrides?.binding,
     },
@@ -25,6 +26,7 @@ function bound(overrides?: {
       name: 'Tech User',
       status: 'active',
       authEpoch: 3,
+      mfaEpoch: 3,
       partnerId: 'partner-1',
       ...overrides?.user,
     },
@@ -42,6 +44,13 @@ describe('vetBinding', () => {
 
   it('denies epoch_advanced when the user authEpoch moved past boundAuthEpoch', () => {
     expect(vetBinding(bound({ user: { authEpoch: 4 } }))).toEqual({
+      ok: false,
+      reason: 'epoch_advanced',
+    });
+  });
+
+  it('denies epoch_advanced when the user MFA epoch moved past the factor-established binding', () => {
+    expect(vetBinding(bound({ user: { mfaEpoch: 4 } }))).toEqual({
       ok: false,
       reason: 'epoch_advanced',
     });

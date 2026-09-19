@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let scope: "system" | "partner" | "organization" | null = "partner";
@@ -15,6 +15,17 @@ const orgState = vi.hoisted(() => ({
 vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope, orgId: orgState.jwtOrgId, partnerId: "partner-1" }),
   loginPathWithNext: () => "/login",
+}));
+// SEC-2026-09-05-057: the QuickBooks sub-tab and panel are gated on
+// `accounting:read`. This suite covers tab/sub-tab wiring, so it holds the
+// grant throughout; the negative branch lives in
+// IntegrationsPage.accountingPermissions.test.tsx.
+vi.mock("../../lib/permissions", () => ({
+  usePermissions: () => ({
+    permissions: [{ resource: "accounting", action: "read" }],
+    can: (resource: string, action: string) =>
+      resource === "accounting" && action === "read",
+  }),
 }));
 vi.mock("../../stores/orgStore", () => ({
   useOrgStore: (selector: (value: { currentOrgId: string | null }) => unknown) =>
@@ -91,6 +102,32 @@ vi.mock("../settings/TdSynnexCatalogPanel", () => ({
 }));
 vi.mock("../settings/TdSynnexEcExpressPanel", () => ({
   default: () => <div data-testid="stub-tdsynnex-ec" />,
+}));
+vi.mock("./StripePaymentsIntegration", () => ({
+  default: () => <div data-testid="stub-stripe-payments" />,
+}));
+
+// The Accounting tab hosts the QuickBooks mapping workbench, which owns a
+// NESTED tab hash (#quickbooks-customers / #quickbooks-items) inside the page's
+// own hash. Render the REAL workbench behind a stubbed QuickbooksIntegration so
+// the nested-hash contract is exercised end to end rather than re-implemented
+// in the test.
+vi.mock("./QuickbooksIntegration", async () => {
+  const { default: QuickbooksMappingWorkbench } = await import(
+    "./QuickbooksMappingWorkbench"
+  );
+  return {
+    default: () => (
+      <div data-testid="stub-quickbooks">
+        <QuickbooksMappingWorkbench defaultIncomeAccountRef="income-1" />
+      </div>
+    ),
+  };
+});
+const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
+vi.mock("../../stores/auth", async (importActual) => ({
+  ...(await importActual<typeof import("../../stores/auth")>()),
+  fetchWithAuth: (...args: unknown[]) => fetchWithAuthMock(...args),
 }));
 
 // Capture the help-panel open() call so we can assert the per-tab docs link
@@ -467,5 +504,92 @@ describe("IntegrationsPage — per-tab documentation link", () => {
     expect(openMock).toHaveBeenLastCalledWith(
       "https://docs.breezermm.com/features/unifi-integration/",
     );
+  });
+});
+
+// Regression: the workbench's nested Customers/Items hash must not knock the
+// page off the Accounting tab. Clicking "Items" writes #quickbooks-items, which
+// the page's hash router used to treat as an unknown tab and fall back to
+// Webhooks — making the Items tab unreachable (reproduced on prod v0.110.0).
+describe("IntegrationsPage — nested QuickBooks workbench hash", () => {
+  beforeEach(() => {
+    scope = "partner";
+    orgState.currentOrgId = null;
+    orgState.jwtOrgId = null;
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const body = url.includes("income-accounts")
+        ? { data: [{ id: "income-1", displayName: "Sales" }] }
+        : {
+            data: [
+              {
+                breezeEntityType: "catalog_item",
+                breezeEntityId: "33333333-3333-4333-8333-333333333333",
+                breezeDisplayName: "Monthly Support",
+                remoteEntityType: "Item",
+                proposedRemoteId: null,
+                proposedRemoteName: null,
+                confidence: "none",
+                linkStatus: "suggested",
+                syncStatus: "pending",
+                lastError: null,
+              },
+            ],
+          };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    window.history.replaceState({}, "", "/integrations#accounting");
+  });
+  afterEach(() => {
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("stays on the Accounting tab when the workbench Items tab is clicked", async () => {
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("quickbooks-mapping-workbench")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    // jsdom does not fire hashchange for a scripted hash write.
+    fireEvent(window, new HashChangeEvent("hashchange"));
+
+    // The page must still be showing Accounting/QuickBooks, not Webhooks.
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(
+      screen.getByTestId("quickbooks-mapping-tab-items").getAttribute("aria-selected"),
+    ).toBe("true");
+
+    // ...and the Items mapping table loads inside it.
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await waitFor(() =>
+      expect(screen.getByTestId("quickbooks-mapping-table")).toBeTruthy(),
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      "/accounting/quickbooks/mappings?entityType=catalog_item",
+    );
+  });
+
+  it("deep-links straight to the workbench Items tab", () => {
+    window.history.replaceState({}, "", "/integrations#quickbooks-items");
+    render(<IntegrationsPage />);
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(
+      screen.getByTestId("quickbooks-mapping-tab-items").getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("keeps the #quickbooks sub-tab deep link on Customers", () => {
+    window.history.replaceState({}, "", "/integrations#quickbooks");
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(
+      screen.getByTestId("quickbooks-mapping-tab-customers").getAttribute("aria-selected"),
+    ).toBe("true");
   });
 });

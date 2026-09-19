@@ -63,6 +63,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
     orgId: 'org_id',
+    siteId: 'site_id',
   },
   alerts: {
     id: 'id',
@@ -100,6 +101,7 @@ vi.mock('../middleware/auth', () => ({
     } : undefined);
     return next();
   }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
@@ -216,7 +218,7 @@ describe('networkChange routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID }]),
+              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID }]),
             }),
           }),
         } as any);
@@ -252,7 +254,7 @@ describe('networkChange routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID_2 }]),
+              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID_2, siteId: SITE_ID }]),
             }),
           }),
         } as any);
@@ -301,7 +303,7 @@ describe('networkChange routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID }]),
+              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID }]),
             }),
           }),
         } as any);

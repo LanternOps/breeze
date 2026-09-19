@@ -1,0 +1,8 @@
+---
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import ConnectSsoLoginPage from '../../components/auth/ConnectSsoLoginPage';
+---
+
+<AuthLayout titleKey="titles.authConnectSso">
+  <ConnectSsoLoginPage client:load />
+</AuthLayout>

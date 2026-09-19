@@ -13,6 +13,12 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { buildAndDispatchSoftwareInstalls } from '../services/softwareDeployment';
+import {
+  dependencyFingerprintError,
+  fingerprintSoftwareInstallMethodDependency,
+  fingerprintSoftwareVersionDependency,
+} from '../services/softwareDependencyIdentity';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'software-deployment-scheduler';
 const JOB_NAME = 'dispatch-due-software-deployments';
@@ -65,6 +71,7 @@ export interface DueDeploymentCandidate {
   scheduleType: string;
   scheduledAt: Date | null;
   options: unknown;
+  dependencyFingerprint: string | null;
   createdBy: string | null;
   windowStatus: string | null;
   windowStartTime: Date | null;
@@ -117,6 +124,7 @@ async function findDueCandidates(now: Date): Promise<DueDeploymentCandidate[]> {
       scheduleType: softwareDeployments.scheduleType,
       scheduledAt: softwareDeployments.scheduledAt,
       options: softwareDeployments.options,
+      dependencyFingerprint: softwareDeployments.dependencyFingerprint,
       createdBy: softwareDeployments.createdBy,
       windowStatus: maintenanceWindows.status,
       windowStartTime: maintenanceWindows.startTime,
@@ -189,6 +197,15 @@ async function dispatchDueManagerDeployment(
     .where(eq(softwareCatalog.id, method.catalogId));
   if (!catalogItem) {
     await failAllPendingResults(candidate.id, 'Software catalog item no longer exists');
+    return true;
+  }
+
+  const dependencyError = dependencyFingerprintError(
+    candidate.dependencyFingerprint,
+    fingerprintSoftwareInstallMethodDependency(method, catalogItem),
+  );
+  if (dependencyError) {
+    await failAllPendingResults(candidate.id, dependencyError);
     return true;
   }
 
@@ -279,6 +296,15 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     .where(eq(softwareCatalog.id, versionRecord.catalogId));
   if (!catalogItem) {
     await failAllPendingResults(candidate.id, 'Software catalog item no longer exists');
+    return true;
+  }
+
+  const dependencyError = dependencyFingerprintError(
+    candidate.dependencyFingerprint,
+    fingerprintSoftwareVersionDependency(versionRecord, catalogItem),
+  );
+  if (dependencyError) {
+    await failAllPendingResults(candidate.id, dependencyError);
     return true;
   }
 
@@ -384,6 +410,7 @@ export async function initializeSoftwareDeploymentScheduler(): Promise<void> {
   if (schedulerWorker) return;
 
   schedulerWorker = createWorker();
+  attachWorkerObservability(schedulerWorker, 'softwareDeploymentScheduler');
   schedulerWorker.on('error', (error) => {
     console.error('[SoftwareDeploymentScheduler] Worker error:', error);
     captureException(error);

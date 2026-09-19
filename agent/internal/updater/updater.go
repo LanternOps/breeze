@@ -286,6 +286,60 @@ var ErrTextBusy = fmt.Errorf("binary is currently executing")
 // rather than retry every heartbeat (issue #3544).
 var ErrUntrustedRelease = fmt.Errorf("release is not trusted by the server")
 
+// ErrCodeSignatureInvalid is returned on macOS when the binary staged for
+// installation fails `codesign --verify`. It is TERMINAL for the current
+// target version: the bytes are already checksum-verified against the signed
+// release manifest, so a verification failure means the artifact itself is
+// unsigned or its signature is broken, and no amount of retrying on the device
+// will change that.
+//
+// The updater deliberately does NOT repair this by ad-hoc signing the binary
+// (`codesign --force --sign -`). An ad-hoc signature has no stable identity —
+// its designated requirement is the code-directory hash, which differs for
+// every build — so ad-hoc signing a shipped build gives the agent a brand-new
+// code identity on every update. macOS TCC grants (Screen Recording,
+// Accessibility, Full Disk Access) are keyed to the previous identity, so they
+// silently stop matching and the user is re-prompted after each update
+// (issue #3458). Refusing the update and keeping the working, correctly signed
+// binary is strictly better than installing one whose identity we just churned.
+var ErrCodeSignatureInvalid = fmt.Errorf("binary failed macOS code signature verification")
+
+// isCodeSignatureErr reports whether err came from the macOS signature gate in
+// replaceBinary.
+func isCodeSignatureErr(err error) bool {
+	return errors.Is(err, ErrCodeSignatureInvalid)
+}
+
+// logCodeSignatureRejection records a refused update loudly. The gate runs
+// before replaceBinary writes anything, so the installed binary is untouched
+// and there is nothing to roll back — a Rollback() here would pointlessly
+// rewrite the live, correctly signed binary. targetVersion is "" for the
+// dev-push path, which has no version to name.
+func logCodeSignatureRejection(targetVersion string, err error) {
+	log.Error(codeSignatureRejectionMessage, codeSignatureRejectionFields(targetVersion, err)...)
+}
+
+// codeSignatureRejectionMessage is the log line for a refused update.
+const codeSignatureRejectionMessage = "staged binary failed macOS code signature verification — refusing to install it"
+
+// codeSignatureRejectionFields builds the structured fields for that line. Split
+// out from logCodeSignatureRejection so the two remedy branches are assertable:
+// a swapped remedy would otherwise only be discovered mid-incident, by an
+// operator reading agent logs.
+func codeSignatureRejectionFields(targetVersion string, err error) []any {
+	fields := []any{
+		"error", err.Error(),
+		"action", "update refused; keeping the currently installed binary",
+	}
+	if targetVersion != "" {
+		return append(fields,
+			"targetVersion", targetVersion,
+			"remedy", "republish this version as a Developer ID signed, notarized macOS build")
+	}
+	return append(fields,
+		"remedy", "sign the dev binary before pushing it (`make dev-push` signs darwin targets; set CODESIGN_IDENTITY to keep TCC grants across pushes)")
+}
+
 // downloadInfoError is the control plane's error body for a refused
 // download-info request. `reason` is a machine-readable enum produced by
 // validateReleaseManifest in apps/api/src/routes/agentVersions.ts (e.g.
@@ -856,6 +910,26 @@ func writeUpdateMarker(version string) {
 	}
 }
 
+// removeUpdateMarker clears a marker written for an update that then refused to
+// proceed. The marker tells the next agent start to skip its heartbeat jitter,
+// which is only correct when the process actually restarted for an update —
+// leaving a stale one behind means an unrelated restart (crash, reboot, launchd
+// respawn) also skips jitter, which is the thundering-herd case jitter exists
+// for.
+//
+// The marker is process-shared state and TryBeginProcessMutation's lease is
+// in-process only, so a watchdog-driven failover update of the agent
+// (cmd/breeze-watchdog doUpdateAgent, a separate process against the same
+// BinaryPath) racing an agent self-update could clear a marker the other just
+// wrote. The cost is bounded to that restart losing its jitter skip; the
+// write-side of the same race predates this function.
+func removeUpdateMarker() {
+	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+		log.Warn("failed to remove update marker", "path", markerPath, "error", err.Error())
+	}
+}
+
 // UpdateTo is a thin shim around UpdateToWithOptions for the common case of
 // an agent-only upgrade. New code (and any caller that needs to thread a
 // companion binary like breeze-user-helper.exe through the Windows restart
@@ -883,6 +957,17 @@ func (u *Updater) UpdateTo(version string) error {
 // Issue #816 / #845 follow-up (PR B): replaces UpdateToWithUserHelper and the
 // u.extras action-at-a-distance state with an explicit options parameter.
 func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-update")
+	if !ok {
+		if opts.UserHelper != nil && opts.UserHelper.Temp != "" {
+			removeCleanup(opts.UserHelper.Temp)
+		}
+		if opts.Backup != nil && opts.Backup.Temp != "" {
+			removeCleanup(opts.Backup.Temp)
+		}
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	err := u.updateTo(version, opts)
 	if err != nil && opts.UserHelper != nil && opts.UserHelper.Temp != "" {
 		// Cleanup contract: see method doc. Preserved verbatim from
@@ -1001,6 +1086,14 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 
 	// 6. Non-macOS or pkg fallback: replace binary inline and restart
 	if err := u.replaceBinary(tempPath); err != nil {
+		if isCodeSignatureErr(err) {
+			// The darwin branch above already wrote the update marker before
+			// attempting the .pkg install; this update is not happening, so it
+			// must not tell the next restart that it did.
+			removeUpdateMarker()
+			logCodeSignatureRejection(version, err)
+			return err
+		}
 		// Catch TOCTOU race: pre-flight passed but FS became read-only before write
 		if isReadOnlyErr(err) {
 			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
@@ -1265,6 +1358,99 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 	return tempPath, nil
 }
 
+// StageRollbackArtifacts verifies and downloads the complete component set
+// before any caller is allowed to cross a live-binary swap boundary.
+func (u *Updater) StageRollbackArtifacts(request RollbackStageRequest) (StagedRollbackSet, error) {
+	result := StagedRollbackSet{DirectiveID: request.DirectiveID}
+	fail := func(err error) (StagedRollbackSet, error) {
+		result.Cleanup()
+		return StagedRollbackSet{}, err
+	}
+	if u == nil || u.config == nil {
+		return fail(fmt.Errorf("updater configuration is required"))
+	}
+	if strings.TrimSpace(request.DirectiveID) == "" {
+		return fail(fmt.Errorf("rollback directive id is required"))
+	}
+	if request.Platform != manifestPlatform() {
+		return fail(fmt.Errorf("rollback platform mismatch: expected %s, got %s", manifestPlatform(), request.Platform))
+	}
+	if request.Architecture != runtime.GOARCH {
+		return fail(fmt.Errorf("rollback architecture mismatch: expected %s, got %s", runtime.GOARCH, request.Architecture))
+	}
+	if strings.TrimSpace(request.CurrentVersion) == "" || strings.TrimSpace(request.TargetVersion) == "" {
+		return fail(fmt.Errorf("rollback current and target versions are required"))
+	}
+	if len(request.Artifacts) == 0 || len(request.Artifacts) != len(request.ComponentVersions) {
+		return fail(fmt.Errorf("rollback artifact set does not match component versions"))
+	}
+	agentVersions, ok := request.ComponentVersions[RollbackComponentAgent]
+	if !ok || agentVersions.Current != request.CurrentVersion || agentVersions.Target != request.TargetVersion {
+		return fail(fmt.Errorf("rollback agent version binding mismatch"))
+	}
+
+	seen := make(map[RollbackComponent]struct{}, len(request.Artifacts))
+	for _, artifact := range request.Artifacts {
+		versions, ok := request.ComponentVersions[artifact.Component]
+		if !ok || versions.Current != artifact.CurrentVersion || versions.Target != artifact.TargetVersion || artifact.TargetVersion != request.TargetVersion {
+			return fail(fmt.Errorf("rollback artifact version binding mismatch for %s", artifact.Component))
+		}
+		if _, duplicate := seen[artifact.Component]; duplicate {
+			return fail(fmt.Errorf("duplicate rollback artifact component %s", artifact.Component))
+		}
+		seen[artifact.Component] = struct{}{}
+		if artifact.DownloadURL == "" || artifact.Size <= 0 || artifact.Size > maxUpdateBinaryBytes {
+			return fail(fmt.Errorf("invalid rollback artifact metadata for %s", artifact.Component))
+		}
+		if len(artifact.SHA256) != 64 {
+			return fail(fmt.Errorf("invalid rollback artifact checksum for %s", artifact.Component))
+		}
+		if _, err := hex.DecodeString(artifact.SHA256); err != nil {
+			return fail(fmt.Errorf("invalid rollback artifact checksum for %s: %w", artifact.Component, err))
+		}
+
+		cfg := *u.config
+		cfg.Component = string(artifact.Component)
+		componentUpdater := &Updater{config: &cfg, client: u.client, clientErr: u.clientErr}
+		info := downloadInfo{
+			URL: artifact.DownloadURL, Checksum: strings.ToLower(artifact.SHA256),
+			Manifest: request.ReleaseManifest, ManifestSignature: request.ManifestSignature,
+			SigningKeyID: request.ManifestSigningKeyID,
+		}
+		manifest, err := componentUpdater.verifyUpdateManifest(info, request.TargetVersion)
+		if err != nil {
+			return fail(fmt.Errorf("verify rollback artifact %s: %w", artifact.Component, err))
+		}
+		if manifest.Checksum != strings.ToLower(artifact.SHA256) || manifest.Size != artifact.Size || manifest.Component != string(artifact.Component) {
+			return fail(fmt.Errorf("signed manifest does not match rollback artifact %s", artifact.Component))
+		}
+		path, err := componentUpdater.downloadFromURL(artifact.DownloadURL)
+		if err != nil {
+			return fail(fmt.Errorf("download rollback artifact %s: %w", artifact.Component, err))
+		}
+		stat, err := os.Stat(path)
+		if err != nil || stat.Size() != artifact.Size {
+			removeCleanup(path)
+			if err != nil {
+				return fail(fmt.Errorf("stat rollback artifact %s: %w", artifact.Component, err))
+			}
+			return fail(fmt.Errorf("rollback artifact %s size mismatch: expected %d, got %d", artifact.Component, artifact.Size, stat.Size()))
+		}
+		if err := componentUpdater.verifyChecksum(path, strings.ToLower(artifact.SHA256)); err != nil {
+			removeCleanup(path)
+			return fail(fmt.Errorf("rollback artifact %s checksum verification failed: %w", artifact.Component, err))
+		}
+		result.Artifacts = append(result.Artifacts, StagedRollbackArtifact{RollbackArtifactMetadata: artifact, StagedPath: path})
+	}
+	return result, nil
+}
+
+// VerifySignedPayload verifies an arbitrary domain-separated payload against
+// the same exact keyed manifest trust set used for release artifacts.
+func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) error {
+	return u.verifyManifestSignature(payload, signature, keyID)
+}
+
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
 // downloadBinary returns the temp path of the downloaded binary, the verified
@@ -1385,8 +1571,52 @@ func (u *Updater) backupCurrentBinary() error {
 	return os.Chmod(u.config.BackupPath, info.Mode())
 }
 
-// replaceBinary replaces the current binary with a new one
+// verifyStagedBinarySignature checks that a binary staged for installation
+// carries a code signature the OS will accept. macOS is the only platform where
+// the agent's code identity — and therefore every TCC grant keyed to it —
+// depends on that signature, so it is a no-op elsewhere.
+//
+// It is a package variable so tests can drive replaceBinary's rejection path on
+// any platform, and so the existing replaceBinary tests can use plain-text
+// stand-in "binaries" (not Mach-O, so the real check would always reject them).
+// Matches the seam style already used in this package
+// (missingSigningKeyIDWarner, unusableTrustSetLogger).
+var verifyStagedBinarySignature = defaultStagedSignatureCheck
+
+// defaultStagedSignatureCheck runs `codesign --verify` on macOS.
+//
+// Release binaries are Apple Developer ID signed, notarized, and
+// codesign-verified by the release workflow before upload, and locally built
+// darwin/arm64 binaries carry the Go linker's own signature, so this passes for
+// every artifact the updater is expected to install. A failure means the staged
+// artifact is genuinely unsigned or its signature is broken.
+func defaultStagedSignatureCheck(path string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	out, err := exec.Command("codesign", "--verify", "--verbose", path).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("%w: %s", ErrCodeSignatureInvalid, detail)
+}
+
+// replaceBinary replaces the current binary with a new one.
+//
+// On macOS the incoming binary's code signature is verified BEFORE anything is
+// written, so a rejected update leaves the installed binary completely
+// untouched — there is nothing to roll back, and the agent keeps running the
+// identity its TCC grants are keyed to. See ErrCodeSignatureInvalid for why the
+// old ad-hoc re-sign fallback was removed (#3458).
 func (u *Updater) replaceBinary(newPath string) error {
+	if err := verifyStagedBinarySignature(newPath); err != nil {
+		return err
+	}
+
 	// On Unix, we can rename over the existing file
 	// On Windows, we need to rename the existing file first
 	if runtime.GOOS == "windows" {
@@ -1429,20 +1659,6 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 	}
 
-	// macOS: only ad-hoc sign if the binary isn't already properly signed.
-	// Release binaries are Apple Developer ID signed — re-signing with adhoc
-	// destroys the signature, which invalidates TCC permission grants.
-	if runtime.GOOS == "darwin" {
-		verifyCmd := exec.Command("codesign", "--verify", "--verbose", u.config.BinaryPath)
-		if err := verifyCmd.Run(); err != nil {
-			// Not signed or signature invalid — apply adhoc signature so macOS allows execution
-			cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
-			if err := cmd.Run(); err != nil {
-				log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -1475,6 +1691,11 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
 func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-dev-update")
+	if !ok {
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	// Log only the host, never the full URL: dev_update's downloadUrl is
 	// operator/control-plane supplied and may legitimately carry a
 	// capability query string (e.g. a signed CDN asset URL), which must
@@ -1529,6 +1750,10 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 	// 5. Non-Windows: replace binary inline and restart
 	defer removeCleanup(tempPath)
 	if err := u.replaceBinary(tempPath); err != nil {
+		if isCodeSignatureErr(err) {
+			logCodeSignatureRejection("", err)
+			return err
+		}
 		if isReadOnlyErr(err) {
 			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
 		}

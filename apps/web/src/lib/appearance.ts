@@ -44,6 +44,14 @@ export const FONT_STORAGE_KEY = 'breeze.font';
 export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
 export const LOCALE_STORAGE_KEY = 'breeze.locale';
 export const PARTNER_LOCALE_STORAGE_KEY = 'breeze.partnerLocale';
+
+/**
+ * Mirrors the localStorage locale preference into a cookie so Astro SSR
+ * (which has no access to localStorage) can render the shell in the right
+ * language on first paint. localStorage stays the client source of truth —
+ * see writeLocaleCookie's callers.
+ */
+export const LOCALE_COOKIE_NAME = 'breeze.locale';
 export const LINKED_PROFILE_COLLAPSE_STORAGE_KEY = 'breeze.collapseLinkedProfiles';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
@@ -124,6 +132,17 @@ function removeStorageValue(key: string): void {
     window.localStorage?.removeItem(key);
   } catch {
     // Storage unavailable: the runtime resolution still uses browser defaults.
+  }
+}
+
+function writeLocaleCookie(value: LocalePreference | undefined): void {
+  if (typeof document === 'undefined') return;
+  try {
+    document.cookie = value === undefined
+      ? `${LOCALE_COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`
+      : `${LOCALE_COOKIE_NAME}=${value}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  } catch {
+    // Cookie write failures must not break the preference itself.
   }
 }
 
@@ -266,6 +285,7 @@ export function writeTimeFormatPreference(value: TimeFormatPreference): void {
 export function writeLocalePreference(value: LocalePreference): void {
   if (!isValidLocale(value)) return;
   writeStorageValue(LOCALE_STORAGE_KEY, value);
+  writeLocaleCookie(value);
   notifyLocale(value);
 }
 
@@ -300,6 +320,11 @@ export function applyResolvedLocalePreferences(
 
   if (normalizedPartner) writeStorageValue(PARTNER_LOCALE_STORAGE_KEY, normalizedPartner);
   else removeStorageValue(PARTNER_LOCALE_STORAGE_KEY);
+
+  // Mirror only an explicit user/partner locale into the cookie — an
+  // undetermined browser default is a per-request client heuristic, not a
+  // preference worth pinning server-side for a year.
+  writeLocaleCookie(normalizedUser ?? normalizedPartner);
 
   const resolved = normalizedUser ?? normalizedPartner ?? detectBrowserLocale();
   notifyLocale(resolved);

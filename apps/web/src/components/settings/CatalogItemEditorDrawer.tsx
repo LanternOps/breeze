@@ -156,8 +156,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setName(item.name);
       setDescription(item.description ?? '');
       setSku(item.sku ?? '');
-      // The list row already carries the aggregated price book (never the
-      // deprecated unit_price mirror); the detail load refreshes it below.
+      // The list row already carries the aggregated price book; the detail
+      // load refreshes it below.
       const listPrices = (item.prices ?? []).map((p) => ({ currencyCode: p.currencyCode, unitPrice: p.unitPrice }));
       setPriceRows(listPrices);
       setBasePrices(listPrices);
@@ -826,7 +826,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                     <input
                       ref={imageInputRef}
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg"
                       disabled={imageBusy}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadImage(f); }}
                       className="block w-full text-xs file:mr-2 file:rounded-md file:border file:bg-muted file:px-2 file:py-1 file:text-xs file:font-medium disabled:opacity-50"

@@ -11,15 +11,35 @@ import {
   getCsrfHeaderValue,
   readCsrfCookie,
 } from './csrfToken';
+import {
+  commitIfCurrent,
+  currentSessionGeneration,
+} from './sessionGeneration';
+import { beginSessionInvalidation } from './sessionAuthority';
+import { noteServerDate } from './serverClock';
+import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
+import { createTokenRefresher } from './tokenRefresh';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
-const API_CORE_PREFIX = '/api/v1';
+/** Exported so callers that build a raw URL (authenticated `<Image>` sources,
+ *  file downloads) cannot drift from the prefix `coreRequest` itself uses. */
+export const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
+export { NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
+const AUTH_TRANSITION_HEADER = 'x-breeze-auth-transition';
+const AUTH_TRANSITION_VERSION = 'v1';
 export const DEVICE_BLOCKED_CODE = 'device_blocked';
+
+const NATIVE_AUTH_ISSUER_ENDPOINTS = new Set([
+  '/auth/login',
+  '/auth/mfa/verify',
+  '/auth/refresh',
+]);
 
 type DeviceBlockedListener = (reason: string | null) => void;
 const deviceBlockedListeners = new Set<DeviceBlockedListener>();
@@ -53,6 +73,9 @@ export interface Alert {
   message: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   type: string;
+  /** Rule-template category (e.g. "Security", "Performance"); absent for
+   * alerts created without a rule. */
+  category?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -86,6 +109,15 @@ export interface Device {
   };
   createdAt: string;
   updatedAt: string;
+  /** Device Details v1 fields (#5140, decision #5117-2). */
+  osVersion?: string;
+  lastUser?: string;
+  /** Best current LAN address (ranked, see mobile.ts's #2503-style pick). */
+  lanIp?: string;
+  /** WAN address the agent last authenticated from. */
+  publicIp?: string;
+  openAlertCount?: number;
+  openTicketCount?: number;
 }
 
 export interface User {
@@ -104,22 +136,52 @@ export interface LoginResponse {
   registerGrant: string | null;
 }
 
-export type MfaMethod = 'totp' | 'sms';
+export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery';
+export type MfaPrimaryMethod = Exclude<MfaMethod, 'recovery'>;
+
+export interface MfaAllowedMethods {
+  totp: boolean;
+  sms: boolean;
+  passkey: boolean;
+}
 
 export interface MfaChallenge {
   tempToken: string;
   mfaMethod: MfaMethod;
+  methods: MfaMethod[];
+  allowedMethods: MfaAllowedMethods;
+  recoveryAvailable: boolean;
   phoneLast4: string | null;
+}
+
+export interface MfaEnrollmentRequired {
+  reason: 'mfa_enrollment_required';
+  enrollUrl: string;
 }
 
 export type LoginResult =
   | { kind: 'success'; token: string; user: User; registerGrant: string | null }
-  | { kind: 'mfaRequired'; challenge: MfaChallenge };
+  | { kind: 'mfaRequired'; challenge: MfaChallenge }
+  | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
-export interface ApiError {
-  message: string;
+/**
+ * A real `Error` subclass (mirrors `TimeEntryError` in `./timeEntries`) so
+ * `err instanceof Error` narrowing at call sites actually matches. Before
+ * #4747 this was a plain `interface` and every throw site threw an object
+ * literal cast `as ApiError`, so `instanceof Error` was always false and the
+ * server's message never reached the user (ChangePasswordSheet,
+ * errorReporting) — it silently fell back to a generic string instead.
+ */
+export class ApiError extends Error {
   code?: string;
   statusCode?: number;
+
+  constructor(params: { message: string; code?: string; statusCode?: number }) {
+    super(params.message);
+    this.name = 'ApiError';
+    this.code = params.code;
+    this.statusCode = params.statusCode;
+  }
 }
 
 interface ListResponse<T> {
@@ -145,10 +207,79 @@ interface LoginPayload {
   mfaRequired?: boolean;
   tempToken?: string;
   mfaMethod?: MfaMethod;
+  allowedMethods?: MfaAllowedMethods;
+  recoveryAvailable?: boolean;
+  passkeyAvailable?: boolean;
   phoneLast4?: string | null;
+  mfaEnrollmentRequired?: boolean;
+  enrollUrl?: string;
   error?: string;
   /** #2707: single-use approver-register grant; mobile-header-gated. */
   authenticatorRegisterGrantId?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPrimaryMfaMethod(value: unknown): value is MfaPrimaryMethod {
+  return value === 'totp' || value === 'sms' || value === 'passkey';
+}
+
+export function parseMfaChallengePayload(value: unknown): MfaChallenge | null {
+  if (
+    !isRecord(value)
+    || value.mfaRequired !== true
+    || typeof value.tempToken !== 'string'
+    || !value.tempToken
+    || !isPrimaryMfaMethod(value.mfaMethod)
+  ) {
+    return null;
+  }
+  const phoneLast4 = value.phoneLast4 === undefined || value.phoneLast4 === null
+    ? null
+    : typeof value.phoneLast4 === 'string' ? value.phoneLast4 : undefined;
+  if (phoneLast4 === undefined) return null;
+  const hasAllowed = Object.prototype.hasOwnProperty.call(value, 'allowedMethods');
+  const hasRecovery = Object.prototype.hasOwnProperty.call(value, 'recoveryAvailable');
+  if (hasAllowed !== hasRecovery) return null;
+
+  if (!hasAllowed) {
+    if (value.passkeyAvailable !== undefined && typeof value.passkeyAvailable !== 'boolean') return null;
+    const allowedMethods: MfaAllowedMethods = {
+      totp: value.mfaMethod === 'totp',
+      sms: value.mfaMethod === 'sms',
+      passkey: value.mfaMethod === 'passkey' || value.passkeyAvailable === true,
+    };
+    const methods: MfaMethod[] = [
+      ...(allowedMethods.totp ? ['totp' as const] : []),
+      ...(allowedMethods.sms ? ['sms' as const] : []),
+      ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ];
+    return { tempToken: value.tempToken, mfaMethod: value.mfaMethod, methods, allowedMethods, recoveryAvailable: false, phoneLast4 };
+  }
+
+  const allowed = value.allowedMethods;
+  if (
+    !isRecord(allowed)
+    || typeof allowed.totp !== 'boolean'
+    || typeof allowed.sms !== 'boolean'
+    || typeof allowed.passkey !== 'boolean'
+    || typeof value.recoveryAvailable !== 'boolean'
+    || typeof value.passkeyAvailable !== 'boolean'
+    || value.passkeyAvailable !== allowed.passkey
+  ) return null;
+  const allowedMethods = { totp: allowed.totp, sms: allowed.sms, passkey: allowed.passkey };
+  const methods: MfaMethod[] = [
+    ...(allowedMethods.totp ? ['totp' as const] : []),
+    ...(allowedMethods.sms ? ['sms' as const] : []),
+    ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ...(value.recoveryAvailable ? ['recovery' as const] : []),
+  ];
+  if (methods.length === 0) return null;
+  const mfaMethod = allowedMethods[value.mfaMethod] ? value.mfaMethod : methods[0];
+  if (!mfaMethod) return null;
+  return { tempToken: value.tempToken, mfaMethod, methods, allowedMethods, recoveryAvailable: value.recoveryAvailable, phoneLast4 };
 }
 
 type MobileAlertRecord = {
@@ -163,6 +294,12 @@ type MobileAlertRecord = {
   acknowledgedBy?: string | null;
   resolvedAt?: string | null;
   type?: string;
+  /**
+   * The rule's alert-template category, joined server-side (#4535). Alerts
+   * created without a rule carry no category, hence nullable rather than
+   * always-present.
+   */
+  category?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -189,117 +326,266 @@ type MobileDeviceRecord = {
     diskUsage?: number;
   };
   siteName?: string;
+  // List endpoint (`GET /mobile/devices`) sends `organizationName`; the
+  // single-device endpoint (`GET /devices/:id`, devices/core.ts) sends the
+  // same value under `orgName`. Both are read in mapDevice() below (#5104).
+  organizationName?: string | null;
+  orgName?: string | null;
+  // Device Details v1 fields (#5140, decision #5117-2). Sent by the list
+  // endpoint (`GET /mobile/devices`, routes/mobile.ts) today — see that
+  // route's loadDeviceDetailsV1Fields for how each is computed. Absent
+  // (rather than null) on any response shape that doesn't send them yet.
+  // The counts are also explicitly `null` (never a false `0`) when the
+  // server-side count query itself failed — see loadDeviceDetailsV1Fields.
+  osVersion?: string | null;
+  lastUser?: string | null;
+  lanIp?: string | null;
+  publicIp?: string | null;
+  openAlertCount?: number | null;
+  openTicketCount?: number | null;
 };
 
 // Token management
-const TOKEN_KEY = 'breeze_auth_token';
-
 async function getToken(): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
+    return await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
   } catch {
     return null;
   }
 }
 
+/**
+ * `body instanceof FormData`, guarded for runtimes that lack the global.
+ *
+ * React Native ships its own FormData polyfill and Node 22 has undici's, so the
+ * global exists on both paths we run on — but a bare `instanceof` against a
+ * missing global is a ReferenceError that would take down every request, not
+ * just uploads.
+ */
+function isFormData(body: BodyInit | null | undefined): boolean {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
+}
+
+/**
+ * Auth headers for a component that fetches bytes itself rather than through
+ * `coreRequest` — `<Image source={{ uri, headers }}>` over the authenticated
+ * attachment content route, which is never a presigned public URL.
+ *
+ * Deliberately NOT the full request header set: there is no CSRF header (these
+ * are GETs) and no native binding (not an auth-issuer endpoint). Authorization
+ * is omitted entirely when no token is stored, because a literal
+ * `Bearer null` reads as a malformed credential rather than an absent one.
+ */
+export async function getAuthImageHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const token = await getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const installationId = await getOrCreateInstallationId();
+    if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
+  } catch {
+    // Deliberately silent, unlike the request path above, which reports the
+    // same failure to Sentry. This runs once per rendered thumbnail rather
+    // than once per request, so reporting here would send one event per tile
+    // per feed render and bury the signal the request path already carries.
+    // The header is diagnostic, not authority — dropping it costs nothing.
+  }
+  return headers;
+}
+
 // Request helper
+/**
+ * Whether a 401 on this request should be answered with a token refresh. Only
+ * the auth endpoints are excluded: a 401 from /auth/login is bad credentials,
+ * and /auth/refresh must never trigger itself. /auth/me is a normal session
+ * probe (cold-start revalidation) and does refresh.
+ */
+function canRefreshFor(prefix: string, endpoint: string): boolean {
+  if (prefix !== API_CORE_PREFIX) return true;
+  const path = endpoint.split('?')[0];
+  return !path.startsWith('/auth/') || path === '/auth/me';
+}
+
+
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
   options: RequestInit = {},
-  timeoutMs?: number
+  timeoutMs?: number,
+  sessionContext: Readonly<{
+    capturedGeneration?: number;
+    bearerToken?: string | null;
+  }> = {},
 ): Promise<T> {
-  const token = await getToken();
-  const method = (options.method ?? 'GET').toUpperCase();
-
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  if (token) {
-    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-  }
-
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    // Echo the server's double-submit token. Sending the fixed bootstrap value
-    // once the CSRF cookie exists fails `safeCompareTokens` server-side and
-    // rejects every refresh, which ends the session at the access-token TTL.
-    (headers as Record<string, string>)[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
-  }
-
-  // Always send the per-install id so the API can recognise this phone. This
-  // used to be a harmless soft-matching hint (the lifecycle/lockout flow), but
-  // post-#2707 the server also gates login-time register_approver_device grant
-  // minting on this header — if SecureStore fails here, the phone never gets a
-  // grant, approver registration permanently defers, and there is no recovery:
-  // ApprovalGate's deferred-banner "sign out and back in" advice cannot fix a
-  // device that can't produce an installation id at all. Report failures so
-  // they're observable instead of silently capping the phone at L1 forever.
-  try {
-    const installationId = await getOrCreateInstallationId();
-    if (installationId) {
-      (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
-    }
-  } catch (e) {
-    Sentry.captureMessage('installation id unavailable for mobile-device header', {
-      level: 'warning',
-      tags: { area: 'mobile-device-id-header' },
-      extra: { errorName: (e as Error)?.name ?? 'unknown' },
-    });
-  }
-
+  // This must be the first operation: even server URL discovery can block on
+  // storage, and a logout during that await must supersede this request.
+  const capturedGeneration = sessionContext.capturedGeneration
+    ?? currentSessionGeneration();
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
+  assertCurrentSession(capturedGeneration);
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetchWithTimeout(
-    url,
-    { ...options, headers, credentials: 'include' },
-    timeoutMs
-  );
+  const nativeAuthIssuer = prefix === API_CORE_PREFIX
+    && NATIVE_AUTH_ISSUER_ENDPOINTS.has(endpoint);
+  let retriedBindingBootstrap = false;
+  // One refresh-and-retry per request. Set by the 401 branch below; the token
+  // read prefers it so the retry cannot race a slow keychain write and re-send
+  // the token that just expired.
+  let retriedAuth = false;
+  let refreshedToken: string | null = null;
 
-  // The server sets a fresh CSRF cookie on login and refresh, and clears it on
-  // sign-out or a rejected refresh. It is deliberately not HttpOnly so a native
-  // client can read and echo it. A `cleared` signal must drop our copy too —
-  // holding a token whose cookie is gone fails the server's no-cookie path,
-  // which accepts only the bootstrap literal.
-  await applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+  while (true) {
+    assertCurrentSession(capturedGeneration);
+    const token = refreshedToken
+      ?? (Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
+        ? sessionContext.bearerToken ?? null
+        : await getToken());
+    const method = (options.method ?? 'GET').toUpperCase();
+    const multipart = isFormData(options.body);
+    const headers: Record<string, string> = {
+      // Multipart is the one body kind we must NOT name: the runtime generates a
+      // per-request boundary and writes `multipart/form-data; boundary=…` itself.
+      // A hand-set value has no boundary, so the server parses zero parts and the
+      // upload fails with a confusing 400 rather than an obvious one.
+      ...(multipart ? {} : { 'Content-Type': 'application/json' }),
+      ...(options.headers as Record<string, string> | undefined),
+    };
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({} as Record<string, unknown>));
-    const code = typeof body.code === 'string' ? body.code : undefined;
-    if (code === DEVICE_BLOCKED_CODE) {
-      const reason = typeof body.reason === 'string' ? body.reason : null;
-      notifyDeviceBlocked(reason);
+    // Strip it case-insensitively rather than merely declining to add it. A
+    // caller passing its own `Content-Type` alongside FormData is always wrong
+    // (see above) and the spread would let it back in.
+    if (multipart) {
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === 'content-type') delete headers[name];
+      }
     }
+
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      // Echo the server's double-submit token. Sending the fixed bootstrap value
+      // once the CSRF cookie exists fails `safeCompareTokens` server-side and
+      // rejects every refresh, which ends the session at the access-token TTL.
+      headers[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
+    }
+
+    // Always send the per-install id so the API can recognise this phone. This
+    // selects native transport but is not accepted by the server as binding
+    // authority; only the signed native binding below carries authority.
+    try {
+      const installationId = await getOrCreateInstallationId();
+      if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
+    } catch (e) {
+      Sentry.captureMessage('installation id unavailable for mobile-device header', {
+        level: 'warning',
+        tags: { area: 'mobile-device-id-header' },
+        extra: { errorName: (e as Error)?.name ?? 'unknown' },
+      });
+    }
+
+    if (nativeAuthIssuer) {
+      headers[AUTH_TRANSITION_HEADER] = AUTH_TRANSITION_VERSION;
+      const binding = await SecureStore.getItemAsync(NATIVE_AUTH_BINDING_KEY).catch(() => null);
+      if (binding) headers[NATIVE_AUTH_BINDING_HEADER] = binding;
+    }
+
+    assertCurrentSession(capturedGeneration);
+    const response = await fetchWithTimeout(
+      url,
+      { ...options, headers, credentials: 'include' },
+      timeoutMs
+    );
+    // Anchor the server clock from every response, INCLUDING failures: a phone
+    // whose clock runs fast has its offline time entries rejected as too far in
+    // the future (createTimeEntrySchema refines startedAt with notFarFuture),
+    // and that 400 is permanent. Synchronous, never throws.
+    noteServerDate(response.headers.get('date'));
+    assertCurrentSession(capturedGeneration);
+
+    if (nativeAuthIssuer && response.status === 428 && !retriedBindingBootstrap) {
+      retriedBindingBootstrap = true;
+      const replacement = response.headers.get(NATIVE_AUTH_BINDING_HEADER)?.trim();
+      if (replacement) {
+        const committed = await commitIfCurrent(capturedGeneration, async () => {
+          await SecureStore.setItemAsync(NATIVE_AUTH_BINDING_KEY, replacement, {
+            keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+          });
+          return replacement;
+        });
+        assertCurrentSession(capturedGeneration);
+        if (committed !== undefined) {
+          assertCurrentSession(capturedGeneration);
+          continue;
+        }
+      }
+    }
+
+    // Every response-derived write is session-owned. A delayed ordinary API
+    // response can be just as stale as an issuer response after account switch.
+    const applyCsrf = () => applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+    await commitIfCurrent(capturedGeneration, applyCsrf);
+    assertCurrentSession(capturedGeneration);
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({} as Record<string, unknown>));
+      assertCurrentSession(capturedGeneration);
+      // Access tokens live JWT_EXPIRES_IN (15 minutes in production) and the
+      // refresh cookie lives days. Until this branch existed only the AI chat
+      // path refreshed, so every other screen hard-401'd a quarter of an hour
+      // after sign-in and the cold-start revalidation then signed the user
+      // out. Refresh once and replay; a second 401 is final. The auth
+      // endpoints themselves are excluded so /auth/refresh can never recurse.
+      if (
+        response.status === 401
+        && !retriedAuth
+        && token
+        && canRefreshFor(prefix, endpoint)
+      ) {
+        retriedAuth = true;
+        const fresh = await refreshAccessToken();
+        assertCurrentSession(capturedGeneration);
+        if (fresh) {
+          refreshedToken = fresh;
+          continue;
+        }
+      }
+      const code = typeof body.code === 'string' ? body.code : undefined;
+      if (code === DEVICE_BLOCKED_CODE) {
+        const reason = typeof body.reason === 'string' ? body.reason : null;
+        notifyDeviceBlocked(reason);
+      }
+      assertCurrentSession(capturedGeneration);
     // Self-heal a token the server will not accept. The stored value can
     // outlive its cookie — SecureStore survives an iOS reinstall while the
     // cookie jar does not — and if `set-cookie` is not readable on this runtime
     // we would never have learned a good one. Forgetting it makes the next
     // request bootstrap with the literal the no-cookie path accepts, so the
     // client recovers instead of looping.
-    const message =
-      (typeof body.error === 'string' && body.error)
-      || (typeof body.message === 'string' && body.message)
-      || 'An error occurred';
-    if (/csrf/i.test(message)) {
-      await forgetCsrfToken();
+      const message =
+        (typeof body.error === 'string' && body.error)
+        || (typeof body.message === 'string' && body.message)
+        || 'An error occurred';
+      if (/csrf/i.test(message)) {
+        await commitIfCurrent(capturedGeneration, forgetCsrfToken);
+        assertCurrentSession(capturedGeneration);
+      }
+
+      throw new ApiError({ message, code, statusCode: response.status });
     }
 
-    const error: ApiError = {
-      message,
-      code,
-      statusCode: response.status
-    };
-    throw error;
-  }
+    const text = await response.text();
+    assertCurrentSession(capturedGeneration);
+    if (!text) return {} as T;
 
-  // Handle empty responses
-  const text = await response.text();
-  if (!text) {
-    return {} as T;
+    return JSON.parse(text);
   }
+}
 
-  return JSON.parse(text);
+function assertCurrentSession(capturedGeneration: number): void {
+  if (capturedGeneration === currentSessionGeneration()) return;
+  throw new ApiError({
+    message: 'Response belongs to a superseded session',
+    code: 'session_superseded',
+  });
 }
 
 async function request<T>(
@@ -337,6 +623,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     message: alert.message,
     severity: normalizedSeverity,
     type: alert.type || 'alert',
+    category: alert.category ?? undefined,
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),
@@ -365,11 +652,21 @@ function mapDevice(device: MobileDeviceRecord): Device {
     status: mapStatus(device.status),
     lastSeen: device.lastSeenAt || undefined,
     organizationId: device.orgId || undefined,
+    organizationName: device.organizationName || device.orgName || undefined,
     siteId: device.siteId || undefined,
     siteName: device.siteName || undefined,
     metrics: device.metrics,
     createdAt,
-    updatedAt
+    updatedAt,
+    // Device Details v1 fields (#5140). `?? undefined` rather than `||`:
+    // openAlertCount/openTicketCount are legitimately 0, which `||` would
+    // discard the same as a missing field.
+    osVersion: device.osVersion ?? undefined,
+    lastUser: device.lastUser ?? undefined,
+    lanIp: device.lanIp ?? undefined,
+    publicIp: device.publicIp ?? undefined,
+    openAlertCount: device.openAlertCount ?? undefined,
+    openTicketCount: device.openTicketCount ?? undefined
   };
 }
 
@@ -380,23 +677,31 @@ export async function login(email: string, password: string): Promise<LoginResul
     body: JSON.stringify({ email, password }),
   });
 
-  if (response.mfaRequired) {
-    if (!response.tempToken || !response.mfaMethod) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
-    }
+  // Fail closed even if a server accidentally includes tempting user/token
+  // fields: enrollment-required is a handoff state, never authentication.
+  if (response.mfaEnrollmentRequired === true) {
     return {
-      kind: 'mfaRequired',
-      challenge: {
-        tempToken: response.tempToken,
-        mfaMethod: response.mfaMethod,
-        phoneLast4: response.phoneLast4 ?? null,
+      kind: 'mfaEnrollmentRequired',
+      handoff: {
+        reason: 'mfa_enrollment_required',
+        enrollUrl: typeof response.enrollUrl === 'string' && response.enrollUrl.startsWith('/')
+          ? response.enrollUrl
+          : '/auth/mfa/setup',
       },
     };
   }
 
+  if (response.mfaRequired) {
+    const challenge = parseMfaChallengePayload(response);
+    if (!challenge) {
+      throw new ApiError({ message: 'Invalid MFA challenge from server' });
+    }
+    return { kind: 'mfaRequired', challenge };
+  }
+
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid login response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid login response' });
   }
 
   return {
@@ -407,15 +712,19 @@ export async function login(email: string, password: string): Promise<LoginResul
   };
 }
 
-export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+export async function verifyMfa(
+  code: string,
+  tempToken: string,
+  method: Exclude<MfaMethod, 'passkey'>,
+): Promise<LoginResponse> {
   const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
     method: 'POST',
-    body: JSON.stringify({ code, tempToken }),
+    body: JSON.stringify({ code, tempToken, method }),
   });
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid MFA response' });
   }
 
   return { token, user: response.user, registerGrant: response.authenticatorRegisterGrantId ?? null };
@@ -428,15 +737,56 @@ export async function sendMfaSms(tempToken: string): Promise<void> {
   });
 }
 
-export async function logout(): Promise<void> {
+export async function logout(
+  options: Readonly<{
+    sessionGenerationAlreadyAdvanced?: boolean;
+    localCleanupAlreadyEnqueued?: boolean;
+    bearerToken?: string | null;
+  }> = {},
+): Promise<void> {
+  const invalidation = options.sessionGenerationAlreadyAdvanced
+    ? null
+    : beginSessionInvalidation();
+  const logoutGeneration = invalidation?.generation ?? currentSessionGeneration();
+  const networkLogout = requestWithPrefix(
+    '/auth/logout',
+    API_CORE_PREFIX,
+    { method: 'POST' },
+    undefined,
+    {
+      capturedGeneration: logoutGeneration,
+      ...(options.bearerToken !== undefined ? { bearerToken: options.bearerToken } : {}),
+    },
+  );
+  // Attach the rejection handler immediately; secure cleanup may be queued
+  // behind a slow old-session write and must not leave an early network error
+  // unhandled while we wait.
+  const networkResult = networkLogout.then(
+    () => undefined,
+    () => undefined,
+  );
+  const cleanup = options.localCleanupAlreadyEnqueued
+    ? Promise.resolve()
+    : invalidation?.cleanup ?? commitIfCurrent(logoutGeneration, async () => {
+      await Promise.all([
+        SecureStore.deleteItemAsync(AUTH_TOKEN_KEY),
+        SecureStore.deleteItemAsync(NATIVE_AUTH_BINDING_KEY),
+        forgetCsrfToken(),
+      ]);
+    });
+
+  // Cleanup is enqueued before waiting on the network. The request already
+  // captured its generation and optional bearer synchronously above.
   try {
-    await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
+    await cleanup;
+    await networkResult;
   } catch {
     // Ignore logout errors
   }
 }
 
 export async function refreshToken(): Promise<{ token: string }> {
+  const generation = currentSessionGeneration();
   const response = await requestWithPrefix<{ tokens?: AuthTokensPayload; accessToken?: string }>(
     '/auth/refresh',
     API_CORE_PREFIX,
@@ -446,10 +796,26 @@ export async function refreshToken(): Promise<{ token: string }> {
     });
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
-    throw { message: 'Failed to refresh token' } as ApiError;
+    throw new ApiError({ message: 'Failed to refresh token' });
+  }
+  // Callers such as aiChat persist the returned token. Refuse to hand them a
+  // response that began before logout advanced the generation, otherwise the
+  // caller could reinstall access authority after local teardown completed.
+  if (generation !== currentSessionGeneration()) {
+    throw new ApiError({
+      message: 'Refresh response belongs to a superseded session',
+      code: 'session_superseded',
+    });
   }
   return { token };
 }
+
+/**
+ * The app's single token refresher: the request core calls it on a 401 and
+ * aiChat reopens its stream through it, so concurrent 401s share one
+ * /auth/refresh. See tokenRefresh.ts for why it is built here.
+ */
+export const refreshAccessToken = createTokenRefresher(refreshToken);
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   await requestWithPrefix('/auth/change-password', API_CORE_PREFIX, {
@@ -703,27 +1069,25 @@ export interface PagedResult<T> {
  * Fetch ONE page of a mobile list endpoint and report how much of the set it
  * represents.
  *
- * Deliberately one request, not a walk. Neither pagination mode on
- * `/mobile/devices` or `/mobile/alerts/inbox` can produce a trustworthy
- * full-set walk today:
+ * Deliberately one request, not a walk — even though the server-side bug that
+ * originally justified this (#3770) is now fixed: `/mobile/devices` and
+ * `/mobile/alerts/inbox` both compute `nextCursor` on every response,
+ * including a cold-start caller's first one, and — for `/devices` — the
+ * default (no `?page=`) request now runs on the immutable, NOT NULL
+ * `hostname` keyset instead of the mutable, nullable `last_seen_at` one, so a
+ * caller that walks `nextCursor` no longer risks the skip/dup hazards
+ * described below for that path. `/alerts/inbox` additionally used to
+ * truncate its cursor to millisecond precision, which could skip rows sitting
+ * between the truncated boundary and the real one; the cursor now carries the
+ * full microsecond value.
  *
- *  - CURSOR mode is unreachable. The routes compute `nextCursor` only inside
- *    `if (cursor)`, so a cold-start caller — which has no cursor to send — gets
- *    `nextCursor: null` on its first response and can never obtain the token
- *    for page two. The previous walk here treated that null as clean
- *    exhaustion, so it stopped after one page AND suppressed its own truncation
- *    warning.
- *  - OFFSET mode is reachable but skews. Both routes order by a MUTABLE key
- *    (`last_seen_at`, rewritten by every heartbeat), so rows reorder between
- *    page requests: page two can repeat rows page one already returned and
- *    never return the ones that moved ahead of the offset. A row-count check
- *    cannot detect that, because the duplicates make the count come out right.
- *
- * So the walk is not the fix — the honest claim is. One page, plus the server's
- * exact `total`, lets the caller say "showing N of M" instead of presenting a
- * sample as the whole set. Fixing the underlying keyset (the way
- * `routes/devices/core.ts` did, by keying cursor mode on the NOT NULL,
- * immutable `hostname`) is filed separately.
+ * None of that makes a client-side walk trustworthy on its own — it only
+ * removes the server-side reasons one couldn't be. Implementing the walk
+ * (retry/backoff, mid-walk auth/network failure, cancellation, resuming a
+ * mid-flight session) is real client work nobody has done, so this still
+ * fetches one page and reports honestly whether it's the whole set: the
+ * server's exact `total`, plus this page, lets the caller say "showing N of
+ * M" instead of presenting a sample as the whole thing.
  */
 async function fetchPage<TRow>(
   buildPath: (params: URLSearchParams) => string,
@@ -795,20 +1159,45 @@ export async function getDevice(id: string): Promise<Device> {
   return mapDevice(response);
 }
 
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Calls GET /api/v1/fleet/findings/counts — open fleet-hygiene finding
+ * counts per org, plus the fleet total (#5139 / #5117 decision 1). Folds
+ * fleet findings (VSS/Universal Print/Intel ME/SCEP failures, etc.) into the
+ * same "issue count" the AI's get_fleet_findings tool already reports, so
+ * the Systems tab shows the same picture. This route lives outside the
+ * `/mobile` surface, so it goes through the core `/api/v1` prefix like
+ * `getDevice` above, not the `/mobile`-prefixed `request()` helper.
+ */
+export async function getFleetFindingCounts(): Promise<FleetFindingCounts> {
+  return requestWithPrefix<FleetFindingCounts>('/fleet/findings/counts', API_CORE_PREFIX);
+}
+
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
+  // GET /devices/:id/metrics (apps/api/src/routes/devices/metrics.ts) returns
+  // buckets keyed `cpu`/`ram`/`disk` (aggregateMetricsByInterval), not
+  // `avgCpuPercent`/`avgRamPercent`/`avgDiskPercent` — those are the internal
+  // DB-row field names used before aggregation, never sent over the wire
+  // (#5104). Buckets are ordered ascending (queryMetricRollups /
+  // queryRawMetricBuckets both `orderBy(asc(...))`), so the last element is
+  // genuinely the most recent sample.
   const response = await requestWithPrefix<{
     data?: {
-      avgCpuPercent?: number;
-      avgRamPercent?: number;
-      avgDiskPercent?: number;
+      cpu?: number;
+      ram?: number;
+      disk?: number;
     }[];
   }>(`/devices/${id}/metrics`, API_CORE_PREFIX);
   const latest = response.data?.[response.data.length - 1];
   if (!latest) return undefined;
   return {
-    cpuUsage: latest.avgCpuPercent,
-    memoryUsage: latest.avgRamPercent,
-    diskUsage: latest.avgDiskPercent
+    cpuUsage: latest.cpu,
+    memoryUsage: latest.ram,
+    diskUsage: latest.disk
   };
 }
 

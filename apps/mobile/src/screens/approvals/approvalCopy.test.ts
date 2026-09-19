@@ -107,3 +107,36 @@ describe('getApprovalCopy', () => {
     });
   });
 });
+
+describe('getApprovalCopy — raw call-signature labels', () => {
+  // Servers before the actionLabel humanising change stamped the audit
+  // signature onto approval_requests.action_label. Those rows still exist and
+  // still arrive by push, so the phone unpacks them rather than printing a
+  // UUID in 28pt.
+  it('renders tool + recognisable args instead of the signature', () => {
+    const copy = getApprovalCopy({
+      actionToolName: 'manage_services',
+      actionLabel: 'manage_services(deviceId=6eae0f70-8da9-49ff-9e18-c241698975f3, action=restart, serviceName=Spooler)',
+      actionArguments: { deviceId: '6eae0f70-8da9-49ff-9e18-c241698975f3', action: 'restart', serviceName: 'Spooler' },
+    });
+    expect(copy.headline).toBe('Manage services: restart Spooler');
+  });
+
+  it('handles JSON-valued args in the signature', () => {
+    const copy = getApprovalCopy({
+      actionToolName: 'execute_command',
+      actionLabel: 'execute_command(deviceId=6eae0f70-8da9-49ff-9e18-c241698975f3, commandType=list_services, payload={"search":"Spooler"})',
+      actionArguments: { deviceId: '6eae0f70-8da9-49ff-9e18-c241698975f3', commandType: 'list_services', payload: { search: 'Spooler' } },
+    });
+    expect(copy.headline).toBe('Execute command: list_services');
+  });
+
+  it('leaves a human label alone', () => {
+    const copy = getApprovalCopy({
+      actionToolName: 'manage_services',
+      actionLabel: 'Restart service "Spooler" on KIT',
+      actionArguments: {},
+    });
+    expect(copy.headline).toBe('Restart service "Spooler" on KIT');
+  });
+});

@@ -48,6 +48,8 @@ export interface PatchCompliance {
   totalDevices: number;
   compliantDevices: number;
   criticalSummary: { total: number; patched: number; pending: number };
+  importantSummary: { total: number; patched: number; pending: number };
+  unratedSummary: { total: number; patched: number; pending: number };
 }
 
 /** GET /security/dashboard — apps/api/src/routes/security/dashboard.ts */

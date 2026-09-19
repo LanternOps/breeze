@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   cloneQuote: vi.fn(),
   navigateTo: vi.fn(),
   runAction: vi.fn(),
+  showToast: vi.fn(),
   organizations: [] as Array<{ id: string; name: string }>,
 }));
 
@@ -28,6 +29,7 @@ vi.mock('../../../lib/runAction', () => ({
   runAction: mocks.runAction,
   handleActionError: vi.fn(),
 }));
+vi.mock('../../shared/Toast', () => ({ showToast: mocks.showToast }));
 vi.mock('../../shared/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
 
 const detail: QuoteDetailData = {
@@ -103,6 +105,32 @@ describe('QuoteActions cloning', () => {
     }));
     expect(mocks.navigateTo).toHaveBeenCalledWith('/billing/quotes/q-2');
   });
+
+  it('warns when a retargeted clone needs scoped descriptors re-picked', async () => {
+    mocks.runAction.mockImplementationOnce(async ({ request }: { request: () => Promise<unknown> }) => {
+      await request();
+      return {
+        data: {
+          id: 'q-2',
+          deviceSetDrift: [
+            { lineId: 'l-2', description: 'VIP laptops', storedQuantity: '8.00', liveQuantity: null, reason: 'org_retargeted' },
+          ],
+        },
+      };
+    });
+    render(<QuoteActions detail={detail} variant="header" />);
+
+    openCloneDialog();
+    fireEvent.click(screen.getByTestId('quote-clone-org-trigger'));
+    fireEvent.click(screen.getByTestId('quote-clone-org-option-org-2'));
+    fireEvent.click(screen.getByTestId('quote-clone-confirm'));
+
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith({
+      type: 'warning',
+      message: '1 line(s) need a device group or site re-picked for this organization',
+    }));
+  });
+
 
   it('sends an emptied title as "" so the clone is untitled, not silently renamed back', async () => {
     render(<QuoteActions detail={detail} variant="header" />);

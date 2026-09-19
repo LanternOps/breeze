@@ -2,6 +2,7 @@
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 import AssetList from '../../components/portal/AssetList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -14,6 +15,14 @@ const response = await portalApi.getAssets(
 if (response.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
+}
+
+// Equipment is gated on asset checkout, which 403s with
+// PORTAL_ASSET_CHECKOUT_DISABLED — and AssetList prints `error` verbatim, so the
+// customer used to be shown our own internal wording ("Asset checkout is not
+// enabled for this portal") for a switch the MSP threw deliberately (#4932).
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
 }
 ---
 

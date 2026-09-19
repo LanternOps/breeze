@@ -12,12 +12,14 @@ import {
   devices,
   playbookDefinitions,
   playbookExecutions,
+  users,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, runFrozenDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -26,6 +28,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -35,7 +40,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -174,6 +182,23 @@ registerTool({
           ? (extraContext.variables as Record<string, unknown>)
           : {};
 
+      // #3826 Wave 4A Task 3: `playbook_executions.triggered_by_user_id`
+      // FK-references users.id (schema/playbooks.ts:118), but an `ai_agent`
+      // principal's `auth.user.id` is the agent's `ai_agents.id`, not a
+      // users row (services/aiAgents/agentAuthContext.ts) — inserting it
+      // verbatim would die on a 23503. Mirrors the shipped
+      // commandQueue.ts:855-889 probe precedent: one indexed PK lookup, and
+      // a non-resolving id degrades the FK column to NULL. The existing
+      // `triggeredBy: 'ai'` varchar tag is untouched either way — it already
+      // flags every AI-originated execution regardless of which principal
+      // triggered it.
+      const [userRow] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, auth.user.id))
+        .limit(1);
+      const safeTriggeredByUserId = userRow ? auth.user.id : null;
+
       const [execution] = await db
         .insert(playbookExecutions)
         .values({
@@ -189,7 +214,7 @@ registerTool({
             },
           },
           triggeredBy: 'ai',
-          triggeredByUserId: auth.user.id,
+          triggeredByUserId: safeTriggeredByUserId,
         })
         .returning();
 
@@ -271,6 +296,24 @@ registerTool({
   },
   handler: async (input, auth) => {
     try {
+      // The site axis is not enforced by RLS. History is attributable to the
+      // execution's current device, so restrict the joined device in SQL
+      // before ordering/LIMIT. `undefined` means unrestricted; a defined-empty
+      // ceiling denies every device and therefore every execution.
+      //
+      // The EXACT-DEVICE axis is independent: a device-less analysis run carries
+      // `allowedDeviceIds` with NO `allowedSiteIds`, so the site branch below
+      // silently no-ops for it and the query stayed org-wide — every sibling
+      // device's playbook history. Push the frozen device set as its own
+      // condition (#6086 finding 7). An execution with a NULL device_id is
+      // excluded for such a caller by construction, which is the fail-closed
+      // direction.
+      const allowedSiteIds = auth.allowedSiteIds;
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (allowedSiteIds?.length === 0 || frozenDeviceIds?.length === 0) {
+        return JSON.stringify({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+      }
+
       const conditions: SQL[] = [];
       const orgCond = auth.orgCondition(playbookExecutions.orgId);
       if (orgCond) conditions.push(orgCond);
@@ -284,6 +327,9 @@ registerTool({
       if (typeof input.status === 'string') {
         conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
       }
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      const deviceCond = deviceScopeCondition(auth, playbookExecutions.deviceId);
+      if (deviceCond) conditions.push(deviceCond);
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
 

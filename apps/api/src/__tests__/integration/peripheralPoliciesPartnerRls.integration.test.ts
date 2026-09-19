@@ -22,6 +22,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceCommands, devices, peripheralPolicies, sites } from '../../db/schema';
 import { processPolicyDistribution } from '../../jobs/peripheralJobs';
+import { loadAndResolveEffectivePeripheralPolicySet } from '../../services/peripheralEffectivePolicy';
 import { createOrganization, createPartner } from './db-utils';
 
 const createdPolicies: string[] = [];
@@ -67,13 +68,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#4954) keys on, so a test that omits it
+ * is exercising a context with no partner GUC at all, not an org token's, and
+ * any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -136,15 +147,39 @@ describe('peripheral_policies RLS — dual-axis (2026-07-01 migration)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('an org-scope caller cannot see a partner-wide policy owned by its partner (agents still receive it via distribution)', async () => {
+  // #4954 flipped this. It used to assert org scope could not see a
+  // partner-wide policy at all — but the fixture never set `currentPartnerId`,
+  // so it was exercising a context with no partner GUC and passed for the wrong
+  // reason. `peripheral_policies_partner_wide_select`
+  // (2026-10-11-000200-software-security-partner-wide-select.sql) now grants an
+  // org token a SELECT-only view of its OWN partner's partner-wide rows, which
+  // is what every request-path reader previously bought with a nested
+  // system-context escalation. Agents reach the same rows through the same
+  // branch: `middleware/agentAuth.ts` sets `currentPartnerId: device.partnerId`
+  // (#4673 W02), so distribution no longer needs an escalation either. Writes
+  // are unchanged; the full read/write matrix for all five software-security
+  // tables lives in softwareSecurityPartnerWideSelect.integration.test.ts.
+  it('an org-scope caller of the owning partner CAN read a partner-wide policy but cannot write it', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const id = await seedPartnerPolicy(partner.id);
 
-    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select({ id: peripheralPolicies.id }).from(peripheralPolicies).where(eq(peripheralPolicies.id, id)),
     );
-    expect(visibleToOrg).toEqual([]);
+    expect(visibleToOrg.map((r) => r.id)).toEqual([id]);
+
+    // The branch is FOR SELECT only: RLS hides the row from the write command
+    // rather than raising, so assert the ROW COUNT — "it didn't throw" would be
+    // satisfied by a successful hijack.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(peripheralPolicies)
+        .set({ name: 'HIJACKED' })
+        .where(eq(peripheralPolicies.id, id))
+        .returning({ id: peripheralPolicies.id }),
+    );
+    expect(updated).toEqual([]);
   });
 
   it('org scope can still INSERT and SELECT an org-scoped policy (unchanged shape)', async () => {
@@ -169,6 +204,30 @@ describe('peripheral_policies RLS — dual-axis (2026-07-01 migration)', () => {
         .where(eq(peripheralPolicies.id, inserted[0]!.id)),
     );
     expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
+  });
+
+  it('persists the v2 priority default on both ownership axes', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerId = await seedPartnerPolicy(partner.id);
+
+    const [orgPolicy] = await withDbAccessContext(orgContext(org.id), () =>
+      db.insert(peripheralPolicies).values({
+        ...BASE_POLICY,
+        name: 'Org policy with default priority',
+        orgId: org.id,
+        partnerId: null,
+      }).returning(),
+    );
+    createdPolicies.push(orgPolicy!.id);
+
+    const rows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: peripheralPolicies.id, priority: peripheralPolicies.priority })
+        .from(peripheralPolicies)
+        .where(inArray(peripheralPolicies.id, [partnerId, orgPolicy!.id])),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.priority === 100)).toBe(true);
   });
 
   it('the one-owner CHECK rejects a policy that sets BOTH axes and one that sets NEITHER', async () => {
@@ -241,6 +300,7 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
           osVersion: '10.0',
           architecture: 'x64',
           agentVersion: '1.0.0',
+          peripheralPolicyProtocolVersion: 2,
         })
         .returning(),
     );
@@ -250,9 +310,12 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
 
   function payloadPolicyIds(payload: unknown): string[] {
     if (!payload || typeof payload !== 'object') return [];
-    const policies = (payload as { policies?: Array<{ id?: string }> }).policies;
+    const policies = (payload as { effectivePolicies?: Array<{ policyId?: string }> })
+      .effectivePolicies;
     if (!Array.isArray(policies)) return [];
-    return policies.map((p) => p.id).filter((id): id is string => typeof id === 'string');
+    return policies
+      .map((policy) => policy.policyId)
+      .filter((id): id is string => typeof id === 'string');
   }
 
   it("a member org's distribution payload includes its partner's partner-wide policy but NOT a foreign partner's", async () => {
@@ -268,12 +331,19 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
     const [orgPolicy] = await withDbAccessContext(orgContext(orgA.id), () =>
       db
         .insert(peripheralPolicies)
-        .values({ ...BASE_POLICY, name: 'Org-owned USB block', orgId: orgA.id, partnerId: null })
+        .values({
+          ...BASE_POLICY,
+          name: 'Org-owned Bluetooth block',
+          deviceClass: 'bluetooth',
+          orgId: orgA.id,
+          partnerId: null,
+        })
         .returning(),
     );
     createdPolicies.push(orgPolicy!.id);
 
     // The distribution worker runs under system context — mirror that.
+    const scheduledDeviceIds: string[] = [];
     const result = await withDbAccessContext(SYSTEM_CTX, () =>
       processPolicyDistribution({
         type: 'policy-distribution',
@@ -281,19 +351,18 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
         changedPolicyIds: [partnerWideA],
         reason: 'integration-test',
         queuedAt: new Date().toISOString(),
+      }, {
+        scheduleDevice: async (deviceId) => {
+          scheduledDeviceIds.push(deviceId);
+          return deviceId;
+        },
       }),
     );
     expect(result.queued).toBe(1);
+    expect(scheduledDeviceIds).toEqual([deviceA]);
 
-    const commands = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .select({ payload: deviceCommands.payload })
-        .from(deviceCommands)
-        .where(eq(deviceCommands.deviceId, deviceA)),
-    );
-    expect(commands.length).toBeGreaterThan(0);
-
-    const distributedIds = payloadPolicyIds(commands[commands.length - 1]!.payload);
+    const resolved = await loadAndResolveEffectivePeripheralPolicySet(deviceA);
+    const distributedIds = payloadPolicyIds(resolved);
     expect(distributedIds).toContain(partnerWideA); // partner-wide policy reaches the member org's devices
     expect(distributedIds).toContain(orgPolicy!.id); // org-owned policy still distributed
     expect(distributedIds).not.toContain(partnerWideB); // another partner's policy NEVER leaks in

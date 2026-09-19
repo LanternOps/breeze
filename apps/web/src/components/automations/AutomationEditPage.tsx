@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Bot } from 'lucide-react';
+import { ArrowLeft, Bot, Link2 } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -16,7 +16,11 @@ import '../../lib/i18n';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
-type Script = { id: string; name: string };
+// `runAs` (#4888): `GET /scripts` selects whole rows, so the saved run
+// context is already on the wire — surfaced on the type so the run_script
+// action's control can name the default it inherits ("Script default
+// (System)") the way the other launch surfaces do.
+type Script = { id: string; name: string; runAs?: 'system' | 'user' | 'elevated' };
 type NotificationChannel = { id: string; name: string; type: string };
 type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
@@ -31,6 +35,31 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Narrows a stored `run_script` action's run context to the `script_run_as`
+ * enum (#4888).
+ *
+ * `'elevated'` is INCLUDED even though the control cannot hand it out: it is a
+ * legal stored value (`automationRuntime.normalizeAutomationActions` keeps
+ * it), and dropping it here would mean opening an elevated automation for an
+ * unrelated edit and silently downgrading it on save. `RunContextSelect`
+ * renders it as a disabled option so the value is visible and survives the
+ * round trip untouched.
+ */
+function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
+  return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
+}
+
+/**
+ * #5128 W4 — read the stored offline behaviour back so opening an automation
+ * for edit shows what is actually in effect. Absent stays absent: an action
+ * saved before the field existed must round-trip byte-identically until the
+ * operator changes it (the API defaults it to 'queue').
+ */
+function asWhenOffline(value: unknown): 'queue' | 'skip' | undefined {
+  return value === 'queue' || value === 'skip' ? value : undefined;
 }
 
 function normalizeActionForForm(value: unknown): ActionFormValues {
@@ -55,7 +84,8 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
   if (type === 'execute_command') {
     return {
       type,
-      command: asString(action.command) ?? ''
+      command: asString(action.command) ?? '',
+      whenOffline: asWhenOffline(action.whenOffline)
     };
   }
 
@@ -68,7 +98,13 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
 
   return {
     type: 'run_script',
-    scriptId: asString(action.scriptId) ?? asString(action.script_id)
+    scriptId: asString(action.scriptId) ?? asString(action.script_id),
+    // #4888 — read the stored run-context override back so opening an
+    // automation for edit shows the choice that is actually in effect.
+    // Without this the form would render "Script default" for an action that
+    // overrides it, and the next save would erase the override.
+    runAs: asRunAs(action.runAs),
+    whenOffline: asWhenOffline(action.whenOffline)
   };
 }
 
@@ -76,7 +112,19 @@ function buildActionPayload(action: ActionFormValues) {
   if (action.type === 'run_script') {
     return {
       type: action.type,
-      scriptId: action.scriptId
+      scriptId: action.scriptId,
+      // #4888 — this builder reconstructs each action field by field rather
+      // than spreading the form values, so a field added to the form and NOT
+      // added here is silently dropped between the operator clicking Save and
+      // the request going out. That is precisely the bug #4888 was filed for
+      // (the Fix flow's discarded run-as select), so it must not be
+      // reintroduced one layer below the form. `undefined` is omitted by
+      // JSON.stringify, which is what "Script default" has to serialise to.
+      ...(action.runAs ? { runAs: action.runAs } : {}),
+      // #5128 W4 — same field-by-field discipline as runAs above: omitted when
+      // the operator never touched the control, so an untouched pre-#5128
+      // action still serialises exactly as it did.
+      ...(action.whenOffline ? { whenOffline: action.whenOffline } : {})
     };
   }
 
@@ -104,7 +152,8 @@ function buildActionPayload(action: ActionFormValues) {
 
   return {
     type: action.type,
-    command: action.command
+    command: action.command,
+    ...(action.whenOffline ? { whenOffline: action.whenOffline } : {})
   };
 }
 
@@ -118,6 +167,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   // #3824: a seeded, agent-owned automation is read-only — render a notice
   // instead of the editor. The API 409s on save anyway.
   const [managedByAgentId, setManagedByAgentId] = useState<string | null>(null);
+  // #5287: an automation compiled from a monitor is likewise read-only here —
+  // the API 409s (`automation_managed_by_monitor`) on save. Takes priority
+  // over the agent-managed notice below since a monitor-compiled automation
+  // is never also agent-owned in practice.
+  const [managedByMonitorId, setManagedByMonitorId] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -142,6 +196,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       const data = await response.json();
       const automation = data.automation ?? data;
       setManagedByAgentId(asString(automation.managedByAgentId) ?? null);
+      setManagedByMonitorId(asString(automation.managedByMonitorId) ?? null);
 
       const trigger = isPlainRecord(automation.trigger)
         ? automation.trigger
@@ -327,7 +382,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         throw new Error(extractApiError(data, t('automationEditPage.errors.save')));
       }
 
-      void navigateTo('/automations');
+      void navigateTo('/jobs');
     } catch (err) {
       setError(err instanceof Error ? err.message : t('automationEditPage.errors.generic'));
     } finally {
@@ -336,7 +391,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   };
 
   const handleCancel = () => {
-    void navigateTo('/automations');
+    void navigateTo('/jobs');
   };
 
   if (loading) {
@@ -368,12 +423,12 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: t('automationEditPage.breadcrumb.automations'), href: '/automations' },
+        { label: t('automationEditPage.breadcrumb.automations'), href: '/jobs' },
         { label: isNew ? t('automationEditPage.breadcrumb.new') : (defaultValues?.name || t('automationEditPage.breadcrumb.edit')) }
       ]} />
       <div className="flex items-center gap-4">
         <a
-          href="/automations"
+          href="/jobs"
           className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
         >
           <ArrowLeft className="h-5 w-5" />
@@ -396,7 +451,29 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         </div>
       )}
 
-      {managedByAgentId ? (
+      {managedByMonitorId ? (
+        <div
+          className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-6"
+          data-testid="automation-managed-notice"
+        >
+          <div className="flex items-center gap-2 text-blue-700 dark:text-blue-200">
+            <Link2 className="h-5 w-5" />
+            <h2 className="text-sm font-semibold">{t('monitoring:managed.readOnly')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {t('monitoring:managed.description')}
+          </p>
+          {/* Monitor detail page lands in a later wave — the route is reserved
+              now so this link lights up without another edit here (#5287). */}
+          <a
+            href={`/alerts/monitors/${managedByMonitorId}`}
+            className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            data-testid="automation-managed-monitor-link"
+          >
+            {t('monitoring:managed.open')}
+          </a>
+        </div>
+      ) : managedByAgentId ? (
         <div
           className="rounded-lg border border-purple-500/40 bg-purple-500/10 p-6"
           data-testid="automation-managed-notice"

@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Bu politikanın organizasyonu yoktur, dolayısıyla atama hedefleri listelenemez.",
       "failedToAddAssignment": "Ödev eklenemedi",
       "failedToRemoveAssignment": "Ödev kaldırılamadı",
+      "assignmentAdded": "Ödev eklendi",
+      "assignmentRemoved": "Ödev kaldırıldı",
       "roleFilter": "Rol Filtresi",
       "optional": "(isteğe bağlı)",
       "noRestrictionAppliesToAllDeviceRoles": "Kısıtlama yok - tüm cihaz rolleri için geçerlidir",
@@ -131,7 +133,10 @@
       "removing": "Kaldırılıyor...",
       "removeConfiguration": "Yapılandırmayı kaldır",
       "complianceStatus2": "compliance_status",
-      "assignments2": "ödevler"
+      "assignments2": "ödevler",
+      "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
+      "inheritedByPolicies_one": "{{count}} politika bundan devralıyor",
+      "inheritedByPolicies_other": "{{count}} politika bundan devralıyor"
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -150,7 +155,8 @@
       "of2": "arasında",
       "itsOwningOrganization": "kendi sahibi kuruluş",
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
-      "summary": "{{filtered}} / {{total}} politikaları"
+      "summary": "{{filtered}} / {{total}} politikaları",
+      "inheritsBadge": "Devralıyor"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Silmek istediğinizden emin misiniz?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Bu aynı zamanda tüm özellik bağlantılarını ve atamalarını da kaldıracaktır. Bu eylem geri alınamaz.",
       "delete": "sil",
-      "deleting": "Siliniyor..."
+      "deleting": "Siliniyor...",
+      "deleteBlockedByChildren": "Önce bundan devralan politikaları silin:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Ödevler yüklenemedi",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "yok"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Kaldırılan cihazları kalıcı olarak sil",
+        "offKeepRemovedDevicesUntilDeletedManually": "Kapalı — kaldırılan cihazlar biri onları elle silene kadar saklanır.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Çıkarılan cihazlar, çıkarılmalarından {{days}} gün sonra kalıcı olarak silinir.",
+        "permanentlyDeleteRemovedDevicesAfter": "Kaldırılan cihazları şu süreden sonra kalıcı olarak sil:",
+        "days": "gün",
+        "enterAWholeNumberOfDaysBetween": "1 ile 3650 arasında tam sayı olarak gün girin.",
+        "purgeIsIrreversibleAndDestroysHistory": "Silme geri alınamaz ve geçmişi yok eder",
+        "aDailyJobPermanentlyDeletesTheDevice": "Günlük çalışan bir görev, cihaz kaydını ve ona bağlı her şeyi — uyarılar, betikler, yamalar, günlükler ve envanter — kalıcı olarak siler. Aracı kaldırma işlemi hâlâ kuyrukta olan cihazlar, bu işlem tamamlanana kadar atlanır. En yakın ilke kazanır; böylece bir kuruluş, tüm kuruluşlar için tanımlanmış bir pencereden çıkmak üzere bunu kapatabilir."
+      },
       "eventLogTab": {
         "security": "Güvenlik",
         "hardware": "Donanım",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Geçersiz kıl",
         "revertToParent": "Ebeveyne Geri Dön",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
+        "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
+        "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
+        "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Cihazlara Breeze Assist'i dağıtın",
@@ -738,6 +759,8 @@
         "recurrence": "Tekrarlama",
         "startDateTime": "Başlangıç Tarihi/Saati",
         "theSpecificDateAndTimeForThis": "Bu tek seferlik bakım aralığı için belirli tarih ve saat.",
+        "startTime": "Başlangıç saati",
+        "theTimeOfDayEachWindowOpensIn": "Her bakım aralığının seçilen saat diliminde açıldığı günün saati. Varsayılan olarak gece yarısıdır (00:00).",
         "durationHours": "Süre (saat)",
         "timezone": "Saat Dilimi",
         "notifyBeforeMinutes": "Önce bildir (dakika)",
@@ -812,6 +835,17 @@
         "openAlertsFeature": "Uyarıları Aç\nBu sekmede kayıtlı ",
         "legacyAlertRulesMovedToAlerts": "{{count}} eski uyarı kuralları, bu politikanın Uyarılar özelliğine taşındı. İzleme artık bunları saklamaz."
       },
+      "monitorsTab": {
+        "attachMonitor": "Bir izleyici ekle",
+        "loadingMonitors": "İzleyiciler yükleniyor…",
+        "noMoreMonitorsToAttach": "Eklenecek başka izleyici yok",
+        "selectAMonitorToAttach": "Eklenecek bir izleyici seçin…",
+        "noMonitorsAttached": "Bu politikaya henüz izleyici eklenmedi.",
+        "inherited": "Devralındı",
+        "overrideValue": "Geçersiz kılma değeri",
+        "overridesLabel": "Geçersiz kılmalar:",
+        "failedToLoadMonitors": "İzleyiciler yüklenemedi"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows UAC yükseltme istemlerini yakalayın",
         "theAgentObservesUACConsentPromptsAnd": "Temsilci, UAC onay istemlerini gözlemler ve bunları PAM incelemesi için yükseltme talepleri olarak kaydeder. Yakalama varsayılan olarak kapalıdır; bir cihazın kapsamını PAM'e dahil etmek için burada etkinleştirin.",
@@ -881,9 +915,20 @@
         "time": "Zaman",
         "dayOfWeek": "Haftanın günü",
         "dayOfMonth": "Ayın günü",
+        "offlineDevices": "Çevrimdışı cihazlar",
+        "offlineBehaviorQueue": "Çevrimdışı cihazlar için kuyruğa al",
+        "offlineBehaviorQueueDescription": "Bir sonraki bağlantıda, planlanan sonraki çalıştırmadan önce çalışır.",
+        "offlineBehaviorSkip": "Çevrimdışı cihazları atla",
+        "offlineBehaviorSkipDescription": "İş çalıştığında çevrimdışı olan cihazlar atlandı olarak kaydedilir.",
         "rebootPolicy": "Yeniden Başlatma Politikası",
         "rebootDelayMinutes": "Yeniden başlatma gecikmesi (dakika)",
         "rebootDelayMinutesDescription": "Oturum açmış kullanıcının yama sonrası yeniden başlatmadan önce ne kadar süreyle uyarılacağı.",
+        "rebootAllowDeferral": "Kullanıcıların yeniden başlatmayı ertelemesine izin ver",
+        "rebootAllowDeferralDescription": "Oturum açmış kullanıcıya Ertele düğmesi bulunan bir istem gösterin. Kullanıcının oturumunda Breeze yardımcısının çalışıyor olması gerekir; Linux cihazlar terminal uyarısına geri döner. Erteleme hakkı bittiğinde yeniden başlatma yine de son tarihte gerçekleşir.",
+        "rebootMaxDeferrals": "En fazla erteleme sayısı",
+        "rebootMaxDeferralsDescription": "Bir kullanıcının tek bir yeniden başlatmayı, işlem devam etmeden önce kaç kez erteleyebileceği.",
+        "rebootDeferralMinutes": "Erteleme süresi (dakika)",
+        "rebootDeferralMinutesDescription": "Her ertelemenin yeniden başlatmayı ne kadar ileri ötelediği.",
         "windowsUpdateSource": "Windows Update Kaynak",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Windows Update'yi yalnızca Breeze aracılığıyla yönetin",
         "suppressesTheEndpointSNativeWindowsUpdate": "Uç noktanın yerel Windows Update otomatik yükleme kanalını bastırır, böylece güncellemelerin yalnızca Breeze onay halkaları üzerinden akmasını sağlayarak beklenmeyen yeniden başlatmaları ve programınızın dışında yamaları önler. Windows-yalnızca; Breeze'in kendi tarama/onaylama/yükleme yolu etkilenmez. Devre dışı bırakıldığında temiz bir şekilde geri döner (önceden var olan yönetici Grup İlkesi'ne dokunulmaz).",
@@ -918,7 +963,8 @@
         "loadingPolicies": "Politikalar yükleniyor...",
         "noExistingPoliciesFound": "Mevcut politika bulunamadı.",
         "selectAPolicy": "Bir politika seçin...",
-        "clearSelection": "Seçimi temizle"
+        "clearSelection": "Seçimi temizle",
+        "allOrgs": "Tüm kuruluşlar"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1140,7 +1186,21 @@
         "generateACriticalAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda kritik bir uyarı oluşturun.",
         "enabled": "etkin",
         "warnDays": "warnDays",
-        "criticalDays": "kritikDayler"
+        "criticalDays": "kritikDayler",
+        "collectHpWarrantyFromTheDevice": "HP garantisini cihazdan topla",
+        "hpCmslConsentExplainer": "HP garanti verileri, HP'nin Client Management Script Library aracı kullanılarak cihaz üzerinde okunur. Bu kutuyu işaretlemek HP lisansını bu müşteri adına kabul eder ve HP, IP adresi dahil olmak üzere cihazdan teknik bilgi toplayabilir. İşaretlenmezse HP cihazları mevcut garanti durumlarını korur.",
+        "hpCmslNoAcceptanceRecordedYet": "Henüz kayıtlı bir kabul yok. Bu kutu işaretliyken kaydettiğinizde kullanıcınız ve sunucu saati kaydedilir.",
+        "hpCmslAcceptedByOn": "{{date}} tarihinde {{user}} tarafından kabul edildi",
+        "hpCmslTermsChangedSaveAgain": "HP, bu kabulden bu yana lisans koşullarını değiştirdi. Yeniden kabul etmek için tekrar kaydedin.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Bu ilke, devralınan garanti ayarlarının tamamını değiştirir; alan alan birleştirme yoktur. Cihaz üzerinde toplama kapalıyken kaydedilmesi, bu ilkenin ulaştığı her cihazda HP garanti toplamayı durdurur."
+      },
+      "rationale": {
+        "label": "Gerekçe",
+        "edit": "Gerekçeyi düzenle",
+        "placeholder": "Bu öğe neden var…",
+        "save": "Kaydet",
+        "cancel": "İptal",
+        "none": "Kayıtlı gerekçe yok."
       }
     }
   },
@@ -1275,6 +1335,8 @@
       "readyToDeployStandalone": "Dağıtıma hazır."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Otomatik kurulum etkin",
+      "complianceCheckQueued": "Uyumluluk denetimi sıraya alındı",
       "failedToLoadSoftwarePolicyData": "Yazılım ilkesi verileri yüklenemedi",
       "couldNotLoadLatestPolicyDetailsShowing": "En son politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
       "couldNotLoadPolicyDetailsShowingCached": "Politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
@@ -1314,7 +1376,19 @@
       "failedToUpdatePolicy": "Politika güncellenemedi",
       "failedToCreatePolicy": "Politika oluşturulamadı",
       "policyUpdated": "Politika başarıyla güncellendi",
-      "policyCreated": "Politika başarıyla oluşturuldu"
+      "policyCreated": "Politika başarıyla oluşturuldu",
+      "armInstallRequiresMfa": "Otomatik yüklemeyi etkinleştirmek çok faktörlü kimlik doğrulama gerektirir. MFA'yı tamamlayıp tekrar deneyin.",
+      "armInstallRequiresPermission": "Otomatik yüklemeyi etkinleştirmek devices.execute iznini gerektirir. Bir yöneticiden bu izni vermesini isteyin, ardından tekrar deneyin.",
+      "installStatusPending": "Yükleme sırada",
+      "installStatusInProgress": "Yükleniyor…",
+      "installStatusCompleted": "Yüklendi",
+      "installStatusFailed": "Yükleme başarısız",
+      "installStatusGaveUp": "Tekrarlanan başarısızlıklardan sonra vazgeçildi",
+      "installStatusSkipped": "Bu geçişte atlandı",
+      "installSkippedNoCatalog": "Gerekli bir kuralın bağlı bir katalog öğesi yok, bu yüzden yüklenecek bir şey yok. Bunu düzeltmek için politika düzenleyicisinde bir katalog bağlantısı ekleyin.",
+      "installSkippedCapOrPlatform": "Bu bir hata değil — geçiş başına yükleme sınırına ulaşıldı ya da bu cihazın platformunda yazılım için bir yükleme yöntemi yok. Bir sonraki geçişte tekrar denenebilir.",
+      "installAttempts": "{{count}} deneme",
+      "installLastAttempt": "Son yükleme denemesi: "
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1352,7 +1426,9 @@
       "noDeploymentsYet": "Henüz hiçbir dağıtım oluşturulmadı.",
       "failedToCancelDeployment": "Dağıtım iptal edilemedi",
       "deploymentCancelled": "Dağıtım iptal edildi",
-      "pageOf": "Sayfa {{page}} / {{pages}}"
+      "pageOf": "Sayfa {{page}} / {{pages}}",
+      "policyOwned": "Politika tarafından yönetiliyor",
+      "policyOwnedTooltip": "Bir yazılım politikasının otomatik yükleme düzeltmesi tarafından otomatik olarak oluşturuldu"
     },
     "deploymentProgress": {
       "queued": "Sıraya alındı",
@@ -1536,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",
+      "manageAssignments": "Yapılandırma ilkesi atamalarını yönet",
+      "gracePeriodHelp": "Bir sonraki uyumluluk denetiminde uygulanır",
       "scope": "Kapsam",
       "allOrganizations": "Tüm kuruluşlar",
       "partnerWideTemplate": "(iş ortağı çapında şablon)",
@@ -1580,7 +1659,16 @@
       "autoUninstall2": "otomatik kaldırma",
       "gracePeriod": "ek süre",
       "gracePeriod2": "GracePeriod",
-      "saving": "Kaydediliyor..."
+      "saving": "Kaydediliyor...",
+      "catalogLink": "Bağlı katalog öğesi",
+      "catalogLinkNone": "Yok — bağlı değil",
+      "autoInstall": "Eksik yazılımı otomatik yükle",
+      "autoInstallCatalogWarning": "{{total}} kuraldan {{count}} tanesinin bağlı bir katalog öğesi yok ve eksik olarak algılanacak ama asla yüklenmeyecek.",
+      "dryRunLoading": "Kaç cihazın etkileneceği kontrol ediliyor...",
+      "dryRunResult": "Bu, eksik yazılımı yaklaşık {{count}} cihaza yükleyecek.",
+      "dryRunUnavailable": "Cihaz sayısı önizlemesi henüz kullanılamıyor. Etkinleştirme yine de bir sonraki uyumluluk taramasında geçerli olacak.",
+      "dryRunNewPolicy": "Bu yeni bir politika — cihaz etkisi, kaydettikten sonraki ilk uyumluluk taramasına kadar bilinmeyecek.",
+      "catalogUnavailable": "Yazılım kataloğu yüklenemedi, bu yüzden aşağıdaki katalog bağlantısı seçicileri boş. Bu, katalog öğesi bulunmamasıyla aynı şey değildir — bir kuralın bağlanamayacağını varsaymadan önce sayfayı yeniden yükleyin."
     },
     "softwareCatalog": {
       "ready": "Hazır",
@@ -1626,20 +1714,6 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Tamamlandı (7 gün)",
       "summaryFailed7d": "Başarısız (7 gün)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Yazılım Uyumluluk Raporu",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Yönetilen cihazlar arasında yazılım sürümü değişimini analiz edin.",
-      "bulkUpdate": "Toplu güncelleme",
-      "versionDriftAnalysis": "Sürüm kayması analizi",
-      "clickARowToSeeOutdatedDevices": "Eski cihazları görmek için bir satıra tıklayın.",
-      "software": "Yazılım",
-      "expectedVersion": "Beklenen sürüm",
-      "devicesOnVersion": "Sürümdeki cihazlar",
-      "devicesOutdated": "Cihazların güncelliği geçmiş",
-      "details": "Ayrıntılar",
-      "outdatedDevices": "Güncel olmayan cihazlar",
-      "hide": "Gizle"
     },
     "softwareInventory": {
       "allowed": "İzin veriliyor",

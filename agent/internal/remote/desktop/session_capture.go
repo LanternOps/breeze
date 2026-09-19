@@ -35,6 +35,12 @@ const (
 	// (2560x1440 IDRs are typically 60-150KB). Dropping keyframes causes decoder
 	// corruption — garbled blocks and color artifacts until the next IDR arrives.
 	maxFrameSizeBytes = 512_000 // 512KB — safe for 1440p IDR keyframes
+
+	// noVideoStopReasonFallback is recorded when the no-video watchdog gives
+	// up and exhausts its reattach budget, but the capturer swallowed no
+	// specific Win32 failure to explain why (e.g. DXGI, which returns real
+	// errors instead of swallowing them as a nil frame). See noVideoStopReason.
+	noVideoStopReasonFallback = "screen capture stopped producing frames and did not recover"
 )
 
 var encodedFramePool = sync.Pool{
@@ -252,6 +258,18 @@ func (s *Session) captureLoop() {
 	}
 }
 
+// noVideoStopReason builds the reason passed to Session.StopWithReason when
+// the no-video watchdog exhausts its reattach budget (#5300). It prefers the
+// last Win32 error the capturer swallowed as a nil frame — the same detail
+// describeCaptureFailure attaches on the startup probe path — and falls back
+// to a generic description when the capturer recorded none (e.g. DXGI).
+func noVideoStopReason(capturer ScreenCapturer) string {
+	if reason := swallowedCaptureError(capturer); reason != "" {
+		return reason
+	}
+	return noVideoStopReasonFallback
+}
+
 // captureLoopDXGI runs a tight loop driven by DXGI's AcquireNextFrame blocking.
 // No ticker — capture calls block until a new frame is available or timeout.
 // Returns the next captureMode when a mode switch is needed.
@@ -331,8 +349,14 @@ func (s *Session) captureLoopDXGI() captureMode {
 			if time.Since(lastWrite) > noVideoReattachTimeout &&
 				time.Since(wd.lastAttempt) > reattachCooldown {
 				if wd.evaluate(s.id, lastWriteNanos) {
-					// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
-					go s.Stop()
+					// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
+					// #5300: pass the last swallowed capture error (if any) so the
+					// ended-session text names the real failure instead of the
+					// generic text, matching what the startup probe path already does.
+					s.mu.RLock()
+					capturer := s.capturer
+					s.mu.RUnlock()
+					go s.StopWithReason(noVideoStopReason(capturer))
 					return captureModeStopped
 				}
 				wd.recordAttempt(lastWriteNanos)
@@ -640,8 +664,12 @@ func (s *Session) captureLoopTicker() captureMode {
 				if time.Since(lastWrite) > noVideoReattachTimeout &&
 					time.Since(wd.lastAttempt) > reattachCooldown {
 					if wd.evaluate(s.id, lastWriteNanos) {
-						// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
-						go s.Stop()
+						// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
+						// #5300: same rationale as captureLoopDXGI above.
+						s.mu.RLock()
+						capturer := s.capturer
+						s.mu.RUnlock()
+						go s.StopWithReason(noVideoStopReason(capturer))
 						return captureModeStopped
 					}
 					wd.recordAttempt(lastWriteNanos)
@@ -905,6 +933,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
+	s.metrics.RecordConvert(enc.LastConvertDuration())
 
 	// Drop oversized P-frames (MFT keyframe bursts) — same guard as GPU path.
 	// Never drop IDR keyframes: the decoder MUST receive them or all subsequent
@@ -1001,6 +1030,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
+	// Zero-copy: no CPU colour conversion on this path. Reset so convertMs
+	// doesn't carry a stale value from an earlier CPU frame in the same session.
+	s.metrics.RecordConvert(0)
 
 	s.frameIdx++
 	// Log the first 5 frames sent (catches monitor switch + encoder re-init)
@@ -1126,15 +1158,16 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 		return
 	}
 	for _, m := range monitors {
-		slog.Debug("applyDisplayOffset: monitor",
+		slog.Info("applyDisplayOffset: monitor",
 			"index", m.Index, "name", m.Name,
 			"x", m.X, "y", m.Y, "w", m.Width, "h", m.Height,
 			"primary", m.IsPrimary)
 	}
 	for _, m := range monitors {
 		if m.Index == displayIndex {
-			slog.Debug("applyDisplayOffset: selected",
-				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y)
+			slog.Info("applyDisplayOffset: selected",
+				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y,
+				"dpiMode", processDPIMode)
 			handler.SetDisplayOffset(m.X, m.Y)
 			cursorOffX.Store(int32(m.X))
 			cursorOffY.Store(int32(m.Y))

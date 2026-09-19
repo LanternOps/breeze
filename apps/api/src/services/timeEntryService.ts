@@ -5,7 +5,7 @@ import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
-import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
+import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
   | 'TICKET_NOT_FOUND'
@@ -21,17 +21,34 @@ export type TimeEntryServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'INVALID_RANGE'
   | 'CURRENCY_MISMATCH'
+  /** 409 — `billed` is written only by the locked invoice-issue transition. */
+  | 'BILLING_STATUS_RESERVED'
   /** 409 — issueInvoice already flipped the row to `billed`; only description-class fields may change. */
   | 'ENTRY_BILLED'
   | 'PART_BILLED'
   // Wave-6 release gate (W6-G4-2/3): a rate or part price that cannot be expressed
   // in the row's stamped currency (¥100.50). Refused, never silently rounded.
-  | 'PRICE_NOT_REPRESENTABLE';
+  | 'PRICE_NOT_REPRESENTABLE'
+  // W06 (#3900) auto-suggested entries
+  | 'SUGGESTIONS_DISABLED'
+  | 'SIGNAL_NOT_FOUND'
+  | 'SIGNAL_NOT_ENDED'
+  | 'SUGGESTION_DISMISSED'
+  // Distinct from SUGGESTION_DISMISSED: SOME members of a merged suggestion
+  // are already confirmed to a different entry. `code` is the machine-readable
+  // half of the contract, so the two 409s must not share one (review W06A).
+  | 'SUGGESTION_PARTIALLY_LOGGED'
+  | 'SUGGESTION_ENTRY_DELETED'
+  | 'ORG_MISMATCH'
+  | 'ENDED_AT_REQUIRED'
+  | 'RANGE_OUTSIDE_SIGNAL'
+  | 'INVALID_TZ'
+  | 'ORG_DENIED';
 
 export class TimeEntryServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 = 400,
+    public status: 400 | 403 | 404 | 409 | 410 | 422 = 400,
     public code?: TimeEntryServiceErrorCode
   ) {
     super(message);
@@ -47,9 +64,16 @@ export type TimeEntryAuditMutation = {
     | 'time_entry.updated'
     | 'time_entry.deleted'
     | 'time_entry.approved'
-    | 'time_entry.unapproved';
+    | 'time_entry.unapproved'
+    // W06 (#3900): the suggestions ledger writes, filed under resourceType
+    // 'time_suggestion' by the route audit writers — a dismissal is not a
+    // time entry.
+    | 'time_suggestion.dismissed'
+    | 'time_suggestion.undismissed';
   entryId: string;
   orgId: string | null;
+  /** W06 (#3900): the server-stamped provenance of the affected entry. */
+  source?: TimeEntrySource;
 };
 
 export interface TimeEntryActor {
@@ -75,12 +99,13 @@ export interface TimeEntryActor {
 function recordAuditMutation(
   actor: TimeEntryActor,
   action: TimeEntryAuditMutation['action'],
-  entry: { id: string; orgId?: string | null },
+  entry: { id: string; orgId?: string | null; source?: string | null },
 ): void {
   actor.recordAuditMutation?.({
     action,
     entryId: entry.id,
     orgId: entry.orgId ?? null,
+    ...(entry.source ? { source: entry.source as TimeEntrySource } : {}),
   });
 }
 
@@ -104,6 +129,17 @@ function assertRepresentable(value: string | null, currencyCode: string | null):
     throw new TimeEntryServiceError(
       `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
       400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
+/** Reject a forged invoice lifecycle fact at every routine service entrypoint. */
+function assertRoutineBillingStatus(status: BillingStatus | undefined): void {
+  if (status === 'billed') {
+    throw new TimeEntryServiceError(
+      'Billed status is assigned only when an invoice is issued',
+      409,
+      'BILLING_STATUS_RESERVED',
     );
   }
 }
@@ -233,6 +269,32 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
 }
 
 /**
+ * The billing defaults the server WOULD stamp on a new ticket-linked time entry
+ * — the resolved match-or-skip rate, the org's locked currency, and the
+ * billable default (#5321).
+ *
+ * Read-only (no ticket lock): a UI prefill must not queue behind, or contend
+ * with, a concurrent org move. The value is advisory — `createTimeEntry` always
+ * re-resolves under its own lock, so a stale prefill can never write a rate in
+ * the wrong currency.
+ *
+ * Exists because a NULL rate is invisible at log time and only surfaces much
+ * later as the ALL_MISSING_RATE 409 on "Create invoice". Exposing the default
+ * lets the ticket quick-add prefill the rate and warn when there is none.
+ */
+export async function getTicketTimeEntryDefaults(
+  ticketId: string,
+  actor: TimeEntryActor,
+): Promise<{ hourlyRate: string | null; currencyCode: string; isBillable: boolean }> {
+  const link = await resolveTicketLink(ticketId, actor);
+  return {
+    hourlyRate: link.defaultHourlyRate,
+    currencyCode: link.currencyCode,
+    isBillable: link.defaultBillable,
+  };
+}
+
+/**
  * Lock the ticket row on the REQUEST transaction (global order: tickets →
  * time_entries → ticket_parts). Held until request commit (withDbAccessContext
  * is one transaction, db/index.ts), so a concurrent moveTicketOrg / device move
@@ -347,7 +409,55 @@ async function insertTimeEntryFeedComment(
   }
 }
 
-export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEntryActor) {
+/**
+ * Internal-only provenance for createTimeEntry. Never part of a public zod
+ * schema (spec D5): routes call createTimeEntry(input, actor) and get
+ * 'manual'; only timeSuggestionService passes a source. `orgLink` is used
+ * when there is no ticket — a ticket always wins because its path holds the
+ * ticket + org locks (creation barrier #3778).
+ */
+export interface TimeEntryProvenance {
+  source: TimeEntrySource;
+  orgLink?: { orgId: string; currencyCode: string } | null;
+}
+
+/**
+ * Org-only link for standalone entries that still know their org (a remote
+ * session's org, later the location wave's `/start {orgId}`). Mirrors the
+ * access half of resolveTicketLink, then takes the same `organizations FOR
+ * SHARE` the ticket path takes so time_entries_currency_required_when_org_chk
+ * holds against a concurrent currency change.
+ *
+ * Lock order: the ownership SELECT below takes NO row lock, so the SHARE inside
+ * readOrgStampingDefaults is still this transaction's FIRST lock and
+ * `organizations` stays outermost (same reasoning as resolveAndLockTicketLink,
+ * whose access reads run unlocked in a separate system transaction).
+ */
+export async function resolveAndLockOrgLink(
+  orgId: string,
+  actor: TimeEntryActor,
+): Promise<{ orgId: string; currencyCode: string }> {
+  if (!entryOrgAllowed({ orgId }, actor.accessibleOrgIds)) {
+    throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+  }
+  const [org] = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org || (actor.partnerId && org.partnerId !== actor.partnerId)) {
+    throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+  }
+  const stamped = await readOrgStampingDefaults(db, orgId);
+  return { orgId, currencyCode: stamped.currencyCode };
+}
+
+export async function createTimeEntry(
+  input: CreateTimeEntryInput,
+  actor: TimeEntryActor,
+  provenance: TimeEntryProvenance = { source: 'manual' },
+) {
+  assertRoutineBillingStatus(input.billingStatus);
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
   let defaultBillable = false;
@@ -363,6 +473,11 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
+  } else if (provenance.orgLink) {
+    // W06 (#3900): no ticket, but the signal knows its org — stamp org and the
+    // org's locked currency so time_entries_currency_required_when_org_chk holds.
+    orgId = provenance.orgLink.orgId;
+    currencyCode = provenance.orgLink.currencyCode;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
@@ -371,8 +486,11 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
   if (input.endedAt.getTime() <= input.startedAt.getTime()) {
     throw new TimeEntryServiceError('endedAt must be after startedAt', 400, 'INVALID_RANGE');
   }
-  if (!input.ticketId && input.hourlyRate != null) {
-    // Standalone money is entered in the technician's partner currency.
+  if (!input.ticketId && currencyCode == null && input.hourlyRate != null) {
+    // Standalone money is entered in the technician's partner currency. An
+    // org-linked suggestion (W06) already carries the ORG's locked currency —
+    // never overwrite that with the partner's, or the row's money would be
+    // denominated in a currency the org never uses.
     currencyCode = await getPartnerCurrency(partnerId);
   }
 
@@ -395,7 +513,9 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
       hourlyRate,
       // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
       currencyCode,
-      billingStatus: input.billingStatus ?? 'not_billed'
+      billingStatus: input.billingStatus ?? 'not_billed',
+      // W06 (#3900): server-stamped provenance; no public schema accepts it.
+      source: provenance.source
     })
     .returning();
   const entry = rows[0]!;
@@ -416,10 +536,29 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     payload: {
       userId: actor.userId,
       durationMinutes: entry.durationMinutes,
-      isBillable: entry.isBillable
+      isBillable: entry.isBillable,
+      source: provenance.source
     }
   });
   return entry;
+}
+
+/** An entry exactly as this service returns it. Exported so callers (the
+ *  suggestions confirm path) can name it without re-deriving the selection. */
+export type TimeEntryRow = Awaited<ReturnType<typeof createTimeEntry>>;
+
+/**
+ * Re-read one entry with the SAME selection createTimeEntry returns. Runs in
+ * the caller's DB context, so the partner-axis time_entries policy is the
+ * tenant wall; callers that need org-axis narrowing still apply
+ * `entryOrgAllowed`. Used by the confirm replay branch so `200 {entry,
+ * replay:true}` and `201 {entry}` are shape-identical — a raw `SELECT *` would
+ * return snake_case columns and silently break `entry.durationMinutes` on
+ * every client.
+ */
+export async function readTimeEntryById(id: string): Promise<TimeEntryRow | null> {
+  const [row] = await db.select().from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
+  return (row as TimeEntryRow | undefined) ?? null;
 }
 
 /** Stops the actor's running entry if any (CAS on ended_at IS NULL). Returns the stopped row or null. */
@@ -510,7 +649,9 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         // Snapshot (spec §7): the ticket org's currency, or null for a
         // standalone timer (no rate yet); never restamped.
         currencyCode,
-        billingStatus: 'not_billed'
+        billingStatus: 'not_billed',
+        // W06 (#3900): a timer-started entry is provenance 'timer'.
+        source: 'timer'
       })
       .onConflictDoNothing()
       .returning();
@@ -535,7 +676,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     partnerId,
     ticketId: entry.ticketId,
     actorUserId: actor.userId,
-    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable }
+    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable, source: 'timer' }
   });
   return entry;
 }
@@ -613,6 +754,7 @@ function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: 
 }
 
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   // Global lock order: the TARGET ticket (relink) before the entry row.
   const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor) : null;
   const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
@@ -707,6 +849,13 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   const entry = await getEntryOr404(id, actor);
   assertCanMutate(entry, actor);
+  if (entry.billingStatus === 'billed') {
+    throw new TimeEntryServiceError(
+      'This entry has been invoiced and cannot be deleted; void the invoice first',
+      409,
+      'ENTRY_BILLED',
+    );
+  }
   const deleted = await db
     .delete(timeEntries)
     .where(eq(timeEntries.id, id))
@@ -815,6 +964,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 // ── Parts ────────────────────────────────────────────────────────────────
 
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   // Lock order tickets → ticket_parts (see lockTicketRow).
   const link = await resolveAndLockTicketLink(ticketId, actor);
   const partUnitPrice = (input.unitPrice ?? 0).toFixed(2);
@@ -858,6 +1008,7 @@ async function getPartOr404(id: string) {
 
 /** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, _actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   const part = await getPartOr404(id);
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
@@ -884,7 +1035,14 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
 }
 
 export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
-  await getPartOr404(id);
+  const part = await getPartOr404(id);
+  if (part.billingStatus === 'billed') {
+    throw new TimeEntryServiceError(
+      'This part has been invoiced and cannot be deleted; void the invoice first',
+      409,
+      'PART_BILLED',
+    );
+  }
   await db.delete(ticketParts).where(eq(ticketParts.id, id));
 }
 
@@ -928,6 +1086,9 @@ function entrySelection() {
     hourlyRate: timeEntries.hourlyRate,
     currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
+    // W06 (#3900): read-only provenance on GET /, /timesheet and the
+    // per-ticket list. Never accepted on a write.
+    source: timeEntries.source,
     isApproved: timeEntries.isApproved,
     approvedBy: timeEntries.approvedBy,
     approvedAt: timeEntries.approvedAt,

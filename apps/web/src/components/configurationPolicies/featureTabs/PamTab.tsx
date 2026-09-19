@@ -42,7 +42,7 @@ export default function PamTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "pam",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { ...settings },
     });
     if (result) onLinkChanged(result, "pam");
@@ -56,7 +56,7 @@ export default function PamTab({
     clearError();
     const result = await save(null, {
       featureType: "pam",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { ...settings },
     });
     if (result) onLinkChanged(result, "pam");

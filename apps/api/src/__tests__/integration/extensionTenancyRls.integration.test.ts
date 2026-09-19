@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import type { ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
 import { getTestDb } from './setup';
+import { loadBuiltinExtensions, type BuiltinExtension } from '../../extensions/builtinExtensions';
+import { BUILTINS } from '../../extensions/builtinRegistry';
+import { ExtensionContributionRegistry } from '../../extensions/contributionRegistry';
+import { createExtensionStateStore } from '../../extensions/stateStore';
 import {
   assertExtensionTenancyRls,
   assertNoUnaccountedPublicTables,
@@ -366,5 +370,32 @@ describe('assertNoUnaccountedPublicTables (real Postgres, #2466)', () => {
         tenancy({ nonTenantTables: [...FIXTURES, ...MATVIEW_FIXTURES] }),
       ]),
     ).resolves.toBeUndefined();
+  });
+});
+
+
+describe('built-in loader production sweep (#4283)', () => {
+  it('rejects an unprefixed undeclared table through the production loader port', async () => {
+    const template = BUILTINS[0]!;
+    const builtin: BuiltinExtension = {
+      ...template,
+      name: 'sweep-fixture',
+      enableEnvVar: 'BREEZE_SWEEP_INTEGRATION_TEST_ENABLED',
+      manifest: { ...template.manifest, name: 'sweep-fixture', tenancy: tenancy({
+        orgCascadeDeleteTables: ['ext_rls_good', 'ext_missing'],
+      }) },
+    };
+    vi.stubEnv(builtin.enableEnvVar, 'false');
+    try {
+      // Real disabled-table probe, filtered RLS check, and final catalog sweep.
+      // The other suite fixtures are deliberately undeclared here.
+      await expect(loadBuiltinExtensions({
+        registry: new ExtensionContributionRegistry(),
+        stateStore: createExtensionStateStore(),
+        ports: { builtins: [builtin], publishTenancy: () => {} },
+      })).rejects.toThrow(/extundeclared_docs/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

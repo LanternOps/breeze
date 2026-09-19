@@ -12,6 +12,7 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { withSystemDbAccessContext } from '../db';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
+import { attachWorkerObservability } from './workerObservability';
 
 interface BulkResult {
   indexed: number;
@@ -162,6 +163,7 @@ export async function initializeLogForwardingWorker(): Promise<void> {
       maxStalledCount: 2,
     },
   );
+  attachWorkerObservability(worker, 'logForwardingWorker');
 
   worker.on('error', (error) => {
     console.error('[logForwarding] Worker error:', error);

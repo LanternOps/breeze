@@ -63,9 +63,20 @@ vi.mock('../services/partnerLlmConfig', () => {
     savePartnerLlmKey: vi.fn(),
     getPartnerLlmStatus: vi.fn(),
     updatePartnerLlmConfig: vi.fn(),
+    updatePartnerLlmEndpoint: vi.fn(),
     deletePartnerLlmConfig: vi.fn(),
   };
 });
+
+const catalogFlagState = { enabled: true };
+
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  isLlmProviderCatalogEnabled: () => catalogFlagState.enabled,
+}));
+
+vi.mock('../services/llmProviderCatalog', () => ({
+  getListedProviders: vi.fn(),
+}));
 
 import { aiProviderRoutes } from './aiProvider';
 import { requirePermission } from '../middleware/auth';
@@ -77,13 +88,25 @@ import {
   PartnerLlmError,
   savePartnerLlmKey,
   updatePartnerLlmConfig,
+  updatePartnerLlmEndpoint,
 } from '../services/partnerLlmConfig';
+import { getListedProviders } from '../services/llmProviderCatalog';
 
 function postKey(apiKey = 'sk-ant-api03-route-test-key-1234567890') {
   return aiProviderRoutes.request('/key', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ apiKey }),
+  });
+}
+
+const CATALOG_ENTRY_ID = '55555555-5555-4555-8555-555555555555';
+
+function postEndpoint(body: Record<string, unknown> = { catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true }) {
+  return aiProviderRoutes.request('/endpoint', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 
@@ -94,7 +117,17 @@ describe('AI provider routes', () => {
     vi.mocked(getPartnerLlmStatus).mockClear();
     vi.mocked(savePartnerLlmKey).mockClear();
     vi.mocked(updatePartnerLlmConfig).mockClear();
+    vi.mocked(updatePartnerLlmEndpoint).mockClear();
     vi.mocked(deletePartnerLlmConfig).mockClear();
+    vi.mocked(getListedProviders).mockClear();
+    vi.mocked(getListedProviders).mockResolvedValue([]);
+    vi.mocked(updatePartnerLlmEndpoint).mockResolvedValue({
+      catalogEntryId: CATALOG_ENTRY_ID,
+      configVersion: 2,
+      slug: 'openrouter',
+      revision: 3,
+    });
+    catalogFlagState.enabled = true;
     authGates.permissionDenied = false;
     authGates.mfaDenied = false;
     authState.value = {
@@ -111,6 +144,7 @@ describe('AI provider routes', () => {
       status: 'active',
       verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
       lastError: null,
+      catalogEntryId: null,
       apiKey: 'must-not-leak',
       keyFingerprint: 'must-not-leak-either',
     } as any);
@@ -148,6 +182,7 @@ describe('AI provider routes', () => {
       body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
     })],
     ['DELETE /', () => aiProviderRoutes.request('/', { method: 'DELETE' })],
+    ['POST /endpoint', () => postEndpoint()],
   ] as const;
 
   it.each(handlerRequests)('%s rejects organization-scoped auth even when it carries a partnerId', async (_name, request) => {
@@ -165,6 +200,7 @@ describe('AI provider routes', () => {
     expect(getPartnerLlmStatus).not.toHaveBeenCalled();
     expect(savePartnerLlmKey).not.toHaveBeenCalled();
     expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
     expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
@@ -182,6 +218,7 @@ describe('AI provider routes', () => {
     expect(getPartnerLlmStatus).not.toHaveBeenCalled();
     expect(savePartnerLlmKey).not.toHaveBeenCalled();
     expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
     expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
@@ -194,11 +231,12 @@ describe('AI provider routes', () => {
     expect(getPartnerLlmStatus).not.toHaveBeenCalled();
     expect(savePartnerLlmKey).not.toHaveBeenCalled();
     expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
     expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
   it('registers every handler with the billing manage permission', async () => {
-    expect(requirePermission).toHaveBeenCalledTimes(4);
+    expect(requirePermission).toHaveBeenCalledTimes(5);
     expect(requirePermission).toHaveBeenCalledWith('billing', 'manage');
   });
 
@@ -245,8 +283,138 @@ describe('AI provider routes', () => {
       status: 'active',
       verifiedAt: '2026-08-23T12:00:00.000Z',
       lastError: null,
+      effectiveDefaultModel: 'claude-sonnet-4-6',
       supportedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
+      catalogEntryId: null,
+      catalog: [],
     });
+  });
+
+  // The resolver routes `defaultModel ?? resolveDefaultModel()`. Without the
+  // effective model on this payload the UI cannot tell that an unpinned
+  // partner is about to send a model the selected endpoint no longer verifies,
+  // so it renders no `model_unverified` banner while AI 503s.
+  it('GET / reports the effective default model the resolver will use when the partner pinned none', async () => {
+    const previous = process.env.ANTHROPIC_MODEL;
+    process.env.ANTHROPIC_MODEL = 'deployment-default-model';
+    try {
+      vi.mocked(getPartnerLlmStatus).mockResolvedValue({
+        configured: true,
+        provider: 'anthropic',
+        keyLast4: '7890',
+        defaultModel: null,
+        status: 'active',
+        verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
+        lastError: null,
+        catalogEntryId: null,
+      });
+
+      const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.defaultModel).toBeNull();
+      expect(body.effectiveDefaultModel).toBe('deployment-default-model');
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_MODEL;
+      else process.env.ANTHROPIC_MODEL = previous;
+    }
+  });
+
+  it('GET / returns the listed catalog with verified models intersected against the model map, and the current selection', async () => {
+    vi.mocked(getPartnerLlmStatus).mockResolvedValue({
+      configured: true,
+      provider: 'anthropic',
+      keyLast4: '7890',
+      defaultModel: 'claude-sonnet-4-6',
+      status: 'active',
+      verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
+      lastError: null,
+      catalogEntryId: CATALOG_ENTRY_ID,
+    });
+    vi.mocked(getListedProviders).mockResolvedValue([
+      {
+        entryId: CATALOG_ENTRY_ID,
+        slug: 'openrouter',
+        name: 'OpenRouter',
+        revisionId: '66666666-6666-4666-8666-666666666666',
+        revision: 3,
+        baseUrl: 'https://openrouter.ai/api/v1',
+        authMode: 'x-api-key',
+        modelMap: {
+          'claude-sonnet-4-6': {
+            providerModel: 'anthropic/claude-sonnet-4-6',
+            inputCentsPerM: 300,
+            outputCentsPerM: 1500,
+            cacheReadCentsPerM: 30,
+            cacheWriteCentsPerM: 375,
+          },
+        },
+        dataNote: 'Prompts transit OpenRouter.',
+        // A stale verification for a model no longer in modelMap must not leak
+        // into the route's response — the route intersects with modelMap keys.
+        verifiedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
+      },
+    ] as any);
+
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.catalogEntryId).toBe(CATALOG_ENTRY_ID);
+    expect(body.catalog).toEqual([{
+      entryId: CATALOG_ENTRY_ID,
+      slug: 'openrouter',
+      name: 'OpenRouter',
+      dataNote: 'Prompts transit OpenRouter.',
+      models: ['claude-sonnet-4-6'],
+    }]);
+  });
+
+  it('GET / never offers a prototype-named verified model that the model map does not own', async () => {
+    vi.mocked(getListedProviders).mockResolvedValue([
+      {
+        entryId: CATALOG_ENTRY_ID,
+        slug: 'openrouter',
+        name: 'OpenRouter',
+        revisionId: '66666666-6666-4666-8666-666666666666',
+        revision: 3,
+        baseUrl: 'https://openrouter.ai/api/v1',
+        authMode: 'x-api-key',
+        modelMap: {
+          'claude-sonnet-4-6': {
+            providerModel: 'anthropic/claude-sonnet-4-6',
+            inputCentsPerM: 300,
+            outputCentsPerM: 1500,
+            cacheReadCentsPerM: 30,
+            cacheWriteCentsPerM: 375,
+          },
+        },
+        dataNote: 'Prompts transit OpenRouter.',
+        // `modelMap` is a jsonb round-trip, so `'constructor' in modelMap` is
+        // TRUE by inheritance: an `in` intersection offers the UI a model the
+        // revision has no wire id or pricing for, and the resolver then fails
+        // closed on every session that selects it (#3922 W3 review round 2).
+        verifiedModels: ['claude-sonnet-4-6', 'constructor', '__proto__', 'toString'],
+      },
+    ] as any);
+
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.catalog[0].models).toEqual(['claude-sonnet-4-6']);
+  });
+
+  it('GET / returns an empty catalog and never calls getListedProviders when the flag is off', async () => {
+    catalogFlagState.enabled = false;
+
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.catalog).toEqual([]);
+    expect(getListedProviders).not.toHaveBeenCalled();
   });
 
   it('GET / returns supportedModels from the cost-tracker registry for the model select', async () => {
@@ -364,6 +532,130 @@ describe('AI provider routes', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ configured: false, status: 'platform' });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA for POST /endpoint', async () => {
+    authGates.mfaDenied = true;
+
+    const response = await postEndpoint();
+
+    expect(response.status).toBe(403);
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
+  });
+
+  it('POST /endpoint 404s when the catalog flag is off, without calling the service', async () => {
+    catalogFlagState.enabled = false;
+
+    const response = await postEndpoint();
+
+    expect(response.status).toBe(404);
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
+  });
+
+  it('POST /endpoint still CLEARS a selection when the catalog flag is off', async () => {
+    catalogFlagState.enabled = false;
+    vi.mocked(updatePartnerLlmEndpoint).mockResolvedValueOnce({
+      catalogEntryId: null,
+      configVersion: 3,
+      slug: null,
+      revision: null,
+    });
+
+    const response = await postEndpoint({ catalogEntryId: null });
+
+    // The flag gates SELECTING, never CLEARING. On a rollback a pinned partner
+    // resolves `catalog_disabled` (AI dead) and cannot even rotate their key;
+    // `catalogEntryId: null` is the documented escape hatch, and gating it
+    // behind the flag left DELETE / — which destroys the stored key — as the
+    // only recovery.
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmEndpoint).toHaveBeenCalledWith({
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      catalogEntryId: null,
+      acknowledgeDataNote: false,
+      userId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(await response.json()).toEqual({ catalogEntryId: null, configVersion: 3 });
+  });
+
+  it('POST /endpoint selects a catalog entry and audits the slug + revision, never the key', async () => {
+    const response = await postEndpoint({ catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true });
+
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmEndpoint).toHaveBeenCalledWith({
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      catalogEntryId: CATALOG_ENTRY_ID,
+      acknowledgeDataNote: true,
+      userId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(await response.json()).toEqual({ catalogEntryId: CATALOG_ENTRY_ID, configVersion: 2 });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
+      orgId: null,
+      action: 'ai_provider.endpoint_changed',
+      resourceType: 'partner',
+      resourceId: '22222222-2222-4222-8222-222222222222',
+      details: {
+        catalogEntryId: CATALOG_ENTRY_ID,
+        slug: 'openrouter',
+        revision: 3,
+        configVersion: 2,
+      },
+    });
+  });
+
+  it('POST /endpoint reverts to direct Anthropic with catalogEntryId: null', async () => {
+    vi.mocked(updatePartnerLlmEndpoint).mockResolvedValue({
+      catalogEntryId: null,
+      configVersion: 3,
+      slug: null,
+      revision: null,
+    });
+
+    const response = await postEndpoint({ catalogEntryId: null });
+
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmEndpoint).toHaveBeenCalledWith({
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      catalogEntryId: null,
+      acknowledgeDataNote: false,
+      userId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(await response.json()).toEqual({ catalogEntryId: null, configVersion: 3 });
+  });
+
+  it('POST /endpoint maps a delisted-entry rejection to its typed status without auditing', async () => {
+    vi.mocked(updatePartnerLlmEndpoint).mockRejectedValue(
+      new PartnerLlmError('That endpoint was delisted and is no longer available for selection.', 409),
+    );
+
+    const response = await postEndpoint();
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'That endpoint was delisted and is no longer available for selection.',
+    });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('POST /endpoint maps a missing-consent rejection to 400', async () => {
+    vi.mocked(updatePartnerLlmEndpoint).mockRejectedValue(
+      new PartnerLlmError('You must acknowledge the data-handling note for this endpoint before selecting it.', 400),
+    );
+
+    const response = await postEndpoint({ catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: false });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('POST /endpoint maps a probe failure to its typed status and persists nothing (route delegates persistence to the service)', async () => {
+    const error = new PartnerLlmError('Could not reach that endpoint to verify the key. Try again shortly.', 503);
+    vi.mocked(updatePartnerLlmEndpoint).mockRejectedValue(error);
+
+    const response = await postEndpoint();
+
+    expect(response.status).toBe(503);
+    expect(captureException).toHaveBeenCalledWith(error, undefined, { service: 'aiProvider' });
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 });

@@ -203,16 +203,26 @@ function projectDeviceInventory(input: unknown) {
   };
 }
 
-const DURABLE_EQUIPMENT_TYPES = new Set(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']);
+// #5213 W03: 'website'/'service' joined the durable six — an IP-less manual
+// asset whose identity is a URL rather than a physical network presence.
+// Kept as one set (not "durable" + "virtual") because both feed the same
+// `networkEquipment` projection and neither needs different limits/handling.
+const NETWORK_EQUIPMENT_TYPES = new Set([
+  'printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service',
+]);
 
 function projectSiteInventory(input: unknown) {
   const row = object(input);
   const networkEquipment = array(row.networkEquipment, PARTNER_INVENTORY_CHILD_LIMIT)
-    .filter((entry) => DURABLE_EQUIPMENT_TYPES.has(String(entry.type ?? entry.assetType)))
+    .filter((entry) => NETWORK_EQUIPMENT_TYPES.has(String(entry.type ?? entry.assetType)))
     .map((entry) => ({
       id: entry.id, type: entry.type ?? entry.assetType, name: nullableString(entry.name ?? entry.label ?? entry.hostname, 255),
-      address: String(entry.address ?? entry.ipAddress ?? '').slice(0, 45), macAddress: nullableString(entry.macAddress, 17),
+      // #5213: a website/service asset has no IP — host(NULL) comes back NULL
+      // from the SQL projection, not the string "null". nullableString maps
+      // both null and '' to null, so it does the right thing for every type.
+      address: nullableString(entry.address ?? entry.ipAddress, 45), macAddress: nullableString(entry.macAddress, 17),
       manufacturer: nullableString(entry.manufacturer, 255), model: nullableString(entry.model, 255),
+      url: nullableString(entry.url, 2048), source: String(entry.source ?? 'scan'),
     }));
   const networkSegments = array(row.networkSegments, PARTNER_INVENTORY_CHILD_LIMIT).map((entry) => ({
     id: entry.id, cidr: String(entry.cidr ?? entry.subnet ?? '').slice(0, 50),
@@ -350,19 +360,27 @@ async function selectSiteInventoryRows(orgIds: string[], query: ExportQueryInput
   return db.select({
     id, subjectId: sites.id, subjectType: sql<string>`'site'`, orgId: sites.orgId, siteId: sites.id,
     createdAt: sites.createdAt, updatedAt,
+    // #5213 W03: 'website'/'service' added to the type filter, and 'url' +
+    // 'source' added to the projection — both are ordinary included fields
+    // per tenantExportPolicyRegistry.ts (W01), and partnerNetworkEquipmentSchema
+    // (schemas.ts) is the strict allowlist that must carry them too, or the
+    // response fails closed with a 500 on `.parse()`. 'address' now comes
+    // straight from host(a.ip_address), which is SQL NULL (not the string
+    // "null") for a website/service row with no IP.
     networkEquipment: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object(
-        'id', a.id, 'type', a.asset_type, 'name', COALESCE(a.label, a.hostname), 'address', host(a.ip_address),
-        'macAddress', a.mac_address, 'manufacturer', a.manufacturer, 'model', a.model
+        'id', a.id, 'type', a.asset_type, 'name', COALESCE(a.label, a.hostname, a.url), 'address', host(a.ip_address),
+        'macAddress', a.mac_address, 'manufacturer', a.manufacturer, 'model', a.model,
+        'url', a.url, 'source', a.source
       ) item FROM ${discoveredAssets} a
       WHERE a.site_id = ${sites.id} AND a.org_id = ${sites.orgId} AND a.approval_status = 'approved'
-        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
+        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service')
       ORDER BY a.id LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
     ) bounded), '[]'::jsonb)`,
     networkEquipmentCount: sql<number>`(
       SELECT COUNT(*)::integer FROM ${discoveredAssets} a
       WHERE a.site_id = ${sites.id} AND a.org_id = ${sites.orgId} AND a.approval_status = 'approved'
-        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
+        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service')
     )`,
     networkSegments: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object('id', b.id, 'cidr', b.subnet) item

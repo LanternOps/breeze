@@ -1,0 +1,430 @@
+---
+title: AI Agents
+description: Configure permission-scoped AI agents and review their recorded runs and proposed actions.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+An AI agent is a named, permission-scoped worker you configure once. It wakes on a trigger, gathers the context available for that trigger, and writes up what it found. Every run is recorded, and — unless the agent is in Act mode and the action is on its pre-approved list — anything it wants to *do* is proposed for a person to approve.
+
+Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
+
+<Aside type="caution" title="Act mode runs unattended — read this before enabling it">
+  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself, but every proposal still lands in the Approvals inbox as a normal, real card: approving one executes it immediately, the same as approving any other request — shadow mode does not turn approval into a dry run. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
+</Aside>
+
+## What an agent does
+
+Manage agents under **Settings → AI Agents**.
+
+An agent has a **kind**: `triage`, `patch`, `helpdesk`, or (from v0.113.0) `designer`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets. A [Fleet designer](#fleet-designer) reads the fleet and writes a monitoring design for you to approve.
+
+Each agent carries its own limits — devices per run, concurrent runs, runs per hour, turns per run, spend per run and per day, wall-clock time, and a ceiling on the percentage of your fleet it may touch in a day. These are enforced per run, not advisory.
+
+<Aside>
+  An organization can have one live agent of each kind. If you need to change an agent's configuration, edit it — you cannot create a second agent of the same kind alongside it.
+</Aside>
+
+## Fleet designer
+
+A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and has no shadow mode because there is nothing to shadow — the mode picker offers only **Off** and **On** for this kind, and a new designer starts on **On** ("run and write reports").
+
+It runs when you start a Fleet Design for an organization, or on a schedule that targets a Fleet designer agent and fires at most once a month. Its evidence bundle is pinned to the organization and covers devices, software, network, posture, health, automation and the shape of the event log.
+
+Each run produces a **Fleet Design** report — the recommended device functions, monitoring watches and alert rules, with the reasoning behind them. Open the run to see the Fleet Design card (counts of functions, watches and alert rules) with **Open report** and **Download PDF**; the same report appears under Reports as the organization's single, system-managed **Fleet Design** definition. If the evidence had to be cut short, the card says so: *"The evidence was cut short — this design did not see the whole fleet."*
+
+The designer also assesses a **function** for each device — domain controller, file server, kiosk, finance workstation and so on — shown next to the billable Device Role on the device's Info tab; see [Device function](/features/devices/#device-function). A function set by hand is never overwritten by the designer.
+
+You do not have to create the agent by hand. If the organization's partner has no Fleet designer yet — or has one that is off — the **Fleet Design** page says so and offers **Enable Fleet Designer**, which creates the partner-wide designer agent on **On** with you as its recipient (or turns the existing one on). The button appears only for a partner administrator with `ai_agents:write`; an organization-scoped user sees who to ask instead.
+
+<Aside>
+  A Fleet designer resolves through the partner-wide agent, so an organization can tighten it (turn it off for one customer) but cannot create it alone. Nothing in a design is applied to the fleet automatically until a technician approves it.
+</Aside>
+
+## Runs
+
+When a trigger passes admission, the agent opens a **run**. The run is the audit surface: open it to see what triggered the agent, which devices it looked at, and what it concluded.
+
+Runs are triggered by an **alert**, an **anomaly**, a **schedule**, a **ticket**, or **manually** from the agent itself. A run moves through these states:
+
+| Status | Meaning |
+|---|---|
+| `queued` | Accepted and waiting for a runner. |
+| `running` | Actively working. |
+| `awaiting_approval` | The agent proposed an action and is waiting on a person. |
+| `completed` | Finished. |
+| `failed` | Stopped on an error. |
+| `cancelled` | Stopped by a person. |
+| `expired` | Exceeded its wall-clock budget. |
+| `skipped` | A run record was created but stopped before executing, for example when the agent's policy was revoked between admission and start. |
+
+Admission checks happen before Breeze creates a run. If an agent policy filters out a trigger, no `skipped` run appears in the runs list. See [Why nothing happened](#why-nothing-happened) for the skip signals that are recorded instead.
+
+## Approving what an agent proposes
+
+When an agent wants to take an action, it does not perform it by default. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.
+
+An agent in **Act mode** is the one exception: for a small set of pre-approved operations, it executes directly instead of recording a proposal. See [Act mode](#act-mode). Everything else, in every mode, always proposes and waits. Rejecting a proposal ends it; the agent does not retry the same action behind you.
+
+## Act mode
+
+Act mode lets an agent execute a fixed, closed set of low-risk, narrowly-scoped operations — restarting a service, running an already-authorized script, executing a disk-cleanup plan it already previewed, running a built-in playbook — without a person approving each one in the moment. Anything not on that list still becomes a proposal in the Approvals inbox, exactly as in Shadow mode. The set is not configurable per agent beyond allowlisting which of those operations it may reach; you cannot add arbitrary tools to Act mode's unattended list.
+
+<Aside type="caution">
+  Act mode is only reachable from an **alert**-triggered or **manually**-triggered run. Ticket- and anomaly-triggered runs are always forced into Shadow mode regardless of the agent's configured mode (see [Ticket helpdesk lane](#ticket-helpdesk-lane) and [Anomaly lane](#anomaly-lane)), so switching an agent to Act does not change how it handles those triggers.
+</Aside>
+
+Act mode is bounded by more than the operation list:
+
+- **Guardrails re-check every call.** Each tool call an agent makes is classified before it runs. A call outside the fixed set — or one that fails a live re-check just before execution (the target device doesn't match the run, the script's content has changed since it was authorized, a required preview no longer exists) — is denied outright or downgraded into an ordinary proposal, never silently executed.
+- **One device per run.** A run only ever acts on the single device it was triggered against.
+- **A per-run action cap.** A run stops taking unattended actions once it hits its configured limit, in addition to the run-level limits (concurrency, spend, wall-clock time) every agent already has.
+- **An organization-wide exposure ledger.** Every unattended action Act mode takes is recorded against the organization it ran in, alongside the equivalent record for the separate, not-yet-generally-available policy-decide capability. This ledger is the foundation for a shared, org-wide cap on unattended activity across all of an organization's agents.
+- **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
+
+An agent in Act mode can also author a new script when nothing in your library fits, following the same independent review and approval flow as the chat assistant — or, if your partner and organization have both opted in, the [unattended lane](/features/ai-script-authoring/#the-unattended-lane) for narrow, low-risk cases. An agent never edits or approves its own proposal.
+
+### Turning Act mode on
+
+In **Settings → AI Agents**, set the agent's mode to **Act**. The API refuses the change unless the agent already has both a recipient that resolves to a real person (Act mode still needs someone to notify) and at least one act-eligible operation in its **Tool allowlist** (for scripts, at least one authorized script). The form shows an explicit warning — unattended execution, no rollback, single-device scope, the action cap — and, the first time you switch an agent into Act mode, requires you to check an acknowledgement before it lets you save.
+
+### Turning it off
+
+Set the agent's mode back to **Off** or **Shadow**, or disable the agent — either stops unattended execution for that agent immediately. Disabling `BREEZE_AI_AGENTS_ENABLED` (see [Enabling agents](#enabling-agents)) is the platform-wide switch: it stops every agent, in every mode, for the whole deployment.
+
+## Graduation (feedback loop)
+
+Graduation is how an agent earns narrower supervision by evidence rather than by an operator's optimism. Breeze records the outcome of every operation an agent completes, and once a single operation has a long enough clean record you can ask a second person to pre-authorize it — so future runs take that one action without waiting in the Approvals inbox.
+
+Open **Settings → AI Agents**, edit an existing agent, and scroll to **Graduation**. The panel only appears on an agent that already exists; there is nothing to show while you are creating one.
+
+### What gets recorded
+
+Every operation an agent finishes produces exactly one piece of evidence, per outcome:
+
+| Outcome | What it means |
+|---|---|
+| **Executed** | The agent actually attempted the operation and the execution reported success. |
+| **Verified** | It executed *and* the follow-up check confirmed the result held — or no follow-up check applied to it. This is the count graduation is measured on. |
+| **Failed** | An **attempted** failure only. A proposal that was refused, blocked by a live guardrail re-check, or stopped before anything ran is not a failure — nothing was tried. |
+| **Recurred** | The follow-up check saw the same condition come back after the agent had fixed it. |
+
+Thumbs-up and thumbs-down on an [alert verdict](#alert-verdicts) are recorded the same way. They do not feed graduation — a thumbs-up is a supervision signal, not proof the verdict was right — but they are reported on the [AI impact](/features/ai-impact/) page.
+
+The panel reads a rolling **30-day** window. If an operation was previously demoted, the window starts at the demotion instead, so a bad record cannot be outlived by evidence that predates it.
+
+### When an operation becomes eligible
+
+Each row shows the operation, its state, and the verified, failed, recurred and first-verified figures behind that state. States are **Tracking**, **Eligible**, **Promoted** and **Demoted**.
+
+An operation becomes **Eligible** only when all of these hold:
+
+- The partner-wide agent allows that operation.
+- **20 verified** executions in the window. This is the promotion threshold, tunable per partner; an organization can raise it but never lower it below the partner's figure.
+- The **first** verified execution is at least **14 days** old — volume alone is not enough, the record has to have lasted.
+- **Zero** failures and **zero** recurrences in the same window.
+- The operation is one that can be pre-authorized at all. Not every action is.
+
+When a row is not eligible, the **Why not yet** column says which of those it fell on — "The partner-wide agent does not allow this operation yet", "Not enough verified executions yet", "The first verified execution is still too recent", "A failure or a recurrence was recorded in this window", or "This operation can never be pre-authorized".
+
+Below the graduation table, an **act-mode reliability** table shows how Act mode's own operations have been performing — executed, verified, failed and recurred. It is read-only by design: those are not policy operations, so they can never be pre-authorized and never carry a Promote button.
+
+<Aside type="caution" title="Partner-level pre-authorized operations no longer apply to organizations on their own">
+  A partner-wide agent's list of pre-authorized operations is now a **ceiling** — what an organization *may* be granted — not an inherited grant. An organization whose agent has no override of its own now resolves to **no** pre-authorized operations, regardless of what the partner baseline lists.
+
+  Each organization has to be granted the operation separately: through graduation, or by editing that organization's own agent. The partner agent's form says so under **Unattended policy authorization**. If you relied on a partner-level list reaching organizations that have no agent of their own, add those grants explicitly.
+</Aside>
+
+### Promoting an operation
+
+Promotion is never automatic, and never something an agent can do for itself.
+
+<Steps>
+
+1. In the **Graduation** panel, click **Promote** on an Eligible row. The button only appears on an Eligible row, and only when pre-authorized execution is switched on for the deployment.
+
+2. Confirm. This raises a **four-eyes** approval request — see [Four-eyes actions](/features/ai/#four-eyes-actions--a-second-person-approves). A **different** person has to approve it; the requester cannot.
+
+3. Once approved, the operation is added to that organization's agent and its graduation row moves to **Promoted**.
+
+</Steps>
+
+The same request can be raised straight from the Approvals inbox. On an eligible card, **Approve and always allow** approves the request in front of you *and* raises the pre-authorization request in one step. It only appears on supervised cards whose operation is already eligible, and never on a critical-risk one.
+
+<Aside>
+  Promotion applies to **future runs only**. It never authorizes the request you are looking at, or anything else already waiting for a decision — those still follow the normal approval.
+</Aside>
+
+Promotion depends on the deployment-wide pre-authorized-execution setting (`BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`, off by default and not yet generally available). With it off the panel still loads and still shows the evidence — it says *"Pre-authorized execution is turned off for this deployment; these figures are informational"* — but no operation can be promoted.
+
+### Demotion is automatic
+
+Demotion is always on and does not depend on any setting.
+
+The first attempted failure of a pre-authorized operation, or a recurrence after the agent fixed something, removes that operation from the organization's agent immediately, in the same step that records the failure. Breeze notifies the agent's recipients at high priority, naming the agent and the operation and saying whether the last attempt failed or the alert it fixed came back.
+
+Demotion touches nothing else. The agent stays enabled, its mode is unchanged, its other operations are unchanged, and the partner-wide baseline is never edited. The graduation row moves to **Demoted** and keeps a record of the promotion that preceded it.
+
+Re-promotion is not automatic. The row returns to **Tracking** as soon as a fresh verified execution lands after the demotion, and it has to earn eligibility again from there — the window now starts at the demotion, so the pre-demotion record cannot count twice.
+
+## Agent activity in the audit trail
+
+Actions that originate from an agent are attributed to **the agent**, not to the person who configured it or happened to be signed in. Agent-created entries in the audit log carry the agent as the actor, so an agent's work is never mistaken for a technician's during a review.
+
+## Permissions
+
+Agents are gated on their own capabilities rather than on general organization permissions:
+
+| Permission | Grants |
+|---|---|
+| `ai_agents:read` | View agents and their runs. |
+| `ai_agents:write` | Create, edit, disable, and trigger agents. |
+
+These are deliberately separate from `organizations:write`. Authoring an agent policy is what authorizes autonomous action on customer machines once an agent is switched to Act mode, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
+
+Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
+
+### Choosing what an agent can do
+
+The agent form's own **Permissions** section groups tools into **capabilities** — fixed groups like alerts and monitoring, files and disk, or scripts and commands — that the catalog assigns to every tool an agent can reach. Only capabilities and operations an agent can actually reach are offered; a tool the agent runtime doesn't expose is never shown, no matter how you search for it. Read-only tools (device lookups, reports, and the like) are always available to every agent and need no decision — they're listed separately, collapsed behind a count of how many.
+
+**Use recommended** adds the operations the agent's kind typically needs on top of whatever is already selected; it never clears anything.
+
+Every mutating operation carries one outcome badge, for the agent's current mode:
+
+| Badge | Meaning |
+|---|---|
+| **Approval request** | Tier 3. Recorded as a proposal; a technician decides in Approvals. |
+| **Logged proposal** | Tier 2. Recorded in the run's outcome and never executed. |
+| **Executes unattended** | Act mode only, and only for the fixed, act-eligible operations described in [Act mode](#act-mode). **Run a script** is the one exception: it stays an approval request until at least one script is authorized for the agent (the **Scripts allowed to run unattended** list on the Safety step / edit drawer — a partner row's list is the ceiling, an organization's agent picks a subset of it), and the picker and review card say so rather than promising an unattended run. |
+
+A green dot marks an operation that **can be pre-authorized** — eligible, on a clean enough record, to graduate out of the approval queue (see [Graduation](#graduation-feedback-loop)). The dot means eligible, not authorized: nothing is pre-authorized until a second person promotes it. On an organization's agent, an operation its partner-wide baseline hasn't granted is marked **Not in partner baseline** and its checkbox is disabled — unless it's already selected, in which case it stays enabled just long enough to be unchecked, so a grant made before the baseline narrowed can still be removed. The partner row is a ceiling on what the organization may be granted, not a starting grant of its own. Pre-authorized operations can no longer be added to an organization's agent directly in this form: its own supervised-keys section is a read-only list of what it already holds, not a checkbox — a key becomes eligible only by promoting an Eligible row in Graduation or the four-eyes request it raises, never by an operator's checkbox.
+
+Turn on **Show tool names** to see the literal key behind each operation. Selections are stored on the agent as `tool:action` entries — one per operation, even when every current operation of a tool is selected, so an operation added to that tool later is never silently granted; a bare `tool` entry appears only for a tool with just one operation to begin with. An entry the picker can't represent — an unknown or unreachable tool, or a hand-typed bare entry on a multi-operation tool — is listed under **Unrecognised or unreachable entries** with a reason and a remove action; it is never dropped or rewritten silently.
+
+The same catalog and ceiling behind the picker are available directly:
+
+```
+GET /api/v1/ai/agents/tool-catalog
+GET /api/v1/ai/agents/ceiling?kind={kind}
+```
+
+## Alert triage wiring
+
+Creating a triage agent automatically creates a matching **system-managed automation** that wakes the agent when an alert fires. You will see it on the Automations page, marked as system-managed.
+
+<Aside type="caution">
+  Edit the agent, not the automation. The managed automation exists only to route alerts to the agent — severity, site, tag, maintenance-window and cooldown filtering all live on the agent's own policy. The API refuses automations that try to use the `ai_triage` action directly.
+</Aside>
+
+Disabling the agent disables its wiring too, so an agent that is switched off never gets live alerts routed in front of it.
+
+## Alert verdicts
+
+A triage agent can classify an alert without opening a full run. The verdict appears on the alert itself, under **AI Verdict**, as one of:
+
+| Verdict | Meaning |
+|---|---|
+| **Actionable** | Something genuinely needs doing. |
+| **Self-healed** | The condition cleared on its own. |
+| **Recurring pattern** | Part of a repeating daily, weekly, or post-event pattern rather than a new problem. |
+| **Duplicate** | The same underlying condition as other alerts already grouped together. |
+| **Needs human review** | The agent could not reach a confident conclusion. |
+
+Each verdict shows a confidence percentage and the agent's reasoning. Use **Hide AI-flagged noise** on the alert list to filter out the ones the agent judged non-actionable — the alerts are suppressed from your view, never deleted.
+
+Verdicts are advisory. If the agent thinks an action is warranted it does not take it: the alert shows **AI suggested an action — review in Approvals** and the proposal waits for a person.
+
+Thumbs-up and thumbs-down buttons on a verdict record whether it was useful. One person's feedback per verdict is kept.
+
+## Scheduled sweeps
+
+A sweep is a scheduled pass over your fleet looking for conditions nobody has alerted on yet. Configure them under **Settings → AI Agents → Scheduled sweeps**.
+
+Choose which checks a sweep runs:
+
+- Disk pressure
+- Stale agents
+- Pending reboots
+- Failed backups
+- Service down
+- Unpatched critical vulnerabilities
+
+Schedules are set with a five-field cron expression and a timezone — for example `0 3 * * *` for every day at 03:00.
+
+<Aside>
+  Sweep schedules attach to a **partner-wide** agent. An individual organization can override the baseline only to *narrow* it — disabling the sweep or dropping checks. An override can never add a check the partner did not enable, and always runs on the partner's cadence.
+</Aside>
+
+Findings appear on the run under **Sweep findings**, listed by check, severity, and device. Where the agent wants to act on a finding it raises an approval request rather than acting. If the fleet was too large to examine exhaustively, the run says so rather than implying it saw everything.
+
+## Weekly report
+
+A **Weekly report** schedule has an agent write a plain-language summary of what happened in an organization over the past week. It appears in Reports as **Weekly AI Operations Narrative**, marked *Managed by AI schedule*.
+
+Set it up the same way as a sweep, choosing **Weekly report** as the schedule type. It must fire exactly once a week — a specific minute and hour on a single day, for example `0 7 * * 1` for every Monday at 07:00.
+
+## Ticket helpdesk lane
+
+A newly created ticket can wake a helpdesk agent when all of these conditions are met:
+
+- `BREEZE_AI_AGENTS_ENABLED=true`.
+- An enabled partner-level baseline agent of kind `helpdesk` exists. An organization-level agent cannot enable itself without this baseline.
+- The effective policy is enabled for both the partner and the organization, and its mode is not Off.
+- The ticket matches the optional `triggers.ticketCategories` and `triggers.ticketPriorities` filters. An absent filter is unrestricted.
+
+Every ticket creation is written to a transactional outbox. A background publisher drains the outbox onto the event bus approximately every five seconds, so you do not need a separate ticket trigger flag.
+
+Ticket-triggered runs have no device context, so device-changing tools are denied outright.
+
+By default a ticket run only ever proposes: it writes an **AI-drafted reply** or an **AI-drafted resolution note** onto the ticket for a technician to deal with. The draft appears in the ticket with two buttons — **Send as me**, which posts it as a comment under your name, and **Discard**, which throws it away. Nothing reaches the customer unless a technician sends it.
+
+You can let a helpdesk agent post ticket updates without waiting for a technician, but it takes two deliberate opt-ins together: the agent must be in **Act** mode, and the organization must turn on **Autonomous ticket writes** (an org-level override on the agent's policy). If either is off — or if the kill switch is engaged — the update goes to a person for approval instead. Both are re-checked at the moment of the write, not just when the run started, so switching either off stops autonomous writes on runs already in flight.
+
+Only ticket creation admits a helpdesk run in this release. Ticket comments and status changes are published on the event bus, but this lane does not read them yet. A ticket that already has agent-originated comment activity is also rejected to prevent a loop.
+
+## Anomaly lane
+
+A newly opened anomaly incident can wake a triage agent when all of these conditions are met:
+
+- `BREEZE_AI_AGENTS_ENABLED=true`.
+- Anomaly Detection is enabled for the organization through `ml.anomalies.enabled`. It is off by default, and the global ML kill switches can still suppress it. See [Availability and enabling](/features/ml-insights/#availability-and-enabling).
+- An enabled partner-level baseline agent of kind `triage` exists. Triage is the only agent kind that accepts anomaly triggers.
+- The organization-level triage agent sets `triggers.anomalyEnabled` to `true`. Its default is `false`.
+- The optional narrowing filters match the incident.
+
+The detector collapses raw anomalies into a canonical incident. A background publisher sends each newly opened incident to the event bus, so you do not need another anomaly event flag.
+
+<Aside type="caution" title="Opt in each organization, not the partner baseline">
+  Set `triggers.anomalyEnabled` on the **organization-level** triage agent. Breeze never reads this value from the partner baseline. Setting it on the partner baseline does nothing and produces no error or warning, while an organization with no override row always resolves to off. This prevents a partner from opting every downstream organization into an unproven detector with one setting.
+</Aside>
+
+Anomaly-triggered runs are always forced into Shadow mode. They are bound to a device, so device pinning, site scope, and maintenance-window rules still apply normally.
+
+You can narrow admission with `triggers.anomalyTypes`, `triggers.metricNames`, `triggers.minAnomalyScore`, and the usual site and device-tag filters. An absent filter is unrestricted. These filters cannot opt the lane in; `triggers.anomalyEnabled` is still required.
+
+If the underlying anomaly has already been promoted to an alert, the anomaly run reuses the alert's deduplication key. One incident therefore does not produce both an anomaly run and a separate alert-triage run.
+
+### Opt in through the API
+
+The **Settings → AI Agents** form exposes alert severities and the maintenance-window toggle, but it does not show an anomaly control. First list agents and identify the organization-scoped triage agent for the customer:
+
+```bash
+GET /api/v1/ai/agents
+```
+
+Then patch only the anomaly opt-in:
+
+```bash
+PATCH /api/v1/ai/agents/{agentId}
+Content-Type: application/json
+
+{"triggers": {"anomalyEnabled": true}}
+```
+
+`{agentId}` must identify the organization-scoped agent, not the partner baseline. The request requires the `ai_agents:write` permission and a completed MFA step, as do other agent mutations.
+
+The server merges the `triggers` object one level onto the stored policy. Fields you omit keep their values, and later edits in the UI do not clear `anomalyEnabled` because the form submits only its own trigger fields.
+
+Verify the effective policy for the organization:
+
+```bash
+GET /api/v1/ai/agents/effective?orgId={orgId}&kind=triage
+```
+
+Confirm that `triggers.anomalyEnabled` is `true` in the response.
+
+## Why nothing happened
+
+When admission is refused, Breeze does not create a run row, so nothing new appears in the runs list. The API always writes a `run skipped` log line carrying the reason, organization, agent, trigger kind, and device.
+
+| Skip reason | Meaning | Also published as an event |
+|---|---|---|
+| `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. | Yes |
+| `resource_scope_unverifiable` | The run's device could not be checked against the agent's site, group or tag scope (database error). The run is skipped rather than allowed; retry once the platform is healthy. | Yes |
+| `no_effective_agent` | No enabled partner baseline agent of that kind exists. | No, log only |
+| `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. | No, log only |
+
+Only a skip that happens *after* the agent has been resolved publishes an `ai.agent.run.skipped` event. `kill_switch_off` and `no_effective_agent` are deliberately log-only: they fire on every trigger in every organization for as long as the condition holds, so publishing them would put a write on the hot alert path for a non-event. If you want to catch those two, alert on the log line rather than the event.
+
+A run that was already admitted can also stop before it starts. If the agent is disabled or its policy is revoked between admission and delivery, the run transitions to `skipped` with the reason `policy_revoked_before_start` and publishes `ai.agent.run.skipped`. Unlike the admission-time skips above, that case does leave a run record in the runs list.
+
+## Durable delivery for agent triggers
+
+**The event dispatch settings do not enable or disable the ticket-helpdesk or anomaly lanes.** Both subscribers are registered when the API starts, and both lanes still run in-process when `EVENT_DISPATCH_MODE` is unset or `off`. Naming a subscriber changes the durability of its delivery hop, not whether the feature runs.
+
+In-process delivery is best-effort. If a handler throws, Breeze writes the failure only to the API log, swallows it, and loses the trigger. Queue delivery leaves a delivery receipt and retries a failed hop. The `ai-agent-ticket-helpdesk` and `ai-agent-anomaly` subscribers each retry up to five times with a 10-second backoff. `ai-agent-alert-verdict` retries up to three times with a 30-second backoff.
+
+| `EVENT_DISPATCH_MODE` | Delivery behavior |
+|---|---|
+| `off` | In-process delivery only. This is the default when the variable is unset. |
+| `shadow` | Also mirrors the routing plan into delivery receipts for observability, but executes nothing through the queue. |
+| `enforce` | Routes named subscribers only through the BullMQ queue and skips their in-process delivery. Subscribers that are not named continue in-process. |
+
+`EVENT_DISPATCH_QUEUE_SUBSCRIBERS` is ignored unless the mode is `enforce`. To make these trigger hops durable, set the mode to `enforce` and name `ai-agent-ticket-helpdesk` and/or `ai-agent-anomaly`. An empty subscriber list is accepted, but everything remains in-process and the API logs a warning at boot.
+
+See [Environment Variables](/deploy/environment/) for validation rules and the complete subscriber ID list.
+
+## Enabling agents
+
+Agents are off unless your operator sets `BREEZE_AI_AGENTS_ENABLED=true`. Upgrading does not turn them on, and no existing role gains access to them by default — the `ai_agents` permissions must be granted to a role explicitly.
+
+Self-hosted operators: see [Environment Variables](/deploy/environment/) for the flag, and remember it must also be mapped in the `api` service's `environment:` block of your compose file — a value in `.env` alone has no effect.
+
+## AI Operator (preview)
+
+An agent run is a single pass: it fires on a trigger, does what it can, and
+finishes. **AI Operator** is the other shape — a long-running *task* you hand off
+and walk away from. Delegate a service-recovery incident to the Operator and it
+keeps working through investigation, action and verification after you close the
+browser, waiting for your approval at the step that needs it.
+
+<Aside type="caution" title="Off by default, and a thin first slice">
+  AI Operator ships **disabled**, behind two flags of its own *and* the main
+  `BREEZE_AI_AGENTS_ENABLED` kill switch. Exactly one recipe — **service
+  recovery** — is shipped in this release. Nothing appears in the UI and no task
+  can be created until an operator turns it on. See
+  [Environment Variables](/deploy/environment/#ai).
+</Aside>
+
+### Delegating a task
+
+With the feature on, a **Delegate to Operator** button appears on the device page
+and on alert detail. Choose it, name the service that needs recovering, confirm,
+and Breeze opens the task's own page and starts work. Delegation needs
+**`ai_agents:write`** and a multi-factor confirmation, the same bar as moving an
+agent to Act mode.
+
+### What the task page shows
+
+The task page is the record of the whole hand-off: the task's current state and
+phase, what it is waiting on if it is waiting, each operation it has performed,
+its final outcome, and links to the underlying agent runs so you can read the
+detail of any single step. The device page also carries an Operator feed so you
+can see task activity in the device's own timeline.
+
+Reading tasks needs **`ai_agents:read`**. A task belonging to an organization or
+site you cannot see is reported as not found rather than as forbidden, so the
+route never confirms that someone else's task exists.
+
+### The service-recovery recipe
+
+The one shipped recipe walks five ordered steps — **investigate, execute,
+observe, verify, document**. Only the `execute` step changes anything, and it is
+**always supervised**: the Operator raises a service-restart request into your
+existing [Approvals](#approving-what-an-agent-proposes) inbox and waits there.
+There is no path in this recipe where the Operator restarts a service without a
+human approving it.
+
+A service you have listed as a protected resource is refused **at delegation
+time**, before any request reaches the approvals inbox — so a domain controller's
+critical services can never become a pending approval someone might wave through.
+
+### What runs in the background
+
+Two background workers ship with the feature: a task coordinator that ticks every
+15 seconds, and a publisher that drains task events every 5 seconds. Both are
+registered whether or not the flags are on — deliberately, so that a task already
+in flight when you turn the feature off still finishes cleanly rather than
+stranding an approval — but with the flags off no new task is ever admitted, so
+neither worker has anything to do. No new queue is added.

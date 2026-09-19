@@ -30,7 +30,12 @@
     "desktopUnavailable": "Masaüstü Kullanılamıyor",
     "dismiss": "Kapat",
     "downloadFor": "{{platform}} için indirin",
+    "ending": {
+      "description": "Önceki oturum cihazda hâlâ kapatılıyor. Biraz bekleyip yeniden deneyin.",
+      "title": "Oturum hâlâ sonlandırılıyor"
+    },
     "errors": {
+      "agentUpgradeRequired": "Uzak masaüstü için bu cihazda aracı güncellemesi gerekiyor (oturum iptal kirası ve başlatma çiti desteği). Aracı kendini otomatik olarak günceller; bu genellikle bir dakika içinde çözülür. Terminal ve dosya aktarımı etkilenmez.",
       "connectionFailed": "Bağlantı başarısız oldu",
       "createDesktopCode": "Masaüstü bağlantı kodu oluşturulamadı",
       "createDesktopSession": "Masaüstü oturumu oluşturulamadı",
@@ -62,6 +67,21 @@
     "openInBrowser": "Tarayıcıda Aç",
     "policyDisabled": "Uzak masaüstü politika nedeniyle devre dışı bırakıldı",
     "policyDisabledNamed": "Uzak masaüstü \"{{name}}\" politikası tarafından devre dışı bırakıldı",
+    "revoked": {
+      "title": "Oturum iptal edildi",
+      "setUpMfa": "MFA'yı ayarla",
+      "reasons": {
+        "session_ended": "Oturum zaten sona ermişti.",
+        "user_inactive": "Hesabınız artık aktif değil.",
+        "epoch_baseline_missing": "İzinleriniz doğrulanamadı. Yeniden bağlanmayı deneyin.",
+        "permissions_changed": "Bu oturum başladıktan sonra izinleriniz değişti. Mevcut erişiminizle devam etmek için yeniden bağlanın.",
+        "membership_removed": "Artık bu kuruluşa veya cihaza erişiminiz yok.",
+        "site_scope_lost": "Bu cihaz size atanan site kapsamının dışında.",
+        "mfa_required": "Uzak masaüstü erişimi için artık çok faktörlü kimlik doğrulama gerekiyor.",
+        "hard_deadline": "Bu oturum izin verilen maksimum süreye ulaştı.",
+        "default": "Oturum bir güvenlik politikası tarafından sonlandırıldı. Yeniden bağlanmayı deneyin."
+      }
+    },
     "unavailable": {
       "default": "Masaüstü bu cihazda kullanılamıyor",
       "headless": "Bu cihazın ekranı yok — uzak masaüstü kullanılamıyor",
@@ -196,7 +216,7 @@
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce"
     },
-    "title": "Başlık",
+    "title": "Dosya Etkinliği",
     "unverifiedHint": "Doğrulanmamış İpucu"
   },
   "fileManager": {
@@ -236,7 +256,7 @@
       "scanned": "Taranan: {{count}} dosya",
       "selected": "Seçilen: {{count}} · {{size}}",
       "threshold": "Eşik",
-      "title": "Başlık",
+      "title": "Disk Analizi",
       "trigger": "Tetikleyici: {{value}}"
     },
     "dismiss": "Kapat",
@@ -260,7 +280,7 @@
     "moveTo": "Şuraya Taşı",
     "selectedCount": "Seçilen Sayı",
     "size": "Boyut",
-    "title": "Başlık",
+    "title": "Dosya Yöneticisi",
     "transfers": "Transferler",
     "trash": "Çöp Kutusu",
     "selectedCount_one": "{{count}} seçildi",
@@ -440,10 +460,10 @@
       "generic": "Bir hata oluştu"
     },
     "refreshStatus": "Durumu Yenile",
-    "title": "Başlık"
+    "title": "Dosya Yöneticisi"
   },
   "remoteTerminal": {
-    "connectedBang": "Bağlantılı Patlama",
+    "connectedBang": "Bağlandı!",
     "connectingTo": "{{hostname}}'ye bağlanılıyor...",
     "copySelection": "Seçimi Kopyala",
     "disconnect": "Bağlantıyı kes",
@@ -616,7 +636,7 @@
     "noServicesFound": "Hiçbir Hizmet Bulunamadı",
     "ok": "Tamam",
     "page": "Sayfa {{current}} / {{total}}",
-    "refreshHint": "Yenileme İpucu",
+    "refreshHint": "Hizmetleri kontrol etmek için yenilemeyi deneyin.",
     "restartService": "Hizmeti Yeniden Başlatın",
     "searchPlaceholder": "Arama Yer Tutucusu",
     "serviceConfirm": "{{action}} hizmetini {{service}} yapmak istediğinizden emin misiniz?",
@@ -663,7 +683,8 @@
       "connecting": "Bağlanılıyor...",
       "disconnected": "Bağlantı Kesildi",
       "failed": "Başarısız",
-      "pending": "Beklemede"
+      "pending": "Beklemede",
+      "teardownPending": "Sonlandırılıyor (cihaz bekleniyor)"
     },
     "subtitle": "Uzaktan erişim denetim günlüğü",
     "title": "Oturum Geçmişi",
@@ -699,6 +720,7 @@
       "timeline": "Zaman Çizelgesi"
     },
     "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
+    "teardownPending": "Cihaz onayı bekleniyor",
     "title": "Oturum Geçmişi",
     "viewDevice": "Cihazı Görüntüle",
     "viewRecording": "Kaydı Görüntüle"

@@ -83,6 +83,13 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+const { schedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice,
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -110,6 +117,7 @@ vi.mock('../agents/enrollment', () => ({
 }));
 
 import { coreRoutes, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
+import { bulkLifecycleRoutes } from './bulkLifecycle';
 import { hardwareRoutes } from './hardware';
 import { softwareRoutes } from './software';
 import { metricsRoutes } from './metrics';
@@ -237,6 +245,10 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
   beforeEach(() => {
     vi.clearAllMocks();
     app = new Hono();
+    // Before coreRoutes, exactly as devices/index.ts mounts it — otherwise
+    // core's `/:id` matcher eats `/devices/bulk/...` and the 403 assertions
+    // below would pass for the wrong reason.
+    app.route('/devices', bulkLifecycleRoutes);
     app.route('/devices', coreRoutes);
     app.route('/devices', hardwareRoutes);
     app.route('/devices', softwareRoutes);
@@ -358,27 +370,41 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
   });
 
   describe('Destructive lifecycle — devices:delete and MFA enforcement', () => {
-    const lifecyclePaths: Array<[string, string]> = [
-      ['DELETE', `/devices/${ACCESSIBLE_DEVICE.id}`],
-      ['POST', `/devices/${ACCESSIBLE_DEVICE.id}/restore`],
-      ['DELETE', `/devices/${ACCESSIBLE_DEVICE.id}/permanent`],
+    // #2787 — the BULK entries matter as much as the single ones: a bulk route
+    // that forgets requirePermission/requireMfa is a 500-device destructive
+    // operation behind a weaker gate than its one-device sibling.
+    const lifecyclePaths: Array<[string, string, Record<string, unknown> | undefined]> = [
+      ['DELETE', `/devices/${ACCESSIBLE_DEVICE.id}`, undefined],
+      ['POST', `/devices/${ACCESSIBLE_DEVICE.id}/restore`, undefined],
+      ['DELETE', `/devices/${ACCESSIBLE_DEVICE.id}/permanent`, undefined],
+      ['POST', '/devices/bulk/restore', { deviceIds: [ACCESSIBLE_DEVICE.id] }],
+      ['POST', '/devices/bulk/permanent-delete', { deviceIds: [ACCESSIBLE_DEVICE.id] }],
     ];
-    for (const [method, path] of lifecyclePaths) {
+    for (const [method, path, body] of lifecyclePaths) {
+      const withBody = (headers: Record<string, string>) =>
+        body
+          ? {
+              method,
+              headers: { ...headers, 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }
+          : { method, headers };
+
       it(`denies a caller without devices:delete on ${method} ${path}`, async () => {
         rigDeviceLookup(ACCESSIBLE_DEVICE);
-        const res = await app.request(path, {
-          method,
-          headers: { Authorization: 'Bearer t', 'x-deny-devices-delete': 'true' },
-        });
+        const res = await app.request(
+          path,
+          withBody({ Authorization: 'Bearer t', 'x-deny-devices-delete': 'true' }),
+        );
         expect(res.status).toBe(403);
       });
 
       it(`denies a caller without MFA on ${method} ${path}`, async () => {
         rigDeviceLookup(ACCESSIBLE_DEVICE);
-        const res = await app.request(path, {
-          method,
-          headers: { Authorization: 'Bearer t', 'x-deny-mfa': 'true' },
-        });
+        const res = await app.request(
+          path,
+          withBody({ Authorization: 'Bearer t', 'x-deny-mfa': 'true' }),
+        );
         expect(res.status).toBe(403);
       });
     }
@@ -693,6 +719,10 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       expect(res.status).toBe(200);
       // Site changes run inside db.transaction (device flip + site_id propagation).
       expect(db.transaction).toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        ACCESSIBLE_DEVICE.id,
+        'device_site_changed',
+      );
     });
 
     it('allows a site-restricted caller to move WITHIN their allowlist (siteA → siteA2 both allowed)', async () => {

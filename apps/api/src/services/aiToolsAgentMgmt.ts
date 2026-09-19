@@ -13,6 +13,9 @@ import { eq, ne, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
+import { getBinaryEdition } from './binaryEdition';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -21,6 +24,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -30,14 +36,11 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
@@ -146,6 +149,31 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false)];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
+        // Exact-device axis (#6086): the candidate set is otherwise org-wide, so
+        // a device-bound run would count every sibling device. Independent of the
+        // site axis — a device-less analysis run has no `allowedSiteIds` at all.
+        const deviceCond = deviceScopeCondition(auth, devices.id);
+        if (deviceCond) conditions.push(deviceCond);
+        // Site axis (audit §1.1). A site-restricted HUMAN never carries
+        // `allowedDeviceIds`, so the branch above is a no-op for them and this
+        // rollup stayed org-wide. `resolveSiteAllowedDeviceIds` intersects both
+        // axes; an unrestricted caller reaches neither branch and pays no scan.
+        if (auth.allowedSiteIds !== undefined) {
+          const siteDeviceIds = auth.orgId
+            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth) ?? []
+            : [];
+          if (siteDeviceIds.length === 0) {
+            return JSON.stringify({
+              latestVersion: latest?.version ?? null,
+              effectiveTarget,
+              pinned,
+              totalOutdated: 0,
+              byVersion: [],
+              note: SITE_SCOPE_EMPTY_NOTE,
+            });
+          }
+          conditions.push(inArray(devices.id, siteDeviceIds));
+        }
 
         const outdated = await db
           .select({
@@ -168,6 +196,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           totalOutdated,
           byVersion: outdated,
           ...(note ? { note } : {}),
+          // The rollup is narrowed but reads as a fleet-wide rollout figure;
+          // say what it actually covers (review #6110).
+          ...(auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined
+            ? { scopeNote: 'These counts cover only the devices within your access scope, not every device in the organization.' }
+            : {}),
         });
       }
 
@@ -227,47 +260,70 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: `Access denied for devices: ${deniedIds.join(', ')}` });
       }
 
-      // Resolve the target version PER DEVICE. An explicit targetVersion applies
-      // to all devices; otherwise each device resolves to its org's effective
-      // AGENT pin (issue #2124) — the SAME pin the heartbeat honors — falling
-      // back to the globally promoted latest when the tenant has no pin. This
-      // keeps manual and automatic updates on one resolution path.
+      // Resolve the target version PER DEVICE, through ONE resolver for both
+      // input shapes (#4093). Without an explicit targetVersion each device
+      // resolves its org's effective AGENT pin (issue #2124) — the SAME pin
+      // the heartbeat honors — falling back to the globally promoted latest.
+      // With one, that version is treated as a per-device pin: it still has to
+      // have a build registered for this device's platform/arch under THIS
+      // server's edition. Before #4093 the explicit branch only checked that
+      // the version string existed in agent_versions at all, so a version with
+      // no build for the device dispatched an update_agent that could only
+      // fail on the box.
       const explicitVersion = input.targetVersion as string | undefined;
       const errors: Record<string, string> = {};
       const targetByDevice = new Map<string, string>();
 
       if (explicitVersion) {
+        // Cheap up-front reject for a version this server serves no agent
+        // build of at all (the common case for a typo or a model-invented
+        // string). Scoped to component+edition so it fails here rather than
+        // in the per-device resolver, which treats a registered-but-missing
+        // build as a fleet-freeze-grade misconfiguration and reports it to
+        // Sentry — the wrong signal for a bad tool argument.
         const [versionRow] = await db
           .select({ version: agentVersions.version })
           .from(agentVersions)
-          .where(eq(agentVersions.version, explicitVersion))
+          .where(
+            and(
+              eq(agentVersions.version, explicitVersion),
+              eq(agentVersions.component, 'agent'),
+              eq(agentVersions.edition, getBinaryEdition()),
+            ),
+          )
           .limit(1);
         if (!versionRow) {
           return JSON.stringify({ error: `Agent version "${explicitVersion}" not found` });
         }
-        for (const id of deviceIds) targetByDevice.set(id, explicitVersion);
-      } else {
-        // Need each device's org (to resolve its effective pin) AND its
-        // platform/arch (to fail closed when the pinned/latest version has no
-        // build for that device). Resolving through resolvePinnedUpgradeTarget
-        // per device — the SAME call the heartbeat uses — is what stops this
-        // manual channel from dispatching an update_agent for a binary that
-        // doesn't exist and reporting it as `queued` (a silent, on-device 60s
-        // timeout the operator never sees).
-        const deviceRows = await db
-          .select({
-            id: devices.id,
-            orgId: devices.orgId,
-            osType: devices.osType,
-            architecture: devices.architecture,
-          })
-          .from(devices)
-          .where(inArray(devices.id, deviceIds));
+      }
 
-        const pinByOrg = new Map<string, string | null>();
-        const failedOrgs = new Set<string>();
+      // Need each device's org (to resolve its effective pin) AND its
+      // platform/arch (to fail closed when the pinned/latest/explicit version
+      // has no build for that device). Resolving through
+      // resolvePinnedUpgradeTarget per device — the SAME call the heartbeat
+      // uses — is what stops this manual channel from dispatching an
+      // update_agent for a binary that doesn't exist and reporting it as
+      // `queued` (a silent, on-device 60s timeout the operator never sees).
+      const deviceRows = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          osType: devices.osType,
+          architecture: devices.architecture,
+        })
+        .from(devices)
+        .where(inArray(devices.id, deviceIds));
 
-        for (const d of deviceRows) {
+      const pinByOrg = new Map<string, string | null>();
+      const failedOrgs = new Set<string>();
+
+      for (const d of deviceRows) {
+        let pin: string | null;
+        if (explicitVersion) {
+          // An explicit version overrides any tenant pin — the org's update
+          // config is not consulted at all on this path.
+          pin = explicitVersion;
+        } else {
           if (failedOrgs.has(d.orgId)) {
             errors[d.id] = 'Failed to resolve version pin for this organization';
             continue;
@@ -280,56 +336,81 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             try {
               const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId)));
               pinByOrg.set(d.orgId, cfg.pins.agent);
-            } catch {
+            } catch (err) {
+              // The operator-facing string is deliberately generic; the cause
+              // has to go somewhere or a batch-wide pin outage is undebuggable.
+              console.error(
+                `[aiToolsAgentMgmt] failed to resolve the agent pin for org ${d.orgId}:`,
+                err,
+              );
               failedOrgs.add(d.orgId);
               errors[d.id] = 'Failed to resolve version pin for this organization';
               continue;
             }
           }
-
-          const normalizedArch = normalizeAgentArchitecture(d.architecture);
-          if (!d.osType || !normalizedArch) {
-            errors[d.id] = 'Device platform/architecture unknown — cannot resolve an agent build';
-            continue;
-          }
-
-          const pin = pinByOrg.get(d.orgId) ?? null;
-          // pin set → that exact build for this platform/arch (null if missing);
-          // pin null → the globally promoted latest for this platform/arch.
-          // Either way, null means "no build" → fail closed, do not dispatch.
-          let target: string | null;
-          try {
-            target = await resolvePinnedUpgradeTarget({
-              component: 'agent',
-              platform: d.osType,
-              architecture: normalizedArch,
-              pin,
-              agentId: d.id,
-            });
-          } catch {
-            errors[d.id] = 'Failed to resolve an agent build for this device';
-            continue;
-          }
-
-          if (target) {
-            targetByDevice.set(d.id, target);
-          } else {
-            errors[d.id] = pin
-              ? `Pinned agent version "${pin}" has no build for this device (${d.osType}/${normalizedArch})`
-              : 'No agent build available for this device platform/architecture';
-          }
+          pin = pinByOrg.get(d.orgId) ?? null;
         }
 
-        if (targetByDevice.size === 0) {
-          return JSON.stringify({
-            error: 'No latest agent version found',
-            ...(Object.keys(errors).length > 0 ? { errors } : {}),
+        const normalizedArch = normalizeAgentArchitecture(d.architecture);
+        if (!d.osType || !normalizedArch) {
+          errors[d.id] = 'Device platform/architecture unknown — cannot resolve an agent build';
+          continue;
+        }
+
+        // pin set → that exact build for this platform/arch (null if missing);
+        // pin null → the globally promoted latest for this platform/arch.
+        // Either way, null means "no build" → fail closed, do not dispatch.
+        let target: string | null;
+        try {
+          target = await resolvePinnedUpgradeTarget({
+            component: 'agent',
+            platform: d.osType,
+            architecture: normalizedArch,
+            pin,
+            agentId: d.id,
           });
+        } catch (err) {
+          console.error(
+            `[aiToolsAgentMgmt] failed to resolve an agent build for device ${d.id}:`,
+            err,
+          );
+          errors[d.id] = 'Failed to resolve an agent build for this device';
+          continue;
+        }
+
+        if (target) {
+          targetByDevice.set(d.id, target);
+        } else if (explicitVersion) {
+          errors[d.id] =
+            `Agent version "${explicitVersion}" has no build for this device (${d.osType}/${normalizedArch})`;
+        } else {
+          errors[d.id] = pin
+            ? `Pinned agent version "${pin}" has no build for this device (${d.osType}/${normalizedArch})`
+            : 'No agent build available for this device platform/architecture';
         }
       }
 
+      // A requested device that produced neither a target nor a reason was not
+      // in `deviceRows` at all — deleted between the access check and this
+      // SELECT. Record it here rather than letting the batch-level error below
+      // name the wrong cause (and, when the WHOLE batch vanished, report no
+      // per-device reason at all).
+      for (const id of deviceIds) {
+        if (!targetByDevice.has(id) && !errors[id]) {
+          errors[id] = 'Device no longer exists — it was removed while this request was running';
+        }
+      }
+
+      if (targetByDevice.size === 0) {
+        return JSON.stringify({
+          error: explicitVersion
+            ? `Agent version "${explicitVersion}" has no build for any of the selected devices`
+            : 'No agent build resolved for any of the selected devices',
+          ...(Object.keys(errors).length > 0 ? { errors } : {}),
+        });
+      }
+
       // Dispatch upgrade commands
-      const { executeCommand } = await getCommandQueue();
       let queued = 0;
 
       for (const deviceId of deviceIds) {
@@ -346,9 +427,9 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           // (handleFailoverCommand). It has no WS connection and polls via
           // heartbeat, so we must tag the command with target_role='watchdog'
           // or it will be dispatched to the agent WS and never picked up.
-          // executeCommand RETURNS status:'failed' on dispatch failure rather
+          // aiExecuteCommand RETURNS status:'failed' on dispatch failure rather
           // than throwing, so inspect the result instead of assuming success.
-          const result = await executeCommand(deviceId, 'update_agent', {
+          const result = await aiExecuteCommand(auth, 'trigger_agent_upgrade', deviceId, 'update_agent', {
             version: targetVersion,
           }, {
             userId: auth.user.id,
@@ -434,20 +515,19 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
       // agent/cmd/breeze-watchdog/main.go (handleFailoverCommand). We do NOT
       // require the device to be online: a silent agent is exactly the case
       // this tool exists to recover.
-      const { executeCommand } = await getCommandQueue();
       let queued = 0;
       const errors: Record<string, string> = {};
 
       for (const deviceId of deviceIds) {
         try {
-          // executeCommand signals dispatch failure by RETURNING
+          // aiExecuteCommand signals dispatch failure by RETURNING
           // status:'failed' (device not found, watchdog not reporting, etc.) —
           // it does not throw for those. Counting an awaited call as success
           // would silently report a queued restart that never happened, which
           // is especially likely here since this tool targets silent devices.
           // A 'timeout' means the row was written and the watchdog will claim
           // it on its next failover poll — that counts as queued.
-          const result = await executeCommand(deviceId, 'restart_agent', {}, {
+          const result = await aiExecuteCommand(auth, 'trigger_agent_restart', deviceId, 'restart_agent', {}, {
             userId: auth.user.id,
             timeoutMs: 60000,
             targetRole: 'watchdog',

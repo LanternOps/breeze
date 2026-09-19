@@ -53,13 +53,14 @@ function makeRoute(methods: unknown[]) {
       });
     if (url === '/software/catalog/cat-m/versions') return ok({ data: [] });
     if (url === '/software/catalog/cat-m/install-methods') return ok({ data: methods });
-    if (url === '/devices')
+    if (url.startsWith('/devices/options?'))
       return ok({
         data: [
-          { id: WIN_DEVICE, hostname: 'win-1', osType: 'windows' },
-          { id: LINUX_DEVICE_A, hostname: 'lin-1', osType: 'linux' },
-          { id: LINUX_DEVICE_B, hostname: 'lin-2', osType: 'linux' },
+          { id: WIN_DEVICE, hostname: 'win-1', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null },
+          { id: LINUX_DEVICE_A, hostname: 'lin-1', displayName: null, osType: 'linux', status: 'online', siteId: null, siteName: null },
+          { id: LINUX_DEVICE_B, hostname: 'lin-2', displayName: null, osType: 'linux', status: 'online', siteId: null, siteName: null },
         ],
+        page: { nextCursor: null, returned: 3, total: 3, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
       });
     return ok({ data: [] }); // /orgs/sites, /device-groups
   };

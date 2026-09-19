@@ -183,8 +183,14 @@ describe('reserved ingest lane tracks the agent source', () => {
     // Matches both single-line and wrapped calls:
     //   h.sendInventoryData("hardware", ...)
     //   h.sendInventoryData(\n  "config-state",\n ...)
-    const matches = [...source.matchAll(/sendInventoryData\(\s*"([^"]+)"/g)];
-    const endpoints = matches
+    const direct = [...source.matchAll(/sendInventoryData\(\s*"([^"]+)"/g)];
+    // registry-state/config-state route through a shared helper that picks
+    // replace-vs-merge mode before forwarding to sendInventoryData (#3529), so
+    // the endpoint literal only appears at the helper call site, not on
+    // sendInventoryData itself:
+    //   sendPolicyState(h, "registry-state", "registry state", entries, err)
+    const viaPolicyStateHelper = [...source.matchAll(/sendPolicyState\(\s*h,\s*"([^"]+)"/g)];
+    const endpoints = [...direct, ...viaPolicyStateHelper]
       .map((m) => m[1])
       .filter((e): e is string => typeof e === 'string');
     return [...new Set(endpoints)].sort();

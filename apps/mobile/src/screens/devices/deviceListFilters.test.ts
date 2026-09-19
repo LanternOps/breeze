@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  deviceRowMeta,
   matchesQuery,
   matchesStatus,
   shapeDeviceList,
@@ -18,6 +19,7 @@ const dev = (over: Partial<Device>): Device =>
     siteName: over.siteName,
     lastSeen: over.lastSeen,
     organizationId: over.organizationId,
+    organizationName: over.organizationName,
     createdAt: '2026-08-18T00:00:00Z',
     updatedAt: '2026-08-18T00:00:00Z',
   }) as Device;
@@ -97,5 +99,33 @@ describe('statusCounts', () => {
     ]);
     expect(c).toEqual({ all: 3, online: 1, offline: 2 });
     expect(c.online + c.offline).toBe(c.all);
+  });
+});
+
+// #5104: the device list row meta line — the visible fix for "no
+// organization on device rows".
+describe('deviceRowMeta', () => {
+  it('joins org and site when both are known', () => {
+    expect(deviceRowMeta(dev({ organizationName: 'Acme Corp', siteName: 'HQ' }))).toBe('Acme Corp · HQ');
+  });
+
+  it('shows org alone when site is unknown', () => {
+    expect(deviceRowMeta(dev({ organizationName: 'Acme Corp', siteName: undefined }))).toBe('Acme Corp');
+  });
+
+  it('shows site alone when org is unknown', () => {
+    expect(deviceRowMeta(dev({ organizationName: undefined, siteName: 'HQ' }))).toBe('HQ');
+  });
+
+  it('falls back to the OS label when neither org nor site is known', () => {
+    expect(
+      deviceRowMeta(dev({ organizationName: undefined, siteName: undefined, os: 'windows' }))
+    ).toBe('Windows');
+  });
+
+  it('falls back to an em dash when org, site AND os are all unknown', () => {
+    expect(
+      deviceRowMeta(dev({ organizationName: undefined, siteName: undefined, os: undefined }))
+    ).toBe('—');
   });
 });

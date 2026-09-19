@@ -1,0 +1,25 @@
+{
+  "directive": {
+    "schemaVersion": 1,
+    "rollbackId": "11111111-1111-4111-8111-111111111111",
+    "deviceId": "22222222-2222-4222-8222-222222222222",
+    "orgId": "33333333-3333-4333-8333-333333333333",
+    "platform": "windows",
+    "architecture": "amd64",
+    "currentVersion": "2.0.0",
+    "targetVersion": "1.9.0",
+    "componentVersions": { "agent": { "current": "2.0.0", "target": "1.9.0" } },
+    "releaseManifest": "{\"schemaVersion\":1,\"release\":\"v1.9.0\"}",
+    "manifestSignature": "manifest-signature",
+    "manifestSigningKeyId": "release-artifact-manifest-ed25519",
+    "artifacts": [{"component":"agent","currentVersion":"2.0.0","targetVersion":"1.9.0","downloadUrl":"https://updates.example/agent.exe","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1234}],
+    "reason": "Recover from regression",
+    "authorizedBy": "44444444-4444-4444-8444-444444444444",
+    "approvedAt": "2026-08-25T12:00:00Z",
+    "expiresAt": "2026-08-25T12:05:00Z",
+    "directiveSigningKeyId": "deploy-test",
+    "directiveSignature": "En6+HEDuO++3xQjFZuj5VHDNh8AaVg1iJpjymEk8BrncuYMIWQnhyOhSAXHv/tuARCGWBU/LNRQRcnG0cO0XDQ=="
+  },
+  "publicKeyB64": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+  "canonicalSha256": "15bd8aed870655897488c0d3e6a5de6dabc7a883d2ae4846d1856e136be19d4f"
+}

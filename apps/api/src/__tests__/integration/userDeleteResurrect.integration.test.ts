@@ -74,7 +74,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { users, partnerUsers, organizationUsers } from '../../db/schema';
+import { users, partnerUsers, organizationUsers, userPasskeys } from '../../db/schema';
 import {
   createPartner,
   createOrganization,
@@ -264,5 +264,73 @@ describe('user re-invite → resurrect tombstone (#1367)', () => {
       .where(eq(partnerUsers.userId, target.id))
       .limit(1);
     expect(link).toBeDefined();
+  });
+});
+
+async function seedPasskey(userId: string) {
+  await getTestDb().insert(userPasskeys).values({
+    userId, credentialId: `cred-${userId}`, publicKey: 'dGVzdC1wdWJsaWMta2V5', counter: 0, deviceType: 'singleDevice', backedUp: false, name: 'stale',
+  });
+}
+
+async function passkeyCount(userId: string) {
+  return (await getTestDb().select({ id: userPasskeys.id }).from(userPasskeys).where(eq(userPasskeys.userId, userId))).length;
+}
+
+describe('user delete / re-invite → factors stripped (RMM-QA-166)', () => {
+  it('I-7: last-membership removal neutralizes TOTP, phone and passkeys and advances both epochs', async () => {
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const caller = await createUser({ partnerId: partner.id, email: `caller-${Date.now()}@example.com`, status: 'active' });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
+    const target = await createUser({ partnerId: partner.id, email: `factors-${Date.now()}@example.com`, status: 'active', mfaEnabled: true });
+    await assignUserToPartner(target.id, partner.id, role.id);
+    await getTestDb().update(users).set({ mfaMethod: 'totp', mfaSecret: 'enc:seed', mfaRecoveryCodes: ['h'], phoneNumber: '+15550100', phoneVerified: true }).where(eq(users.id, target.id));
+    await seedPasskey(target.id);
+    const before = await readUser(target.id);
+
+    activeAuthContext = { scope: 'partner', partnerId: partner.id, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partner.id], userId: caller.id };
+    const app = await buildApp();
+    const res = await app.request(`/users/${target.id}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+
+    const row = await readUser(target.id);
+    expect(row).toMatchObject({
+      status: 'disabled', passwordHash: null,
+      mfaEnabled: false, mfaMethod: null, mfaSecret: null, mfaRecoveryCodes: null, phoneNumber: null, phoneVerified: false,
+    });
+    expect(await passkeyCount(target.id)).toBe(0);
+    expect(row.authEpoch).toBeGreaterThan(before.authEpoch);
+    expect(row.mfaEpoch).toBeGreaterThan(before.mfaEpoch);
+  });
+
+  it('I-8: re-inviting a tombstone that still carries a stale passkey sweeps it before resurrection', async () => {
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const caller = await createUser({ partnerId: partner.id, email: `caller-${Date.now()}@example.com`, status: 'active' });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
+    const email = `stale-${Date.now()}@example.com`;
+    const target = await createUser({ partnerId: partner.id, email, name: 'Old Name', status: 'active' });
+    // Tombstone as the pre-fix code (or the 2026-06-18 backfill) leaves it: disabled,
+    // no password, no membership — but with a passkey row and a verified phone.
+    await withSystemDbAccessContext(async () =>
+      db.update(users).set({ status: 'disabled', disabledReason: 'removed', passwordHash: null, phoneNumber: '+15550100', phoneVerified: true }).where(eq(users.id, target.id)),
+    );
+    await seedPasskey(target.id);
+
+    activeAuthContext = { scope: 'partner', partnerId: partner.id, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partner.id], userId: caller.id };
+    const app = await buildApp();
+    const res = await app.request('/users/invite', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, name: 'New Name', roleId: role.id, orgAccess: 'none' }),
+    });
+    expect(res.status).toBe(201);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('invited');
+    expect(await passkeyCount(target.id)).toBe(0);
+    expect(row.phoneVerified).toBe(false);
+    expect(row.phoneNumber).toBeNull();
   });
 });

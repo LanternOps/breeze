@@ -15,3 +15,11 @@ func (*noopManager) Promote(context.Context) (Credential, error) {
 }
 
 func (*noopManager) Demote(context.Context) error { return nil }
+
+func (*noopManager) Deprovision(context.Context) (AccountEvidence, error) {
+	return AccountEvidence{}, ErrUnsupportedPlatform
+}
+
+func (*noopManager) VerifyClean(context.Context) (AccountEvidence, error) {
+	return AccountEvidence{}, ErrUnsupportedPlatform
+}

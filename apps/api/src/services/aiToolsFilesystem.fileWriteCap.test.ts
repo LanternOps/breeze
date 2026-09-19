@@ -10,8 +10,11 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
 }));
 
 vi.mock('./filesystemAnalysis', () => ({
@@ -25,7 +28,7 @@ vi.mock('./filesystemAnalysis', () => ({
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { executeCommand } from './commandQueue';
+import { aiExecuteCommand } from './aiDispatch';
 import { registerFilesystemTools } from './aiToolsFilesystem';
 import { AGENT_MAX_FILE_WRITE_BYTES } from '../routes/systemTools/schemas';
 
@@ -52,6 +55,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -94,7 +98,7 @@ describe('file_operations write size cap (#2399)', () => {
     );
 
     expect(result.error).toContain('too large');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('measures UTF-8 bytes, not string length', async () => {
@@ -108,7 +112,7 @@ describe('file_operations write size cap (#2399)', () => {
     );
 
     expect(result.error).toContain('too large');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('dispatches writes at or under the cap', async () => {
@@ -123,8 +127,8 @@ describe('file_operations write size cap (#2399)', () => {
       makeAuth(),
     );
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(executeCommand).mock.calls[0]?.[1]).toBe('file_write');
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(aiExecuteCommand).mock.calls[0]?.[3]).toBe('file_write');
   });
 
   it('does not apply the cap to non-write actions', async () => {
@@ -134,7 +138,7 @@ describe('file_operations write size cap (#2399)', () => {
       makeAuth(),
     );
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(executeCommand).mock.calls[0]?.[1]).toBe('file_read');
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(aiExecuteCommand).mock.calls[0]?.[3]).toBe('file_read');
   });
 });

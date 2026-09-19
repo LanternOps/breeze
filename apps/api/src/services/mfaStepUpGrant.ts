@@ -1,10 +1,10 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { getRedis } from './redis';
 
 /**
- * SR2-20 / #2707: existing-factor step-up grant for adding a NEW MFA factor to
- * an ALREADY-PROTECTED account, OR registering an authenticator device as an
- * approver.
+ * Existing-factor step-up grants for sensitive MFA mutations on an
+ * ALREADY-PROTECTED account, registering an authenticator device as an
+ * approver, and the other purpose-bound operations listed below.
  *
  * Minted by FOUR sources: (1) `POST /auth/mfa/step-up`, after the caller
  * proves an existing factor (TOTP/SMS/passkey); (2)
@@ -15,9 +15,9 @@ import { getRedis } from './redis';
  * mode), the passwordless equivalent of (2) — see #4018.
  *
  * Grants from (1) are presented back to a factor-addition endpoint
- * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) as
- * `stepUpGrantId`. Grants for approver-device registration (from any of the
- * three sources) are presented as `registerGrantId` to
+ * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) or
+ * recovery-code rotation as `stepUpGrantId`. Grants for approver-device
+ * registration are presented as `registerGrantId` to
  * `POST /authenticator/devices/webauthn/options`,
  * `POST /authenticator/devices/webauthn/verify`, or the mobile
  * `POST /authenticator/devices`.
@@ -31,7 +31,50 @@ import { getRedis } from './redis';
  */
 /** Operations a step-up grant can authorize. A grant minted for one operation
  * can never validate/consume for another (bindsMatch checks equality). */
-export type StepUpOperation = 'add_factor' | 'register_approver_device' | 'enroll_first_factor';
+export type StepUpOperation =
+  | 'add_factor'
+  | 'rotate_recovery_codes'
+  | 'delete_passkey'
+  | 'register_approver_device'
+  | 'agent_rollback'
+  | 'enroll_first_factor'
+  // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
+  // resourceDigest to the exact { deviceIds, reason, durationHours } the
+  // technician was shown, so a grant can never be replayed against a
+  // different device set or a longer window.
+  | 'device_maintenance'
+  // Device move-org step-up (spec 2026-09-18): relocating a device to another
+  // organization rewrites org_id on 64 device-scoped tables in one transaction
+  // and is cross-tenant by definition. Bound by resourceDigest to the exact
+  // { deviceId, targetOrgId, targetSiteId, acceptCurrencyMismatch } the
+  // operator was shown, so a grant can never be replayed against a different
+  // device, destination, or billing acknowledgement.
+  | 'device_move_org'
+  // AI script authoring W04 (#5612): enabling the unattended lane on an org
+  // is the same class of action as enabling agent act mode — a fresh MFA
+  // proof, bound to the org AND to the value being set, so a grant minted to
+  // turn the lane ON cannot be replayed to widen something else.
+  | 'ai_script_lane_grant'
+  // #5601: a "recent ceremony" credential for consecutive approval decides.
+  // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
+  // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
+  // `consumeStepUpGrant` (GETDEL), so one passkey ceremony can cover the
+  // several Tier-3 rows one AI conversation raises inside the TTL.
+  //
+  // That deviation is safe only because the other bounds are tighter than any
+  // other operation's: it is minted and redeemed for SUPERVISED rows only
+  // (four_eyes keeps its per-approval passkey, Todd's call 2026-09-11), the
+  // digest pins one conversation + one org + one risk tier
+  // (services/approvals/approvalDecideGrant.ts), critical/L4 is excluded
+  // outright, the minting approver device must still be live at redeem,
+  // redeeming mints nothing so the window cannot ratchet forward, and the
+  // TTL is 120 s (OPERATION_TTL_SECONDS below), not the 300 s default.
+  //
+  // MUST NOT be client-requestable: it is deliberately excluded from
+  // STEP_UP_OPERATIONS in routes/auth/schemas.ts, by the compiler. Letting a
+  // client mint one would turn an ordinary TOTP step-up into a bypass of the
+  // enforcing-partner L3 passkey floor on supervised rows.
+  | 'approval_decide';
 
 export interface StepUpGrant {
   id: string;
@@ -40,11 +83,49 @@ export interface StepUpGrant {
   authEpoch: number;
   mfaEpoch: number;
   sid: string;
+  resourceDigest: string;
 }
 
-type GrantBind = Omit<StepUpGrant, 'id'>;
+export type StepUpGrantBinding = Omit<StepUpGrant, 'id'>;
+type GrantBind = Omit<StepUpGrantBinding, 'resourceDigest'> & { resourceDigest?: string };
+
+/**
+ * Server-written payload stored ALONGSIDE a grant's binding (#5601).
+ *
+ * Deliberately NOT part of `bindsMatch`: `bindsMatch` is a statement about
+ * facts the CALLER must present correctly, and this is data the server wrote
+ * to itself. Including it would make the binding depend on values no caller
+ * ever supplies, turning a legitimate redeem into a confusing mismatch.
+ *
+ * Only `approval_decide` uses it today, to carry the achieved assurance level,
+ * the factor, the device that signed, and the moment the ceremony actually
+ * happened across the reuse window. Typed as `unknown` here on purpose — this
+ * module must not learn the approvals domain's shapes; the redeeming service
+ * validates it (services/approvals/approvalDecideGrant.ts).
+ */
+type StoredGrant = StepUpGrantBinding & { context?: unknown };
 
 const TTL_SECONDS = 300;
+
+/**
+ * Per-operation TTL overrides. Every single-use operation keeps the 300 s
+ * default above; `approval_decide` (#5601) is the one MULTI-USE grant in the
+ * codebase, so its window is deliberately shorter — 120 s, Todd's call on
+ * 2026-09-11 — because inside it a live stolen access token plus a leaked
+ * grant id can repeat a decide the session is already authorised to make.
+ * Kept here, next to the default, so a reader comparing the two numbers sees
+ * both in one place; the approvals module derives its own age bound from
+ * `stepUpGrantTtlSeconds` rather than re-declaring the number.
+ */
+const OPERATION_TTL_SECONDS: Partial<Record<StepUpOperation, number>> = {
+  approval_decide: 120,
+};
+
+/** Redis TTL a grant of this operation is written with. */
+export function stepUpGrantTtlSeconds(operation: StepUpOperation): number {
+  return OPERATION_TTL_SECONDS[operation] ?? TTL_SECONDS;
+}
+
 const key = (id: string) => `mfa:stepup:${id}`;
 
 function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
@@ -52,7 +133,101 @@ function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
     && record.operation === bind.operation
     && record.authEpoch === bind.authEpoch
     && record.mfaEpoch === bind.mfaEpoch
-    && record.sid === bind.sid;
+    && record.sid === bind.sid
+    && (record.resourceDigest ?? '') === (bind.resourceDigest ?? '');
+}
+
+export function rollbackResourceDigest(input: {
+  deviceId: string;
+  currentVersion: string;
+  targetVersion: string;
+  reason: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    currentVersion: input.currentVersion,
+    deviceId: input.deviceId,
+    reason: input.reason,
+    targetVersion: input.targetVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+// The device-maintenance maxima moved to services/maintenanceStepUpLimits.ts —
+// see that file's header for why a constant must not live in a module this
+// many suites mock wholesale.
+
+/**
+ * Canonical digest for a device-maintenance grant.
+ *
+ * Canonicalization is part of the security contract, not a convenience: the
+ * mint route and the maintenance routes must produce byte-identical input for
+ * the same operator intent, so `deviceIds` is deduplicated and sorted and
+ * `reason` is trimmed here — in ONE function both callers use — rather than at
+ * each call site. Keys are emitted in a fixed alphabetical order because
+ * JSON.stringify preserves insertion order, which would otherwise let two
+ * equivalent objects hash differently.
+ */
+export function maintenanceResourceDigest(input: {
+  deviceIds: string[];
+  reason: string;
+  durationHours: number;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    deviceIds: [...new Set(input.deviceIds)].sort(),
+    durationHours: input.durationHours,
+    reason: input.reason.trim(),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Canonical digest for a device move-org grant (spec 2026-09-18 D2).
+ *
+ * Same contract as maintenanceResourceDigest: the mint route and the move
+ * route must produce byte-identical input for the same operator intent, so
+ * `acceptCurrencyMismatch` is normalised to a boolean HERE (`undefined` and
+ * `false` are the same intent) and keys are emitted in fixed alphabetical
+ * order. Accepting a currency mismatch is a billing acknowledgement and part
+ * of the intent, so it is bound: a grant minted without it cannot authorise a
+ * move that sets it.
+ */
+export function moveOrgResourceDigest(input: {
+  deviceId: string;
+  targetOrgId: string;
+  targetSiteId: string;
+  acceptCurrencyMismatch?: boolean;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    acceptCurrencyMismatch: input.acceptCurrencyMismatch === true,
+    deviceId: input.deviceId,
+    targetOrgId: input.targetOrgId,
+    targetSiteId: input.targetSiteId,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Bind a factor-removal grant to one exact server-side passkey row. */
+/**
+ * W04 (#5612): binds an `ai_script_lane_grant` to the org and the requested
+ * value (`unattendedEnabled`), and to the lane-reset action when `reset` is
+ * set. Same one-org-one-value shape as the maintenance digest.
+ */
+export function scriptLanePolicyResourceDigest(input: {
+  orgId: string;
+  unattendedEnabled: boolean;
+  reset?: boolean;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    orgId: input.orgId,
+    unattendedEnabled: input.unattendedEnabled,
+    reset: input.reset === true,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+export function passkeyRemovalResourceDigest(passkeyId: string): `sha256:${string}` {
+  const canonical = JSON.stringify({ passkeyId });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
 /**
@@ -62,7 +237,7 @@ function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
  * never propagate as an uncaught rejection into a caller like
  * `mintLoginRegisterGrant` that must never throw.
  */
-export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
+export async function mintStepUpGrant(bind: GrantBind, context?: unknown): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
     console.error(`[mfaStepUpGrant] mint declined for user ${bind.userId} (${bind.operation}): Redis unavailable`);
@@ -70,7 +245,11 @@ export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
   }
   try {
     const id = randomUUID();
-    await redis.setex(key(id), TTL_SECONDS, JSON.stringify(bind));
+    const normalized: StoredGrant = { ...bind, resourceDigest: bind.resourceDigest ?? '' };
+    // Omitted entirely when absent so every existing operation's stored bytes
+    // are unchanged — a grant minted by an older API instance stays readable.
+    if (context !== undefined) normalized.context = context;
+    await redis.setex(key(id), stepUpGrantTtlSeconds(bind.operation), JSON.stringify(normalized));
     return id;
   } catch (err) {
     // Still fails closed (null), but no longer silently: a bare `catch {}` here
@@ -92,6 +271,38 @@ export async function validateStepUpGrant(id: string, bind: GrantBind): Promise<
     return bindsMatch(JSON.parse(raw) as GrantBind, bind);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Non-consuming read that returns the grant's server-written `context` when —
+ * and only when — the binding matches (#5601).
+ *
+ * `validateStepUpGrant` answers a boolean, which is all a single-use factor
+ * write needs. A multi-use `approval_decide` grant must additionally recover
+ * WHAT the original ceremony achieved (level, factor, device, when), and that
+ * payload must come from the SAME record whose binding was just checked —
+ * reading it separately would open a window where the two disagree.
+ *
+ * Returns `{ context }` on a match (context `undefined` when none was stored)
+ * and `null` on every failure: Redis down, miss, malformed JSON, or a binding
+ * mismatch. Callers cannot distinguish those, by design — all of them mean
+ * "no usable grant", and fail closed identically.
+ */
+export async function readStepUpGrant(
+  id: string,
+  bind: GrantBind,
+): Promise<{ context: unknown } | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(key(id));
+    if (!raw) return null;
+    const record = JSON.parse(raw) as StoredGrant;
+    if (!bindsMatch(record, bind)) return null;
+    return { context: record.context };
+  } catch {
+    return null;
   }
 }
 

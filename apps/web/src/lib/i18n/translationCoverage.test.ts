@@ -14,12 +14,23 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
-    'admin.json': 19,
+    // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
+    // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 25,
     'ai.json': 1,
+    // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
+    // identical cognates in pt-BR.
+    'aiOperator.json': 2,
     'alerts.json': 43,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
-    'backup.json': 52,
+    // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
+    // retained loanword in pt-BR IT contexts, matching how other backup.json
+    // strings already use it unchanged.
+    'backup.json': 53,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
@@ -38,7 +49,17 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 60, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.manual "Manual" are
+    // identical cognates in pt-BR.
+    'checklists.json': 3,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -46,12 +67,39 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 101,
-    'devices.json': 159,
+    // +1 #5288: nav.jobs — "Jobs" is the same loanword in pt-BR.
+    'common.json': 103, // +1 W06: lists.separator ", " is punctuation
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // (Datto RMM / NinjaOne / ConnectWise Automate / N-central — proper
+    // product names, never translated) and dateFormat.iso's "ISO
+    // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
+    // literal format token/example key, not wording.
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
+    // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 177,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    'errors.json': 0,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
+    'fleetDesign.json': 2,
     'integrations.json': 23,
+    // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
+    // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
+    // "System" (event-log categories), "CPU" (resource select) are identical
+    // cognates/loanwords in pt-BR.
+    'monitoring.json': 5,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
+    'organizations.json': 9, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
+    // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
+    'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -63,24 +111,65 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 57,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
+    // pt-BR already accepted above for bulkOrgImport.preview.status.
+    // +3 #5288: automationsPage.title and automationEditPage.breadcrumb.
+    // automations are both "Jobs" (same loanword in pt-BR); tabs.webhooks is
+    // "Webhooks" in both languages.
+    'scripts.json': 61,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
-    'settings.json': 112,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in pt-BR technical UI.
+    // +1: this baseline was already 1 duplicate stale relative to the file
+    // before wave 6.1 Task 4 touched it (an earlier, unrelated wave's change
+    // landed without bumping it) — carried forward here rather than
+    // root-caused, since Task 4's own scope is the runs UI, not an audit of
+    // prior waves.
+    // +6: aiAgentsPage.runs (#3828 Task 4) — "Status" and "Manual" are the
+    // same cognate in pt-BR (already accepted elsewhere in this namespace),
+    // and "OK" is locale-invariant.
+    // +1: aiAgentsPage.chipLabels.running (#4187 UI critique 3) — "Status" is
+    // the same cognate in pt-BR (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in pt-BR.
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox") and .script ("Script") — both are the standard loanwords in
+    // pt-BR, and translating them would read as invented jargon.
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 128,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
+    // per-locale note where it is not obvious.
+    'toolSources.json': 1,
     'vulnerabilities.json': 13,
   },
   'es-419': {
-    'admin.json': 16,
+    // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
+    // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 21,
     'ai.json': 4,
+    // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
+    // "chat" are identical cognates in es-419.
+    'aiOperator.json': 3,
     'alerts.json': 39,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 30,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
@@ -100,7 +189,14 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 43,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; source.manual "Manual" is an identical cognate in es-419.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -110,12 +206,39 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.fleet.FindingsFeed.severities.error — "Error" is the correct
     // es-419 severity label and spells identically to English.
     // +1: nav.variables — "Variables" is the same word in Spanish.
-    'common.json': 86,
-    'devices.json': 115,
+    // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
+    // in Spanish.
+    'common.json': 88, // +1 W06: lists.separator ", " is punctuation
+    // +5 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
+    // format tokens, not wording.
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
+    // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 128,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
+    'fleetDesign.json': 2,
     'integrations.json': 31,
+    // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
+    // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
+    // level), "CPU" (resource select), "Total" (direction select) are
+    // identical cognates/loanwords in es-419.
+    'monitoring.json': 6,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
+    'organizations.json': 4, // W01 #5075: cognate — "Tickets"
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
+    'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -129,22 +252,56 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 60,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in es-419.
+    'scripts.json': 61,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
-    'settings.json': 115,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in es-419 technical UI.
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Manual" and "Ticket" are the
+    // same cognate in es-419, and "OK"/"Error" are locale-invariant.
+    // +3: contactsCard / bulkContactImport (#3258 W04) — "Roles" is the same
+    // word in Spanish (plural of "rol"), and the contacts UI labels it in
+    // three places (the list column, the form fieldset and the CSV mapping row).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in es-419.
+    // +1 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.script
+    // — "Script" is the standard loanword in es-419. (`status` is translated
+    // here as "Entorno aislado" and is NOT a duplicate.)
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 130,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    'toolSources.json': 1,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
-    'admin.json': 27,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
+    // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-FR.
+    'aiOperator.json': 3,
     'alerts.json': 58,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 59,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
@@ -166,7 +323,16 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    // +1 W02: templates.description — "Description" is also the French word.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -176,10 +342,44 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 104,
-    'devices.json': 136,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Audit" and "Date" are identical cognates in fr-FR.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 154,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-FR.
+    'fleetDesign.json': 3,
     'integrations.json': 38,
+    // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
+    // (event-log count field), "Direction" (bandwidth/disk-I/O field),
+    // "Application" (event-log category), "CPU" (resource select), "Total"
+    // (direction select), "Source" (policy-tab column) are identical
+    // cognates in fr-FR.
+    'monitoring.json': 7,
+    'organizations.json': 11, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    // +1 W03 account board: "PSA" is a locale-invariant acronym.
+    // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
+    // scripts.json made titles.scripts an intentional cognate ("Script" is the
+    // standard fr-FR loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -193,7 +393,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 63,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in fr-FR.
+    'scripts.json': 64,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -206,19 +408,58 @@ const namespaceDuplicateBaselines = {
     // action-column headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 153,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    // +1: aiAgentsPage.chipLabels.mode (#4187 UI critique 3) — "Mode" is the
+    // same word in French (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
+    // "{{count}} minutes" spell identically in French.
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in French.
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // French.
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in French (same acceptance as scriptRejected).
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
+    // — "Modules" spells identically in French.
+    'settings.json': 177,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 23,
+    'toolSources.json': 1,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
-    'admin.json': 27,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
+    // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-CA.
+    'aiOperator.json': 3,
     'alerts.json': 59,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 60,
     // Contract-template format strings, French cognates, and locale-invariant
@@ -234,7 +475,16 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    // +1 W02: templates.description — "Description" is also the French word.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -244,10 +494,44 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 106,
-    'devices.json': 136,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Date" and "Notes" are identical cognates in fr-CA.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 154,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-CA.
+    'fleetDesign.json': 3,
     'integrations.json': 40,
+    // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
+    // (event-log count field), "Direction" (bandwidth/disk-I/O field),
+    // "Application" (event-log category), "CPU" (resource select), "Total"
+    // (direction select), "Source" (policy-tab column) are identical
+    // cognates in fr-CA.
+    'monitoring.json': 7,
+    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    // +1 W03 account board: "PSA" is a locale-invariant acronym.
+    // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
+    // here) made titles.scripts an intentional cognate ("Script" is the
+    // standard loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -261,7 +545,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 63,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in fr-CA.
+    'scripts.json': 64,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -274,21 +560,65 @@ const namespaceDuplicateBaselines = {
     // headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 158,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in Canadian French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    // +1: aiAgentsPage.chipLabels.mode (#4187 UI critique 3) — "Mode" is the
+    // same word in Canadian French (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
+    // "{{count}} minutes" spell identically in French.
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in Canadian French.
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // Canadian French.
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in Canadian French too.
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
+    // — "Modules" spells identically in Canadian French too.
+    'settings.json': 183,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 22,
+    'toolSources.json': 1,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
-    'admin.json': 23,
+    // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
+    // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 31,
     'ai.json': 5,
+    // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
+    // "chat" and waitReason "information" are identical cognates in de-DE.
+    'aiOperator.json': 4,
     'alerts.json': 46,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 15,
-    'backup.json': 63,
+    // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
+    // retained loanword in German IT contexts, matching how other backup.json
+    // strings already use it unchanged.
+    'backup.json': 64,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -305,7 +635,14 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
-    'billing.json': 42,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
+    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    // +1 W02: templates.name — "Name" is also the German word.
+    'checklists.json': 2,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -313,12 +650,54 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 102,
-    'devices.json': 146,
-    'discovery.json': 26,
+    // +2: nav.software + nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Software" and "Administration" are the German words too.
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    // +1: runContext.system (#4888) — "System" is the German word too, and it
+    // labels a privilege level, so the one place it must NOT be creatively
+    // rendered is a control that says which account a script runs under.
+    // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
+    // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
+    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
+    // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" (literal format tokens/example keys, not wording); plus
+    // customFieldImportPreview.columns.status "Status" and grid.name "Name"
+    // — both spelled identically in German.
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" arrived with the
+    // unified-device-list branch; re-measured after merging main.
+    // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
+    // in German.
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
+    // #5573 W01 (service deliverables): "Status", "Portal", "Name" and "Audit" are identical cognates in de-DE.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 5,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 166,
+    // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
+    // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
+    // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
+    'discovery.json': 28,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 43,
+    // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
+    // "Name" (list/legacy column + field label), "Monitor" (policy-tab
+    // column), "Hardware"/"System" (event-log categories), "CPU" (resource
+    // select) are identical cognates/loanwords in de-DE.
+    'monitoring.json': 8,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
+    'organizations.json': 6, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
+    'pages.json': 14, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -330,23 +709,61 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
-    'scripts.json': 54,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the standard
+    // loanword in this locale, same as the German "Status" used elsewhere.
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in de-DE.
+    'scripts.json': 56,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
-    'settings.json': 168,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +10: aiAgentsPage.runs (#3828 Task 4) — "Agent", "Status", "Ticket" and
+    // "Tool" are the same words in German, and "OK" is locale-invariant.
+    // +4: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Name" is the same word in German, and the contacts UI labels it in
+    // four places (the list column, the form field, the CSV mapping row and
+    // the import preview column).
+    // +1: aiAgentsPage.chipLabels.running (#4187 UI critique 3) — "Status" is
+    // the same word in German (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +1: orgPortalSettingsEditor.visibility.toggles.enableService.label (W04 #5573)
+    // — "Service" is the same word in German.
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in de-DE.
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.region
+    // ("Region" is the same word in German) and .status ("Sandbox", the
+    // standard loanword). `exitCode` is deliberately "Exit" rather than the
+    // English "exit", so it is not among these.
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 191,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    'toolSources.json': 1,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
-    'admin.json': 31,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
+    // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 38,
     'ai.json': 12,
+    // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
+    // identical cognates in it-IT.
+    'aiOperator.json': 2,
     'alerts.json': 57,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 21,
     'backup.json': 45,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
@@ -359,17 +776,46 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 35,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
+    // are the same loanwords deliverables.json already keeps untranslated in it-IT.
+    'checklists.json': 3,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 105,
-    'devices.json': 144,
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    'common.json': 107, // +1 W06: lists.separator ", " is punctuation
+    // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 146,
     'discovery.json': 22,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
+    'fleetDesign.json': 2,
     'integrations.json': 81,
+    // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
+    // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
+    // (event-log category), "CPU" (resource select) are identical
+    // cognates/loanwords in it-IT.
+    'monitoring.json': 5,
+    'organizations.json': 6, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
+    'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -383,19 +829,49 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
     'security.json': 163,
-    'settings.json': 156,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in it-IT technical UI.
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Trigger" and "Ticket" are
+    // standard loanwords in it-IT technical UI, and "OK" is locale-invariant.
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in it-IT.
+    // +3 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox"), .script ("Script") and .stdout ("Output") — all three are
+    // the standard loanwords in it-IT.
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): ticketingSettingsTabs.email —
+    // "Email" is the standard loanword in it-IT technical UI (same word is
+    // already used for inboundEmail elsewhere in this file).
+    'settings.json': 171,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
+    'toolSources.json': 1,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
-    'admin.json': 14,
+    // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
+    // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 19,
     'ai.json': 1,
+    'aiOperator.json': 0,
     'alerts.json': 25,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 25,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
@@ -409,11 +885,37 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 20,
-    'common.json': 48,
-    'devices.json': 77,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
+    'common.json': 49, // +1 W06: lists.separator ", " is punctuation
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
+    // #5573 W01 (service deliverables): "Portal" is the identical cognate in tr-TR.
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 90,
     'discovery.json': 9,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 22,
+    // #5289 (monitors W02 web): "CPU" (resource select) is the identical
+    // acronym in tr-TR.
+    'monitoring.json': 1,
+    'organizations.json': 5, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
+    'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",
@@ -428,10 +930,26 @@ const namespaceDuplicateBaselines = {
     'reports.json': 31,
     'scripts.json': 38,
     'security.json': 86,
-    'settings.json': 64,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
+    // introduced zero new tr-TR duplicates.
+    // +3: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Site" is the established loanword in tr-TR (bulkOrgImport already
+    // uses it), so the three site labels stay identical.
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    // +1 W05 (#5612): scriptAuthoringPage.class.disk — "Disk" is spelled
+    // identically in tr-TR.
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 72,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
+    'toolSources.json': 1,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

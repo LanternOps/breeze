@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Patch freigegeben",
       "declined": "Patch abgelehnt",
+      "declinedAllRings": "Patch für alle Update-Ringe abgelehnt",
       "deferred": "Patch zurückgestellt"
+    },
+    "allRings": {
+      "label": "Alle Ring-Freigaben aufheben",
+      "description": "Hebt die Freigabe dieses Patches auch in jedem anderen Update-Ring dieses Partners auf, nicht nur im aktuellen Geltungsbereich."
     },
     "confirm": {
       "title": "Patch-Freigabe bestätigen",
@@ -243,7 +248,9 @@
       "critical": "Kritisch",
       "important": "Wichtig",
       "moderate": "Moderat",
-      "low": "Niedrig"
+      "low": "Niedrig",
+      "unrated": "Unbewertet",
+      "unratedNote": "Wird nicht automatisch genehmigt"
     },
     "approval": {
       "pending": "Ausstehend",
@@ -262,6 +269,7 @@
     "actions": {
       "deploy": "Bereitstellen",
       "review": "Prüfen",
+      "unapprove": "Freigabe aufheben",
       "details": "Details",
       "approveCount": "{{count}} freigeben",
       "declineCount": "{{count}} ablehnen",
@@ -429,6 +437,8 @@
       "allCategories": "Alle Kategorien",
       "default": "Standard",
       "severityNote": "Schweregrade gelten nur für Betriebssystem-Updates. Drittanbieter-App-Updates werden über den Schalter unten gesteuert — sie sind nicht schweregradbasiert.",
+      "unratedSeverityNote": "Nicht bewertete Patches (ohne Schweregradbewertung) sind von dieser Schweregradauswahl ausgeschlossen und werden nicht automatisch freigegeben, selbst wenn alle Schweregrade ausgewählt sind, es sei denn, Sie aktivieren den Schalter unten.",
+      "autoApproveUnratedLabel": "Auch nicht bewertete Patches automatisch freigeben",
       "manualDefault": "Jeder Patch in diesem Ring muss manuell freigegeben werden.",
       "manualCategory": "Patches in dieser Kategorie müssen manuell freigegeben werden.",
       "noOverrides": "Alle Kategorien verwenden den Standard. Mit einer Überschreibung kann eine Kategorie abweichend behandelt werden."

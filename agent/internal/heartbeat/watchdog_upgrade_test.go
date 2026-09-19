@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/updater"
 )
 
 var errInstallFailed = errors.New("simulated watchdog install failure")
@@ -196,5 +197,18 @@ func TestHandleWatchdogUpgrade_SkipsWhenInProgress(t *testing.T) {
 	h.handleWatchdogUpgrade("0.83.0")
 	if calls.Load() != 0 {
 		t.Fatalf("expected installer NOT called while an upgrade is in progress, got %d", calls.Load())
+	}
+}
+
+func TestHandleWatchdogUpgrade_DefersWhileRollbackOwnsCoordinator(t *testing.T) {
+	lease, ok := updater.TryBeginProcessMutation("rollback")
+	if !ok {
+		t.Fatal("failed to acquire rollback coordinator lease")
+	}
+	defer lease.Release()
+	h, calls, _ := newWatchdogTestHeartbeat("0.82.1", true)
+	h.handleWatchdogUpgrade("0.83.0")
+	if calls.Load() != 0 {
+		t.Fatalf("watchdog installer ran %d times during rollback", calls.Load())
 	}
 }

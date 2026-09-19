@@ -27,7 +27,9 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import type { Alert } from './AlertList';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import AlertDeviceInfo from './AlertDeviceInfo';
 import { formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
 
 export type NotificationHistory = {
@@ -159,7 +161,25 @@ export default function AlertDetails({
                 >
                   {t(/* i18n-dynamic */ `alertDetails.status.${alert.status}`)}
                 </span>
+                {alert.aiVerdict && (
+                  <AlertVerdictBadge
+                    verdict={alert.aiVerdict}
+                    onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                  />
+                )}
               </div>
+              {alert.aiVerdict && (
+                <p className="mt-1.5 text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
+              )}
+              {alert.aiVerdict?.suggestedIntentId && (
+                <a
+                  href="/approvals"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  {t('alertVerdict.suggestionPending')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
             </div>
           </div>
           <button
@@ -226,26 +246,12 @@ export default function AlertDetails({
           <div className="rounded-md border p-4">
             <h3 className="text-sm font-semibold mb-3">{t('alertDetails.deviceInformation')}</h3>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <p className="text-xs text-muted-foreground">{t('alertDetails.device')}</p>
-                <a
-                  href={`/devices/${alert.deviceId}`}
-                  className="flex items-center gap-1 text-sm font-medium hover:underline"
-                >
-                  {alert.deviceName}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-              {alert.ruleName && (
-                <div>
-                  <p className="text-xs text-muted-foreground">{t('alertDetails.alertRule')}</p>
-                  <p className="text-sm font-medium">{alert.ruleName}</p>
-                  <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
-                    {t('alertDetails.managedInConfigurationPolicies')}
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </div>
-              )}
+              <AlertDeviceInfo
+                deviceId={alert.deviceId}
+                deviceName={alert.deviceName}
+                ruleName={alert.ruleName}
+                monitorId={alert.monitorId}
+              />
               <div>
                 <p className="text-xs text-muted-foreground">{t('alertDetails.triggered')}</p>
                 <p className="text-sm">{formatDateTime(alert.triggeredAt)}</p>

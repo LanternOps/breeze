@@ -403,6 +403,11 @@ func (h *Heartbeat) reconcileBackupHelperFromExecutable() {
 // Serialized by backupHelperInstallMu so a future manual dev-push for this
 // component and the periodic reconcile can't race on the shared install path.
 func (h *Heartbeat) installBackupBinary(tempPath, installPath, version string) error {
+	lease, acquired := updater.TryBeginProcessMutation("backup-update")
+	if !acquired {
+		return updater.ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	h.backupHelperInstallMu.Lock()
 	defer h.backupHelperInstallMu.Unlock()
 

@@ -23,10 +23,11 @@ import {
   formatDateTime as formatUserDateTime,
   formatTime as formatUserTime,
 } from "@/lib/dateTimeFormat";
-import { escapeCsvCell } from "@/lib/csvExport";
+import { csvRow } from "@/lib/csvExport";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 
 type SoftwareItem = {
   name: string;
@@ -75,6 +76,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning/15 text-warning border-warning/30",
   updating: "bg-info/15 text-info border-info/30",
   pending: "bg-muted text-muted-foreground border-border",
+  unknown: "bg-muted text-muted-foreground border-border",
 };
 
 const metricColors = ["#3b82f6", "#22c55e", "#f97316", "#a855f7"];
@@ -184,69 +186,6 @@ function hashSeed(input: string): number {
   return input
     .split("")
     .reduce((acc, char) => acc + char.charCodeAt(0) * 37, 0);
-}
-
-function normalizeDeviceSummary(
-  raw: Record<string, unknown>,
-  index: number,
-  labels: { device: string; unknown: string },
-): Device {
-  const id = String(raw.id ?? raw.deviceId ?? raw.uuid ?? `device-${index}`);
-  const hostname = String(
-    raw.hostname ?? raw.displayName ?? raw.name ?? `${labels.device} ${id}`,
-  );
-  const os = normalizeOs(
-    raw.os ?? raw.osType ?? raw.platform ?? raw.operatingSystem ?? "windows",
-  );
-  const osVersion = String(
-    raw.osVersion ?? raw.platformVersion ?? raw.version ?? labels.unknown,
-  );
-  const status = normalizeStatus(
-    raw.status ?? raw.state ?? raw.connectionStatus ?? "offline",
-  );
-  const cpu = raw.cpu as Record<string, unknown> | undefined;
-  const ram = raw.ram as Record<string, unknown> | undefined;
-  const agent = raw.agent as Record<string, unknown> | undefined;
-  const cpuPercent = toNumber(
-    raw.cpuPercent ?? raw.cpuUsage ?? cpu?.percent,
-    0,
-  );
-  const ramPercent = toNumber(
-    raw.ramPercent ?? raw.memoryUsage ?? ram?.percent,
-    0,
-  );
-  const lastSeen = String(
-    raw.lastSeen ?? raw.lastSeenAt ?? raw.seenAt ?? "2024-01-15T12:00:00.000Z",
-  );
-  const orgId = String(raw.orgId ?? raw.organizationId ?? "");
-  const orgName = String(raw.orgName ?? raw.organizationName ?? labels.unknown);
-  const siteId = String(raw.siteId ?? raw.locationId ?? "site-0");
-  const siteName = String(
-    raw.siteName ?? raw.location ?? raw.site ?? labels.unknown,
-  );
-  const agentVersion = String(
-    raw.agentVersion ?? agent?.version ?? raw.agent ?? "-",
-  );
-  const tags = Array.isArray(raw.tags)
-    ? raw.tags.map((tag) => String(tag))
-    : [];
-
-  return {
-    id,
-    hostname,
-    os,
-    osVersion,
-    status,
-    cpuPercent,
-    ramPercent,
-    lastSeen,
-    orgId,
-    orgName,
-    siteId,
-    siteName,
-    agentVersion,
-    tags,
-  };
 }
 
 function normalizeSoftwareList(
@@ -729,6 +668,10 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     quarantined: t("deviceCompare.status.quarantined"),
     updating: t("deviceCompare.status.updating"),
     pending: t("deviceCompare.status.pending"),
+    // No compare entry point exists for a manual asset (#4622 W04) and the
+    // `unknown` status is only produced for unprobed network rows (#5213) —
+    // kept for the shared DeviceStatus exhaustiveness.
+    unknown: t("deviceCompare.status.unknown"),
   };
   const osLabels: Record<OSType, string> = {
     windows: t("deviceCompare.operatingSystems.windows"),
@@ -740,20 +683,37 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     "6h": t("deviceCompare.timeRanges.6h"),
     "24h": t("deviceCompare.timeRanges.24h"),
   };
-  const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deviceDetails, setDeviceDetails] = useState<
     Record<string, DeviceComparisonData>
   >({});
-  const [loadingDevices, setLoadingDevices] = useState(true);
   const [loadingDetails, setLoadingDetails] = useState(false);
-  const [listError, setListError] = useState<string>();
   const [detailsError, setDetailsError] = useState<string>();
   const [query, setQuery] = useState("");
   const [metricKey, setMetricKey] = useState<MetricKey>("cpu");
   const [timeRange, setTimeRange] = useState<TimeRange>("6h");
   const [showAllConfig, setShowAllConfig] = useState(false);
   const [copied, setCopied] = useState(false);
+  const deviceOptions = useDeviceOptions({
+    search: query,
+    includeIds: selectedIds,
+  });
+  const availableDevices = useMemo<Device[]>(() => deviceOptions.options.map((device) => ({
+    id: device.id,
+    hostname: device.displayName ?? device.hostname,
+    os: (['windows', 'macos', 'linux'].includes(device.osType) ? device.osType : 'windows') as OSType,
+    osVersion: unknownLabel,
+    status: device.status as DeviceStatus,
+    cpuPercent: 0,
+    ramPercent: 0,
+    lastSeen: '',
+    orgId: '',
+    orgName: unknownLabel,
+    siteId: device.siteId ?? '',
+    siteName: device.siteName ?? unknownLabel,
+    agentVersion: '-',
+    tags: [],
+  })), [deviceOptions.options, unknownLabel]);
 
   // Use provided timezone or browser default
   const effectiveTimezone =
@@ -765,13 +725,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     return map;
   }, [availableDevices]);
 
-  const filteredDevices = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) return availableDevices;
-    return availableDevices.filter((device) =>
-      device.hostname.toLowerCase().includes(normalizedQuery),
-    );
-  }, [availableDevices, query]);
+  const filteredDevices = availableDevices;
 
   const selectedDevices = useMemo(() => {
     return selectedIds
@@ -786,41 +740,6 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
   const canCompare = selectedIds.length >= 2;
   const selectionLimitReached = selectedIds.length >= 4;
-
-  const fetchAvailableDevices = useCallback(async () => {
-    try {
-      setLoadingDevices(true);
-      setListError(undefined);
-      const response = await fetchWithAuth("/devices");
-      if (!response.ok) {
-        throw new Error(t("deviceCompare.errors.fetchDevices"));
-      }
-      const data = await response.json();
-      const items = (data.devices ??
-        data.data ??
-        data.items ??
-        data) as unknown;
-      if (!Array.isArray(items))
-        throw new Error(t("deviceCompare.errors.unexpectedResponse"));
-      const normalized = items.map(
-        (device: Record<string, unknown>, index: number) =>
-          normalizeDeviceSummary(device, index, {
-            device: t("deviceCompare.values.device"),
-            unknown: unknownLabel,
-          }),
-      );
-      setAvailableDevices(normalized);
-    } catch (err) {
-      setAvailableDevices([]);
-      setListError(
-        err instanceof Error
-          ? err.message
-          : t("deviceCompare.failedToLoadDevices"),
-      );
-    } finally {
-      setLoadingDevices(false);
-    }
-  }, [t, unknownLabel]);
 
   const fetchDeviceDetails = useCallback(
     async (ids: string[]) => {
@@ -906,10 +825,6 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     },
     [deviceMap, t, unknownLabel],
   );
-
-  useEffect(() => {
-    fetchAvailableDevices();
-  }, [fetchAvailableDevices]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1067,9 +982,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
     // Neutralize spreadsheet-formula injection from agent-supplied fields
     // (hostname/cpuModel/software/patch/config values) before quoting.
-    const csv = rows
-      .map((row) => row.map((value) => escapeCsvCell(value ?? "")).join(","))
-      .join("\n");
+    const csv = rows.map(csvRow).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
 
@@ -1211,7 +1124,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     });
   }, [selectedDevices, metricsByDevice, metricKey]);
 
-  if (loadingDevices) {
+  if (deviceOptions.state === 'loading' && deviceOptions.options.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
@@ -1267,17 +1180,17 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         </div>
       </div>
 
-      {listError && (
+      {deviceOptions.state === 'error' && (
         <div className="flex items-center justify-between rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 shrink-0" />
             <span>
-              {t("deviceCompare.failedToLoadDevices2")} {listError}
+              {t("deviceCompare.failedToLoadDevices2")} {deviceOptions.error?.message}
             </span>
           </div>
           <button
             type="button"
-            onClick={fetchAvailableDevices}
+            onClick={deviceOptions.retry}
             className="shrink-0 rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10"
           >
             {t("deviceCompare.retry")}{" "}

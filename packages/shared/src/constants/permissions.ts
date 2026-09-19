@@ -15,12 +15,23 @@ export const PERMISSION_GRANTS = {
   // Backup / recovery
   BACKUP_READ: { resource: 'backup', action: 'read' },
   BACKUP_WRITE: { resource: 'backup', action: 'write' },
+  BACKUP_CROSS_SITE_RESTORE: { resource: 'backup', action: 'cross_site_restore' },
 
   // Devices
   DEVICES_READ: { resource: 'devices', action: 'read' },
   DEVICES_WRITE: { resource: 'devices', action: 'write' },
   DEVICES_DELETE: { resource: 'devices', action: 'delete' },
   DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+
+  // Signed, resource-bound rollback of customer-machine agent components.
+  AGENT_ROLLBACK_CREATE: { resource: 'agent_rollback', action: 'create' },
+
+  // Built-in Workspace extension. Keep content/source administration and
+  // credential use distinct from read-only visibility and crawl execution.
+  WORKSPACE_READ: { resource: 'workspace', action: 'read' },
+  WORKSPACE_WRITE: { resource: 'workspace', action: 'write' },
+  WORKSPACE_CREDENTIALS: { resource: 'workspace', action: 'credentials' },
+  WORKSPACE_EXECUTE: { resource: 'workspace', action: 'execute' },
 
   // Network topology (discovery topology view + saved layout — #1728)
   TOPOLOGY_READ: { resource: 'topology', action: 'read' },
@@ -69,6 +80,22 @@ export const PERMISSION_GRANTS = {
   CONTRACTS_READ: { resource: 'contracts', action: 'read' },
   CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
   CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
+  // Organization document library + key dates (service deliverables, spec §10).
+  // Deliberately NOT folded into `contracts`: a runbook or an onboarding
+  // baseline is org-record content that outlives any contract, and a partner
+  // may want a technician who can file documents without touching billing.
+  DOCUMENTS_READ: { resource: 'documents', action: 'read' },
+  DOCUMENTS_WRITE: { resource: 'documents', action: 'write' },
+
+  // Agreement templates + signed agreements (agreements vocabulary & IA split,
+  // spec §4). Deliberately NOT folded into `contracts`: a billing contract and
+  // the MSA a customer signs are different objects with different audiences —
+  // an MSP may want a technician who can pull up the signed MSA without
+  // touching recurring billing, and a billing clerk who runs contracts without
+  // authoring legal terms. No `manage` action: publish and archive are write
+  // operations on a template, so there is nothing left for a third verb to gate.
+  AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
+  AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },
@@ -91,6 +118,12 @@ export const PERMISSION_GRANTS = {
   ORGS_WRITE: { resource: 'organizations', action: 'write' },
   ORGS_DELETE: { resource: 'organizations', action: 'delete' },
 
+  // Partner-wide OAuth/MCP connected applications. These are deliberately
+  // separate from organization administration: one disconnect revokes every
+  // grant for the shared client under the partner.
+  CONNECTED_APPS_READ: { resource: 'connected_apps', action: 'read' },
+  CONNECTED_APPS_MANAGE: { resource: 'connected_apps', action: 'manage' },
+
   // SSO administration: configure providers + manage verified domains. A
   // higher-trust capability than organizations:write (security review #2 H-2).
   SSO_ADMIN: { resource: 'sso', action: 'admin' },
@@ -111,6 +144,12 @@ export const PERMISSION_GRANTS = {
   // Audit
   AUDIT_READ: { resource: 'audit', action: 'read' },
   AUDIT_EXPORT: { resource: 'audit', action: 'export' },
+  // Manage the org's audit-log retention policy (audit_retention_policies —
+  // issue #4633). Distinct from AUDIT_READ: reading the audit trail and
+  // configuring how long it is kept are different levels of trust — lowering
+  // retention shortens the forensic window, so this rides with Org Admin only,
+  // not every audit:read holder.
+  AUDIT_MANAGE: { resource: 'audit', action: 'manage' },
 
   // Reports
   REPORTS_READ: { resource: 'reports', action: 'read' },
@@ -141,9 +180,44 @@ export const PERMISSION_GRANTS = {
   AI_AGENTS_READ: { resource: 'ai_agents', action: 'read' },
   AI_AGENTS_WRITE: { resource: 'ai_agents', action: 'write' },
 
+  // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
+  TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },
+  TOOL_SOURCES_WRITE: { resource: 'tool_sources', action: 'write' },
+  // …and call the tools they expose. `use` gates Tier 1, `write` gates Tier 2/3.
+  EXTERNAL_TOOLS_USE: { resource: 'external_tools', action: 'use' },
+  EXTERNAL_TOOLS_WRITE: { resource: 'external_tools', action: 'write' },
+
   // Action intents / durable approvals — gates who may decide (approve/deny) a
   // pending action-intent approval, distinct from creating/reading intents.
   APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
+
+  // Privileged Access Management (PAM) — dedicated capabilities split off the
+  // generic device grants (security review wave 7, SR1-13/SR1-14). Approving/
+  // denying an elevation and authoring PAM policy are both HIGH-TRUST actions
+  // that must not ride on devices:execute/devices:write — an ordinary
+  // technician holding those (to run scripts, remote in, etc.) must not
+  // thereby gain the authority to grant standing admin or write the rules
+  // that decide who gets it automatically. Only Org Admin (and Partner Admin
+  // via its `*:*` wildcard) hold these by default; existing custom roles gain
+  // neither automatically.
+  PAM_APPROVE: { resource: 'pam', action: 'approve' },
+  PAM_MANAGE_POLICY: { resource: 'pam', action: 'manage_policy' },
+
+  // Accounting / QuickBooks integration (SEC-2026-09-05-057). The interactive
+  // QuickBooks routes used to gate on partner authority alone, so any
+  // full-partner member — however low their role — could read the shared
+  // provider realm (customers, entity mappings, income accounts, remote
+  // candidates) and, with MFA, reach realm lifecycle and settings mutations.
+  // These two capabilities make that authority explicit and separately
+  // grantable: `accounting:read` for provider reads, `accounting:manage` for
+  // connect/disconnect, settings, mapping writes and synchronization.
+  // Route-specific requirements (organizations:write + sites:write on customer
+  // import, invoices:write on invoice push, catalog:write on item mappings,
+  // and MFA) remain cumulative on top. Only Org Admin (and Partner Admin via
+  // its `*:*` wildcard) hold these by default; existing custom roles gain
+  // neither automatically.
+  ACCOUNTING_READ: { resource: 'accounting', action: 'read' },
+  ACCOUNTING_MANAGE: { resource: 'accounting', action: 'manage' },
 
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },

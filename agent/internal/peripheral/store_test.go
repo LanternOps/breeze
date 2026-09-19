@@ -2,6 +2,7 @@ package peripheral
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -234,6 +235,21 @@ func TestStoreSaveAtomicity(t *testing.T) {
 	tmpPath := s.path + ".tmp"
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
 		t.Fatal(".tmp file should not exist after successful save")
+	}
+}
+
+func TestStoreSaveFailurePreservesInMemoryPolicies(t *testing.T) {
+	s := newTestStore(t)
+	initial := []Policy{{ID: "pol-initial", Name: "Initial"}}
+	if err := s.Save(initial); err != nil {
+		t.Fatal(err)
+	}
+	s.writeAtomic = func(string, []byte) error { return errors.New("disk full") }
+	if err := s.Save([]Policy{{ID: "pol-new"}}); err == nil {
+		t.Fatal("Save succeeded despite injected write failure")
+	}
+	if got := s.Policies(); len(got) != 1 || got[0].ID != "pol-initial" {
+		t.Fatalf("failed save replaced in-memory LKG: %+v", got)
 	}
 }
 

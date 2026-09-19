@@ -59,7 +59,24 @@ export type ActionIntentOutcome =
   | 'self_approved_sole_operator'
   | 'digest_mismatch'
   | 'approver_unauthorized'
-  | 'effect_digest_unpinned';
+  | 'effect_digest_unpinned'
+  /**
+   * #5326: a compare-and-swap into a terminal state (`executing -> completed`
+   * / `executing -> failed`) was LOST — another writer (a reaper, the durable
+   * release worker, a duplicate delivery) had already terminalized the intent.
+   * Emitted by the PRE-execution loss sites in services/aiAgentSdk.ts, where
+   * the tool never ran: nothing is wrong with the intent, so it is neither a
+   * failure of the action nor Sentry-worthy (contention here is expected),
+   * but it was previously a bare `console.warn` and therefore uncountable.
+   * A POST-execution loss is materially different — the side effect already
+   * happened — and stays on `executed` plus its own Sentry event and audit
+   * marker; do not merge the two.
+   *
+   * Metric-only by design: this outcome never flows through
+   * `recordActionIntentEvent`, so it deliberately has no
+   * `action_intent.cas_lost` audit action and no `FAILURE_OUTCOMES` entry.
+   */
+  | 'cas_lost';
 
 interface ActionIntentMetricsRecorder {
   onEvent: (source: ActionIntentSource, action: string, outcome: ActionIntentOutcome) => void;
@@ -134,6 +151,17 @@ export interface ActionIntentAuditInput {
    */
   actorType?: 'user' | 'ai_agent';
   /**
+   * Wave 5 Part B (#3827): override `writeAuditEvent`'s auto-derived
+   * `initiatedBy` (which maps an omitted actorType to `'schedule'`, meant
+   * for the reaper/cron family, not an authorization mechanism). A
+   * policy-authorized `'approved'` event passes `'policy'` explicitly here
+   * — the locked design decision that policy is a mechanism, never a
+   * synthetic human decider, has to be readable in the audit trail itself.
+   * Omit for every other caller; the existing 'user'/'system' auto-derivation
+   * is unchanged.
+   */
+  initiatedBy?: import('../auditService').InitiatedByType;
+  /**
    * Extra audit context — ids, decider, assurance, error codes, counts. Must
    * NEVER carry raw tool argument contents, only the digest/summaries already
    * computed (spec §7: "Details carry ids, action name, digest, decider,
@@ -165,6 +193,7 @@ export function recordActionIntentEvent(input: ActionIntentAuditInput): void {
     result: FAILURE_OUTCOMES.has(input.outcome) ? 'failure' : 'success',
     actorType: input.actorType,
     ...(input.actorId ? { actorId: input.actorId } : {}),
+    ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
   });
   recordActionIntentMetric(input.source, input.actionName, input.outcome);
 }

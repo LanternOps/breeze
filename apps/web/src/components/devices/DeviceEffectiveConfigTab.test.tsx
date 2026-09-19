@@ -57,15 +57,54 @@ const allEnforcedResponse = {
   ],
 };
 
+// Device whose enforced feature was inherited from a baseline CONFIG POLICY
+// (#5080) rather than won directly by the assigned policy itself — the
+// assigned child policy has no link of its own for this feature, so the
+// resolver fell back to its parent's link. `sourcePolicyName`/`sourceLevel`
+// still describe the ASSIGNED policy (device_group here); the parent is a
+// separate, additional provenance fact.
+const inheritedFeatureResponse = {
+  deviceId: 'dev-5',
+  features: {
+    patch: {
+      featureType: 'patch',
+      featurePolicyId: null,
+      inlineSettings: null,
+      sourceLevel: 'device_group',
+      sourceTargetId: 'grp-1',
+      sourcePolicyId: 'pol-child',
+      sourcePolicyName: 'Workstations (child)',
+      sourcePriority: 0,
+      inheritedFromPolicyId: 'pol-parent',
+      inheritedFromPolicyName: 'MSP Baseline',
+    },
+    backup: {
+      featureType: 'backup',
+      featurePolicyId: null,
+      inlineSettings: null,
+      sourceLevel: 'device_group',
+      sourceTargetId: 'grp-1',
+      sourcePolicyId: 'pol-child',
+      sourcePolicyName: 'Workstations (child)',
+      sourcePriority: 0,
+    },
+  },
+  inheritanceChain: [
+    { level: 'device_group', targetId: 'grp-1', policyId: 'pol-child', policyName: 'Workstations (child)', priority: 0, featureTypes: ['patch', 'backup'] },
+  ],
+};
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
-    const body = url.includes('dev-4')
-      ? allEnforcedResponse
-      : url.includes('dev-3')
-        ? warrantyResponse
-        : url.includes('dev-2')
-          ? mixedResponse
-          : baselineOnlyResponse;
+    const body = url.includes('dev-5')
+      ? inheritedFeatureResponse
+      : url.includes('dev-4')
+        ? allEnforcedResponse
+        : url.includes('dev-3')
+          ? warrantyResponse
+          : url.includes('dev-2')
+            ? mixedResponse
+            : baselineOnlyResponse;
     return { ok: true, status: 200, statusText: 'OK', json: async () => body };
   }),
 }));
@@ -141,5 +180,34 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
     expect(
       container.querySelector('a[href="/configuration-policies/breeze-defaults"]'),
     ).toBeNull();
+  });
+});
+
+// #5080: when a resolved feature's winning link came from an assigned
+// policy's PARENT (baseline) rather than the assigned policy's own link, the
+// tab shows that provenance in addition to the existing source-policy line.
+describe('DeviceEffectiveConfigTab inherited-from provenance (#5080)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('shows "Inherited from <parent>" when a feature carries inheritedFromPolicyId', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-5" />);
+
+    const inheritedFrom = await screen.findByTestId('effective-config-inherited-from');
+    expect(inheritedFrom).toHaveTextContent('MSP Baseline');
+  });
+
+  it('renders nothing for a feature with no inheritedFromPolicyId', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-5" />);
+
+    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    // Only one feature (patch) in this fixture carries provenance; backup does not.
+    expect(screen.getAllByTestId('effective-config-inherited-from')).toHaveLength(1);
+  });
+
+  it('renders no inherited-from line for the pre-W02 shape (field absent everywhere)', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-2" />);
+
+    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    expect(screen.queryByTestId('effective-config-inherited-from')).not.toBeInTheDocument();
   });
 });

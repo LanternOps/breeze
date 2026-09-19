@@ -212,6 +212,34 @@
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
     },
+    "lifecycleOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "includeManualAssets": "Elle girilen varlıkları dahil et",
+      "includeManualAssetsHelp": "Satın alma veya garanti tarihi olan manuel varlıklar ajanlı cihazların yanında görünür.",
+      "includeOtherEquipment": "Diğer ekipmanları listele",
+      "includeOtherEquipmentHelp": "Yazıcılar, ağ ve IoT donanımı değiştirme takvimi olmadan listelenir.",
+      "replaceAgeYears": "Değiştirmeyi planla (yıl sonra)",
+      "replaceAgeYearsHelp": "Bir cihaz satın alımdan bu kadar yıl sonra, veya daha geçse aktif garanti bittiğinde değiştirilmelidir.",
+      "serverReplaceAgeYears": "Sunucu değişimini planla (yıl sonra)",
+      "serverReplaceAgeYearsHelp": "Sunucular kendi zaman çizelgesini izler ve raporun ayrı bir bölümünde listelenir."
+    },
+    "vulnerabilityManagementOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "includeAccepted": "Kabul edilen riskleri ve istisnaları dahil et",
+      "includeAcceptedHelp": "Kabul edilen ve azaltılan bulguları listeler; kabulü sonraki dönemde sona erenleri işaretler.",
+      "severity": {
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "severityFloor": "Listelenecek en düşük önem derecesi",
+      "severityFloorHelp": "Bu önem derecesinin altındaki bulgular tablolara alınmaz. Etkin olarak sömürülen (KEV) veya EPSS değeri yüksek bir bulguyu asla gizlemez; bunlar her zaman sayılır ve listelenir.",
+      "topN": "Giderme listesi uzunluğu",
+      "topNHelp": "«Önce gider» tablosunun kaç yamalanabilir bulgu içereceği. Rapor, sessizce kesmek yerine kaç bulgunun dışarıda kaldığını belirtir."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Rapor Yapılandırması",
       "description": "Kaydetmeden tek seferlik bir rapor oluşturun.",
@@ -264,14 +292,47 @@
         "showing": "{{start}} ila {{end}} / {{total}} kayıt gösteriliyor"
       },
       "refresh": "Yenile",
+      "lifecycle": {
+        "dueSoon": "Yakında",
+        "onTrack": "Yolunda",
+        "otherEquipment": "Diğer ekipman",
+        "recommendations": "Önerimiz",
+        "replaceNow": "Şimdi değiştir",
+        "unknownAge": "Yaş bilinmiyor"
+      },
+      "vulnerabilityManagement": {
+        "critical": "Açık kritik",
+        "expiringExceptions": "Sonraki dönemde sona eren istisnalar",
+        "high": "Açık yüksek",
+        "highEpss": "Sömürülme olasılığı yüksek",
+        "knownExploited": "Etkin olarak sömürülen (KEV)",
+        "notMeasured": "Yok"
+      },
       "reportTypes": {
+        "ai_fleet_design": "Filo Tasarımı",
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+      },
+      "threatDetection": {
+        "agents": "Tespit aracısı olan uç noktalar",
+        "breezeDevices": "Breeze'in yönettiği cihazlar",
+        "carriedIn": "Devreden, hâlâ açık",
+        "coverage": "Bu raporun sınırları",
+        "devicesWithoutAgent": "Aracısı olmayan yönetilen cihazlar",
+        "notMeasured": "Yok",
+        "opened": "Bildirilen tespitler",
+        "resolved": "Çözülen tespitler"
       },
       "tryAgain": "Tekrar deneyin",
       "values": {
@@ -281,6 +342,26 @@
       "viewModes": {
         "chart": "Grafik",
         "table": "Masa"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Kaydı olmayan Breeze cihazları",
+        "dataGaps": "Ölçemediklerimiz",
+        "intuneDevices": "Intune'a kayıtlı",
+        "intuneWithoutBreezeLink": "Eşleşmemiş Intune kayıtları",
+        "noncompliant": "Uyumlu değil",
+        "notMeasured": "Yok",
+        "staleEnrolments": "Eskimiş kayıtlar"
+      },
+      "identityAccess": {
+        "notMeasured": "Yok",
+        "coverage": "Bu raporun sınırları",
+        "signins": "Etkileşimli oturum açmalar",
+        "distinctUsers": "Oturum açan hesaplar",
+        "failures": "Başarısız oturum açmalar",
+        "admins": "Yönetici rolü olan hesaplar",
+        "adminsWithoutMfa": "MFA’sı olmayan yöneticiler",
+        "mfaUnknown": "MFA durumu bilinmiyor",
+        "dormant": "Atıl hesaplar"
       }
     },
     "reportsList": {
@@ -290,6 +371,10 @@
         "generateNow": "Şimdi oluştur"
       },
       "adhocReport": "Özel Rapor",
+      "aiNarrative": {
+        "managedBySchedule": "Yapay zeka programı tarafından yönetiliyor",
+        "openLatest": "En sonuncuyu aç"
+      },
       "confirmDelete": "\"{{name}}\" öğesini silmek istediğinizden emin misiniz?",
       "createReport": "Rapor Oluştur",
       "description": "Altyapınız için raporlar oluşturun ve planlayın.",
@@ -304,7 +389,8 @@
         "downloadFailed": "İndirme başarısız oldu",
         "fetchReports": "Raporlar getirilemedi",
         "generateReport": "Rapor oluşturulamadı",
-        "generic": "Bir hata oluştu"
+        "generic": "Bir hata oluştu",
+        "noCompletedRun": "Açılacak tamamlanmış anlatı henüz yok"
       },
       "formats": {
         "csv": "CSV",
@@ -313,16 +399,27 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "success": {
+        "generated": "\"{{name}}\" raporu oluşturuldu."
+      },
+      "visibleInPortal": "Müşteri portalında görünür",
       "newReport": "Yeni Rapor",
       "nextOccurrence": "Sonraki: {{next}}",
       "reportTypes": {
+        "ai_fleet_design": "Filo Tasarımı",
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -693,6 +790,18 @@
         "templateName": "Üç Aylık Uyumluluk Paketi",
         "value": "Değer"
       },
+      "recipients": {
+        "contacts": "Kuruluş kişileri",
+        "legacy": "Eski e-posta adresleri",
+        "convert": "Kişiye dönüştür",
+        "added": "Rapor alıcısı eklendi",
+        "removed": "Rapor alıcısı kaldırıldı",
+        "converted": "E-posta adresi kişiye dönüştürüldü",
+        "updateFailed": "Rapor alıcıları güncellenemedi",
+        "convertFailed": "Bu e-posta adresi dönüştürülemedi",
+        "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.",
+        "loadFailed": "Rapor alıcıları yüklenemedi"
+      },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
       },
@@ -770,6 +879,10 @@
         }
       },
       "selectedFields": "Seçilen alanlar",
+      "success": {
+        "created": "\"{{name}}\" raporu kaydedildi.",
+        "updated": "\"{{name}}\" raporu güncellendi."
+      },
       "values": {
         "enabled": "Etkin",
         "off": "Kapalı",
@@ -805,16 +918,23 @@
       "previewAlt": "{{name}} önizleme",
       "reportTypes": {
         "activity": "Etkinlik",
+        "ai_fleet_design": "Filo Tasarımı",
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "alerts": "Uyarılar",
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
         "devices": "Cihazlar",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "schedules": {
         "daily": "Günlük",
@@ -837,10 +957,6 @@
           "description": "En önemli uyarılar, önem derecesi eğilimleri ve yanıt iş yükü.",
           "name": "Uyarı Özeti Raporu"
         },
-        "billing_usage": {
-          "description": "Lisans kullanımı, kullanım katmanları ve ters ibraz özetleri.",
-          "name": "Faturalandırma/Kullanım Raporu"
-        },
         "device_health": {
           "description": "Cihaz durumu puanlamasıyla CPU, bellek ve çalışma süresi eğilimleri.",
           "name": "Cihaz Sağlık Raporu"
@@ -849,26 +965,65 @@
           "description": "Liderliğe yönelik üst düzey KPI'lar, risk duruşu ve stratejik eğilimler.",
           "name": "Yönetici Özeti"
         },
-        "patch_compliance": {
-          "description": "Yama kapsamı, gecikmiş güncellemeler ve düzeltme durumu.",
-          "name": "Yama Uyumluluk Raporu"
+        "hardware_lifecycle": {
+          "description": "Müşteriye hazır cihaz değiştirme planı: yaş, garanti, değiştirme tarihleri ve işletim sistemi destek durumu, aşamalı bir öneriyle.",
+          "name": "Donanım Yaşam Döngüsü Raporu"
+        },
+        "vulnerability_management": {
+          "description": "Önem derecesine göre açık bulgular; etkin olarak sömürülenler (KEV) ve EPSS değeri yüksek olanlar ayrıca belirtilir, önce giderilecek yamalanabilir bulgular ve sonraki dönemde süresi dolan kabul edilmiş risk istisnaları listelenir.",
+          "name": "Güvenlik Açığı Yönetimi Raporu"
+        },
+        "identity_access_review": {
+          "name": "Kimlik ve Erişim İncelemesi",
+          "description": "Bir döneme ait etkileşimli Microsoft 365 oturum açmaları; kimlik envanteri, atıl hesaplar, koşullu erişim durumu ve uzaktan erişim istemcilerinin varlığıyla birlikte — gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir."
         },
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
           "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
         },
-        "sla_compliance": {
-          "description": "SLA uyum, ihlal riski ve yanıt zaman çizelgeleri.",
-          "name": "SLA Uyumluluk Raporu"
+        "threat_detection_review": {
+          "description": "Bir dönem için elde tutulan tehdit tespitleri; gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir — bağlı olmayan bir kaynak için asla sıfır yazılmaz.",
+          "name": "Tehdit Tespiti İncelemesi"
         },
-        "technician_activity": {
-          "description": "Bilet hacmi, cihaz dokunuşları ve çözünürlük hızı.",
-          "name": "Teknisyen Faaliyet Raporu"
+        "endpoint_management_review": {
+          "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
+          "name": "Intune Uç Nokta Yönetimi İncelemesi"
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
       "useTemplateTitle": "{{name}} kullanın"
+    },
+    "threatDetectionOptions": {
+      "cancel": "İptal",
+      "coverageNote": "Rapor, gerçekte kapsadığı zaman aralığını yazar. Tespit kaynağı dönemin bir bölümünde bağlı değilse, sıfır bildirmek yerine bunu açıkça belirtir.",
+      "createReport": "Rapor oluştur",
+      "includeCarriedIn": "Devreden tespitleri dahil et",
+      "includeCarriedInHelp": "Bu dönemden önce açılmış ve hâlâ çözülmemiş tespitler, dönemin kendi tespitleriyle birlikte listelenir.",
+      "topIncidents": "En fazla listele (tespit)",
+      "topIncidentsHelp": "Yoğun bir ayın yüz sayfalık PDF üretmemesi için tespit tablosunu sınırlar. Rapor, sessizce kesmek yerine kaç tanesinin dışarıda bırakıldığını belirtir."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Vazgeç",
+      "createReport": "Rapor oluştur",
+      "includeLicences": "Lisans koltuklarını dahil et",
+      "includeLicencesHelp": "Her Microsoft 365 ürünü için kullanılan koltukları satın alınan koltuklarla karşılaştırarak gösterir.",
+      "staleEnrolmentDays": "Şu kadar gündür sessiz kayıtları işaretle (gün)",
+      "staleEnrolmentDaysHelp": "Bu kadar gündür Intune ile iletişim kurmayan bir cihaz eskimiş kayıt sayılır. Ölçüt, rapor dönemi değil Intune eşitleme sıklığıdır.",
+      "trendDays": "Uyumluluk eğilimi penceresi (gün)",
+      "trendDaysHelp": "Günlük uyumluluk eğiliminin Microsoft 365 durum özetlerinde ne kadar geriye gittiği."
+    },
+    "identityAccessOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "orgWideNote": "Bu rapor kuruluşun tamamını kapsar. Microsoft 365 kimlik verisinde lokasyon boyutu yoktur; bu nedenle belirli lokasyonlara daraltılamaz ve yalnızca belirli lokasyonlara yetkili bir hesap bu raporu hiç üretemez.",
+      "dormantDays": "Hesabı atıl say (gün)",
+      "dormantDaysHelp": "Bu kadar gün içinde kayıtlı başarılı oturum açması bulunmayan etkin hesaplar listelenir. Hiç oturum açarken görülmemiş bir hesap “hiç gözlenmedi” olarak geçer; bu, uzun bir aradan farklıdır.",
+      "homeCountries": "Beklenen oturum açma ülkeleri (ISO kodları)",
+      "homeCountriesHelp": "Virgülle ayrılmış iki harfli ülke kodları; örneğin US, CA. Listenin dışından yapılan oturum açmalar sayılır. Alan boş bırakılırsa bölüm “yapılandırılmadı” der, asla “yurt dışından oturum açma yok” demez.",
+      "adminDetail": "Yönetici oturum açma ayrıntısını dahil et",
+      "adminDetailHelp": "Yönetici rolü taşıyan bir hesabın her etkileşimli oturum açmasını, geldiği adres dahil listeler. Denetçinin ilk okuduğu bölüm budur.",
+      "coverageNote": "Rapor yalnızca etkileşimli oturum açmaları kapsar ve gerçekte kapsadığı aralığı yazar. Microsoft oturum açma günlüklerini yaklaşık 30 gün saklar ve bunları vermek için Entra ID P1 veya P2 lisansı ister; bu nedenle toplama açıldıktan sonraki ilk rapor eksiktir ve bunu açıkça belirtir."
     }
   }
 }

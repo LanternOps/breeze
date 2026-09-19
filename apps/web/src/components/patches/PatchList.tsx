@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { usePatchSelection } from './usePatchSelection';
 
-export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
+export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low' | 'unrated';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
 
 export type Patch = {
@@ -42,6 +42,10 @@ type PatchListProps = {
   onReview?: (patch: Patch) => void;
   onDeploy?: (patch: Patch) => void;
   onView?: (patch: Patch) => void;
+  /** Unapprove/decline a single already-approved row (#5585) — opens the
+   * approval modal preselected on 'decline', distinct from onReview (which
+   * opens on 'approve' and is only offered for non-approved rows). */
+  onUnapprove?: (patch: Patch) => void;
   onBulkApprove?: (patchIds: string[]) => Promise<void>;
   onBulkDecline?: (patchIds: string[]) => Promise<void>;
   /** Initial rows-per-page; user can change it via the page-size selector. */
@@ -55,7 +59,8 @@ const severityConfig: Record<PatchSeverity, { labelKey: string; color: string }>
   critical: { labelKey: 'patchList.severity.critical', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
   important: { labelKey: 'patchList.severity.important', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
   moderate: { labelKey: 'patchList.severity.moderate', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  low: { labelKey: 'patchList.severity.low', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' }
+  low: { labelKey: 'patchList.severity.low', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  unrated: { labelKey: 'patchList.severity.unrated', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 const approvalConfig: Record<PatchApprovalStatus, { labelKey: string; color: string; icon: typeof CheckCircle }> = {
@@ -98,7 +103,8 @@ const severityRank: Record<PatchSeverity, number> = {
   critical: 0,
   important: 1,
   moderate: 2,
-  low: 3
+  low: 3,
+  unrated: 4
 };
 
 const approvalRank: Record<PatchApprovalStatus, number> = {
@@ -133,6 +139,7 @@ export default function PatchList({
   onReview,
   onDeploy,
   onView,
+  onUnapprove,
   onBulkApprove,
   onBulkDecline,
   initialPageSize = DEFAULT_PAGE_SIZE,
@@ -230,8 +237,19 @@ export default function PatchList({
     [patches, selectedIds]
   );
 
-  const selectedPendingIds = useMemo(
+  // Approve only makes sense for a not-yet-decided row (approving an already
+  // approved/declined row is a no-op the API doesn't need a bulk path for).
+  const selectedApprovableIds = useMemo(
     () => selectedPatches.filter(p => p.approvalStatus !== 'approved' && p.approvalStatus !== 'declined').map(p => p.id),
+    [selectedPatches]
+  );
+
+  // Decline is meaningful for anything not already declined — INCLUDING
+  // approved rows (#5585: bulk decline used to exclude them entirely, which
+  // was the whole bug: there was no way to unapprove more than one patch at
+  // a time from the UI).
+  const selectedDeclinableIds = useMemo(
+    () => selectedPatches.filter(p => p.approvalStatus !== 'declined').map(p => p.id),
     [selectedPatches]
   );
 
@@ -243,32 +261,32 @@ export default function PatchList({
   const [bulkError, setBulkError] = useState<string>();
 
   const handleBulkApprove = useCallback(async () => {
-    if (!onBulkApprove || selectedPendingIds.length === 0) return;
+    if (!onBulkApprove || selectedApprovableIds.length === 0) return;
     setBulkLoading(true);
     setBulkError(undefined);
     try {
-      await onBulkApprove(selectedPendingIds);
+      await onBulkApprove(selectedApprovableIds);
       clearSelection();
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : t('patchList.errors.approvePatches'));
     } finally {
       setBulkLoading(false);
     }
-  }, [onBulkApprove, selectedPendingIds, clearSelection, t]);
+  }, [onBulkApprove, selectedApprovableIds, clearSelection, t]);
 
   const handleBulkDecline = useCallback(async () => {
-    if (!onBulkDecline || selectedPendingIds.length === 0) return;
+    if (!onBulkDecline || selectedDeclinableIds.length === 0) return;
     setBulkLoading(true);
     setBulkError(undefined);
     try {
-      await onBulkDecline(selectedPendingIds);
+      await onBulkDecline(selectedDeclinableIds);
       clearSelection();
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : t('patchList.errors.declinePatches'));
     } finally {
       setBulkLoading(false);
     }
-  }, [onBulkDecline, selectedPendingIds, clearSelection, t]);
+  }, [onBulkDecline, selectedDeclinableIds, clearSelection, t]);
 
   // Row pieces shared by the desktop table and the mobile cards so the two
   // surfaces can't drift.
@@ -315,8 +333,13 @@ export default function PatchList({
   const renderSeverityBadge = (patch: Patch) => {
     const severity = severityConfig[patch.severity];
     return (
-      <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
-        {t(/* i18n-dynamic */ severity.labelKey)}
+      <span className="inline-flex flex-col gap-0.5">
+        <span className={cn('inline-flex w-fit items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
+          {t(/* i18n-dynamic */ severity.labelKey)}
+        </span>
+        {patch.severity === 'unrated' && (
+          <span className="text-[10px] text-muted-foreground">{t('patchList.severity.unratedNote')}</span>
+        )}
       </span>
     );
   };
@@ -335,15 +358,28 @@ export default function PatchList({
   const renderRowActions = (patch: Patch) => (
     <div className="flex items-center justify-end gap-2">
       {patch.approvalStatus === 'approved' ? (
-        <button
-          type="button"
-          onClick={() => onDeploy?.(patch)}
-          data-testid={`patch-row-${patch.id}-deploy`}
-          className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
-        >
-          <Download className="h-3.5 w-3.5" />
-          {t('patchList.actions.deploy')}
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => onDeploy?.(patch)}
+            data-testid={`patch-row-${patch.id}-deploy`}
+            className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {t('patchList.actions.deploy')}
+          </button>
+          {onUnapprove && (
+            <button
+              type="button"
+              onClick={() => onUnapprove(patch)}
+              data-testid={`patch-row-${patch.id}-unapprove`}
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10"
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              {t('patchList.actions.unapprove')}
+            </button>
+          )}
+        </>
       ) : (
         <button
           type="button"
@@ -402,6 +438,7 @@ export default function PatchList({
             <option value="important">{t('patchList.severity.important')}</option>
             <option value="moderate">{t('patchList.severity.moderate')}</option>
             <option value="low">{t('patchList.severity.low')}</option>
+            <option value="unrated">{t('patchList.severity.unrated')}</option>
           </select>
           <select
             value={statusFilter}
@@ -492,7 +529,7 @@ export default function PatchList({
             </button>
           )}
           <div className="h-4 w-px bg-border" />
-          {onBulkApprove && selectedPendingIds.length > 0 && (
+          {onBulkApprove && selectedApprovableIds.length > 0 && (
             <button
               type="button"
               onClick={handleBulkApprove}
@@ -501,10 +538,10 @@ export default function PatchList({
               className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
-              {t('patchList.actions.approveCount', { count: selectedPendingIds.length })}
+              {t('patchList.actions.approveCount', { count: selectedApprovableIds.length })}
             </button>
           )}
-          {onBulkDecline && selectedPendingIds.length > 0 && (
+          {onBulkDecline && selectedDeclinableIds.length > 0 && (
             <button
               type="button"
               onClick={handleBulkDecline}
@@ -513,7 +550,7 @@ export default function PatchList({
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:opacity-50"
             >
               {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
-              {t('patchList.actions.declineCount', { count: selectedPendingIds.length })}
+              {t('patchList.actions.declineCount', { count: selectedDeclinableIds.length })}
             </button>
           )}
           {onDeploy && selectedApprovedIds.length > 0 && (

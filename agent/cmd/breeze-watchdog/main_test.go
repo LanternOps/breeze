@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/watchdog"
 )
 
@@ -322,5 +324,82 @@ func TestStopRunCancelsForwardersWithoutTriggerLabel(t *testing.T) {
 	}
 	if got := shutdownTrigger(context.Cause(runCtx)); got != "unknown" {
 		t.Fatalf("trigger = %q, want \"unknown\"", got)
+	}
+}
+
+// stubIPCProber always reports a failed ping, so a driven series of CheckIPC
+// calls reliably crosses the (unexported, package-watchdog) ipcFailThreshold
+// and either escalates to CheckIPCFailed or gets vetoed, depending on whether
+// a recent state_sync reported an active backup run.
+type stubIPCProber struct{}
+
+func (stubIPCProber) Ping() (bool, error) { return false, errors.New("stub: ipc unreachable") }
+
+// TestHandleIPCMessage_StateSyncThreadsActiveBackupRunsIntoHealthVeto pins the
+// production wiring at cmd/breeze-watchdog/main.go:~996, where a decoded
+// state_sync IPC message calls health.NoteStateSync(hb, sync.ActiveBackupRuns).
+// D3 depends on ActiveBackupRuns actually reaching the health checker: without
+// it, CheckIPC has no way to know a backup is in flight and escalates a
+// transient IPC hiccup mid-run into a helper-killing restart (see the D3
+// comment above handleIPCMessage's TypeStateSync case, and
+// internal/watchdog/checks_test.go's TestCheckIPCVetoedWhileBackupInFlightWithFreshSync).
+func TestHandleIPCMessage_StateSyncThreadsActiveBackupRunsIntoHealthVeto(t *testing.T) {
+	// ipcFailThreshold in internal/watchdog/checks.go is 3. It is unexported,
+	// so this package (main) mirrors the value rather than referencing it —
+	// see TestCheckIPCVetoedWhileBackupInFlightWithFreshSync in checks_test.go
+	// for the same loop shape against the real constant.
+	const ipcFailThreshold = 3
+
+	tests := []struct {
+		name         string
+		activeRuns   int
+		expectVetoed bool
+	}{
+		{name: "active backup run vetoes the escalation", activeRuns: 1, expectVetoed: true},
+		{name: "no active backup run does not veto", activeRuns: 0, expectVetoed: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			journal, err := watchdog.NewJournal(t.TempDir(), 10, 3)
+			if err != nil {
+				t.Fatalf("new journal: %v", err)
+			}
+			defer func() { _ = journal.Close() }()
+
+			health := watchdog.NewHealthChecker(nil, stubIPCProber{}, 3*time.Minute)
+			health.SetIPCProbeInterval(50 * time.Millisecond)
+
+			wd := watchdog.NewWatchdog(watchdog.Config{})
+			cfg := &config.Config{AgentID: "test-agent"}
+			tokens := &tokenHolder{}
+
+			sync := ipc.StateSync{
+				LastHeartbeat:    time.Now().Format(time.RFC3339),
+				ActiveBackupRuns: tc.activeRuns,
+			}
+			payload, err := json.Marshal(sync)
+			if err != nil {
+				t.Fatalf("marshal state_sync payload: %v", err)
+			}
+			env := &ipc.Envelope{ID: "state-sync-test", Type: ipc.TypeStateSync, Payload: payload}
+
+			handleIPCMessage(env, wd, journal, cfg, tokens, health)
+
+			var last string
+			for i := 0; i < ipcFailThreshold; i++ {
+				last = health.CheckIPC()
+			}
+
+			if got := health.LastIPCCheckVetoed(); got != tc.expectVetoed {
+				t.Fatalf("LastIPCCheckVetoed() = %v, want %v (last CheckIPC result %q)", got, tc.expectVetoed, last)
+			}
+			if tc.expectVetoed && last != watchdog.CheckIPCDegraded {
+				t.Fatalf("expected the veto to hold escalation at %q, got %q", watchdog.CheckIPCDegraded, last)
+			}
+			if !tc.expectVetoed && last != watchdog.CheckIPCFailed {
+				t.Fatalf("expected escalation to %q with no active backup run, got %q", watchdog.CheckIPCFailed, last)
+			}
+		})
 	}
 }

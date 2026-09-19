@@ -1,5 +1,10 @@
 import { defineMiddleware } from 'astro:middleware';
 import { resolveConnectSrcDirective, resolveFrameSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
+import { LOCALE_COOKIE_NAME } from './lib/appearance';
+import { resolveLocaleFromCookie, resolveServerLocale } from './lib/i18n/serverLocale';
+
+/** Re-exported for direct unit testing alongside the CSP helpers below. */
+export { resolveLocaleFromCookie };
 
 function readFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -116,7 +121,15 @@ export function relaxExistingCsp(
   return directives.join('; ');
 }
 
-export const onRequest = defineMiddleware(async (_context, next) => {
+export const onRequest = defineMiddleware(async (context, next) => {
+  // Explicit cookie wins; Accept-Language is a per-request fallback only — it
+  // is never written back into the cookie (that would let browser detection
+  // masquerade as a stored choice). See lib/i18n/serverLocale.ts.
+  context.locals.locale = resolveServerLocale({
+    cookieValue: context.cookies.get(LOCALE_COOKIE_NAME)?.value,
+    acceptLanguage: context.request.headers.get('accept-language'),
+  });
+
   const response = await next();
   const headers = new Headers(response.headers);
   const strictDevCsp = import.meta.env.DEV && readFlag('CSP_STRICT_DEV');

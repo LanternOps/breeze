@@ -38,15 +38,15 @@ This is distinct from the fleet event log system (which collects Windows Event L
 | Component | What It Logs |
 |---|---|
 | `heartbeat` | Heartbeat send/receive, metric collection, cert renewal |
-| `commands` | Command dispatch, execution, result reporting |
+| `executor` | Script/command execution, timeouts, cancellation, result reporting |
 | `patching` | Patch scan, download, install, reboot handling |
-| `enrollment` | Enrollment attempts, token exchange, config persistence |
-| `discovery` | Network scan execution, host detection, result shipping |
+| `enroll` | Enrollment attempts, token exchange, config persistence |
+| `websocket` | Command channel connect, reconnect, message parsing |
 | `terminal` | PTY allocation, resize, data relay |
-| `desktop` | Remote desktop session lifecycle, WebRTC signaling |
+| `desktop.proxy` | Remote desktop capture proxy lifecycle |
 | `updater` | Self-update checks, downloads, binary replacement |
 | `mtls` | Certificate loading, renewal, TLS configuration |
-| `logging` | Log shipper lifecycle, buffer management |
+| `monitoring` | Monitor config apply, check intervals, auto-restart of watched services |
 
 ---
 
@@ -98,7 +98,7 @@ The `Shipper` intercepts all log entries via a custom `slog.Handler` wrapper (`s
 </Steps>
 
 <Aside type="note">
-  The minimum shipping level is configurable at runtime via `SetShipperLevel()`. By default, it ships entries at `info` level and above. You can dynamically lower it to `debug` for a specific device to capture verbose diagnostics without restarting the agent.
+  The minimum shipping level is configurable at runtime via `SetShipperLevel()`. By default, it ships entries at `warn` level and above. You can dynamically lower it to `debug` or `info` for a specific device to capture verbose diagnostics without restarting the agent.
 </Aside>
 
 ---
@@ -216,41 +216,6 @@ curl "/api/v1/devices/:deviceId/diagnostic-logs?level=warn,error&component=patch
 
 ---
 
-## Fleet-Wide Log Search
-
-For searching logs across multiple devices and organizations, use the fleet log search endpoint:
-
-```bash
-curl -X POST /api/v1/logs/search \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "patch installation failed",
-    "timeRange": {
-      "start": "2026-02-01T00:00:00Z",
-      "end": "2026-02-28T23:59:59Z"
-    },
-    "level": ["error", "critical"],
-    "category": ["system"],
-    "deviceIds": ["UUID1", "UUID2"],
-    "limit": 100,
-    "sortBy": "timestamp",
-    "sortOrder": "desc"
-  }'
-```
-
-### Additional Fleet Log Features
-
-| Feature | Endpoint | Description |
-|---|---|---|
-| Aggregation | `GET /api/v1/logs/aggregation` | Time-bucketed counts grouped by level, category, source, or device |
-| Trends | `GET /api/v1/logs/trends` | Top error patterns and trending log sources |
-| Correlation detection | `POST /api/v1/logs/correlation/detect` | Find patterns appearing across multiple devices |
-| Correlation list | `GET /api/v1/logs/correlation` | List detected correlations with status |
-| Saved queries | `GET/POST/DELETE /api/v1/logs/queries` | Save and reuse common search filters |
-
----
-
 ## Dropped Log Monitoring
 
 When the agent's buffer is full (500 entries), new log entries are dropped. The agent tracks dropped entries and reports the count in each heartbeat. After a successful heartbeat, the counter resets to zero.
@@ -279,20 +244,9 @@ To mitigate, increase the shipping level to `warn` or `error`, or investigate th
 |---|---|---|
 | `GET` | `/api/v1/devices/:id/diagnostic-logs` | Query diagnostic logs for a specific device |
 
-### Fleet Log Search
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/v1/logs/search` | Search logs across the fleet with filters |
-| `GET` | `/api/v1/logs/aggregation` | Time-bucketed log aggregation |
-| `GET` | `/api/v1/logs/trends` | Trending log patterns |
-| `POST` | `/api/v1/logs/correlation/detect` | Detect cross-device log correlations |
-| `GET` | `/api/v1/logs/correlation/detect/:jobId` | Check status of an async correlation detection job |
-| `GET` | `/api/v1/logs/correlation` | List detected correlations |
-| `GET` | `/api/v1/logs/queries` | List saved log search queries |
-| `POST` | `/api/v1/logs/queries` | Create a saved log search query |
-| `GET` | `/api/v1/logs/queries/:id` | Get a saved query by ID |
-| `DELETE` | `/api/v1/logs/queries/:id` | Delete a saved query |
+<Aside type="note">
+  Searching across multiple devices and organizations at once uses a separate fleet-wide search over managed-device **event logs** (Windows Event Log, syslog, application logs), not agent diagnostic logs. See [Fleet-Wide Log Search](/features/event-log-forwarding/#fleet-wide-log-search) in the Event Log Forwarding docs.
+</Aside>
 
 ---
 
@@ -301,8 +255,8 @@ To mitigate, increase the shipping level to `warn` or `error`, or investigate th
 **Logs not appearing for a device**
 Verify the agent is enrolled and the log shipper is initialized. The shipper starts after enrollment when the agent has a valid server URL, agent ID, and auth token. Check the agent's local stdout for `[log-shipper]` messages indicating shipping errors.
 
-**Only seeing info-level and above**
-The default minimum shipping level is `info`. To capture `debug` entries, dynamically adjust the shipping level via the agent's configuration or use `SetShipperLevel("debug")`. Note that debug-level logging significantly increases volume and may cause buffer drops.
+**Only seeing warn-level and above**
+The default minimum shipping level is `warn`. To capture `info` or `debug` entries, dynamically adjust the shipping level via the agent's configuration or use `SetShipperLevel("debug")`. Note that debug-level logging significantly increases volume and may cause buffer drops.
 
 **Logs delayed by up to 60 seconds**
 This is expected. The shipper flushes every 60 seconds or when the buffer reaches 500 entries, whichever comes first. For time-critical debugging, lower the minimum level to produce more entries and trigger faster flushes.

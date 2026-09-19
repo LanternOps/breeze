@@ -1,10 +1,10 @@
 import { config } from 'dotenv';
 // Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env' });
-config(); // Also try cwd
+config({ path: '../../.env', quiet: true });
+config({ quiet: true }); // Also try cwd
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
@@ -13,6 +13,23 @@ import {
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
+import {
+  formatUnsafeRequestDatabaseRoleMessage,
+  REQUEST_DATABASE_ROLE_REMEDIATION,
+  unsafeRequestDatabaseRoleCapabilities,
+  type RequestDatabaseRole,
+} from './requestDatabaseRoleSafety';
+import { PG_UUID_REGEX } from '../utils/uuid';
+import {
+  getDbAccessContextPrologueTimeoutMs,
+  withPrologueDeadline,
+  type PrologueDeadline,
+} from './prologueDeadline';
+import { requestWedgedBackendReclaim } from './wedgedBackends';
+import {
+  claimDbPoolHealthCaptureSlot,
+  getDbPoolHealthCaptureThrottleMs,
+} from './dbPoolHealthMonitor';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
@@ -44,17 +61,14 @@ const client = postgres(requestDatabaseConfig.url, {
   // values are pinned together by a contract test in that classifier's suite,
   // so they cannot drift silently.
   connect_timeout: 10,
+  // Names the request pool in `pg_stat_activity`. Not decoration: #6048 was
+  // diagnosed by hand from that view, and without this every backend — request
+  // pool, health probe, reclaimer, psql — looked alike. The health probe and the
+  // wedged-backend side clients set their own names for the same reason.
+  connection: { application_name: 'breeze-api' },
 });
 
-export interface RequestDatabaseRole {
-  currentUser: string;
-  isSuperuser: boolean;
-  bypassesRls: boolean;
-}
-
-const REQUEST_DATABASE_ROLE_REMEDIATION =
-  'Set DATABASE_URL_APP to a NOSUPERUSER NOBYPASSRLS role, or configure ' +
-  'BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD so Breeze can derive the breeze_app URL.';
+export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
 
 /**
  * Reads the effective role from the exact module-scope postgres.js client that
@@ -91,16 +105,10 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
 
 export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRole> {
   const role = await getRequestDatabaseRole();
-  const unsafeCapabilities: string[] = [];
-  if (role.isSuperuser) unsafeCapabilities.push('SUPERUSER');
-  if (role.bypassesRls) unsafeCapabilities.push('BYPASSRLS');
+  const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length > 0) {
-    throw new Error(
-      `[database] Unsafe effective request database role "${role.currentUser}": ` +
-        `${unsafeCapabilities.join(' and ')}. Request handlers require a ` +
-        `NOSUPERUSER NOBYPASSRLS role. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
-    );
+    throw new Error(formatUnsafeRequestDatabaseRoleMessage(role, unsafeCapabilities));
   }
 
   return role;
@@ -283,6 +291,7 @@ const DB_CONTEXT_WRAPPER_FUNCTIONS = new Set([
   'withDbAccessContext',
   'withSystemDbAccessContext',
   'withResolvedDbAccessContext',
+  'withArchivedOrgReadContext',
 ]);
 
 export interface HeldContextOpenerFrame {
@@ -433,6 +442,203 @@ export function formatHeldContextWarning(input: {
   };
 }
 
+/**
+ * Anything with drizzle's `.execute(sql`…`)` shape — the module-scope `db`, a
+ * `db.transaction` handle, or the resolved `getCurrentDb()`. Lets the GUC
+ * writer below be shared by every context opener instead of each one keeping
+ * its own copy of the six `set_config` calls.
+ */
+interface GucExecutor {
+  execute: (query: SQL) => Promise<unknown>;
+}
+
+/**
+ * Write the six `breeze.*` RLS GUCs for `context` onto the CURRENT transaction
+ * (`set_config(..., true)` == SET LOCAL, so they unwind with it).
+ *
+ * Single source of truth for the GUC contract: `withDbAccessContext`,
+ * `withResolvedDbAccessContext` and `withArchivedOrgReadContext` all call this,
+ * so a new context opener cannot silently ship a partial context — the exact
+ * failure mode that turns "RLS denies" into "RLS returns zero rows".
+ */
+async function applyAccessContextGucs(
+  executor: GucExecutor,
+  context: DbAccessContext,
+  deadline?: PrologueDeadline,
+): Promise<void> {
+  const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
+  const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
+  const serializedUserId = context.userId ?? '';
+
+  // `deadline.throwIfAborted()` at EVERY statement boundary, not just the first.
+  // `Promise.race` does not cancel its loser (#6048): once the budget has
+  // expired the caller has already been given a typed error and the connection
+  // is being reclaimed, so a statement that finally resolved late must not be
+  // allowed to queue the remaining five onto a connection that is being torn
+  // down — or worse, has already been recycled to a different tenant's request.
+  const statements: SQL[] = [
+    sql`select set_config('breeze.scope', ${context.scope}, true)`,
+    sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`,
+    sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`,
+    sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`,
+    sql`select set_config('breeze.user_id', ${serializedUserId}, true)`,
+    sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`,
+  ];
+
+  for (const statement of statements) {
+    deadline?.throwIfAborted();
+    await executor.execute(statement);
+  }
+  deadline?.throwIfAborted();
+}
+
+/**
+ * Label for the #6048 prologue deadline. Low cardinality by construction: the
+ * opener's name plus the context scope, never an org/device id.
+ */
+function prologueLabel(opener: string, context: DbAccessContext): string {
+  return context.label ? `${opener}(${context.label})` : `${opener}(scope=${context.scope})`;
+}
+
+/**
+ * The expiry handler shared by every context opener. Logs the structured
+ * warning the issue asks for and kicks off a single-flight reclamation pass.
+ * Never awaited — recovery must not extend the caller's bounded latency.
+ */
+function onPrologueDeadlineExpired(expiry: {
+  contextLabel: string;
+  elapsedMs: number;
+  timeoutMs: number;
+}): void {
+  console.warn(
+    `[db-prologue-deadline] RLS GUC prologue for ${expiry.contextLabel} exceeded `
+      + `${expiry.timeoutMs}ms (elapsed ${expiry.elapsedMs}ms). The pooled connection has been `
+      + 'abandoned; requesting a wedged-backend reclamation pass (#6048). If this fires without a '
+      + 'matching [db-wedged-backend] termination, suspect event-loop starvation rather than a '
+      + 'wedged connection (#3022).',
+  );
+  const pass = requestWedgedBackendReclaim({
+    // The reclaimer must not consider a backend wedged on a shorter clock than
+    // the one that just expired, or a merely slow prologue elsewhere in the
+    // fleet becomes a termination candidate.
+    minAgeMs: expiry.timeoutMs,
+  });
+  if (pass === null) {
+    console.warn(
+      '[db-prologue-deadline] reclamation pass declined (disabled, or inside the retry floor). '
+        + 'The pool slot stays lost until the next accepted pass.',
+    );
+    return;
+  }
+  void pass
+    .then((outcome) => {
+      if (outcome.error) {
+        console.warn('[db-wedged-backend] reclamation pass failed:', outcome.error);
+        // Sentry too, not console only. The detector alerts that something is
+        // wedged; THIS alerts that we cannot clear it — and a repair path broken
+        // for days while the pool bleeds slots is the same invisible failure
+        // #6048 was filed for, one layer up. Throttled on its own key (a broken
+        // reclaimer fails on every expiry, and this repo has twice blacked out
+        // Sentry with an unthrottled recurring warning) and wrapped, because the
+        // reporter may be what is failing.
+        if (
+          claimDbPoolHealthCaptureSlot(
+            'wedged-backend-reclaim-failed',
+            Date.now(),
+            getDbPoolHealthCaptureThrottleMs(),
+          )
+        ) {
+          try {
+            // Stable headline, no interpolated error text: Sentry groups by
+            // message, and a varying message mints a fresh issue per occurrence.
+            captureMessage('[db-wedged-backend] reclamation pass failed (#6048)', {
+              eventCode: 'db_wedged_backend_reclaim_failed',
+              tags: { db_pool_health_verdict: 'wedged-backend-reclaim-failed' },
+            });
+          } catch (captureErr) {
+            console.error('[db-wedged-backend] failed to report reclaim failure to Sentry:', captureErr);
+          }
+        }
+        return;
+      }
+      console.warn(
+        `[db-wedged-backend] reclamation pass: scanned=${outcome.scanned} `
+          + `confirmed=${outcome.confirmed} terminated=[${outcome.terminated.join(',')}] `
+          + `cappedAt=${outcome.cappedAt ?? 'none'} in ${outcome.elapsedMs}ms.`,
+      );
+    })
+    .catch((err: unknown) => {
+      console.warn('[db-wedged-backend] reclamation pass threw unexpectedly:', err);
+    });
+}
+
+/**
+ * Run a context-opening transaction under the #6048 prologue deadline, with the
+ * shared expiry reporting. Thin on purpose: every opener must get the SAME
+ * bound, and a new one that forgets it would reintroduce the leak.
+ */
+function withContextPrologueDeadline<T>(
+  opener: string,
+  context: DbAccessContext,
+  work: (deadline: PrologueDeadline) => Promise<T>,
+): Promise<T> {
+  return withPrologueDeadline(prologueLabel(opener, context), work, {
+    onExpired: onPrologueDeadlineExpired,
+  });
+}
+
+/**
+ * #1105 hold tripwire, extracted so every context opener that pins a pooled
+ * connection reports the same way. Never throws: it exists to SURFACE problems
+ * and must not become one (it runs from a `finally`, where a throw would mask
+ * `fn`'s real return value or error).
+ */
+function reportHeldContextIfNeeded(input: {
+  scope: DbAccessScope;
+  label?: string;
+  opener: Error | undefined;
+  startedAt: number;
+  warnMs: number;
+}): void {
+  try {
+    if (input.warnMs <= 0) return;
+    const heldMs = Date.now() - input.startedAt;
+    if (heldMs < input.warnMs) return;
+
+    // Formatting the stack costs a `.stack` access, so it happens here —
+    // only once a hold has actually breached the threshold (#3218).
+    const openerFrame = parseOpenerFrame(input.opener?.stack);
+    const { message, consoleLine, tags } = formatHeldContextWarning({
+      scope: input.scope,
+      label: input.label,
+      openerFrame,
+      heldMs,
+      warnMs: input.warnMs,
+    });
+    console.warn(consoleLine);
+    // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
+    // so a recurring conn-hold can't flood the org's event quota.
+    if (shouldCaptureHeldContext(input.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
+      captureMessage(message, {
+        eventCode: 'db_context_held_too_long',
+        tags: Object.keys(tags).length > 0 ? tags : undefined,
+      });
+    }
+  } catch (instrumentationError) {
+    // Detection instrumentation must never alter fn's real result/error, so
+    // this stays broad. But it must not swallow itself into total silence
+    // either: #3218 exists because this warning was unattributable, and a
+    // future slip in the frame parsing above would otherwise make the whole
+    // warning vanish with no trace at all. Leave a breadcrumb, and guard
+    // even that — a throw from the reporter would defeat the purpose.
+    try {
+      console.warn('[db-context-hold-warning] instrumentation failed:', instrumentationError);
+    } catch {
+      // Truly last resort: console itself is unusable. Preserve fn's outcome.
+    }
+  }
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -462,75 +668,71 @@ export async function withDbAccessContext<T>(
   // serialization, and only when the tripwire is armed at all.
   const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
-  return baseDb.transaction(async (tx) => {
-    const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
-    const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
-    const serializedUserId = context.userId ?? '';
+  return withContextPrologueDeadline('withDbAccessContext', context, (deadline) =>
+    baseDb.transaction(async (tx) => {
+      await applyAccessContextGucs(tx as unknown as GucExecutor, context, deadline);
+      // Disarmed the instant the prologue lands: `fn` below is the caller's own
+      // work and must never be bounded by the prologue budget (#6048). A context
+      // held too long is a different fault, already reported by the #1105
+      // tripwire underneath.
+      deadline.disarm();
 
-    await tx.execute(sql`select set_config('breeze.scope', ${context.scope}, true)`);
-    await tx.execute(sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`);
-    await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
-    await tx.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
-    await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
-    await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
-
-    // Timed from HERE, not from function entry: the hold being measured is the
-    // one on a pooled connection, which only starts once the transaction owns
-    // one. Time spent waiting for the pool is a different problem.
-    const startedAt = warnMs > 0 ? Date.now() : 0;
-    try {
-      return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
-        dbContextMetaStorage.run(context, fn),
-      );
-    } finally {
-      // The whole point of this block is to SURFACE problems, so it must never
-      // BECOME one: any throw here (e.g. a Sentry transport hiccup) would, from
-      // a finally, mask fn's real return value or error. Swallow instrumentation
-      // failures so the transaction's true outcome always propagates unchanged.
+      // Timed from HERE, not from function entry: the hold being measured is the
+      // one on a pooled connection, which only starts once the transaction owns
+      // one. Time spent waiting for the pool is a different problem.
+      const startedAt = warnMs > 0 ? Date.now() : 0;
       try {
-        if (warnMs > 0) {
-          const heldMs = Date.now() - startedAt;
-          if (heldMs >= warnMs) {
-            // Formatting the stack costs a `.stack` access, so it happens here —
-            // only once a hold has actually breached the threshold (#3218).
-            const openerFrame = parseOpenerFrame(opener?.stack);
-            const { message, consoleLine, tags } = formatHeldContextWarning({
-              scope: context.scope,
-              label: context.label,
-              openerFrame,
-              heldMs,
-              warnMs,
-            });
-            console.warn(consoleLine);
-            // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
-            // so a recurring conn-hold can't flood the org's event quota.
-            if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
-              captureMessage(message, {
-                eventCode: 'db_context_held_too_long',
-                tags: Object.keys(tags).length > 0 ? tags : undefined,
-              });
-            }
-          }
-        }
-      } catch (instrumentationError) {
-        // Detection instrumentation must never alter fn's real result/error, so
-        // this stays broad. But it must not swallow itself into total silence
-        // either: #3218 exists because this warning was unattributable, and a
-        // future slip in the frame parsing above would otherwise make the whole
-        // warning vanish with no trace at all. Leave a breadcrumb, and guard
-        // even that — a throw from the reporter would defeat the purpose.
-        try {
-          console.warn('[db-context-hold-warning] instrumentation failed:', instrumentationError);
-        } catch {
-          // Truly last resort: console itself is unusable. Preserve fn's outcome.
-        }
+        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+          dbContextMetaStorage.run(context, fn),
+        );
+      } finally {
+        reportHeldContextIfNeeded({
+          scope: context.scope,
+          label: context.label,
+          opener,
+          startedAt,
+          warnMs,
+        });
       }
-    }
-  });
+    }),
+  );
 }
 
-export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promise<T> {
-  return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn);
+/**
+ * The shared system context, optionally carrying a diagnostic `label`.
+ *
+ * Exported as its own function so the blank-label rule has ONE home and a unit
+ * test can pin it: a whitespace-only label must fall through to the shared
+ * constant rather than being stored, because `formatHeldContextWarning` treats
+ * a blank explicit label as "unlabelled" and would then suppress neither the
+ * tag nor the derived fallback consistently. Returns the shared frozen-by-
+ * convention constant when there is no label, so the common case allocates
+ * nothing.
+ */
+export function systemDbAccessContext(label?: string): DbAccessContext {
+  const normalized = label?.trim();
+  return normalized ? { ...SYSTEM_DB_ACCESS_CONTEXT, label: normalized } : SYSTEM_DB_ACCESS_CONTEXT;
+}
+
+/**
+ * Open (or join) a system-scoped RLS context.
+ *
+ * `label` is the optional #3218/#4276 diagnostic name for the code path opening
+ * this context — e.g. `metricRollups.scanOrgs`. It grants nothing and never
+ * reaches Postgres; it only names the context in the #1105 held-connection
+ * warning (message text + `dbContextLabel` tag). Pass one whenever the opener
+ * is an anonymous arrow, which is every BullMQ worker handler: under the tsup
+ * single-file bundle `parseOpenerFrame` collapses all of them to a bare
+ * `index`, so without a label the hold arrives in Sentry unattributed.
+ *
+ * Keep labels low-cardinality — they become part of the grouped Sentry message,
+ * so one per code path, never one per org/device/job id.
+ *
+ * System scope has no other knobs by construction; a caller that needs to vary
+ * anything else about the context should use `withDbAccessContext` directly.
+ */
+export async function withSystemDbAccessContext<T>(fn: () => Promise<T>, label?: string): Promise<T> {
+  return withDbAccessContext(systemDbAccessContext(label), fn);
 }
 
 /**
@@ -548,22 +750,132 @@ export async function withResolvedDbAccessContext<T, R>(
   return withSystemDbAccessContext(async () => {
     const resolved = await resolve();
     const activeDb = getCurrentDb();
-    const serializedOrgIds = serializeAccessibleIds(
-      resolved.context.scope,
-      resolved.context.accessibleOrgIds,
+    // A SECOND prologue, on the connection the system-scope transaction already
+    // holds — so it gets its own #6048 bound. The reclaimer's predicate matches
+    // any `set_config` prologue, so a wedge here is recoverable the same way.
+    await withContextPrologueDeadline(
+      'withResolvedDbAccessContext',
+      resolved.context,
+      async (deadline) => {
+        await applyAccessContextGucs(activeDb as unknown as GucExecutor, resolved.context, deadline);
+        deadline.disarm();
+      },
     );
-    const serializedPartnerIds = serializeAccessibleIds(
-      resolved.context.scope,
-      resolved.context.accessiblePartnerIds,
-    );
-    await activeDb.execute(sql`select set_config('breeze.scope', ${resolved.context.scope}, true)`);
-    await activeDb.execute(sql`select set_config('breeze.org_id', ${resolved.context.orgId ?? ''}, true)`);
-    await activeDb.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
-    await activeDb.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
-    await activeDb.execute(sql`select set_config('breeze.user_id', ${resolved.context.userId ?? ''}, true)`);
-    await activeDb.execute(sql`select set_config('breeze.current_partner_id', ${resolved.context.currentPartnerId ?? ''}, true)`);
     return dbContextMetaStorage.run(resolved.context, () => fn(resolved.value));
   });
+}
+
+// `PG_UUID_REGEX` is the same shape `breeze_accessible_org_ids()` pre-validates
+// the GUC payload against (migrations/2026-05-18-a) — deliberately the
+// version/variant-agnostic pattern, not the RFC-4122-strict one, so a real org
+// id can never be rejected here. A single malformed id makes that helper return
+// `ARRAY[]::uuid[]` for the WHOLE list — every row then denies, silently and
+// uniformly. Callers pass ids that came out of the database, so a miss is a
+// programming error and deserves a throw, not a zero-row result.
+
+/**
+ * Read rows belonging to ARCHIVED organizations inside a Postgres `READ ONLY`
+ * transaction (org-lifecycle Wave 4 / spec Part 2, "Hidden + read-only").
+ *
+ * `archived` (and `purging`, `merging`) orgs are excluded from
+ * `computeAccessibleOrgIds` on purpose, so they are invisible to every normal
+ * request, worker, agent and RLS context. This is the ONE explicit door, and it
+ * is deliberately a narrow one:
+ *
+ * - **Read-onlyness is enforced by Postgres, not by middleware.** The
+ *   transaction opens `SET TRANSACTION READ ONLY` as its first statement, so
+ *   ANY write inside `fn` — through drizzle, raw SQL, a nested service call, a
+ *   trigger-invoked function — fails with SQLSTATE `25006`
+ *   (`read_only_sql_transaction`). App-layer 409s on archived orgs are additive
+ *   UX; this is the boundary.
+ * - **Deny-by-default is untouched.** The context grants exactly the org ids
+ *   passed in and nothing else: no partner-axis access (`accessiblePartnerIds`
+ *   stays null, so `breeze_has_partner_access` is false for every partner), no
+ *   user-id self-read, no partner-wide catalog read branch. Cross-partner rows
+ *   stay invisible because they are simply not in the id set. Callers MUST
+ *   resolve those ids from the caller's own verified partner id — never from
+ *   client input.
+ * - **It refuses to nest.** `withDbAccessContext` early-returns when a context
+ *   already exists, which is right for its purpose but would be a hole here:
+ *   the ambient transaction is read-WRITE, so nesting would quietly run an
+ *   "archived read" with none of the guarantees above. Wrap the call in
+ *   `runOutsideDbContext()` when a request context is already open (that opens
+ *   a second pooled connection while the first is held — keep `fn` short).
+ *
+ * Scope shape: `'partner'` with an explicit org allowlist, i.e. exactly the
+ * shape `authMiddleware` builds for a partner-scope request, minus the partner
+ * axis. That is deliberate — the RLS helpers only branch on `= 'system'`
+ * (`breeze_has_org_access` is pure allowlist membership otherwise), so a bespoke
+ * scope string would change nothing in Postgres while widening the
+ * `DbAccessScope` union across every ambient-scope check in the codebase. The
+ * path is identified by `label: 'archivedOrgRead'` instead, which is what the
+ * #1105 hold warning and its Sentry tag report on.
+ */
+export async function withArchivedOrgReadContext<T>(
+  orgIds: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (dbContextStorage.getStore() || dbContextMetaStorage.getStore()) {
+    throw new Error(
+      'withArchivedOrgReadContext cannot nest inside an existing DB access context: '
+        + 'the ambient transaction is read-write, so nesting would silently drop the '
+        + 'READ ONLY guarantee that IS the archived-read boundary. Wrap the call in '
+        + 'runOutsideDbContext() (it opens a second pooled connection — keep it short).',
+    );
+  }
+
+  const uniqueOrgIds = Array.from(new Set(orgIds));
+  const malformed = uniqueOrgIds.filter((id) => !PG_UUID_REGEX.test(id));
+  if (malformed.length > 0) {
+    throw new Error(
+      `withArchivedOrgReadContext received ${malformed.length} malformed org id(s); `
+        + 'breeze_accessible_org_ids() fails the whole list closed on any non-UUID, '
+        + 'which would return zero rows instead of erroring.',
+    );
+  }
+
+  const context: DbAccessContext = {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: uniqueOrgIds,
+    accessiblePartnerIds: null,
+    userId: null,
+    currentPartnerId: null,
+    label: 'archivedOrgRead',
+  };
+
+  const warnMs = getHeldContextWarnMs();
+  // Captured at entry, before any await — see withDbAccessContext for why.
+  const opener = warnMs > 0 ? new Error('withArchivedOrgReadContext opened here') : undefined;
+
+  return withContextPrologueDeadline('withArchivedOrgReadContext', context, (deadline) =>
+    baseDb.transaction(async (tx) => {
+      const executor = tx as unknown as GucExecutor;
+      // FIRST statement in the transaction. `SET TRANSACTION` may not follow a
+      // query or data-modification statement, so it has to precede even the
+      // `set_config` SELECTs below (which are themselves fine in a read-only
+      // transaction — a GUC write is not a data write).
+      deadline.throwIfAborted();
+      await executor.execute(sql`SET TRANSACTION READ ONLY`);
+      await applyAccessContextGucs(executor, context, deadline);
+      deadline.disarm();
+
+      const startedAt = warnMs > 0 ? Date.now() : 0;
+      try {
+        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+          dbContextMetaStorage.run(context, fn),
+        );
+      } finally {
+        reportHeldContextIfNeeded({
+          scope: context.scope,
+          label: context.label,
+          opener,
+          startedAt,
+          warnMs,
+        });
+      }
+    }),
+  );
 }
 
 /**
@@ -577,6 +889,27 @@ export async function withResolvedDbAccessContext<T, R>(
  */
 export function hasDbAccessContext(): boolean {
   return dbContextStorage.getStore() !== undefined;
+}
+
+/**
+ * Throw unless the caller is inside an active withDbAccessContext /
+ * withSystemDbAccessContext. Use at the top of a function that performs a
+ * multi-statement all-or-nothing write and does NOT open its own transaction,
+ * where a missing context means each write lands on the bare pool with no GUC —
+ * and forced RLS on breeze_app silently matches 0 rows (#1375), leaving a
+ * half-written document with no error.
+ *
+ * Note: __runInDbContextForTests satisfies this without a real transaction. That
+ * is deliberate and TEST ONLY (see its doc); production callers must use the
+ * context helpers, both of which open baseDb.transaction.
+ */
+export function assertInTransaction(label: string): void {
+  if (!hasDbAccessContext()) {
+    throw new Error(
+      `${label} must run inside withDbAccessContext / withSystemDbAccessContext — `
+      + 'without one every write lands on the bare pool with no RLS GUC and silently affects 0 rows',
+    );
+  }
 }
 
 /**
@@ -858,6 +1191,15 @@ export {
   closeAuditAdminPool,
   type AuditAdminDb,
 } from './auditAdminPool';
+
+// #6048 — the typed prologue-timeout error, re-exported so a caller that wants
+// to distinguish "our own GUC prologue budget expired" from a genuine driver
+// error has one import surface for the DB module.
+export {
+  DbAccessContextPrologueTimeoutError,
+  DbAccessContextPrologueAbortedError,
+  getDbAccessContextPrologueTimeoutMs,
+} from './prologueDeadline';
 
 import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
 

@@ -13,13 +13,15 @@ import * as dbModule from '../db';
 import {
   automations,
   configPolicyAutomations,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   devices,
   deviceGroupMemberships,
+  deviceGroups,
+  monitorDeviceState,
   organizations,
 } from '../db/schema';
-import { type BreezeEvent, getEventBus } from '../services/eventBus';
+import { type BreezeEvent } from '../services/eventBus';
 import {
   type AutomationTrigger,
   type AutomationTriggerContext,
@@ -33,6 +35,7 @@ import {
 import {
   scanScheduledAutomations,
   resolveAutomationsForDevice,
+  resolveAutomationsForDeviceWithPolicy,
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
   type ScheduledAutomationWithTarget,
@@ -42,17 +45,23 @@ import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { recordEpisodeResponse } from '../services/monitors/episodeService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+const runOutsideDbAccess = <T>(fn: () => T): T => {
+  const outside = dbModule.runOutsideDbContext;
+  return typeof outside === 'function' ? outside(fn) : fn();
+};
 
 /** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
 function isRelationNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const cause = (error as { cause?: { code?: string } }).cause;
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
   return cause?.code === '42P01';
 }
 
@@ -84,8 +93,6 @@ type AutomationJobData = AutomationQueueJobData;
 
 let automationQueue: Queue<AutomationJobData> | null = null;
 let automationWorker: Worker<AutomationJobData> | null = null;
-
-let eventSubscription: (() => void) | null = null;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -203,7 +210,12 @@ export function collectDueConfigPolicyScheduleDispatches(
       continue;
     }
 
-    let entry = grouped.get(cpAutomation.id);
+    // Keyed on (automation, ASSIGNED policy), not the automation alone (#5080).
+    // An inherited automation surfaces once per policy that effectively has it,
+    // and each of those runs under its own policy's ownership — collapsing them
+    // would run every child's devices under one arbitrary policy's org clamp.
+    const groupKey = `${cpAutomation.id}:${candidate.policyId}`;
+    let entry = grouped.get(groupKey);
     if (!entry) {
       entry = {
         configPolicyAutomationId: cpAutomation.id,
@@ -213,7 +225,7 @@ export function collectDueConfigPolicyScheduleDispatches(
         policyName: candidate.policyName,
         targetKeys: new Set<string>(),
       };
-      grouped.set(cpAutomation.id, entry);
+      grouped.set(groupKey, entry);
     }
 
     const targetKey = `${candidate.assignmentLevel}:${candidate.assignmentTargetId}`;
@@ -411,11 +423,15 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
           assignmentTargets: dispatch.assignmentTargets,
           policyId: dispatch.policyId,
           policyName: dispatch.policyName,
+          configPolicyId: dispatch.policyId,
           slotKey,
           scanAt: scanDate.toISOString(),
         },
         {
-          jobId: `cp-automation-schedule-${dispatch.configPolicyAutomationId}-${slotKey}`,
+          // The assigned policy is part of the identity: without it the two
+          // children of one inherited automation would share a job id and
+          // BullMQ would drop the second dispatch of every tick (#5080).
+          jobId: `cp-automation-schedule-${dispatch.configPolicyAutomationId}-${dispatch.policyId}-${slotKey}`,
           removeOnComplete: { count: 200 },
           removeOnFail: { count: 500 },
         },
@@ -505,22 +521,52 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   // `typeof === 'string'` rather than `!== null`: an absent property (a
   // partially-selected row) would read as MANAGED under `!== null` and start
   // binding/skipping every ordinary customer automation. Fail toward unmanaged.
-  const isManaged = typeof automation.managedByAgentId === 'string';
+  const isAgentManaged = typeof automation.managedByAgentId === 'string';
+  // #5289 — a compiled MONITOR automation binds the same way. It is an ordinary
+  // `alert.triggered` event automation with no conditions and no trigger
+  // deviceIds, so without this it falls through to "every device in the owning
+  // org" (every org under the partner, for a partner-wide monitor): one disk
+  // alert on one workstation would run the monitor's response fleet-wide.
+  const isMonitorManaged = typeof automation.managedByMonitorId === 'string';
+  const isManaged = isAgentManaged || isMonitorManaged;
   let boundDeviceIds: string[] | undefined;
   let triggerContext: AutomationTriggerContext | undefined;
   if (isManaged) {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
     if (!deviceId) {
       // A managed automation binds to the triggering device — an event with no
-      // device has nothing to triage. Skip loudly, never fan out.
+      // device has nothing to act on. Skip loudly, never fan out.
       return { skipped: 'managed_automation_event_has_no_device' };
     }
-    if (typeof payload.automationId === 'string') {
+    if (isAgentManaged && typeof payload.automationId === 'string') {
       // Alert was CREATED by an automation (create_alert publishes automationId).
       // Triaging automation output invites feedback loops; deliberate default
       // until wave 6 revisits it.
       return { skipped: 'managed_automation_skips_automation_created_alerts' };
     }
+    // #5290 — a monitor whose recurrence latch fired pauses its own compiled
+    // response for THIS device only. The latch and the pause are written under
+    // the state row lock before the alert is ever published, so this read can
+    // never observe a half-latched pair.
+    if (isMonitorManaged) {
+      const monitorId = automation.managedByMonitorId as string;
+      const [state] = await db
+        .select({ paused: monitorDeviceState.responsesPaused })
+        .from(monitorDeviceState)
+        .where(
+          and(
+            eq(monitorDeviceState.monitorId, monitorId),
+            eq(monitorDeviceState.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+
+      if (state?.paused) {
+        await recordEpisodeResponse({ monitorId, deviceId, outcome: 'skipped_paused' });
+        return { skipped: 'monitor_responses_paused' };
+      }
+    }
+
     boundDeviceIds = [deviceId];
     triggerContext = {
       alertId: typeof payload.alertId === 'string' ? payload.alertId : null,
@@ -528,6 +574,23 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       severity: normalizeTriggerSeverity(payload.severity),
       ruleId: typeof payload.ruleId === 'string' ? payload.ruleId : null,
     };
+  } else if (typeof payload.deviceId === 'string') {
+    // Event targets must not fall back to the static fleet-wide conditions.
+    // Recheck current ownership: the device/org may have moved since publication.
+    const [device] = await db
+      .select({ orgId: devices.orgId, partnerId: organizations.partnerId })
+      .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
+      .where(eq(devices.id, payload.deviceId))
+      .limit(1);
+    const belongsToOwner = device && (automation.orgId
+      ? device.orgId === automation.orgId
+      : automation.partnerId && device.partnerId === automation.partnerId);
+    if (!belongsToOwner) {
+      console.warn(`[AutomationWorker] Skipping automation ${automation.id}: event_device_outside_automation_scope (device ${payload.deviceId})`);
+      return { skipped: 'event_device_outside_automation_scope' };
+    }
+    boundDeviceIds = [payload.deviceId];
   }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({
@@ -545,6 +608,19 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
   } else {
     await enqueueAutomationRun(run.id, targetDeviceIds);
+  }
+
+  // #5290 — record the response attempt on the OPEN episode for the pair. The
+  // outcome walks forward only: automationActionResults terminalises it to
+  // completed/failed when the run finishes.
+  if (isMonitorManaged && boundDeviceIds?.[0]) {
+    const actions = Array.isArray(automation.actions) ? automation.actions : [];
+    await recordEpisodeResponse({
+      monitorId: automation.managedByMonitorId as string,
+      deviceId: boundDeviceIds[0],
+      runId: run.id,
+      outcome: actions.length === 0 ? 'skipped_no_response' : 'queued',
+    });
   }
 
   return { runId: run.id };
@@ -644,12 +720,40 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'device_group': {
+      // #3182 — the group id arrives from an assignment row and is
+      // dereferenced through device_group_memberships, so BOTH joins carry an
+      // org-equality condition rather than a bare id match. Neither of the two
+      // clamps below is sufficient on its own:
+      //   * the partner branch joins organizations through the MEMBERSHIP's
+      //     org_id, so it only ever proved that the membership's own org sits
+      //     under the policy's partner — never that the group does;
+      //   * the org branch's `memberships.org_id = policyOrgId` proved the same
+      //     for the policy's org.
+      // A membership row was free to name a group in a different org until
+      // #3182's composite FK landed, and a cross-org device move produced
+      // exactly that shape, so an org A group could resolve an org B device.
+      // Requiring group.org_id = membership.org_id = device.org_id makes the
+      // query reject it independently of the constraint. This worker runs under
+      // a system DB context, so there is no RLS behind it to catch a miss.
       if (needsPartnerClamp) {
         const members = await db
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
-          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+          .innerJoin(
+            deviceGroups,
+            and(
+              eq(deviceGroupMemberships.groupId, deviceGroups.id),
+              eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
+            ),
+          )
+          .innerJoin(
+            devices,
+            and(
+              eq(deviceGroupMemberships.deviceId, devices.id),
+              eq(devices.orgId, deviceGroupMemberships.orgId),
+            ),
+          )
           .where(
             and(
               eq(deviceGroupMemberships.groupId, assignmentTargetId),
@@ -667,7 +771,20 @@ async function resolveDeviceIdsForAssignment(
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+        .innerJoin(
+          deviceGroups,
+          and(
+            eq(deviceGroupMemberships.groupId, deviceGroups.id),
+            eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
+          ),
+        )
+        .innerJoin(
+          devices,
+          and(
+            eq(deviceGroupMemberships.deviceId, devices.id),
+            eq(devices.orgId, deviceGroupMemberships.orgId),
+          ),
+        )
         .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
@@ -741,18 +858,57 @@ async function processTriggerConfigPolicySchedule(
   // current truth. The assignment targets were only partner/org-scoped at
   // ASSIGN time; without this clamp a target reparented to a different partner
   // after assignment would still resolve its devices (TOCTOU, #2286).
+  // #5080: read by the ASSIGNED policy id, NOT by joining the feature link.
+  // Through the effective view one link id belongs to the authoring parent and
+  // every child of it, so a link→policy reverse map would clamp a child's run
+  // to whichever owner the planner happened to return. Pre-#5080 jobs carry
+  // only `policyId`, which has always held the same value.
+  const assignedPolicyId = data.configPolicyId ?? data.policyId;
+
   const [policyOwner] = await db
     .select({
       orgId: configurationPolicies.orgId,
       partnerId: configurationPolicies.partnerId,
+      status: configurationPolicies.status,
     })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
-    .where(eq(configPolicyFeatureLinks.id, cpAutomation.featureLinkId))
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, assignedPolicyId))
     .limit(1);
 
+  // Not found or no longer active: skip. A missing policy is a denial, never
+  // "nothing constrains this run". The two are reported separately because the
+  // skip reason is the only diagnostic this path produces, and "not found" sent
+  // an operator hunting for a deleted row when the policy was merely archived.
   if (!policyOwner) {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}: assigned policy ${assignedPolicyId} no longer exists — skipping the run`,
+    );
     return { skipped: 'config_policy_not_found' };
+  }
+  if (policyOwner.status !== 'active') {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}: assigned policy ${assignedPolicyId} is ${policyOwner.status}, not active — skipping the run`,
+    );
+    return { skipped: 'config_policy_inactive' };
+  }
+
+  // …and the automation must still be EFFECTIVE for that policy: a child that
+  // has since authored its own automation link no longer inherits the parent's,
+  // so a dispatch queued a tick ago must not fire against it.
+  const [effectiveLink] = await db
+    .select({ id: configPolicyEffectiveFeatureLinks.id })
+    .from(configPolicyEffectiveFeatureLinks)
+    .where(and(
+      eq(configPolicyEffectiveFeatureLinks.id, cpAutomation.featureLinkId),
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, assignedPolicyId),
+    ))
+    .limit(1);
+
+  if (!effectiveLink) {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id} is no longer effective for policy ${assignedPolicyId} (the policy overrode the feature after this tick was queued) — skipping the run`,
+    );
+    return { skipped: 'automation_not_effective_for_policy' };
   }
 
   const assignmentTargets =
@@ -808,36 +964,101 @@ async function processTriggerConfigPolicySchedule(
     return { skipped: 'all_devices_in_maintenance' };
   }
 
+  // One execution per device per tick (#5080). Splitting dispatches per assigned
+  // policy means a device covered by BOTH a parent's assignment and a child's
+  // (parent at org level, child at site level) appears in two dispatches of the
+  // same inherited automation. Each dispatch keeps only the devices whose
+  // WINNING automation assignment — by the same hierarchy resolution the rest of
+  // the product uses — is this dispatch's policy, so exactly one of them runs it.
+  //
+  // Batched rather than a bare sequential `for await`: this runs on top of the
+  // per-device maintenance loop above, so a naive loop would DOUBLE the
+  // sequential round trips on a path a partner-wide automation can point at a
+  // whole MSP fleet, every minute. Same shape as
+  // `resolveAllVulnerabilityEnabledDevices`, which solves the same
+  // "verify each candidate through a full hierarchy resolution" problem.
+  const winners: string[] = [];
+  const WINNER_BATCH_SIZE = 50;
+  for (let i = 0; i < eligibleDeviceIds.length; i += WINNER_BATCH_SIZE) {
+    const batch = eligibleDeviceIds.slice(i, i + WINNER_BATCH_SIZE);
+    const resolvedBatch = await Promise.all(
+      batch.map(async (deviceId) => ({
+        deviceId,
+        // A device whose automations cannot be resolved is skipped, not assumed
+        // to win: an unresolvable device is a denial, not an absence of
+        // constraint.
+        resolved: await resolveAutomationsForDeviceWithPolicy(deviceId),
+      })),
+    );
+    for (const { deviceId, resolved } of resolvedBatch) {
+      if (!resolved || resolved.configPolicyId !== assignedPolicyId) continue;
+      if (resolved.automations.some((a) => a.id === cpAutomation.id)) winners.push(deviceId);
+    }
+  }
+
+  if (winners.length === 0) {
+    // Deliberately a log line and NOT a Sentry event: this is a ROUTINE outcome
+    // of per-policy dispatch. When a parent is assigned at org level and a child
+    // at site level, and every one of the org's devices is at that site, the
+    // parent's dispatch legitimately keeps nobody — the child's dispatch runs
+    // them all. Alerting on it would page on a correct configuration. It is only
+    // suspicious when no overlapping assignment exists, which is why the counts
+    // are in the message: `eligible=N winners=0` with no sibling dispatch in the
+    // same slot is the shape worth investigating.
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}, policy ${assignedPolicyId}, slot ${data.slotKey}: eligible=${eligibleDeviceIds.length} winners=0 — every candidate device resolves to a different policy for this automation, so this dispatch runs nothing`,
+    );
+    return { skipped: 'no_winning_devices' };
+  }
+
   await enqueueConfigPolicyRun(
     {
       type: 'execute-config-policy-run',
       configPolicyAutomationId: cpAutomation.id,
-      targetDeviceIds: eligibleDeviceIds.sort(),
+      configPolicyId: assignedPolicyId,
+      targetDeviceIds: winners.sort(),
       triggeredBy: `schedule:${data.slotKey}`,
     },
-    `cp-automation-run:${cpAutomation.id}:${data.slotKey}`,
+    `cp-automation-run:${cpAutomation.id}:${assignedPolicyId}:${data.slotKey}`,
   );
 
-  return { devicesQueued: eligibleDeviceIds.length };
+  return { devicesQueued: winners.length };
 }
 
 async function processExecuteConfigPolicyRun(
   data: ExecuteConfigPolicyRunJobData,
 ): Promise<{ runId?: string; skipped?: string }> {
   // Load the config policy automation row
-  const [cpAutomation] = await db
+  const [cpAutomation] = await runWithSystemDbAccess(() => db
     .select()
     .from(configPolicyAutomations)
     .where(eq(configPolicyAutomations.id, data.configPolicyAutomationId))
-    .limit(1);
+    .limit(1));
 
   if (!cpAutomation) {
     return { skipped: 'config_policy_automation_not_found' };
   }
 
+  // #5080: the run's ownership comes from the ASSIGNED policy, which the
+  // enqueueing stage put on the payload. A job without it can only be one
+  // enqueued before this deploy; skip rather than guess an owner from the
+  // feature link, which now maps to the parent and every child. The scheduler
+  // re-enqueues on the next tick with the id present.
+  if (!data.configPolicyId) {
+    // Loud, because this DROPS one execution rather than deferring it. Only the
+    // schedule stage re-enqueues, and only on the automation's own cron cadence
+    // — for a weekly or monthly automation a deploy landing in the window costs
+    // a whole cycle, with no automation_runs row to explain the gap.
+    console.warn(
+      `[AutomationWorker] Config-policy run for automation ${data.configPolicyAutomationId} carries no configPolicyId (queued before the #5080 deploy) — dropping this execution rather than guessing an owner; the next scheduled tick re-enqueues it`,
+    );
+    return { skipped: 'config_policy_id_missing' };
+  }
+
   // Execute the automation run via the runtime
   const result = await executeConfigPolicyAutomationRun(
     cpAutomation,
+    data.configPolicyId,
     data.targetDeviceIds,
     data.triggeredBy,
   );
@@ -845,12 +1066,25 @@ async function processExecuteConfigPolicyRun(
   return { runId: result.runId };
 }
 
-function createAutomationWorker(): Worker<AutomationJobData> {
+export function createAutomationWorker(): Worker<AutomationJobData> {
   return new Worker<AutomationJobData>(
     AUTOMATION_QUEUE,
     async (job: Job<AutomationJobData>) => {
+      const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
+      // Runtime execution deliberately owns a sequence of short system
+      // contexts. Keeping the worker's historical ambient transaction here
+      // would pin one pooled connection for the whole fleet run and force the
+      // action-result seeder/reconciler either to reuse that long transaction
+      // or allocate a second connection per device.
+      if (data.type === 'execute-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
+        return runOutsideDbAccess(() => processExecuteRun(data));
+      }
+      if (data.type === 'execute-config-policy-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
+        return runOutsideDbAccess(() => processExecuteConfigPolicyRun(data));
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
         switch (data.type) {
           case 'scan-schedules':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
@@ -861,15 +1095,9 @@ function createAutomationWorker(): Worker<AutomationJobData> {
           case 'trigger-event':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
             return processTriggerEvent(data);
-          case 'execute-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
-            return processExecuteRun(data);
           case 'trigger-config-policy-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
             return processTriggerConfigPolicySchedule(data);
-          case 'execute-config-policy-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
-            return processExecuteConfigPolicyRun(data);
         }
       });
     },
@@ -987,8 +1215,15 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   try {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
 
-    if (deviceId) {
-      const cpAutomations = await resolveAutomationsForDevice(deviceId);
+    // #5080: the WINNING assignment's policy travels with the automations — the
+    // event-run job needs it for the same reason the scheduled one does. A null
+    // resolution (device gone, or nothing assigned) means there is nothing to
+    // run, so the whole block is skipped rather than defaulting the policy id to
+    // something the run stage would have to reject.
+    const resolved = deviceId ? await resolveAutomationsForDeviceWithPolicy(deviceId) : null;
+
+    if (deviceId && resolved) {
+      const { configPolicyId: cpAssignedPolicyId, automations: cpAutomations } = resolved;
 
       for (const cpAutomation of cpAutomations) {
         if (!cpAutomation.enabled) continue;
@@ -1014,10 +1249,11 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
           {
             type: 'execute-config-policy-run',
             configPolicyAutomationId: cpAutomation.id,
+            configPolicyId: cpAssignedPolicyId,
             targetDeviceIds: [deviceId],
             triggeredBy: `config-policy-event:${event.type}`,
           },
-          `cp-automation-event-${cpAutomation.id}-${deviceId}-${event.id}`,
+          `cp-automation-event-${cpAutomation.id}-${cpAssignedPolicyId}-${deviceId}-${event.id}`,
         );
       }
     }
@@ -1031,24 +1267,24 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   }
 }
 
-function subscribeToAutomationEvents(): void {
-  if (eventSubscription) {
-    return;
+/**
+ * Dispatch one event to the automation trigger fan-out.
+ *
+ * Registered under subscriber id `automation-worker` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscriber's try/catch used
+ * to provide itself.
+ */
+export async function handleAutomationEvent(event: BreezeEvent): Promise<void> {
+  if (!isRedisAvailable()) {
+    // Retryable in queue mode; local delivery swallows this exactly as the
+    // old silent `return` did.
+    throw new Error('redis unavailable for automation trigger dispatch');
   }
 
-  const eventBus = getEventBus();
-  eventSubscription = eventBus.subscribe('*', async (event) => {
-    try {
-      if (!isRedisAvailable()) {
-        return;
-      }
-
-      await runWithSystemDbAccess(async () => {
-        await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
-      });
-    } catch (error) {
-      console.error('[AutomationWorker] Failed handling event trigger dispatch:', error);
-    }
+  await runWithSystemDbAccess(async () => {
+    await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
   });
 }
 
@@ -1065,17 +1301,11 @@ export async function initializeAutomationWorker(): Promise<void> {
   });
 
   await scheduleAutomationScans();
-  subscribeToAutomationEvents();
 
   console.log('[AutomationWorker] Automation worker initialized');
 }
 
 export async function shutdownAutomationWorker(): Promise<void> {
-  if (eventSubscription) {
-    eventSubscription();
-    eventSubscription = null;
-  }
-
   if (automationWorker) {
     await automationWorker.close();
     automationWorker = null;
@@ -1094,6 +1324,7 @@ export async function shutdownAutomationWorker(): Promise<void> {
 // not part of the worker's public surface.
 export const __testOnly = {
   resolveDeviceIdsForAssignment,
+  processScanSchedules,
   processTriggerConfigPolicySchedule,
   processTriggerEvent,
   processExecuteRun,

@@ -41,7 +41,7 @@ function draft(lines: InvoiceDetail['lines'], extra: Partial<InvoiceDetail['invo
 const manualLine: InvoiceDetail['lines'][number] = {
   id: 'line-1', invoiceId: 'inv-1', sourceType: 'manual', parentLineId: null, catalogItemId: null,
   name: null, description: 'Consulting', quantity: '2.00', unitPrice: '50.00', costBasis: null, revenueAllocation: null,
-  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1,
+  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
 };
 
 describe('InvoiceEditor', () => {
@@ -70,6 +70,34 @@ describe('InvoiceEditor', () => {
     // Name/description are now editable inputs (full-width description row) rather
     // than static text; the legacy name-less line shows its description in the box.
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
+  });
+
+  it('links the Bill To name to its organization record (#5075 W03)', async () => {
+    render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    const link = screen.getByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/organizations/org-9');
+    expect(link).toHaveTextContent('Globex Inc');
+  });
+
+  it('characterizes a contract overage sibling as editable while a bundle child is read-only (#3205 W04)', async () => {
+    const overage = {
+      ...manualLine, id: 'over', sourceType: 'contract' as const, parentLineId: null,
+      description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00',
+    };
+    const child = {
+      ...manualLine, id: 'child', sourceType: 'bundle' as const, parentLineId: 'over',
+      description: 'Bundle component', customerVisible: false,
+    };
+    render(<InvoiceEditor detail={draft([overage, child])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-line-desc-over')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-line-remove-over')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-line-child-child')).toHaveTextContent('Bundle component');
+    expect(screen.queryByTestId('invoice-line-desc-child')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-line-remove-child')).not.toBeInTheDocument();
   });
 
   it('warns when a line is taxable but no tax rate is configured', async () => {
@@ -465,5 +493,81 @@ describe('InvoiceEditor', () => {
     const price = await screen.findByTestId('invoice-catalog-picker-price-cat-1');
     expect(price).toHaveTextContent('420.00');
     expect(price).not.toHaveTextContent('500');
+  });
+
+  // #3277 — the free-text fields re-sync from the server value DURING RENDER,
+  // not from a `useEffect`. A deferred effect can flush AFTER a keystroke it
+  // never saw and overwrite it with the pre-edit value, silently clearing the
+  // dirty flag; `saveNotes`/`saveTerms` then short-circuit on `!dirty` and no
+  // PATCH is sent at all. That is what made the InvoiceWorkspace queued-Issue
+  // tests flaky, filed five times from 2026-07-29 on, across
+  // #2925/#3219/#3277/#3980/#4033.
+  //
+  // The ordering hazard itself is only reachable by out-racing React's
+  // scheduler, so these cases pin the observable contract instead: a re-render
+  // whose server value is UNCHANGED after normalisation must never touch the
+  // draft — and must leave it SAVEABLE, which is the part that actually broke —
+  // while one whose server value genuinely changed must replace it. The
+  // null → '' case is the deterministic discriminator — the old
+  // `useEffect(..., [invoice.notes])` compared the RAW prop, so that round-trip
+  // re-ran the effect and discarded the draft.
+  describe('server value re-sync', () => {
+    it('keeps a dirty notes draft when a refetch reports the same value under a different raw form (null → "")', async () => {
+      const { rerender } = render(<InvoiceEditor detail={draft([manualLine], { notes: null })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Half-typed note' } });
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Half-typed note');
+
+      // A quiet refetch lands carrying '' where the previous payload had null.
+      // Nothing the user cares about changed, so the draft must survive.
+      rerender(<InvoiceEditor detail={draft([manualLine], { notes: '' })} onChanged={vi.fn()} />);
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Half-typed note');
+
+      // …and it must still be SAVEABLE. The visible text is only a proxy: the
+      // damage in #3277 was the silently-cleared `notesDirty`, which makes
+      // `saveNotes()` short-circuit so the blur sends nothing at all. Asserting
+      // the text alone would pass for a regression that clears the flag without
+      // touching the value, which is the same silent data loss wearing a
+      // different hat — so assert the PATCH actually goes out.
+      fireEvent.blur(screen.getByTestId('invoice-notes'));
+      await waitFor(() => expect(fetchMock.mock.calls.some(
+        (c) => (c[1] as RequestInit)?.method === 'PATCH'
+          && String((c[1] as RequestInit)?.body).includes('Half-typed note'),
+      )).toBe(true));
+    });
+
+    it('keeps a dirty terms draft across the same null → "" round-trip', async () => {
+      const { rerender } = render(<InvoiceEditor detail={draft([manualLine], { termsAndConditions: null })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('invoice-terms'), { target: { value: 'Net 15' } });
+      expect(screen.getByTestId('invoice-terms')).toHaveValue('Net 15');
+
+      rerender(<InvoiceEditor detail={draft([manualLine], { termsAndConditions: '' })} onChanged={vi.fn()} />);
+      expect(screen.getByTestId('invoice-terms')).toHaveValue('Net 15');
+
+      // Same reason as the notes case: prove the edit is still saveable, not
+      // merely still visible.
+      fireEvent.blur(screen.getByTestId('invoice-terms'));
+      await waitFor(() => expect(fetchMock.mock.calls.some(
+        (c) => (c[1] as RequestInit)?.method === 'PATCH'
+          && String((c[1] as RequestInit)?.body).includes('Net 15'),
+      )).toBe(true));
+    });
+
+    it('DOES replace the draft when the server value genuinely changes', async () => {
+      const { rerender } = render(<InvoiceEditor detail={draft([manualLine], { notes: 'Original' })} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Original');
+
+      fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Local draft' } });
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Local draft');
+
+      // Someone else's edit arrived. The local draft is stale — replacing it is
+      // the deliberate behaviour this fix preserves, not a regression.
+      rerender(<InvoiceEditor detail={draft([manualLine], { notes: 'Updated on the server' })} onChanged={vi.fn()} />);
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Updated on the server');
+    });
   });
 });

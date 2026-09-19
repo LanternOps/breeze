@@ -5,6 +5,7 @@ vi.mock('./api', () => ({ coreRequest: (...args: unknown[]) => coreRequest(...ar
 
 import {
   addTicketComment,
+  createTicket,
   allowedQuickStatuses,
   buildTicketListQuery,
   canTransition,
@@ -79,6 +80,41 @@ describe('addTicketComment', () => {
     expect(path).toBe('/tickets/t1/comments');
     expect(options.method).toBe('POST');
     expect(JSON.parse(String(options.body))).toEqual({ content: 'hello', isPublic: false });
+  });
+
+  it('omits attachmentIds entirely when there are none', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'c1' } });
+    await addTicketComment('t1', 'hello', true, []);
+    const [, options] = coreRequest.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(options.body))).not.toHaveProperty('attachmentIds');
+  });
+
+  it('sends attachmentIds when the comment carries attachments', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'c1' } });
+    await addTicketComment('t1', 'see photo', true, ['att-1', 'att-2']);
+    const [, options] = coreRequest.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(options.body))).toEqual({
+      content: 'see photo', isPublic: true, attachmentIds: ['att-1', 'att-2'],
+    });
+  });
+
+  it('allows an empty body when attachments carry the comment', async () => {
+    // addTicketCommentSchema refines content-or-attachments, so a photo-only
+    // comment is legal server-side and the client must not block it.
+    coreRequest.mockResolvedValue({ data: { id: 'c1' } });
+    await addTicketComment('t1', '', true, ['att-1']);
+    const [, options] = coreRequest.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(options.body))).toEqual({
+      content: '', isPublic: true, attachmentIds: ['att-1'],
+    });
+  });
+
+  it('returns the attachments the server claimed onto the comment', async () => {
+    coreRequest.mockResolvedValue({
+      data: { id: 'c1', attachments: [{ id: 'att-1', contentType: 'image/jpeg' }] },
+    });
+    const created = await addTicketComment('t1', 'see photo', true, ['att-1']);
+    expect(created.attachments).toEqual([{ id: 'att-1', contentType: 'image/jpeg' }]);
   });
 });
 
@@ -161,5 +197,17 @@ describe('SYSTEM_COMMENT_TYPES', () => {
     );
     expect(SYSTEM_COMMENT_TYPES.has('comment')).toBe(false);
     expect(SYSTEM_COMMENT_TYPES.has('internal')).toBe(false);
+  });
+});
+
+describe('createTicket', () => {
+  it('posts the body to /tickets and returns the created ticket', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'new-1', internalNumber: 'T-2026-0004', subject: 'x' } });
+    const created = await createTicket({ orgId: 'o1', subject: 'x', priority: 'normal' });
+    expect(coreRequest).toHaveBeenCalledWith('/tickets', {
+      method: 'POST',
+      body: JSON.stringify({ orgId: 'o1', subject: 'x', priority: 'normal' }),
+    });
+    expect(created).toMatchObject({ id: 'new-1', internalNumber: 'T-2026-0004' });
   });
 });

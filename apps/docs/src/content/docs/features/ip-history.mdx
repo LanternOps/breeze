@@ -11,6 +11,23 @@ This feature is essential for incident response (answering "which device had IP 
 
 ---
 
+## Viewing IP History in the Console
+
+Open a device's detail page and select the **IP History** tab to browse its address history without querying the API directly. The table lists Interface, IP Address, Type, Assignment, First Seen, Last Seen, and Status (active/inactive) for every recorded assignment.
+
+Above the table:
+
+- A **search** box matches against interface name, IP address, MAC address, gateway, or DNS servers.
+- **Assignment** filters to `dhcp`, `static`, `vpn`, `link-local`, or `unknown`.
+- **Interface** filters to one of the interfaces seen on this device.
+- **IP Type** filters to IPv4 or IPv6.
+- **Active only** limits the list to currently-assigned addresses.
+- **Since** / **Until** date fields narrow the list to assignments last seen on or after, or first seen on or before, the chosen dates.
+
+Use **Clear filters** to reset all of the above, and **Refresh** to re-fetch the latest history from the API. Results are paginated in the console (25 rows per page); the underlying fetch pulls up to 500 records at a time.
+
+---
+
 ## Key Concepts
 
 ### IP Assignment Types
@@ -41,7 +58,7 @@ This feature is essential for incident response (answering "which device had IP 
 | `ipAddress` | string (max 45) | The IP address |
 | `ipType` | string | `ipv4` or `ipv6` |
 | `assignmentType` | enum | One of `dhcp`, `static`, `vpn`, `link-local`, `unknown` |
-| `macAddress` | string (max 17) | MAC address of the interface (e.g., `00:1A:2B:3C:4D:5E`) |
+| `macAddress` | string (max 64) | MAC address of the interface (e.g., `00:1A:2B:3C:4D:5E`) -- widened to accommodate longer hardware address formats such as Teredo/ISATAP/InfiniBand |
 | `subnetMask` | string (max 45) | Subnet mask or prefix length |
 | `gateway` | string (max 45) | Default gateway address |
 | `dnsServers` | string[] | DNS server addresses (up to 8) |
@@ -78,7 +95,7 @@ This feature is essential for incident response (answering "which device had IP 
 
    - **Linux**: Scans lease files in `/run/systemd/netif/leases/`, `/var/lib/NetworkManager/`, `/var/lib/dhcp/`, and `/var/lib/dhclient/` for matching interface name and IP address.
    - **macOS**: Runs `ipconfig getpacket <interface>` and checks for `yiaddr` or `lease_time` in the output.
-   - **Windows**: Runs `ipconfig /all` and looks for "DHCP Enabled: Yes" in the interface section containing the IP address.
+   - **Windows**: Runs the PowerShell `Get-NetIPInterface` cmdlet (chosen over `ipconfig /all` because its `.NET` enum values are always English regardless of OS locale) and checks whether the matching interface reports DHCP as enabled.
    - **Fallback**: If no explicit evidence is found, common interface prefixes (`eth`, `en`, `eno`, `ens`, `enp`, `wlan` on Linux/macOS; `Ethernet`, `Wi-Fi`, `WLAN` on Windows) with private IP addresses are assumed to be DHCP.
    </TabItem>
    </Tabs>
@@ -214,7 +231,7 @@ The `ipHistoryUpdate` object within the heartbeat payload uses this structure fo
 | `ipAddress` | string | Yes | Valid IPv4 or IPv6 address (max 45 characters) |
 | `ipType` | enum | No | `ipv4` or `ipv6` (auto-detected from address if omitted) |
 | `assignmentType` | enum | No | `dhcp`, `static`, `vpn`, `link-local`, or `unknown` |
-| `macAddress` | string | No | MAC address (max 17 characters) |
+| `macAddress` | string | No | MAC address (max 64 characters) |
 | `subnetMask` | string | No | Subnet mask (max 45 characters) |
 | `gateway` | string | No | Default gateway (max 45 characters) |
 | `dnsServers` | string[] | No | DNS server addresses (max 8 entries, each max 45 characters) |
@@ -260,7 +277,7 @@ The `device_ip_history` table has the following indexes for efficient querying:
 
 - The agent uses heuristics to detect DHCP assignments. On Linux, it checks lease files in standard locations (`/run/systemd/netif/leases/`, `/var/lib/NetworkManager/`, `/var/lib/dhcp/`). If your DHCP client stores leases in a non-standard location, the detection may fail.
 - On macOS, the agent runs `ipconfig getpacket <interface>`. If the command is not available or returns an error, the fallback heuristic (private IP on common interface prefix) is used.
-- On Windows, the agent parses `ipconfig /all` output. If the command times out (1500ms limit), detection falls back to the interface name heuristic.
+- On Windows, the agent runs the PowerShell `Get-NetIPInterface` cmdlet. If the command times out (2-second limit), detection falls back to the interface name heuristic.
 
 ### IP history shows duplicate entries
 

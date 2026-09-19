@@ -9,10 +9,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('./stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'groupBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -30,7 +46,10 @@ vi.mock('../db', () => {
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: (fn: () => unknown) => fn()
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // Phase D2: the payment outbox reads the ambient scope to decide whether
+    // an org-scoped caller can write the partner-axis mapping row.
+    getCurrentDbAccessContext: () => undefined
   };
 });
 
@@ -67,6 +86,8 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice allows a site-restricted actor an in-site invoice', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteA' }]); // getOwnedInvoiceOr404
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', restricted);
     expect(result.invoice.id).toBe('i1');
   });
@@ -74,6 +95,8 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice is unaffected for an unrestricted actor (out-of-site & null-site both visible)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB' }]);
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', unrestricted);
     expect(result.invoice.id).toBe('i1');
   });
@@ -102,6 +125,7 @@ describe('invoiceService site-axis guard', () => {
   });
 
   it('recordPayment denies a payment on an out-of-site invoice (SITE_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]);
     await expect(
       svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, restricted)

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock dependencies before imports
 vi.mock('../db', () => ({
@@ -10,14 +12,14 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('./commandQueue', () => ({
-  queueCommandForExecution: vi.fn(),
-  executeCommand: vi.fn(),
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
+  aiExecuteCommand: vi.fn(),
 }));
 
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { db } from '../db';
-import { queueCommandForExecution, executeCommand } from './commandQueue';
+import { aiQueueCommandForExecution, aiExecuteCommand } from './aiDispatch';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
@@ -26,6 +28,7 @@ function makeAuth(orgId: string): AuthContext {
     user: { id: 'user-1' },
     orgId,
     accessibleOrgIds: [orgId],
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -85,6 +88,7 @@ describe('aiToolsAgentLogs', () => {
           id: 'log-1',
           deviceId: 'dev-1',
           timestamp: new Date('2026-02-15T10:00:00Z'),
+          createdAt: new Date('2026-02-15T10:00:05Z'),
           level: 'error',
           component: 'heartbeat',
           message: 'connection failed',
@@ -92,13 +96,14 @@ describe('aiToolsAgentLogs', () => {
           agentVersion: '1.0.0',
         },
       ];
+      const orderBy = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(mockRows),
+      });
 
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue(mockRows),
-            }),
+            orderBy,
           }),
         }),
       } as any);
@@ -114,6 +119,17 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.logs[0].message).toBe('connection failed');
       expect(parsed.logs[0].level).toBe('error');
       expect(parsed.logs[0].timestamp).toBe('2026-02-15T10:00:00.000Z');
+      expect(parsed.logs[0].receivedAt).toBe('2026-02-15T10:00:05.000Z');
+      // Receipt time dominates; event time only breaks ties inside one receipt
+      // instant (a 100-row ingest batch shares created_at), and the random uuid
+      // is last. Assert the sequence, not just membership.
+      const dialect = new PgDialect();
+      const orderingSql = (orderBy.mock.calls[0] as SQL[])
+        .map((clause) => dialect.sqlToQuery(clause).sql)
+        .join(', ');
+      expect(orderingSql).toContain('"created_at"');
+      expect(orderingSql.indexOf('"timestamp"')).toBeGreaterThan(orderingSql.indexOf('"created_at"'));
+      expect(orderingSql.indexOf('"id"')).toBeGreaterThan(orderingSql.indexOf('"timestamp"'));
     });
 
     it('redacts legacy raw secrets before returning log search results', async () => {
@@ -125,6 +141,7 @@ describe('aiToolsAgentLogs', () => {
                 id: 'log-1',
                 deviceId: 'dev-1',
                 timestamp: new Date('2026-02-15T10:00:00Z'),
+                createdAt: new Date('2026-02-15T10:00:05Z'),
                 level: 'error',
                 component: 'heartbeat',
                 message: 'failed token=raw-token',
@@ -204,7 +221,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should queue command on success', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(queueCommandForExecution).mockResolvedValue({
+      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
         command: { id: 'cmd-123' },
         error: null,
       } as any);
@@ -221,7 +238,9 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.message).toContain('debug');
       expect(parsed.message).toContain('30 minutes');
 
-      expect(queueCommandForExecution).toHaveBeenCalledWith(
+      expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+        expect.anything(),
+        'set_agent_log_level',
         'dev-1',
         'set_log_level',
         { level: 'debug', durationMinutes: 30 },
@@ -231,7 +250,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should return error from command queue', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(queueCommandForExecution).mockResolvedValue({
+      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
         command: null,
         error: 'Device offline',
       } as any);
@@ -248,7 +267,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should default durationMinutes to 60', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(queueCommandForExecution).mockResolvedValue({
+      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
         command: { id: 'cmd-456' },
         error: null,
       } as any);
@@ -259,7 +278,9 @@ describe('aiToolsAgentLogs', () => {
         makeAuth('org-1'),
       );
 
-      expect(queueCommandForExecution).toHaveBeenCalledWith(
+      expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+        expect.anything(),
+        'set_agent_log_level',
         'dev-1',
         'set_log_level',
         { level: 'info', durationMinutes: 60 },
@@ -290,7 +311,7 @@ describe('aiToolsAgentLogs', () => {
       const result = await tool.handler({}, makeAuth('org-1'));
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain('deviceId is required');
-      expect(executeCommand).not.toHaveBeenCalled();
+      expect(aiExecuteCommand).not.toHaveBeenCalled();
     });
 
     it('should reject an unknown profile without dispatching a command', async () => {
@@ -301,12 +322,12 @@ describe('aiToolsAgentLogs', () => {
       );
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain('Invalid profile "cpu"');
-      expect(executeCommand).not.toHaveBeenCalled();
+      expect(aiExecuteCommand).not.toHaveBeenCalled();
     });
 
     it('should execute the capture_pprof command type and default profile to all', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'completed',
         stdout: capturedStdout,
         commandId: 'cmd-pprof-1',
@@ -315,7 +336,9 @@ describe('aiToolsAgentLogs', () => {
       const tool = tools.get('capture_agent_pprof')!;
       const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
 
-      expect(executeCommand).toHaveBeenCalledWith(
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
+        expect.anything(),
+        'capture_agent_pprof',
         'dev-1',
         'capture_pprof',
         { profile: 'all' },
@@ -335,7 +358,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should pass an explicit profile through to the agent command', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'completed',
         stdout: JSON.stringify({
           capturedAt: '2026-07-12T10:00:00Z',
@@ -352,7 +375,9 @@ describe('aiToolsAgentLogs', () => {
         makeAuth('org-1'),
       );
 
-      expect(executeCommand).toHaveBeenCalledWith(
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
+        expect.anything(),
+        'capture_agent_pprof',
         'dev-1',
         'capture_pprof',
         { profile: 'goroutine' },
@@ -364,7 +389,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('must NOT inline base64 profile data into the tool output', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'completed',
         stdout: capturedStdout,
         commandId: 'cmd-pprof-3',
@@ -393,12 +418,12 @@ describe('aiToolsAgentLogs', () => {
       const result = await tool.handler({ deviceId: 'dev-other' }, makeAuth('org-1'));
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain('Device not found or access denied');
-      expect(executeCommand).not.toHaveBeenCalled();
+      expect(aiExecuteCommand).not.toHaveBeenCalled();
     });
 
     it('should surface command failure', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'failed',
         error: 'Device is offline, cannot execute command',
       } as any);
@@ -411,7 +436,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should handle unparseable agent output and still return the commandId', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'completed',
         stdout: 'not-json',
         commandId: 'cmd-pprof-4',
@@ -426,7 +451,7 @@ describe('aiToolsAgentLogs', () => {
 
     it('should NOT report success when a completed result carries no profile data', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(executeCommand).mockResolvedValue({
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
         status: 'completed',
         // Valid JSON but no heapProfileBytes/goroutineProfileBytes fields
         // (agent/API contract drift or stdout lost in transit).
@@ -441,5 +466,12 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.error).toContain('no profile data');
       expect(parsed.commandId).toBe('cmd-pprof-5');
     });
+  });
+});
+
+describe('exported builders for export_dataset reuse', () => {
+  it('exports the shared agent-log predicate builder', async () => {
+    const mod = await import('./aiToolsAgentLogs');
+    expect(typeof mod.buildAgentLogConditions).toBe('function');
   });
 });

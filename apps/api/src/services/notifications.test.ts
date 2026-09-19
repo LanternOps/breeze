@@ -8,6 +8,13 @@ vi.mock('./apns', () => ({
   sendApnsNotification: (...args: unknown[]) => sendApnsNotificationMock(...args),
 }));
 
+const isFcmConfiguredMock = vi.fn();
+const sendFcmNotificationMock = vi.fn();
+vi.mock('./fcm', () => ({
+  isFcmConfigured: () => isFcmConfiguredMock(),
+  sendFcmNotification: (...args: unknown[]) => sendFcmNotificationMock(...args),
+}));
+
 const updateSetCalls: Record<string, unknown>[] = [];
 const updateWhereCalls: unknown[] = [];
 vi.mock('../db', () => ({
@@ -28,13 +35,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   alerts: {},
-  mobileDevices: { apnsToken: { name: 'apnsToken' } },
+  mobileDevices: { apnsToken: { name: 'apnsToken' }, fcmToken: { name: 'fcmToken' } },
   organizationUsers: {},
   pushNotifications: {},
   users: {},
 }));
 
-import { sendAPNS, type PushPayload } from './notifications';
+import { sendAPNS, sendFCM, type PushPayload } from './notifications';
 import { db } from '../db';
 
 const payload: PushPayload = {
@@ -108,6 +115,85 @@ describe('sendAPNS', () => {
     sendApnsNotificationMock.mockResolvedValueOnce({ ok: false, status: 400, reason: 'BadRequest' });
 
     await expect(sendAPNS('apns-token', payload)).rejects.toThrow(/status 400/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendFCM', () => {
+  beforeEach(() => {
+    isFcmConfiguredMock.mockReset();
+    isFcmConfiguredMock.mockReturnValue(true);
+    sendFcmNotificationMock.mockReset();
+    vi.mocked(db.update).mockClear();
+    updateSetCalls.length = 0;
+    updateWhereCalls.length = 0;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns a stubbed result and never logs the raw token when FCM is not configured', async () => {
+    isFcmConfiguredMock.mockReturnValue(false);
+    const token = 'fcm-sensitive-token';
+    const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await sendFCM(token, {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: {},
+      alertId: 'al-1',
+      eventType: 'alert.triggered',
+    });
+
+    expect(res.status).toBe('stubbed');
+    expect(sendFcmNotificationMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[Notifications] FCM not configured; push stubbed.',
+      { tokenFingerprint, title: 'Alert Triggered' },
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+  });
+
+  it('returns sent with the provider messageId on success', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: true, messageId: 'msg-1' });
+
+    const res = await sendFCM('tok', {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: {},
+      alertId: 'al-1',
+      eventType: 'alert.triggered',
+    });
+
+    expect(res).toEqual({ messageId: 'msg-1', status: 'sent' });
+    expect(sendFcmNotificationMock).toHaveBeenCalledWith('tok', {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: { alertId: 'al-1', eventType: 'alert.triggered' },
+    });
+  });
+
+  it('purges the fcm token column and throws when the provider reports unregistered', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'messaging/registration-token-not-registered',
+      unregistered: true,
+    });
+
+    await expect(
+      sendFCM('dead-tok', { title: 't', body: 'b', data: {}, alertId: null, eventType: 'alert.triggered' })
+    ).rejects.toThrow('FCM delivery failed');
+    expect(db.update).toHaveBeenCalled();
+    expect(updateSetCalls.some((s) => s.fcmToken === null)).toBe(true);
+  });
+
+  it('throws without purging on a non-unregistered failure', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: false, reason: 'messaging/internal-error' });
+
+    await expect(
+      sendFCM('tok', { title: 't', body: 'b', data: {}, alertId: null, eventType: 'alert.triggered' })
+    ).rejects.toThrow('FCM delivery failed');
     expect(db.update).not.toHaveBeenCalled();
   });
 });

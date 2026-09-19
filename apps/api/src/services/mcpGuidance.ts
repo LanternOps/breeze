@@ -5,7 +5,7 @@ import { BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 // module stays decoupled from the heavy tool registry — mcpGuidancePromptTools
 // .test.ts asserts it stays within tolerance of the live count and fails loudly
 // if the two drift apart.
-export const MCP_TOOL_COUNT_APPROX = 190;
+export const MCP_TOOL_COUNT_APPROX = 200;
 
 export const MCP_SERVER_INSTRUCTIONS = `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
 
@@ -37,9 +37,9 @@ export const MCP_PROMPTS: McpPromptDefinition[] = [
     name: 'breeze-fleet-triage',
     description: 'Read-only health sweep of the fleet — what needs attention right now.',
     arguments: [{ name: 'scope', description: 'Optional org or site to scope the sweep', required: false }],
-    referencedTools: ['get_fleet_status', 'get_fleet_health', 'manage_alerts', 'query_devices', 'manage_patches', 'get_sla_breaches'],
+    referencedTools: ['get_fleet_health', 'manage_alerts', 'query_devices', 'manage_patches', 'get_sla_breaches'],
     render: (a) => `Triage the Breeze RMM fleet${scopeSuffix(a.scope)}. Perform a READ-ONLY sweep and produce ONE prioritized "what needs attention now" summary. Steps:
-1. Overall posture: get_fleet_status and get_fleet_health.
+1. Overall posture: get_fleet_health and query_devices (device counts and online/offline).
 2. Active alerts: manage_alerts (action=list).
 3. Offline devices: query_devices (status=offline).
 4. Failed/pending patches: manage_patches (action=list).

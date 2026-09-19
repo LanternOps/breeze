@@ -98,11 +98,16 @@ describe('endSupportSession', () => {
 
     await endSupportSession('sess-1', 'tech');
 
+    // decommissionedAt (#2787 item 4): a quick-support device ending its
+    // session IS a removed device, and the retention job measures its purge
+    // window from this stamp. Without it every ephemeral support device stays
+    // forever under an org whose policy says to purge removed devices.
     expect(updates[0]?.values).toEqual({
       agentTokenHash: null,
       watchdogTokenHash: null,
       helperTokenHash: null,
       status: 'decommissioned',
+      decommissionedAt: expect.any(Date),
     });
   });
 

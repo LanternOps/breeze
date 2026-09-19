@@ -1,0 +1,385 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organisation",
+    "header": {
+      "type": {
+        "customer": "Kunde",
+        "internal": "Intern"
+      },
+      "primaryContact": "Hauptansprechpartner",
+      "noPrimaryContact": "Kein Hauptansprechpartner",
+      "sites_one": "{{count}} Standort",
+      "sites_other": "{{count}} Standorte",
+      "scopeChip": "Arbeitsbereich: {{orgName}}",
+      "scopeChipHint": "Ihr Arbeitsbereich ist auf eine andere Organisation eingestellt. Diese Seite zeigt immer {{orgName}}.",
+      "created": "Kunde seit {{date}}"
+    },
+    "actions": {
+      "workHere": "In dieser Organisation arbeiten",
+      "workHereToast": "Zu {{orgName}} gewechselt",
+      "settings": "Einstellungen",
+      "more": "Weitere Aktionen",
+      "archive": "Archivieren",
+      "merge": "Zusammenführen",
+      "restore": "Wiederherstellen",
+      "retry": "Erneut versuchen"
+    },
+    "tabs": {
+      "overview": "Übersicht",
+      "contacts": "Kontakte",
+      "sites": "Standorte",
+      "devices": "Geräte",
+      "tickets": "Tickets",
+      "billing": "Verträge & Abrechnung",
+      "service": "Leistungen",
+      "documents": "Dokumente",
+      "activity": "Aktivität"
+    },
+    "comingSoon": {
+      "title": "Demnächst verfügbar",
+      "description": "Dieser Tab wird im nächsten Update des Organisationsdatensatzes verfügbar sein."
+    },
+    "devices": {
+      "loadError": "Die Geräte dieser Organisation konnten nicht geladen werden.",
+      "searchPlaceholder": "Geräte suchen",
+      "allStatuses": "Alle Status",
+      "allSites": "Alle Standorte",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Wartung",
+        "decommissioned": "Entfernt",
+        "quarantined": "Unter Quarantäne gestellt",
+        "updating": "Aktualisierung",
+        "pending": "Ausstehend"
+      }
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Geräte",
+        "devicesSub": "{{online}} von {{total}} online",
+        "alerts": "Offene Warnungen",
+        "alertsSub": "{{critical}} kritisch · {{high}} hoch",
+        "tickets": "Offene Tickets",
+        "ticketsSub": "{{count}} wartet auf Kunde",
+        "contracts": "Aktive Verträge",
+        "contractsSub": "Nächste Verlängerung {{date}}",
+        "contractsNoRenewal": "Keine bevorstehende Verlängerung",
+        "invoices": "Ausstehend",
+        "invoicesSub": "Nächste Fälligkeit {{date}}",
+        "invoicesOverdue_one": "{{count}} überfällig",
+        "invoicesOverdue_other": "{{count}} überfällig",
+        "invoicesNothingDue": "Nichts fällig",
+        "contacts": "Kontakte",
+        "portalUsers": "Portalnutzer",
+        "sites": "Standorte",
+        "lastActivity": "Letzte Aktivität"
+      },
+      "activity": {
+        "title": "Letzte Aktivität",
+        "empty": "Noch keine Aktivität erfasst.",
+        "failed": "Letzte Aktivität konnte nicht geladen werden.",
+        "viewAll": "Alle Aktivitäten anzeigen"
+      },
+      "criticalAlerts": {
+        "title": "Offene kritische Warnungen",
+        "empty": "Keine offenen kritischen Warnungen.",
+        "failed": "Offene kritische Warnungen konnten nicht abgerufen werden.",
+        "viewAll": "Alle Warnungen anzeigen"
+      },
+      "lastActivity": "Letzte Aktivität {{date}}",
+      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar."
+    },
+    "archived": {
+      "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "restoreError": "Diese Organisation konnte nicht wiederhergestellt werden."
+    },
+    "lifecycle": {
+      "inaccessible": "Diese Organisation ist {{status}}, daher sind ihre Live-Daten nicht verfügbar. Sie können sie weiterhin in der Organisationsliste sehen.",
+      "backToList": "Zurück zu den Organisationen"
+    },
+    "unavailable": {
+      "title": "In diesem Arbeitsbereich nicht verfügbar",
+      "description": "Organisationsdatensätze sind eine Ansicht auf Partnerebene. Ihre Anmeldung ist auf eine einzelne Organisation beschränkt, daher gibt es hier nichts zum Wechseln.",
+      "action": "Zum Dashboard"
+    },
+    "notFound": {
+      "title": "Organisation nicht gefunden",
+      "description": "Diese Organisation existiert nicht mehr, oder Sie haben keinen Zugriff mehr darauf.",
+      "action": "Zurück zu den Organisationen"
+    },
+    "error": {
+      "title": "Diese Organisation konnte nicht geladen werden",
+      "description": "Beim Abrufen des Datensatzes ist ein Fehler aufgetreten. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+    },
+    "loading": "Organisation wird geladen…",
+    "tickets": {
+      "tabs": {
+        "open": "Offen",
+        "all": "Alle",
+        "closed": "Geschlossen"
+      },
+      "newTicket": "Neues Ticket",
+      "loadFailed": "Die Tickets konnten nicht geladen werden.",
+      "forbidden": "Sie sind nicht berechtigt, Tickets anzuzeigen.",
+      "truncated": "{{shown}} von {{total}} Tickets werden angezeigt."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Verträge",
+        "invoices": "Rechnungen",
+        "quotes": "Angebote",
+        "agreements": "Vereinbarungen"
+      }
+    },
+    "documents": {
+      "title": "Dokumente",
+      "subtitle": "Runbooks, Baselines, Richtlinien und Servicenachweise für diese Organisation.",
+      "empty": "Noch keine Dokumente. Laden Sie ein Runbook, eine Baseline oder eine unterschriebene Richtlinie hoch, um die Bibliothek zu starten.",
+      "emptyFiltered": "Keine Dokumente in dieser Kategorie.",
+      "loadFailed": "Dokumente konnten nicht geladen werden.",
+      "upload": "Dokument hochladen",
+      "uploading": "Wird hochgeladen…",
+      "replace": "Ersetzen",
+      "download": "Herunterladen",
+      "delete": "Löschen",
+      "deleteConfirm": "„{{title}}“ löschen? Dadurch werden die Datei und alle früheren Versionen entfernt. Dies kann nicht rückgängig gemacht werden.",
+      "edit": "Bearbeiten",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "versions": "Versionsverlauf",
+      "showSuperseded": "Frühere Versionen anzeigen",
+      "form": {
+        "title": "Titel",
+        "description": "Beschreibung",
+        "category": "Kategorie",
+        "portalVisible": "Im Kundenportal sichtbar",
+        "file": "Datei",
+        "fileHint": "PDF, JPEG, PNG oder WebP, bis zu 10 MB.",
+        "replaceHint": "Die aktuelle Version wird als Verlauf aufbewahrt, und die neue Datei wird zur aktuellen Version."
+      },
+      "filter": {
+        "all": "Alle Kategorien"
+      },
+      "category": {
+        "baseline": "Basislinie",
+        "runbook": "Betriebshandbuch",
+        "policy": "Richtlinie",
+        "evidence": "Nachweis",
+        "report": "Bericht",
+        "export": "Exportdatei",
+        "other": "Sonstiges"
+      },
+      "column": {
+        "title": "Titel",
+        "category": "Kategorie",
+        "size": "Größe",
+        "uploaded": "Hochgeladen",
+        "portal": "Kundenportal",
+        "actions": "Aktionen"
+      },
+      "badge": {
+        "superseded": "Frühere Version",
+        "portal": "Im Portal"
+      },
+      "errors": {
+        "tooLarge": "Diese Datei ist größer als 10 MB.",
+        "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien gespeichert werden.",
+        "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+        "notHead": "Dieses Dokument wurde bereits ersetzt. Laden Sie die Seite neu und arbeiten Sie mit der aktuellen Version.",
+        "emptyFile": "Diese Datei ist leer.",
+        "uploadFailed": "Das Dokument konnte nicht hochgeladen werden.",
+        "updateFailed": "Das Dokument konnte nicht gespeichert werden.",
+        "deleteFailed": "Das Dokument konnte nicht gelöscht werden.",
+        "downloadFailed": "Das Dokument konnte nicht heruntergeladen werden."
+      },
+      "toast": {
+        "uploaded": "Dokument hochgeladen",
+        "replaced": "Neue Version hochgeladen",
+        "updated": "Dokument aktualisiert",
+        "deleted": "Dokument gelöscht"
+      }
+    }
+  },
+  "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} Organisationen)",
+    "partnerOption_one": "{{id}}… ({{count}} Organisation)",
+    "partnerScopeHint": "Die Konten eines Partners werden angezeigt; die Summen unten gelten nur für diesen Partner",
+    "title": "Organisationen",
+    "description": "Jeder Kunde, was ihm noch fehlt und was offen ist.",
+    "loading": "Organisationen werden geladen…",
+    "actions": {
+      "addOrganization": "Organisation hinzufügen",
+      "tryAgain": "Erneut versuchen",
+      "clearFilters": "Filter zurücksetzen",
+      "openRecord": "Datensatz öffnen",
+      "contact": "{{name}} kontaktieren",
+      "newTicket": "Neues Ticket",
+      "workHere": "In dieser Organisation arbeiten",
+      "settings": "Einstellungen",
+      "archive": "Organisation archivieren",
+      "merge": "In eine andere Organisation zusammenführen",
+      "restore": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt…"
+    },
+    "rowMenu": { "label": "Aktionen für {{name}}" },
+    "search": { "label": "Organisationen, Kontakte und E-Mail-Adressen durchsuchen" },
+    "lens": { "label": "Ansicht", "setup": "Einrichtung", "account": "Konto", "both": "Beide" },
+    "filters": {
+      "label": "Filtern",
+      "all": "Alle",
+      "setupIncomplete": "Einrichtung unvollständig",
+      "accountMissing": "Kontodaten fehlen",
+      "openTickets": "Offene Tickets",
+      "trial": "Testphase",
+      "archived": "Archiviert",
+      "unlinked": "Nicht verknüpft"
+    },
+    "sort": { "label": "Sortieren", "manual": "Manuelle Reihenfolge", "name": "A bis Z", "tickets": "Offene Tickets" },
+    "columns": { "organization": "Organisation", "setup": "Einrichtung", "account": "Kontodaten", "tickets": "Offene Tickets", "actions": "Zeilenaktionen", "integrations": "Integrationen" },
+    "band": {
+      "label": "Kontobereitschaft",
+      "all": "Konten",
+      "allSub": "{{trial}} in Testphase · {{suspended}} gesperrt",
+      "setupIncomplete": "Einrichtung unvollständig",
+      "accountMissing": "Kontodaten fehlen",
+      "openTickets": "Offene Tickets",
+      "openTicketsSub": "{{count}} SLA verletzt",
+      "pending": "Organisationen werden geprüft…",
+      "partial": "Einige Organisationen konnten nicht geprüft werden.",
+      "unlinked": "Nicht verknüpft"
+    },
+    "chips": {
+      "noSite": "Kein Standort",
+      "noDevices": "Keine Geräte registriert",
+      "noCheckIn": "Kein Agent hat sich gemeldet",
+      "staleCheckIn_one": "Seit {{count}} Tag keine Agent-Meldung",
+      "staleCheckIn_other": "Seit {{count}} Tagen keine Agent-Meldung",
+      "noPolicy": "Keine Richtlinie zugewiesen",
+      "primaryContact": "Hauptansprechpartner",
+      "contactEmail": "Kontakt-E-Mail",
+      "contactPhone": "Kontakttelefon",
+      "billingContact": "Rechnungskontakt",
+      "billingAddress": "Rechnungsadresse",
+      "overdueInvoices_one": "{{count}} überfällige Rechnung",
+      "overdueInvoices_other": "{{count}} überfällige Rechnungen",
+      "invitation_one": "{{count}} Einladung nicht angenommen",
+      "invitation_other": "{{count}} Einladungen nicht angenommen",
+      "complete": "Vollständig",
+      "notApplicable": "Nicht zutreffend",
+      "unavailable": "Nicht verfügbar",
+      "stillNeeded": "Noch offen",
+      "link": "{{chip}} für {{orgName}}",
+      "noActiveContract": "Kein aktiver Vertrag",
+      "noBackup": "Kein Backup konfiguriert"
+    },
+    "repair": {
+      "sites": "Registerkarte „Standorte“ für {{orgName}} öffnen",
+      "devices": "Registerkarte „Geräte“ für {{orgName}} öffnen",
+      "policies": "Konfigurationsrichtlinien öffnen",
+      "contacts": "Registerkarte „Kontakte“ für {{orgName}} öffnen",
+      "settings": "Einstellungen für {{orgName}} öffnen",
+      "billing": "Registerkarte „Abrechnung“ für {{orgName}} öffnen",
+      "backup": "Backup für {{orgName}} öffnen"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS-Filter" },
+      "state": { "linked": "Verknüpft", "pending": "Ausstehend", "error": "Erfordert Aufmerksamkeit", "identity": "Nur Identität", "not_linked": "Nicht verknüpft" },
+      "reason": {
+        "suggested_match": "Vorgeschlagene Zuordnung, noch nicht bestätigt",
+        "sync_error": "Letzte Synchronisierung fehlgeschlagen",
+        "consent_pending": "Wartet auf Microsoft-Einwilligung",
+        "expired": "Verbindung abgelaufen",
+        "degraded": "Verbindung eingeschränkt",
+        "suspended": "Verbindung ausgesetzt",
+        "error": "Verbindung hat einen Fehler gemeldet",
+        "never_synced": "Noch nie synchronisiert",
+        "sync_failed": "Connector-Synchronisierung fehlgeschlagen",
+        "disabled": "Verbindung deaktiviert",
+        "connector_error": "Connector inaktiv oder fehlerhaft"
+      },
+      "notLinked": "{{system}} nicht verknüpft",
+      "nothingLinked": "Nichts verknüpft",
+      "connectorMuted": "{{system}}-Connector ist nicht verbunden",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} muss neu verbunden werden",
+          "disconnected": "{{system}} ist getrennt",
+          "error": "{{system}}-Connector hat einen Fehler",
+          "disabled": "{{system}}-Connector ist deaktiviert"
+        },
+        "openSettings": "{{system}}-Einstellungen öffnen"
+      }
+    },
+    "tickets": { "open": "{{count}} offen", "awaiting": "{{count}} warten auf Kunde", "sla": "{{count}} SLA verletzt" },
+    "meta": {
+      "workspace": "Arbeitsbereich",
+      "devices_one": "{{count}} Gerät",
+      "devices_other": "{{count}} Geräte",
+      "sites_one": "{{count}} Standort",
+      "sites_other": "{{count}} Standorte",
+      "archivedBadge": "Archiviert",
+      "archivingBadge": "Wird archiviert…",
+      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
+      "purgeToday": "Wird heute endgültig gelöscht",
+      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
+      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht"
+    },
+    "reorder": {
+      "handle": "{{name}} neu anordnen",
+      "hint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
+      "dragToReorder": "Zum Neuanordnen ziehen",
+      "moved": "{{name}} wurde an Position {{position}} von {{total}} verschoben"
+    },
+    "footer": {
+      "summary": "{{accounts}} aktive Konten · {{devices}} Geräte",
+      "summaryWithTickets": "{{accounts}} aktive Konten · {{devices}} Geräte · {{tickets}} offene Tickets",
+      "manualHint": "Manuelle Reihenfolge: Zeile ziehen oder die Pfeiltasten auf dem Griff verwenden."
+    },
+    "empty": {
+      "title": "Noch keine Organisationen",
+      "description": "Fügen Sie Ihren ersten Kunden hinzu, um Einrichtung und Kontodaten im Blick zu behalten.",
+      "noMatches": "Keine Organisationen entsprechen Ihrer Suche oder Ihrem Filter."
+    },
+    "archived": {
+      "loading": "Archivierte Organisationen werden geladen…",
+      "empty": "Keine archivierten Organisationen.",
+      "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
+      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
+      "fetchError": "Archivierte Organisationen konnten nicht geladen werden"
+    },
+    "restore": {
+      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
+      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
+      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
+      "errors": {
+        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
+        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
+        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
+      }
+    },
+    "add": {
+      "title": "Organisation hinzufügen",
+      "description": "Erstellen Sie eine neue Organisation mit den unten aufgeführten Details.",
+      "submit": "Organisation erstellen",
+      "created": "{{name}} hinzugefügt. Die Zeile zeigt, was als Nächstes einzurichten ist."
+    },
+    "errors": {
+      "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
+      "generic": "Es ist ein Fehler aufgetreten",
+      "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
+      "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
+      "readiness": "Die Kontobereitschaft einiger Organisationen konnte nicht geprüft werden."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Aufsteigend",
+      "descending": "Absteigend",
+      "sortBy": "Sortieren nach {{label}}",
+      "sortByWithDirection": "Sortieren nach {{label}}, {{direction}}"
+    }
+  }
+}

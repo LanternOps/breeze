@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { executeMock, updateMock, addMock, closeMock } = vi.hoisted(() => ({
+const { executeMock, updateMock, addMock, pamAddMock, closeMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
   updateMock: vi.fn(),
   addMock: vi.fn(),
+  pamAddMock: vi.fn(),
   closeMock: vi.fn(),
 }));
 
@@ -54,8 +55,8 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../services/bullmqQueue', () => ({
-  createInstrumentedQueue: vi.fn(() => ({
-    add: addMock,
+  createInstrumentedQueue: vi.fn((name: string) => ({
+    add: name === 'pam-actuation' ? pamAddMock : addMock,
     close: closeMock,
   })),
 }));
@@ -78,6 +79,7 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     addMock.mockResolvedValue({ id: 'bullmq-job-1' });
+    pamAddMock.mockResolvedValue({ id: 'pam-job-1' });
   });
 
   it('enqueues claimed rows with hyphenated jobId, marks published, and increments attempts', async () => {
@@ -238,5 +240,35 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
     // Sanity: the DB context helper itself is not held after the full pass
     // either — the claim and mark-published contexts both closed cleanly.
     expect(dbModule.hasDbAccessContext()).toBe(false);
+  });
+
+  it('routes PAM rows to the dedicated queue outside the DB context', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    executeMock.mockResolvedValueOnce({
+      rows: [{
+        id: 6,
+        intent_id: null,
+        pam_actuation_id: '50000000-0000-4000-8000-000000000001',
+        event_type: 'pam.desired_state_changed',
+        payload: { generation: 3 },
+        publish_attempts: 1,
+      }],
+    });
+    const chain = makeUpdateChain();
+    updateMock.mockReturnValue({ set: chain.set });
+    let contextDuringAdd: boolean | undefined;
+    pamAddMock.mockImplementation(async () => {
+      contextDuringAdd = dbModule.hasDbAccessContext();
+      return { id: 'pam-job-3' };
+    });
+
+    await expect(publishOutboxRows()).resolves.toEqual({ published: 1, skipped: 0 });
+    expect(pamAddMock).toHaveBeenCalledWith(
+      'pam.desired_state_changed',
+      { actuationId: '50000000-0000-4000-8000-000000000001', generation: 3 },
+      expect.objectContaining({ jobId: 'pam-50000000-0000-4000-8000-000000000001-3' }),
+    );
+    expect(addMock).not.toHaveBeenCalled();
+    expect(contextDuringAdd).toBe(false);
   });
 });

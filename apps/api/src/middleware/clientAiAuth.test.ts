@@ -12,6 +12,7 @@ const {
   const redis = {
     get: vi.fn(),
     del: vi.fn(() => Promise.resolve(1)),
+    srem: vi.fn(() => Promise.resolve(1)),
     expire: vi.fn(() => Promise.resolve(1)),
   };
   const captured: unknown[] = [];
@@ -36,6 +37,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../services/redis', () => ({ getRedis: getRedisMock }));
 
+// Org-status gate (org-lifecycle Wave 2): the middleware now refuses a session
+// whose org is not usable. Default to "usable" so these tests keep asserting
+// what they are about; the gate itself is covered by clientAiAuthOrgStatusGate.test.ts.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
+}));
+
 vi.mock('../services/clientAiPolicy', () => ({
   getOrgPolicy: getOrgPolicyMock,
   isClientUserPermitted: (
@@ -56,6 +64,7 @@ const USER_ROW = {
   email: 'finance.user@contoso.com',
   name: 'Finance User',
   status: 'active',
+  authEpoch: 1,
   partnerAiForOfficeEnabled: true,
 };
 
@@ -88,7 +97,7 @@ beforeEach(() => {
   capturedDbContexts.length = 0;
   getRedisMock.mockReturnValue(redisMock);
   redisMock.get.mockResolvedValue(
-    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, createdAt: new Date().toISOString() })
+    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, authEpoch: 1, createdAt: new Date().toISOString() })
   );
   setupUserSelect(USER_ROW);
 });

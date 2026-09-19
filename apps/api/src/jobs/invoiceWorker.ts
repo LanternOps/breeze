@@ -18,6 +18,7 @@ import { captureException } from '../services/sentry';
 import { renderInvoicePdf } from '../services/invoicePdf';
 import { runOverdueSweep } from '../services/invoiceService';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const INVOICE_QUEUE = 'invoice-jobs';
 const OVERDUE_SWEEP_CRON = jobSchedule('invoice-overdue-sweep');
@@ -155,6 +156,7 @@ let invoiceWorker: Worker<InvoiceJobData> | null = null;
 export async function initializeInvoiceWorkers(): Promise<void> {
   try {
     invoiceWorker = createInvoiceWorker();
+  attachWorkerObservability(invoiceWorker, 'invoiceWorker');
 
     invoiceWorker.on('error', (error) => {
       console.error('[InvoiceWorker] Worker error:', error);

@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Copy, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { ScriptLanguage, OSType, ScriptRunAs } from '@breeze/shared';
+import type { ScriptLanguage, OSType, ScriptRunAs, ScriptOrigin } from '@breeze/shared';
 import { ScopeBadge } from '../shared/ScopeBadge';
 export type { ScriptLanguage, OSType } from '@breeze/shared';
 export type ScriptStatus = 'active' | 'draft' | 'archived';
@@ -25,6 +25,15 @@ export type Script = {
   orgId?: string | null;
   partnerId?: string | null;
   isSystem?: boolean;
+  // Provenance (Task 22, spec §4.1/§4.8). Absent on a mock/legacy row —
+  // callers must treat that as 'human' / not-reviewed, never `undefined`.
+  origin?: ScriptOrigin;
+  /** True when the version at `scripts.version` (the head) carries a review. */
+  reviewedAtHead?: boolean;
+  /** Set when the script originated from a reviewed AI proposal. Null/undefined
+   *  for an `ai_proposal`-origin script created via Fleet Design apply, which
+   *  is AI-authored and human-approved but never model-reviewed (#5654). */
+  originProposalId?: string | null;
 };
 
 type Organization = {
@@ -37,7 +46,9 @@ type ScriptListProps = {
   categories?: string[];
   onRun?: (script: Script) => void;
   onEdit?: (script: Script) => void;
+  onDuplicate?: (script: Script) => void;
   onDelete?: (script: Script) => void;
+  onOpenLibrary?: () => void;
   pageSize?: number;
   timezone?: string;
   organizations?: Organization[];
@@ -60,6 +71,15 @@ const osLabels: Record<OSType, string> = {
   windows: 'os.windows',
   macos: 'os.macos',
   linux: 'os.linux'
+};
+
+// Mirrors ScriptProvenancePanel.tsx's ORIGIN_KEY_SUFFIX — keeps both readers
+// of the existing `provenance.origin*` i18n keys in sync.
+const ORIGIN_KEY_SUFFIX: Record<ScriptOrigin, string> = {
+  human: 'Human',
+  ai_proposal: 'AiProposal',
+  imported: 'Imported',
+  system: 'System',
 };
 
 function formatLastRun(dateString: string | undefined, t: ScriptsT, timezone?: string): string {
@@ -87,7 +107,9 @@ export default function ScriptList({
   categories = [],
   onRun,
   onEdit,
+  onDuplicate,
   onDelete,
+  onOpenLibrary,
   pageSize = 10,
   timezone,
   organizations = [],
@@ -105,6 +127,7 @@ export default function ScriptList({
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [languageFilter, setLanguageFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
+  const [originFilter, setOriginFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -137,10 +160,11 @@ export default function ScriptList({
       const matchesCategory = categoryFilter === 'all' ? true : script.category === categoryFilter;
       const matchesLanguage = languageFilter === 'all' ? true : script.language === languageFilter;
       const matchesOs = osFilter === 'all' ? true : script.osTypes.includes(osFilter as OSType);
+      const matchesOrigin = originFilter === 'all' ? true : (script.origin ?? 'human') === originFilter;
 
-      return matchesQuery && matchesCategory && matchesLanguage && matchesOs;
+      return matchesQuery && matchesCategory && matchesLanguage && matchesOs && matchesOrigin;
     });
-  }, [scripts, query, categoryFilter, languageFilter, osFilter]);
+  }, [scripts, query, categoryFilter, languageFilter, osFilter, originFilter]);
 
   const sortedScripts = useMemo(() => {
     if (!sortColumn) return filteredScripts;
@@ -230,6 +254,25 @@ export default function ScriptList({
             <option value="macos">{t('scriptList.os.macos')}</option>
             <option value="linux">{t('scriptList.os.linux')}</option>
           </select>
+          <select
+            data-testid="script-origin-filter"
+            value={originFilter}
+            onChange={event => {
+              if (event.target.value === 'system' && onOpenLibrary) {
+                onOpenLibrary();
+                return;
+              }
+              setOriginFilter(event.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+          >
+            <option value="all">{t('provenance.allOrigins')}</option>
+            <option value="human">{t('provenance.originHuman')}</option>
+            <option value="ai_proposal">{t('provenance.originAiProposal')}</option>
+            <option value="imported">{t('provenance.originImported')}</option>
+            <option value="system">{t('provenance.originSystem')}</option>
+          </select>
         </div>
         <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
           {t('scriptList.summary', { shown: filteredScripts.length, total: scripts.length })}
@@ -258,6 +301,9 @@ export default function ScriptList({
                   {sortColumn === 'category' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
+              <th data-testid="script-col-origin" className="px-4 py-2.5">
+                {t('provenance.origin')}
+              </th>
               <th className="px-4 py-2.5">{t('scriptList.headers.os')}</th>
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('lastRun')}>
                 <span className="inline-flex items-center gap-1">
@@ -276,8 +322,8 @@ export default function ScriptList({
           </thead>
           <tbody className="divide-y">
             {paginatedScripts.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+              <tr data-testid="script-empty-row">
+                <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   {t('scriptList.empty')}
                 </td>
               </tr>
@@ -285,6 +331,7 @@ export default function ScriptList({
               paginatedScripts.map(script => (
                 <tr
                   key={script.id}
+                  data-testid={`script-row-${script.id}`}
                   tabIndex={0}
                   role="button"
                   className="transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
@@ -324,6 +371,42 @@ export default function ScriptList({
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">{script.category}</td>
+                  <td data-testid={`script-origin-${script.id}`} className="px-4 py-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span>{t(/* i18n-dynamic */ `provenance.origin${ORIGIN_KEY_SUFFIX[script.origin ?? 'human']}`)}</span>
+                      {(script.origin ?? 'human') === 'ai_proposal' && (
+                        script.reviewedAtHead ? (
+                          <span
+                            data-testid={`script-badge-reviewed-${script.id}`}
+                            className="inline-flex items-center rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success"
+                          >
+                            {t('provenance.reviewed')}
+                          </span>
+                        ) : script.originProposalId ? (
+                          // Honest downgrade (spec §4.1): a human edit cuts a
+                          // head with no review, so the badge must stop
+                          // claiming the AI review still describes the code.
+                          <span
+                            data-testid={`script-badge-edited-since-review-${script.id}`}
+                            className="inline-flex items-center rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                          >
+                            {t('provenance.editedSinceReview')}
+                          </span>
+                        ) : (
+                          // No originProposalId at all (e.g. Fleet Design
+                          // apply, #5654): AI-authored, human-approved at
+                          // apply, but never model-reviewed. "Edited since
+                          // review" would falsely imply a review once existed.
+                          <span
+                            data-testid={`script-badge-not-reviewed-${script.id}`}
+                            className="inline-flex items-center rounded-full bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium"
+                          >
+                            {t('provenance.notReviewed')}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {script.osTypes.map(os => (
@@ -377,6 +460,19 @@ export default function ScriptList({
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
+                      {onDuplicate && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDuplicate(script);
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                          title={t('scriptList.actions.duplicateTitle')}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={(e) => {

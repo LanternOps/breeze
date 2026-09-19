@@ -12,6 +12,7 @@ import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { normalizeGraphMessage } from '../services/ticketMailbox/normalizeGraphMessage';
 import { enqueueInboundEmail } from '../services/inboundEmailQueue';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'ticket-mailbox-poll';
 const SWEEP_INTERVAL_MS = 90 * 1000;
@@ -36,6 +37,10 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     }
 
     const next = status === 401 || status === 403 ? 'reauth_required' : 'error';
+    // Raw, unsanitized text (do not prefix with MAILBOX_VERIFICATION_FAILED,
+    // 'Mailbox verification failed' — connectionService.ts's listMailboxConnections
+    // only exposes lastError to the client when it has that exact prefix, to
+    // keep this poller's error text server-side-only; #6192).
     await setConnectedMailboxStatus(
       c,
       next,
@@ -120,9 +125,21 @@ export async function initializeTicketMailboxPollWorker(): Promise<void> {
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );
+  attachWorkerObservability(worker, 'ticketMailboxPollWorker');
 
   worker.on('failed', (job, err) => {
     console.error('[mailboxPoll] sweep job failed', { id: job?.id, err: err?.message });
   });
   console.log('[mailboxPoll] worker initialized');
+}
+
+export async function shutdownTicketMailboxPollWorker(): Promise<void> {
+  if (worker) {
+    await worker.close();
+    worker = null;
+  }
+  if (queue) {
+    await queue.close();
+    queue = null;
+  }
 }

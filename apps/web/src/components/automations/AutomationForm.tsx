@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import { useForm, useFieldArray, Controller, FormProvider } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { z } from 'zod';
@@ -22,6 +22,11 @@ import { cn } from '@/lib/utils';
 import type { TriggerType } from './AutomationList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
+import ActionsEditor, {
+  type Script,
+  type NotificationChannel,
+  type SoftwareCatalogItem,
+} from './ActionsEditor';
 
 type ScriptsT = TFunction<'scripts'>;
 
@@ -51,21 +56,49 @@ function describeCron(cron: string, t: ScriptsT): string {
   return `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;
 }
 
+// Module scope (not inside `createAutomationSchema`) since `ActionsEditor`
+// needs it too (#5289) and none of its fields validate through `t()` — only
+// the array-level `.min(1, t(...))` in `createAutomationSchema` below does.
+export const actionSchema = z.object({
+  type: z.enum([
+    'run_script',
+    'send_notification',
+    'create_alert',
+    'execute_command',
+    'deploy_software',
+    // AI agents wave 3d / #5289 monitor responses: system-managed, carries no
+    // config of its own (mirrors `automationActionSchema`'s `ai_triage` arm in
+    // packages/shared). The control only offers it when the parent form sets
+    // `allowAiTriage` on `ActionsEditor`.
+    'ai_triage'
+  ]),
+  scriptId: z.string().optional(),
+  // Absent means "use the script's own saved default" — the default MUST
+  // stay absent so an existing automation that never set this is
+  // byte-identical on save (#4888).
+  //
+  // `'elevated'` is accepted (though the control never offers it) so a
+  // stored elevated override survives an unrelated edit instead of being
+  // stripped by the schema on the way through — RunContextSelect renders it
+  // as a disabled option.
+  runAs: z.enum(['system', 'user', 'elevated']).optional(),
+  // #5128 W4 — offline behaviour for run_script / execute_command.
+  // Optional here so an action loaded from a pre-#5128 automation keeps a
+  // byte-identical payload until the operator actually touches the control;
+  // the API defaults an absent value to 'queue'.
+  whenOffline: z.enum(['queue', 'skip']).optional(),
+  notificationChannelId: z.string().optional(),
+  alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  alertMessage: z.string().optional(),
+  command: z.string().optional(),
+  catalogId: z.string().optional()
+});
+
 const createAutomationSchema = (t: ScriptsT) => {
   const conditionSchema = z.object({
     type: z.enum(['site', 'group', 'os', 'tag']),
     operator: z.enum(['is', 'is_not', 'contains', 'not_contains']),
     value: z.string().min(1, t('automationForm.validation.valueRequired'))
-  });
-
-  const actionSchema = z.object({
-    type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command', 'deploy_software']),
-    scriptId: z.string().optional(),
-    notificationChannelId: z.string().optional(),
-    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-    alertMessage: z.string().optional(),
-    command: z.string().optional(),
-    catalogId: z.string().optional()
   });
 
   return z.object({
@@ -94,9 +127,6 @@ export type ActionFormValues = AutomationFormValues['actions'][number];
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
-type Script = { id: string; name: string };
-type NotificationChannel = { id: string; name: string; type: string };
-type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
 type AutomationFormProps = {
   onSubmit?: (values: AutomationFormValues) => void | Promise<void>;
@@ -171,22 +201,6 @@ const getOperatorOptions = (t: ScriptsT) => [
   { value: 'not_contains', label: t('automationForm.operators.doesNotContain') }
 ];
 
-const getActionTypeOptions = (t: ScriptsT) => [
-  { value: 'run_script', label: t('automationForm.actionTypes.runScript') },
-  { value: 'send_notification', label: t('automationForm.actionTypes.sendNotification') },
-  { value: 'create_alert', label: t('automationForm.actionTypes.createAlert') },
-  { value: 'execute_command', label: t('automationForm.actionTypes.executeCommand') },
-  { value: 'deploy_software', label: t('automationForm.actionTypes.deploySoftware') }
-];
-
-const getSeverityOptions = (t: ScriptsT) => [
-  { value: 'critical', label: t('automationForm.severity.critical') },
-  { value: 'high', label: t('automationForm.severity.high') },
-  { value: 'medium', label: t('automationForm.severity.medium') },
-  { value: 'low', label: t('automationForm.severity.low') },
-  { value: 'info', label: t('automationForm.severity.info') }
-];
-
 const getOnFailureOptions = (t: ScriptsT) => [
   { value: 'stop', label: t('automationForm.failure.stop.label'), description: t('automationForm.failure.stop.description') },
   { value: 'continue', label: t('automationForm.failure.continue.label'), description: t('automationForm.failure.continue.description') },
@@ -221,19 +235,10 @@ export default function AutomationForm({
   const eventTypeOptions = useMemo(() => getEventTypeOptions(t), [t]);
   const conditionTypeOptions = useMemo(() => getConditionTypeOptions(t), [t]);
   const operatorOptions = useMemo(() => getOperatorOptions(t), [t]);
-  const actionTypeOptions = useMemo(() => getActionTypeOptions(t), [t]);
-  const severityOptions = useMemo(() => getSeverityOptions(t), [t]);
   const onFailureOptions = useMemo(() => getOnFailureOptions(t), [t]);
   const resolvedSubmitLabel = submitLabel ?? t('automationForm.actions.saveAutomation');
 
-  const {
-    register,
-    handleSubmit,
-    control,
-    watch,
-    setValue,
-    formState: { errors, isSubmitting }
-  } = useForm<AutomationFormValues>({
+  const methods = useForm<AutomationFormValues>({
     resolver: zodResolver(automationSchema),
     defaultValues: {
       name: '',
@@ -248,6 +253,14 @@ export default function AutomationForm({
       ...defaultValues
     }
   });
+  const {
+    register,
+    handleSubmit,
+    control,
+    watch,
+    setValue,
+    formState: { errors, isSubmitting }
+  } = methods;
 
   const {
     fields: conditionFields,
@@ -258,18 +271,8 @@ export default function AutomationForm({
     name: 'conditions'
   });
 
-  const {
-    fields: actionFields,
-    append: appendAction,
-    remove: removeAction
-  } = useFieldArray({
-    control,
-    name: 'actions'
-  });
-
   const watchTriggerType = watch('triggerType');
   const watchCronExpression = watch('cronExpression');
-  const watchActions = watch('actions');
   const watchOnFailure = watch('onFailure');
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
@@ -286,6 +289,7 @@ export default function AutomationForm({
   };
 
   return (
+    <FormProvider {...methods}>
     <form
       onSubmit={handleSubmit(async values => {
         await onSubmit?.({
@@ -630,163 +634,19 @@ export default function AutomationForm({
         )}
       </div>
 
-      {/* Actions Builder */}
+      {/* Actions Builder (#5289: extracted into ActionsEditor, shared with the monitor editor's Respond/Escalate cards) */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold">{t('automationForm.sections.actions')}</h3>
-            <p className="text-xs text-muted-foreground">{t('automationForm.sections.actionsDescription')}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => appendAction({ type: 'run_script' })}
-            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-          >
-            <Plus className="h-4 w-4" />
-            {t('automationForm.actions.addAction')}
-          </button>
+        <div>
+          <h3 className="text-sm font-semibold">{t('automationForm.sections.actions')}</h3>
+          <p className="text-xs text-muted-foreground">{t('automationForm.sections.actionsDescription')}</p>
         </div>
-
-        {errors.actions && (
-          <p className="text-sm text-destructive">{errors.actions.message}</p>
-        )}
-
-        {actionFields.length > 0 && (
-          <div className="space-y-3">
-            {actionFields.map((field, index) => (
-              <div key={field.id} className="rounded-md border bg-muted/20 p-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
-                    {index + 1}
-                  </div>
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center gap-3">
-                      <select
-                        className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                        {...register(`actions.${index}.type`)}
-                      >
-                        {actionTypeOptions.map(opt => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {watchActions?.[index]?.type === 'run_script' && (
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.script')}</label>
-                        <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                          {...register(`actions.${index}.scriptId`)}
-                        >
-                          <option value="">{t('automationForm.placeholders.selectScript')}</option>
-                          {scripts.map(script => (
-                            <option key={script.id} value={script.id}>
-                              {script.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {watchActions?.[index]?.type === 'send_notification' && (
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          {t('automationForm.fields.notificationChannel')}
-                        </label>
-                        <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                          {...register(`actions.${index}.notificationChannelId`)}
-                        >
-                          <option value="">{t('automationForm.placeholders.selectChannel')}</option>
-                          {notificationChannels.map(channel => (
-                            <option key={channel.id} value={channel.id}>
-                              {channel.name} ({channel.type})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {watchActions?.[index]?.type === 'create_alert' && (
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.severity')}</label>
-                          <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                            {...register(`actions.${index}.alertSeverity`)}
-                          >
-                            {severityOptions.map(opt => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.message')}</label>
-                          <input
-                            placeholder={t('automationForm.placeholders.alertMessage')}
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                            {...register(`actions.${index}.alertMessage`)}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {watchActions?.[index]?.type === 'execute_command' && (
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.command')}</label>
-                        <input
-                          placeholder="systemctl restart nginx"
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
-                          {...register(`actions.${index}.command`)}
-                        />
-                      </div>
-                    )}
-
-                    {watchActions?.[index]?.type === 'deploy_software' && (
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.software')}</label>
-                        <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                          {...register(`actions.${index}.catalogId`)}
-                        >
-                          <option value="">{t('automationForm.placeholders.selectSoftware')}</option>
-                          {softwareCatalog.map(item => (
-                            <option key={item.id} value={item.id}>
-                              {item.vendor ? `${item.name} (${item.vendor})` : item.name}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="text-xs text-muted-foreground">
-                          {t('automationForm.software.installLatestHint')}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => removeAction(index)}
-                    disabled={actionFields.length === 1}
-                    className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {actionFields.length === 0 && (
-          <div className="rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t('automationForm.empty.noActions')}
-            </p>
-          </div>
-        )}
+        <ActionsEditor
+          name="actions"
+          minItems={1}
+          scripts={scripts}
+          notificationChannels={notificationChannels}
+          softwareCatalog={softwareCatalog}
+        />
       </div>
 
       {/* On Failure Behavior */}
@@ -853,5 +713,6 @@ export default function AutomationForm({
         </button>
       </div>
     </form>
+    </FormProvider>
   );
 }

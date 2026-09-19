@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
@@ -109,12 +111,20 @@ Categories and tags travel by name and are created in the importing tenant when 
 </Steps>
 
 <Aside type="caution">
-  Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
+  Creating and updating scripts requires an MFA-assured session: if your organization or partner MFA policy requires MFA, or your account has a factor enrolled, the save action returns an error until the session has completed MFA. Accounts without an enrolled factor in a tenant that does not require MFA are admitted with a password alone.
 </Aside>
+
+### Duplicating a script
+
+Use **Duplicate** — in the row actions on the Scripts list, or in the script editor toolbar — to start a new script from an existing one. Breeze copies the content, execution settings, parameter definitions, and tags into a new, fully editable script named `<name> (copy)`. Execution history is not copied; the new script starts with a clean record.
+
+This is the way to adapt a script from the system library without waiting for permission to edit the original, and the way to branch a working script for a customer who needs a variation. A partner-wide script duplicates as partner-wide by default; duplicating out of the system library requires you to say which organization the copy belongs to.
 
 ### Version history and rollback
 
 When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
+
+Each script's detail page also shows a **Provenance panel**: whether it was written by a person, by the AI assistant (as a reviewed proposal), imported, or shipped as a system script, plus — for AI-authored scripts — the reviewer's summary, risk tier, and who approved it. The scripts list has a matching **Origin** column and filter, with a "Reviewed" / "Edited since review" badge; editing an AI-authored script by hand clears the review badge, since what was reviewed is no longer exactly what would run. See [AI Script Authoring & Review](/features/ai-script-authoring/).
 
 ---
 
@@ -126,7 +136,9 @@ When you edit a script's content, the version number increments automatically. F
 
 2. **Review script info.** The modal shows the script's language, category, target OS, and description.
 
-3. **Choose the run-as context.** Select **System** (runs as the agent service account) or **Logged-in user** (runs in the active user session).
+3. **Choose the run-as context.** Under **Run as**, select **System** (runs as the agent service account) or **Logged-in user** (runs in the active user session).
+
+   When you run a script from a single device — its **Scripts** tab, or the **Test Run** panel in the script editor — choosing **Logged-in user** on a device whose helper starts on demand also offers a **Target session** list: **Any active session**, or a specific signed-in user by name. Pick a session when a machine has more than one person signed in and it matters which desktop the script touches. Devices with an always-on helper own a single session, so there is nothing to choose and the list does not appear. Automation actions have a **Run as** setting but no session target — an automation fans out across a fleet, where a specific session has no meaning.
 
 4. **Fill in parameters.** If the script defines parameters, fill in the values. Required parameters are marked with an asterisk. Boolean parameters show as checkboxes; select parameters show as dropdowns.
 
@@ -150,6 +162,12 @@ Navigate to **Scripts** and click a script name to open the editor, then click *
 - **Sort columns.** Click column headers (Script, Device, Status, Started, Duration, Exit Code) to sort ascending or descending.
 - **View details.** Click any execution row to open the detail view with full stdout, stderr, exit code, error messages, and timing information.
 - **Paginate.** Results are paginated with 10 per page by default.
+
+### Run again
+
+Open any past execution and click **Run again**. The Run modal reopens with the same device and the same parameter values already filled in, so re-running a fix on a machine that regressed is one click and a confirmation rather than a re-entry exercise. Change anything you like before confirming — nothing is locked.
+
+After the run is dispatched, a single-device re-run takes you to that device's **Scripts** tab with the new execution highlighted, so you can watch it finish in context. A multi-device run leaves you on the execution history.
 
 ---
 
@@ -369,6 +387,10 @@ Every parameter has a **source** that decides where its value comes from. By def
 | **From a device custom field** | A custom field value on the target device. |
 | **From a device property** | A built-in device property, such as hostname or OS type. |
 
+<Aside>
+  This reads a custom field. To have a script **write** one back to the device — no API key required — see [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script).
+</Aside>
+
 ### Using parameters in script content
 
 The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
@@ -411,6 +433,8 @@ Each variable has:
 | **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables). |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
+
+Switching the variables list to **All Organizations** lists partner-wide variables only, with a column naming the organization each row belongs to — org-scoped variables aren't shown there; open a specific organization to see or manage those.
 
 ### Using variables in a script
 
@@ -519,6 +543,8 @@ Returns the full execution record including `stdout`, `stderr`, `exitCode`, `err
   The agent captures up to 1 MB of stdout and 1 MB of stderr. Output exceeding this limit is truncated. The `truncatedFields` array in the agent result indicates which fields were truncated.
 </Aside>
 
+If the script printed a [custom-field write-back marker](/features/custom-fields/#writing-custom-fields-from-a-script), the response also includes `customFieldResult: { applied: string[], rejected: [{ key, reason }] } | null` — surfaced in the web UI's execution detail panel.
+
 ### Cancelling an execution
 
 Pending, queued, or running executions can be cancelled:
@@ -528,32 +554,50 @@ POST /scripts/executions/:executionId/cancel
 Authorization: Bearer <token>
 ```
 
-The API sets the execution status to `cancelled` and also cancels any pending device commands associated with the execution. On the agent side, the executor terminates the process and kills the entire process group to prevent orphaned child processes.
+The API sets the execution status to `cancelled` and cancels any device commands for that execution that have not yet been delivered.
+
+<Aside type="caution">
+  This stops an execution that has not reached the device yet. It does **not** reach into a device and kill a script that is already running — the process on the endpoint runs to completion or times out, and only the record in Breeze is marked cancelled.
+</Aside>
 
 ---
 
 ## Security
 
-The Go agent enforces strict security validation on all script content before execution.
+The Go agent enforces security validation on all script content before execution. There is no global, partner, or organization-level setting that changes how strict this validation is — validation behaves identically everywhere, and every acknowledgement described below applies to one specific script, never to a partner, an organization, or the fleet.
 
 ### Blocked patterns
 
-The agent's security validator operates at the **Strict** level by default, scanning for two categories of dangerous patterns:
+The validator checks script content against two categories of dangerous pattern.
 
-**Basic level** -- clearly destructive operations:
+**Basic** -- clearly destructive operations, blocked unconditionally with no override of any kind, ever:
 - Recursive deletion of root or system directories (`rm -rf /`, `rd /s /q C:\Windows`)
 - Filesystem format commands (`mkfs`, `Format-Volume`, `Clear-Disk`)
 - Direct writes to block devices (`dd of=/dev/sda`)
 - Fork bomb patterns
 - Dangerous permission changes on system paths
 
-**Strict level** -- potentially risky operations:
+**Strict** -- risky-but-legitimate admin operations that can be acknowledged per script (see below):
 - Remote code execution patterns (`curl | bash`, `Invoke-WebRequest | IEX`)
 - Credential dumping tools and techniques
 - Scheduled task / persistence creation
 - Privilege escalation via setuid/setgid
 - HKLM registry modifications
 - Sudoers modifications
+
+### Acknowledging Strict patterns
+
+Saving a script in the Scripts editor shows which Strict patterns its content currently matches, each with a plain-language explanation of the risk. Anyone who can write the script body — the same permission already required to save the script, no new permission is introduced — ticks the patterns they intend the script to trigger. The acknowledged descriptions are stored on the script record, audited (who, when, which patterns), and travel with every dispatch of that script. The agent then permits exactly those Strict patterns for that script and still blocks any other match.
+
+<Aside type="caution" title="An acknowledgement names patterns, not the whole script">
+  The stored acknowledgement is the set of Strict pattern descriptions the content matched when it was approved — never a blanket "this script is trusted" flag. Editing the script later to introduce a *different* Strict pattern leaves that new pattern unacknowledged and still blocked, even though the original approval keeps working. Removing the risky line drops its acknowledgement automatically.
+</Aside>
+
+A script that matches a Strict pattern it has not been acknowledged for fails at execution time with an error naming the pattern and telling the operator to open the script in Breeze, acknowledge it under Security review, and run it again. For a one-off change on a single device, use Remote Tools (Registry or Terminal) instead of a script.
+
+<Aside type="note">
+  The patterns are line-oriented regular expressions matched against the script body after parameter substitution. They are a guard rail against accidental destructive commands, not a containment boundary — anyone who can author or edit a script can already run arbitrary code on the device they dispatch it to.
+</Aside>
 
 ### Output sanitization
 
@@ -594,7 +638,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts. The partner-wide **Require MFA** setting (Settings → Partner → Security) is on by default for partners created after 2026-09-18, so users without an enrolled factor are routed to enrolment at sign-in.
 
 ### Viewing approval history
 
@@ -621,7 +665,7 @@ All script endpoints require authentication and the appropriate permission scope
 | POST | `/scripts/executions/:id/cancel` | `scripts:execute` | Cancel a pending, queued, or running execution |
 
 <Aside>
-  All write and execute endpoints require MFA verification. The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
+  All write and execute endpoints require an MFA-assured session (see [MFA enforcement](#mfa-enforcement)). The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
 </Aside>
 
 ---
@@ -632,10 +676,10 @@ All script endpoints require authentication and the appropriate permission scope
 The agent only supports `powershell`, `bash`, `python`, and `cmd`. Verify the `language` field matches one of these values. If using `cmd`, confirm the target device is running Windows -- `cmd` is not available on macOS or Linux.
 
 **Script times out unexpectedly.**
-The default timeout is 300 seconds (5 minutes). The maximum allowed timeout is 86,400 seconds (24 hours) at the API level, though the agent enforces a hard cap of 3,600 seconds (1 hour). Set `timeoutSeconds` when creating the script or override `runAs` at execution time. On timeout, the agent kills the entire process group to prevent orphaned children.
+The default timeout is 300 seconds (5 minutes). The maximum allowed timeout is 3,600 seconds (1 hour) — the API rejects anything higher, matching the agent's own execution cap. Set `timeoutSeconds` when creating the script or override `runAs` at execution time. On timeout, the agent kills the entire process group to prevent orphaned children.
 
 **Execution stuck in `pending` status.**
-The device may be offline or its WebSocket connection to the API may have dropped. The command is persisted in the `deviceCommands` table and transitions to `sent` only when the API successfully pushes it over the WebSocket. Check the device's connection status and ensure the agent is running.
+If the device is offline, this is expected: the command is queued and delivered automatically on the device's next successful heartbeat, up to a **7-day** delivery deadline, and it's visible and cancellable from the device's **Queued actions** list in the meantime. If the device is online but the execution is still `pending` after a few minutes, check the device's connection status and ensure the agent is running — the command is persisted in the `deviceCommands` table and transitions to `sent` only when the API successfully pushes it over the WebSocket.
 
 **Script rejected by security validation.**
 The agent's strict security validator blocks patterns that match known destructive or suspicious operations. Review the `errorMessage` field in the execution detail for the specific pattern that was detected. If the script is legitimate, consider restructuring the command to avoid matching the blocked pattern. Security validation runs after parameter substitution, so a parameter value could trigger a block.

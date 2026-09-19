@@ -126,7 +126,7 @@ func TestEnrollPresentsReenrollToken(t *testing.T) {
 	}
 }
 
-// refuseUntrustedRedirect is the http.Client.CheckRedirect policy. It must
+// RefuseUntrustedRedirect is the http.Client.CheckRedirect policy. It must
 // reject any redirect that would carry the agent's credentials off the endpoint
 // the request originally targeted, and allow trusted same-endpoint redirects.
 // See #1043.
@@ -156,15 +156,15 @@ func TestRefuseUntrustedRedirect(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := refuseUntrustedRedirect(mustReq(tt.target), []*http.Request{mustReq(tt.prev)})
+			err := RefuseUntrustedRedirect(mustReq(tt.target), []*http.Request{mustReq(tt.prev)})
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("refuseUntrustedRedirect() error = %v, wantErr = %v", err, tt.wantErr)
+				t.Fatalf("RefuseUntrustedRedirect() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 		})
 	}
 
 	// The first call (no prior hops) must always be allowed.
-	if err := refuseUntrustedRedirect(mustReq("https://api.example.com/a"), nil); err != nil {
+	if err := RefuseUntrustedRedirect(mustReq("https://api.example.com/a"), nil); err != nil {
 		t.Fatalf("empty via should be allowed, got %v", err)
 	}
 }

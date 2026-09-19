@@ -1,8 +1,20 @@
 {
+  "aiInitiator": {
+    "assistant": "Assistant IA",
+    "agent": "Agent IA",
+    "originUnavailable": "Origine non disponible",
+    "openSession": "Ouvrir la conversation",
+    "openAgentRun": "Ouvrir l'exécution de l'agent",
+    "tool": "Outil : {{name}}",
+    "occurredAt": "Survenu le {{time}}"
+  },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
-    "devices": "Dispositifs",
+    "devices": "Dispositifs et actifs",
     "alerts": "Alertes",
     "approvals": "Approbations",
     "pendingApprovals": "{{count}} approbations en attente",
@@ -15,32 +27,28 @@
     "patches": "Correctifs",
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
-    "fleet": "Flotte",
-    "aiWorkspace": "Espace de travail IA",
     "aiForOffice": "IA pour Office",
     "networkMonitor": "Moniteur réseau",
+    "jobs": "Tâches",
+    "monitoring": "Supervision",
     "networkDiscovery": "Découverte du réseau",
-    "security": "Sécurité",
     "edr": "EDR",
     "dnsSecurity": "DNS Sécurité",
     "pam": "PAM",
     "userRisk": "Risque utilisateur",
     "sensitiveData": "Données sensibles",
     "peripherals": "Périphériques",
-    "aiRiskEngine": "Moteur de Risque IA",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Références de conformité",
     "quotes": "Citations",
     "invoices": "Factures",
     "contracts": "Contrats",
+    "agreements": "Conventions",
     "timesheets": "Feuilles de temps",
     "productCatalog": "Catalogue de produits",
-    "softwareLibrary": "Bibliothèque logicielle",
-    "softwarePolicies": "Politiques logicielles",
     "deviceGroups": "Groupes d'appareils",
     "configPolicies": "Politiques de configuration",
     "integrations": "Intégrations",
-    "backup": "Sauvegarde",
     "cloudBackup": "Sauvegarde cloud",
     "disasterRecovery": "Reprise après sinistre",
     "reports": "Rapports",
@@ -48,9 +56,15 @@
     "auditTrail": "Trace d’audit",
     "eventLogs": "Journaux d’événements",
     "partner": "Partenaire",
+    "billing": "Facturation",
     "organizations": "Organisations",
-    "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiUsage": "Utilisation de l’IA",
+    "scriptAuthoring": "Rédaction de scripts",
+    "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
+    "aiAgentRuns": "Exécutions des agents IA",
+    "aiImpact": "Impact de l’IA",
+    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -61,16 +75,29 @@
     "deletionRequests": "Demandes de suppression",
     "quarantinedDevices": "Dispositifs en quarantaine",
     "thirdPartyCatalog": "Catalogue tiers",
-    "connectedAppsAdmin": "Applications connectées (admin)",
-    "sectionAiFleet": "IA & Flotte",
-    "sectionMonitoring": "Surveillance",
+    "connectedAppsAdmin": "Applications connectées",
     "sectionSecurity": "Sécurité",
-    "sectionOperations": "Opérations",
     "sectionBackup": "Sauvegarde",
     "sectionReporting": "Reportage",
     "sectionSettings": "Paramètres",
     "sectionExtensions": "Modules d'extension",
-    "variables": "Variables"
+    "variables": "Variables",
+    "llmProviderCatalog": "Catalogue des fournisseurs LLM",
+    "aiKillSwitch": "Coupe-circuit IA",
+    "sectionAi": "IA",
+    "sectionFleetManagement": "Gestion de la flotte",
+    "sectionBilling": "Facturation",
+    "sectionAdministration": "Administration",
+    "fleetOrchestration": "Orchestration de la flotte",
+    "aiAssistant": "Assistant IA",
+    "software": "Logiciels",
+    "securityOverview": "Vue d’ensemble",
+    "aiRisk": "Risque IA",
+    "deviceBackup": "Sauvegarde des appareils",
+    "sectionServiceDesk": "Centre de services",
+    "serviceManagement": "Gestion des services",
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Modèles de livrables"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -161,6 +188,19 @@
     "none": "Aucun",
     "optional": "Optionnel",
     "required": "Obligatoire"
+  },
+  "runContext": {
+    "label": "Exécuter en tant que",
+    "scriptDefault": "Valeur par défaut du script",
+    "scriptDefaultNamed": "Valeur par défaut du script ({{context}})",
+    "system": "Système",
+    "user": "Utilisateur connecté",
+    "elevated": "Élevé",
+    "unknown": "Non enregistré",
+    "userInSession": "Utilisateur connecté (session {{session}})",
+    "sessionLabel": "Session cible",
+    "sessionAny": "Toute session active",
+    "effectiveLabel": "Contexte d’exécution"
   },
   "shared": {
     "accessDenied": {
@@ -352,6 +392,9 @@
       "criticalPending": "{{count}} correctifs critiques en attente",
       "criticalPending_one": "{{count}} correctif critique en attente",
       "criticalPending_other": "{{count}} correctifs critiques en attente",
+      "unratedPending": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
+      "unratedPending_one": "{{count}} correctif non évalué en attente (ne sera pas approuvé automatiquement)",
+      "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "empty": "Pas encore de données de correctifs"
     },
     "vuln": {
@@ -687,7 +730,19 @@
         "scripts": "Scénarios",
         "alerts": "Alertes",
         "users": "Utilisateurs",
-        "settings": "Paramètres"
+        "settings": "Paramètres",
+        "recent-devices": "Dispositifs récents",
+        "recent-pages": "Consultés récemment"
+      },
+      "actions": {
+        "newDevice": "Nouveau dispositif",
+        "newDeviceDescription": "Ajouter un dispositif à votre parc",
+        "runScript": "Exécuter un script",
+        "runScriptDescription": "Exécuter un script sur des dispositifs",
+        "alertRules": "Règles d'alerte",
+        "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
+        "keyboardShortcuts": "Raccourcis clavier",
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
       }
     },
     "notifications": {
@@ -727,7 +782,10 @@
       "collapse": "Réduire la barre latérale",
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
-      "closeMenu": "Fermer le menu"
+      "closeMenu": "Fermer le menu",
+      "recentDevices": "Dispositifs récents",
+      "hideRecentDevices": "Masquer les dispositifs récents",
+      "showRecentDevices": "Afficher les dispositifs récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -738,6 +796,20 @@
       "title": "Impossible de charger vos organisations",
       "description": "Une erreur s'est produite lors du chargement de la liste des organisations. Vérifiez votre connexion et réessayez.",
       "retry": "Réessayer"
+    },
+    "shortcuts": {
+      "title": "Raccourcis clavier",
+      "general": "Général",
+      "goTo": "Aller à",
+      "goToHint": "Appuyez sur g, relâchez, puis la touche.",
+      "then": "puis",
+      "search": "Rechercher dans Breeze",
+      "searchSlash": "Recherche (s'ouvre aussi avec cette touche)",
+      "cycleSidebar": "Changer le mode de la barre latérale",
+      "help": "Ouvrir le panneau d'aide",
+      "showThis": "Afficher cette carte",
+      "close": "Fermer une boîte de dialogue ou un menu",
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
     }
   },
   "migrationBanner": {
@@ -886,7 +958,8 @@
         "fallbackTitle": "Moniteur",
         "fields": {
           "interval": "Intervalle (s)",
-          "timeout": "Temps mort (s)"
+          "timeout": "Temps mort (s)",
+          "target": "URL cible"
         },
         "labels": {
           "lastChecked": "Dernière vérification : {{time}}",
@@ -914,6 +987,20 @@
           "httpCheck": "Vérification HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Port TCP"
+        },
+        "targetResetNote": "La modification de l’URL réinitialise l’observation TLS.",
+        "saved": "Moniteur mis à jour",
+        "certificate": {
+          "title": "Certificat",
+          "issuer": "Émetteur",
+          "expires": "Expiration",
+          "observedHost": "Hôte observé",
+          "state": "État",
+          "states": {
+            "observed": "Observé",
+            "handshakeFailed": "Échec de la négociation TLS",
+            "notTls": "Sans TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1626,6 +1713,12 @@
         "editEntry": "Modifier l’entrée {{id}}",
         "total": "Total : {{duration}}",
         "billableTotal": "Facturable : {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Minuteur",
+        "location": "Depuis la localisation",
+        "remote_session": "Depuis une session à distance",
+        "support_session": "Depuis Quick Support"
       }
     },
     "snmp": {
@@ -1758,7 +1851,9 @@
         "assetsDescription": "Vue unifiée des sondages et vérifications réseau de SNMP par actif découvert.",
         "table": {
           "asset": "Actif",
-          "overall": "Globalisation"
+          "overall": "Globalisation",
+          "reachability": "Joignabilité",
+          "collection": "Collecte"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1810,7 +1905,29 @@
         "disabling": "Désactivant...",
         "yesDisable": "Oui, désactiver",
         "monitoringNotActive": "La surveillance n’est pas active pour cet actif.",
-        "saving": "Enregistrement..."
+        "saving": "Enregistrement...",
+        "openSettings": "Paramètres…",
+        "reachability": {
+          "responding": "Répond",
+          "notResponding": "Ne répond pas",
+          "unverified": "Non vérifié",
+          "sources": {
+            "networkCheck": "vérification réseau",
+            "probe": "vérifier maintenant",
+            "scan": "analyse",
+            "unifi": "contrôleur UniFi",
+            "snmp": "interrogation SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Collecte en cours",
+          "partial": "Partielle",
+          "no_template": "Aucun modèle",
+          "failing": "En échec",
+          "paused": "En pause",
+          "never_polled": "Jamais interrogé",
+          "not_configured": "Non configuré"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2014,7 +2131,8 @@
           "notMember": "N'est plus concerné par ce constat",
           "decommissioned": "L’appareil est retiré",
           "timeout": "Expiré après 30 minutes",
-          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
+          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué",
+          "maintenanceWindow": "Appareil dans une fenêtre de maintenance"
         },
         "viewProgress": "Voir la progression",
         "errors": {
@@ -2404,6 +2522,21 @@
     "link": "Nouveautés"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximatif · taux du {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximatif · taux du {{rateDate}}",
+    "approximateFailed": "≈ total non disponible — impossible de charger les taux de change",
+    "approximateUnavailableMissing": "≈ total non disponible — aucun taux de change vers {{target}} pour {{codes}}",
+    "approximateUnavailableStale": "≈ total non disponible — le taux de change vers {{target}} pour {{codes}} est trop ancien",
+    "approximateUnavailableMixed": "≈ total non disponible — impossible de convertir {{codes}} en {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} et {{more}} autres"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Votre rôle nécessitera l’authentification à deux facteurs. Configurez-la avant le {{date}}.",
+    "cta": "Configurer la 2FA",
+    "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'authentification multifacteur n'est pas obligatoire pour votre équipe. Les sessions avec mot de passe seul peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "cta": "Exiger la MFA",
+    "dismiss": "Masquer le rappel de politique MFA pour aujourd'hui"
   }
 }

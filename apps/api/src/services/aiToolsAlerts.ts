@@ -12,13 +12,24 @@ import { alerts, devices, notificationChannels } from '../db/schema';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { publishEvent } from './eventBus';
+import {
+  ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
+  ALERT_CAS_LOST_MESSAGE,
+  ALERT_SUPPRESS_CAS_LOST_MESSAGE,
+  buildAcknowledgeAlertCas,
+  buildResolveAlertCas,
+  buildSuppressAlertCas,
+} from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
   encryptNotificationChannelConfig,
   decryptNotificationChannelConfig,
+  isMaskedIntegrationSecret,
 } from './notificationChannelSecrets';
+import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
 import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
@@ -31,12 +42,30 @@ function getOrgId(auth: AuthContext): string | null {
 // Resolve an alert within org scope AND enforce the site axis (app-layer only;
 // RLS does NOT enforce site): the alert's device must be in a site the caller
 // can access. Returns null when not found or site-denied.
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
+//
+// EXPORTED as the single implementation of alert-by-id access for AI tools:
+// aiToolsTicketing.ts kept a hand-copied twin that drifted (#6096 I6 — its
+// `alert.deviceId &&` short-circuit admitted org-wide alerts for a
+// device-bound run). One body, one contract. `services/aiTools.ts` carried a
+// third copy and now RE-EXPORTS this one (that direction already exists at
+// runtime — aiTools imports registerAlertTools from here — so the reverse
+// would close an import cycle). Identity is pinned by
+// `aiTools.findAlertWithAccess.test.ts`; do not reintroduce a local copy in
+// either module.
+export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(alerts.id, alertId)];
   const orgCond = auth.orgCondition(alerts.orgId);
   if (orgCond) conditions.push(orgCond);
   const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
   if (!alert) return null;
+  // Exact-device axis (#6096), independent of the site axis. A device-bound
+  // run (`allowedDeviceIds`) may only touch alerts attributable to a device in
+  // its allowlist — a device-LESS org-wide alert is attributable to none of
+  // them, so it is denied rather than admitted by the `alert.deviceId &&`
+  // short-circuit below. A device-LESS ANALYSIS run carries no site axis at
+  // all, so this check cannot be folded into the site one.
+  if (auth.allowedDeviceIds
+    && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return null;
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
@@ -87,10 +116,14 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (input.severity) conditions.push(eq(alerts.severity, input.severity as typeof alerts.severity.enumValues[number]));
         if (input.deviceId) conditions.push(eq(alerts.deviceId, input.deviceId as string));
 
-        // Site axis: a site-restricted caller may only see alerts for devices in
-        // their allowed sites (RLS does NOT enforce site). Narrow to that set.
+        // Both app-layer axes (RLS enforces neither): a site-restricted caller
+        // may only see alerts for devices in their allowed sites, and a
+        // device-bound run only for the devices in its allowlist.
+        // `resolveSiteAllowedDeviceIds` intersects the two, so the gate must
+        // fire when EITHER is set — a device-LESS analysis run carries
+        // `allowedDeviceIds` and no site axis at all (#6096).
         const listOrgId = getOrgId(auth);
-        if (auth.allowedSiteIds && listOrgId) {
+        if ((auth.allowedSiteIds || auth.allowedDeviceIds) && listOrgId) {
           const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
           if (!allowed || allowed.length === 0) {
             return JSON.stringify({ alerts: [], total: 0, showing: 0 });
@@ -158,14 +191,27 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         }
 
         const acknowledgedAt = new Date();
-        await db
+        // Winner-takes-all (#4101), same shape as the `resolve` branch below and as
+        // both HTTP acknowledge routes. Without the status predicate an agent step
+        // racing a technician's resolve — or racing a retried/duplicated copy of
+        // its own tool call — stamped `acknowledged` over the resolution and
+        // reported `success: true`. There was no `RETURNING` at all, so a write
+        // that matched zero rows (a lost race, or a row invisible to this tenant
+        // context, which raises no error under breeze_app RLS) was indistinguishable
+        // from a real acknowledgement.
+        const acknowledgeWrite = await db
           .update(alerts)
           .set({
             status: 'acknowledged',
             acknowledgedAt,
             acknowledgedBy: auth.user.id
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildAcknowledgeAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (acknowledgeWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE });
+        }
 
         let eventWarning: string | undefined;
         try {
@@ -210,7 +256,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         // Mirror POST /alerts/:id/resolve: already-resolved is a no-op error and
         // dismissed is terminal (resolving it would let synthetic evaluators
-        // re-create the alert the user permanently dismissed).
+        // re-create the alert the user permanently dismissed). Like the route's,
+        // this read is a fast path with a specific message, NOT the concurrency
+        // control — the compare-and-swap below is.
         if (alert.status === 'resolved') {
           return JSON.stringify({ error: 'Alert is already resolved' });
         }
@@ -220,7 +268,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         const resolvedAt = new Date();
         const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
-        await db
+        // Winner-takes-all (#4094), same predicate as `resolveAlert` and the two
+        // HTTP resolve routes. An agent racing a technician — or racing a retried
+        // or duplicated tool call of its own — must not republish `alert.resolved`
+        // for a transition it did not perform. (At-least-once event delivery,
+        // tracked for wave 3.5c in #4085, is not shipped yet; it will raise the
+        // odds further when it lands, but the race is already reachable today.)
+        const resolveWrite = await db
           .update(alerts)
           .set({
             status: 'resolved',
@@ -228,7 +282,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             resolvedBy: auth.user.id,
             resolutionNote
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildResolveAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (resolveWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_CAS_LOST_MESSAGE });
+        }
 
         let resolveEventWarning: string | undefined;
         try {
@@ -240,7 +299,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
               ruleId: alert.ruleId,
               deviceId: alert.deviceId,
               resolvedBy: auth.user.id,
-              resolutionNote
+              resolutionNote,
+              resolvedAt: resolvedAt.toISOString(),
+              triggeredAt: alert.triggeredAt.toISOString(),
             },
             'ai-tools',
             { userId: auth.user.id }
@@ -293,14 +354,21 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const resolutionNote = (input.resolutionNote as string)
           ?? (forever ? 'Suppressed indefinitely via AI assistant' : `Suppressed for ${durationHours}h via AI assistant`);
 
-        await db
+        // Winner-takes-all (#4101) — same shape as the acknowledge branch above. A
+        // stale suppress landing on a just-resolved alert would un-resolve it.
+        const suppressWrite = await db
           .update(alerts)
           .set({
             status: 'suppressed',
             suppressedUntil,
             resolutionNote
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildSuppressAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (suppressWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE });
+        }
 
         let suppressEventWarning: string | undefined;
         try {
@@ -402,6 +470,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      // Reads (list) are not gated by the site-ceiling — test/create/update/delete are.
+      if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'list') {
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 50);
@@ -543,6 +615,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (input.config !== undefined && input.config !== null) {
+          if (
+            existing.type === 'webhook'
+            && webhookOriginChangeWouldRetainAuthorization(
+              decryptNotificationChannelConfig(existing.type, existing.config),
+              input.config,
+              isMaskedIntegrationSecret,
+            )
+          ) {
+            return JSON.stringify({
+              error: 'Webhook authorization and custom headers must be re-entered or explicitly cleared when changing the endpoint origin',
+            });
+          }
           // Mirror the HTTP PUT route: merge incoming config with the existing
           // encrypted config (preserving masked/preserved secret fields), then
           // decrypt to validate the resolved config, then re-encrypt for storage.

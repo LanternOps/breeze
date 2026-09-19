@@ -6,6 +6,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { emitTicketEvent } from '../services/ticketEvents';
 import { getEventBus } from '../services/eventBus';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Ticket SLA monitor (spec §3, Phase 2): every 60s, stamp sla_breached_at /
@@ -71,6 +72,10 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
       SELECT id
       FROM tickets
       WHERE status IN ('new', 'open')
+        -- #5573 spec §4.8: planned work has a due date, not an SLA. Rows
+        -- written before tickets.work_kind shipped default to 'support', so
+        -- this narrows nothing that used to be swept.
+        AND work_kind = 'support'
         AND sla_paused_at IS NULL
         AND ${unmetCondition}
         AND ${targetColumn} IS NOT NULL
@@ -180,6 +185,7 @@ async function scheduleRepeatableJob(): Promise<void> {
 export async function initializeTicketSlaWorker(): Promise<void> {
   if (slaWorker) return;
   slaWorker = createWorker();
+  attachWorkerObservability(slaWorker, 'ticketSlaWorker');
   slaWorker.on('error', (error) => {
     console.error('[TicketSlaWorker] Worker error:', error);
     captureException(error);

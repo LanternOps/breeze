@@ -11,9 +11,9 @@ services:
     ports:
       - '6379:6379'
 
-  caddy:
-    # Uses canonical docker/Caddyfile.prod mounted by the base compose.
-    # No command override needed — Caddy reads the volume-mounted config.
+  # caddy needs no dev override: it uses the canonical docker/Caddyfile.prod
+  # mounted by the base compose, and the portal (dev server included) is routed
+  # on path alone under /portal — see the @portal block there and #3906.
 
   binaries-init:
     image: alpine:3.19
@@ -33,6 +33,10 @@ services:
       - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
+      # ee/workspace imports @breeze/extension-sdk (main: ./src/index.ts). Mount it
+      # too, or a mounted workspace hot-reloads against a baked, stale SDK
+      # (SyntaxError: does not provide an export named …) until --rebuild.
+      - ./packages/extension-sdk/src:/app/packages/extension-sdk/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # The manifest is BAKED into the image, so without this mount a local edit
       # to its tenancy / orgExportColumns is invisible to the running container
@@ -116,6 +120,8 @@ services:
       HOST: 0.0.0.0
       PORT: 4321
       PUBLIC_APP_VERSION: dev
+      # Empty → the web default (on); set false in .env to test the agent-only list.
+      PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST: ${PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST:-}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 60s

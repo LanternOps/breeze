@@ -100,10 +100,13 @@ vi.mock('../../db/schema', () => ({
     status: 'cp.status',
     orgId: 'cp.orgId',
   },
-  configPolicyFeatureLinks: {
-    configPolicyId: 'cpfl.configPolicyId',
-    featureType: 'cpfl.featureType',
-    inlineSettings: 'cpfl.inlineSettings',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'cpefl.id',
+    configPolicyId: 'cpefl.configPolicyId',
+    sourcePolicyId: 'cpefl.sourcePolicyId',
+    inherited: 'cpefl.inherited',
+    featureType: 'cpefl.featureType',
+    inlineSettings: 'cpefl.inlineSettings',
   },
   pamOrgConfig: {
     orgId: 'poc.orgId',

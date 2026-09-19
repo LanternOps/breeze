@@ -728,6 +728,9 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         .limit(10)
     : [];
 
+  // Incident RCA is an explicit event-time investigation, unlike default log
+  // recency views. Ingest clamps excessive future skew, while timestamp keeps
+  // legitimate delayed/offline event chronology inside the requested window.
   const agentLogRows = deviceIds.length > 0
     ? await db
         .select()

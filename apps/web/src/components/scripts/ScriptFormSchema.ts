@@ -66,6 +66,12 @@ export const scriptSchema = z.object({
         seen.add(row.exitCode);
       });
     }),
+  // #5129 — the agent STRICT-pattern descriptions the author acknowledges for
+  // this script. Protocol values, never translated: the agent compares them
+  // byte-for-byte against its own strings. The server re-derives the stored
+  // set as (submitted ∩ patterns the content actually matches), so anything
+  // here that the body does not contain is dropped rather than trusted.
+  acknowledgedSecurityPatterns: z.array(z.string()).optional(),
   // Who this script is available to when creating. Only relevant on create for
   // partner-scope users with >1 org; backend ignores it for org-scope users.
   availability: z.enum(['org', 'partner']).optional(),

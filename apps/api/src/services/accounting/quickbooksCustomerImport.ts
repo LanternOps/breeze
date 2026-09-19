@@ -28,7 +28,8 @@ import type {
   OrgImportErrorCode,
   OrgImportSummary,
 } from '../orgImport';
-import type { RemoteAddress, RemoteCustomer } from './types';
+import { siteAddressFrom } from './addressMapping';
+import type { RemoteCustomer } from './types';
 
 const PROVIDER = 'quickbooks' as const;
 
@@ -97,7 +98,11 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   // turn into a "Reconnect QuickBooks" CTA, instead of an opaque 500.
   let accessToken: string;
   try {
-    accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
+    // Called BARE on purpose: `getValidAccessToken` opens its own short system
+    // transactions around the QuickBooks refresh fetch and asserts that nothing
+    // is already open. Wrapping it (as this once did) turned those into
+    // savepoints that held the connection's row lock across the round trip.
+    accessToken = await getValidAccessToken(db, conn);
   } catch (err) {
     if (err instanceof ReauthRequiredError) {
       throw new QbImportError('QuickBooks needs to be reconnected', 'reauth_required', 409);
@@ -114,18 +119,7 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   }
 }
 
-function siteAddressFrom(addr: RemoteAddress | undefined): Record<string, string> | undefined {
-  if (!addr) return undefined;
-  // Match the web SiteForm convention so imported sites render correctly.
-  const out: Record<string, string> = {};
-  if (addr.line1) out.addressLine1 = addr.line1;
-  if (addr.line2) out.addressLine2 = addr.line2;
-  if (addr.city) out.city = addr.city;
-  if (addr.region) out.state = addr.region;
-  if (addr.postalCode) out.postalCode = addr.postalCode;
-  if (addr.country) out.country = addr.country;
-  return Object.keys(out).length ? out : undefined;
-}
+export { siteAddressFrom } from './addressMapping';
 
 /**
  * RemoteCustomer → ImportRow. No `site` field: a group with no sites gets one

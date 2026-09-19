@@ -121,6 +121,8 @@ function makeAuth(): AuthContext {
     partnerId: null,
     orgId: ORG_ID,
     scope: 'organization',
+    principal: { kind: 'user_session' },
+    allowedSiteIds: undefined,
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),

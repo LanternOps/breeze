@@ -39,6 +39,22 @@ vi.mock('../services/mfaPolicy', () => ({
   })),
 }));
 
+const ipAllowlistState = vi.hoisted(() => ({
+  decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
+  error: null as Error | null,
+  calls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock('../services/ipAllowlist', () => ({
+  IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+  enforceIpAllowlist: vi.fn(async (_c: unknown, params: Record<string, unknown>) => {
+    ipAllowlistState.calls.push(params);
+    if (ipAllowlistState.error) throw ipAllowlistState.error;
+    return ipAllowlistState.decision;
+  }),
+}));
+
 const verifyState = vi.hoisted(() => ({
   next: undefined as
     | { kind: 'claims'; claims: Record<string, unknown> }
@@ -112,8 +128,8 @@ const tokenState = vi.hoisted(() => ({
   bindCalls: [] as Array<{ jti: string; familyId: string }>,
 }));
 
-vi.mock('../services', () => ({
-  createTokenPair: vi.fn(
+vi.mock('../services', () => {
+  const createTokenPair = vi.fn(
     async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
       tokenState.lastPayload = payload;
       tokenState.lastOptions = options ?? null;
@@ -124,19 +140,71 @@ vi.mock('../services', () => ({
         expiresInSeconds: 900,
       };
     }
-  ),
-  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
+  );
+  const mintRefreshTokenFamily = vi.fn(async (userId: string) => {
     tokenState.mintCalls.push(userId);
     return 'fam-1';
-  }),
-  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
+  });
+  const bindRefreshJtiToFamily = vi.fn(async (jti: string, familyId: string) => {
     tokenState.bindCalls.push({ jti, familyId });
-  }),
-  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  });
+  const getUserEpochs = vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 }));
+  const issueLegacy = vi.fn(async (identity: any) => {
+    const familyId = await mintRefreshTokenFamily(identity.userId);
+    const epochs = await getUserEpochs();
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      mfa_src: identity.mfaSrc,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return { ...tokens, familyId };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  return {
+  createTokenPair,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
+  getUserEpochs,
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
-}));
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => {
+    const { db } = await import('../db');
+    return callback(db);
+  }),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  assertAuthIssuanceCapability: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession: vi.fn(async (identity: any) => ({
+    ...await issueLegacy(identity),
+    transitionId: 'transition-1',
+    generation: 1,
+  })),
+  issueUserSessionLegacyDuringTransition: issueLegacy,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
+  };
+});
 
 const auditState = vi.hoisted(() => ({
   audits: [] as Array<Record<string, unknown>>,
@@ -153,6 +221,10 @@ vi.mock('../routes/auth/helpers', async () => {
   const actual = await vi.importActual<typeof import('../routes/auth/helpers')>(
     '../routes/auth/helpers'
   );
+  const installCookie = vi.fn((c: Context, issued: { refreshToken: string }) => {
+    cookieState.set = issued.refreshToken;
+    c.header('set-cookie', `breeze_refresh=${issued.refreshToken}; Path=/; HttpOnly`);
+  });
   return {
     ...actual,
     auditUserLoginFailure: vi.fn((_c: unknown, entry: Record<string, unknown>) => {
@@ -164,6 +236,8 @@ vi.mock('../routes/auth/helpers', async () => {
       // ape Hono's behaviour just enough for the test's purposes
       c.header('set-cookie', `breeze_refresh=${refreshToken}; Path=/; HttpOnly`);
     }),
+    installAuthorizedUserSessionCookies: installCookie,
+    installLegacyUserSessionCookiesDuringTransition: installCookie,
     toPublicTokens: actual.toPublicTokens,
     userRequiresSetup: () => false,
     getClientIP: () => '127.0.0.1',
@@ -196,6 +270,11 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
+import {
+  AuthIssuanceCapabilityError,
+  finishAuthIssuance,
+  issueUserSession,
+} from '../services';
 
 function createContext(headers: Record<string, string | undefined> = {}): Context {
   const normalized = Object.fromEntries(
@@ -252,11 +331,15 @@ const activeUser = {
 describe('cfAccessLoginMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
     envState.enabled = false;
     envState.teamDomain = 'your-team.cloudflareaccess.com';
     envState.audience = 'aud-app-1234567890abcdef';
     envState.trustsMfa = false;
     policyState.required = false;
+    ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
+    ipAllowlistState.error = null;
+    ipAllowlistState.calls = [];
     verifyState.next = undefined;
     dbState.userRow = null;
     dbState.lastUpdateId = null;
@@ -422,6 +505,83 @@ describe('cfAccessLoginMiddleware', () => {
     });
   });
 
+  it('denies a valid federated identity outside the partner IP allowlist before MFA handoff or session mint', async () => {
+    envState.enabled = true;
+    ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: 'encrypted', mfaMethod: 'totp' };
+    const { next, called } = createNext();
+
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next,
+    );
+
+    expect(res?.status).toBe(403);
+    await expect(res?.json()).resolves.toMatchObject({ code: 'ip_not_allowed' });
+    expect(called()).toBe(false);
+    expect(ipAllowlistState.calls).toEqual([expect.objectContaining({ partnerId: 'partner-1', actorId: activeUser.id })]);
+    expect(tokenState.mintCalls).toEqual([]);
+    expect(tokenState.lastPayload).toBeNull();
+    expect(dbState.lastUpdateId).toBeNull();
+  });
+
+  it('fails closed before federated effects when the IP allowlist cannot be read', async () => {
+    envState.enabled = true;
+    ipAllowlistState.error = new Error('allowlist unavailable');
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      createNext().next,
+    );
+
+    expect(res?.status).toBe(503);
+    expect(tokenState.mintCalls).toEqual([]);
+    expect(cookieState.set).toBeNull();
+    expect(dbState.lastUpdateId).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  it('does not mint, update last login, audit success, or install a cookie when logout wins finalization', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: {
+        email: activeUser.email,
+        sub: 'cf-user-1',
+        aud: envState.audience,
+        iss: `https://${envState.teamDomain}`,
+        exp: 999,
+        iat: 1,
+      },
+    };
+    dbState.userRow = { ...activeUser };
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await cfAccessLoginMiddleware(
+      createContext({
+        'Cf-Access-Jwt-Assertion': 'valid.jwt.here',
+        'x-breeze-auth-transition': 'v1',
+      }),
+      createNext().next,
+    );
+
+    expect(res?.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.lastUpdateId).toBeNull();
+    expect(auditState.audits).toEqual([]);
+    expect(cookieState.set).toBeNull();
+  });
+
   it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
     envState.enabled = true;
     verifyState.next = {
@@ -569,7 +729,7 @@ describe('cfAccessLoginMiddleware', () => {
         next
       );
 
-      expect(tokenState.lastPayload).toMatchObject({ mfa: true });
+      expect(tokenState.lastPayload).toMatchObject({ mfa: true, mfa_src: 'policy' });
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(false);
     });
@@ -588,6 +748,7 @@ describe('cfAccessLoginMiddleware', () => {
       );
 
       expect(tokenState.lastPayload).toMatchObject({ mfa: false });
+      expect(tokenState.lastPayload?.mfa_src).toBeUndefined();
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(true);
     });
@@ -605,7 +766,7 @@ describe('cfAccessLoginMiddleware', () => {
         next
       );
 
-      expect(tokenState.lastPayload).toMatchObject({ mfa: true });
+      expect(tokenState.lastPayload).toMatchObject({ mfa: true, mfa_src: 'idp' });
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(false);
     });

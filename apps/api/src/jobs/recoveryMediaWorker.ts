@@ -1,8 +1,12 @@
-import { Job, Queue, Worker } from 'bullmq';
+import { Job, Queue, UnrecoverableError, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { withSystemDbAccessContext } from '../db';
 import { isReusableState } from '../services/bullmqUtils';
-import { buildRecoveryMediaArtifact } from '../services/recoveryMediaService';
+import {
+  authorizeAndClaimRecoveryMediaArtifact,
+  buildRecoveryMediaArtifact,
+  recordRecoveryMediaBuildFailure,
+} from '../services/recoveryMediaService';
 import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
@@ -35,17 +39,7 @@ function getRecoveryMediaQueue(): Queue<RecoveryMediaQueueJobData> {
 function createRecoveryMediaWorker(): Worker<RecoveryMediaQueueJobData> {
   return new Worker<RecoveryMediaQueueJobData>(
     RECOVERY_MEDIA_QUEUE,
-    async (job: Job<RecoveryMediaQueueJobData>) => {
-      return withSystemDbAccessContext(async () => {
-        const data = parseQueueJobData(RECOVERY_MEDIA_QUEUE, job, recoveryMediaQueueJobDataSchema);
-        if (data.type !== 'build-media') {
-          throw new Error(`Unknown recovery media job type: ${(data as { type: string }).type}`);
-        }
-        assertQueueJobName(RECOVERY_MEDIA_QUEUE, job, 'build-media');
-        await buildRecoveryMediaArtifact(data.artifactId);
-        return { artifactId: data.artifactId };
-      });
-    },
+    processRecoveryMediaBuildJob,
     {
       connection: getBullMQConnection(),
       concurrency: 2,
@@ -54,6 +48,50 @@ function createRecoveryMediaWorker(): Worker<RecoveryMediaQueueJobData> {
       maxStalledCount: 2,
     }
   );
+}
+
+function isKnownAuthorizationDenial(error: unknown): error is Error & { retriable: false; code?: string } {
+  return error instanceof Error
+    && 'retriable' in error
+    && (error as { retriable?: unknown }).retriable === false;
+}
+
+export async function processRecoveryMediaBuildJob(
+  job: Job<RecoveryMediaQueueJobData>,
+): Promise<{ artifactId: string }> {
+  const data = parseQueueJobData(RECOVERY_MEDIA_QUEUE, job, recoveryMediaQueueJobDataSchema);
+  if (data.type !== 'build-media') {
+    throw new Error(`Unknown recovery media job type: ${(data as { type: string }).type}`);
+  }
+  assertQueueJobName(RECOVERY_MEDIA_QUEUE, job, 'build-media');
+
+  const authorizationDenial = await withSystemDbAccessContext(async () => {
+    try {
+      const claimed = await authorizeAndClaimRecoveryMediaArtifact(data.artifactId);
+      if (!claimed) {
+        throw new Error(`Recovery media authorization claim changed for ${data.artifactId}`);
+      }
+      return null;
+    } catch (error) {
+      if (isKnownAuthorizationDenial(error)) return error;
+      throw error;
+    }
+  });
+  if (authorizationDenial) {
+    throw new UnrecoverableError(
+      `Recovery media authorization denied: ${authorizationDenial.code ?? authorizationDenial.message}`,
+    );
+  }
+
+  try {
+    await withSystemDbAccessContext(async () => {
+      await buildRecoveryMediaArtifact(data.artifactId);
+    });
+  } catch (error) {
+    await withSystemDbAccessContext(() => recordRecoveryMediaBuildFailure(data.artifactId, error));
+    throw error;
+  }
+  return { artifactId: data.artifactId };
 }
 
 export async function enqueueRecoveryMediaBuild(artifactId: string): Promise<string> {

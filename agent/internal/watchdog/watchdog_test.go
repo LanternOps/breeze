@@ -215,3 +215,46 @@ func TestStateHistory(t *testing.T) {
 		}
 	}
 }
+
+// TestStandbyTransitions is the table-driven guard for #5252.
+//
+// A graceful agent stop moves the watchdog MONITORING → STANDBY. Before this
+// fix STANDBY accepted only agent_recovered / standby_timeout / start_agent,
+// so the process-gone signal that arrives moments later (the agent really did
+// exit) was SILENTLY DROPPED, and so was the ipc_connected edge that fires
+// when the agent comes back after an upgrade. A host whose agent was stopped
+// by `service install` therefore sat unmanaged for the full 30-minute standby
+// timeout and then parked in FAILOVER — still stopped.
+//
+// STANDBY must now be able to reach both RECOVERING (the agent is gone and is
+// not coming back on its own) and MONITORING (the agent came back).
+func TestStandbyTransitions(t *testing.T) {
+	tests := []struct {
+		name  string
+		event string
+		want  string
+	}{
+		{"agent process gone during standby escalates to recovery", EventAgentUnhealthy, StateRecovering},
+		{"agent reconnected over IPC returns to monitoring", EventIPCConnected, StateMonitoring},
+		{"verified-healthy agent returns to monitoring", EventAgentRecovered, StateMonitoring},
+		{"standby window exhausted parks in failover", EventStandbyTimeout, StateFailover},
+		{"server-delivered start command drives recovery", EventStartAgent, StateRecovering},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewWatchdog(DefaultTestConfig())
+			w.HandleEvent(EventIPCConnected)   // CONNECTING → MONITORING
+			w.HandleEvent(EventShutdownIntent) // MONITORING → STANDBY
+			if w.State() != StateStandby {
+				t.Fatalf("setup failed: state = %s, want %s", w.State(), StateStandby)
+			}
+			next, ok := w.HandleEvent(tc.event)
+			if !ok {
+				t.Fatalf("STANDBY dropped event %q — the watchdog cannot react to it at all", tc.event)
+			}
+			if next != tc.want {
+				t.Fatalf("STANDBY + %q = %s, want %s", tc.event, next, tc.want)
+			}
+		})
+	}
+}

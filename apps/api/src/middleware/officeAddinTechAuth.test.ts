@@ -109,6 +109,7 @@ const BOUND = {
     userId: USER_ID,
     partnerId: PARTNER_ID,
     boundAuthEpoch: 3,
+    boundMfaEpoch: 3,
     mfaVerifiedAt: new Date(),
   },
   user: {
@@ -117,6 +118,7 @@ const BOUND = {
     name: 'Tech User',
     status: 'active',
     authEpoch: 3,
+    mfaEpoch: 3,
     partnerId: PARTNER_ID,
   },
 };
@@ -237,6 +239,17 @@ describe('officeAddinTechAuthMiddleware', () => {
     findActiveBindingByIdMock.mockResolvedValue({
       ...BOUND,
       user: { ...BOUND.user, authEpoch: 4 },
+    });
+    const res = await buildApp().request(authed());
+    expect(res.status).toBe(401);
+    expect(revokeBindingMock).toHaveBeenCalledWith(BINDING_ID, null);
+    expect(revokeTechSessionsForUserMock).toHaveBeenCalledWith(redisMock, USER_ID);
+  });
+
+  it('401s, revokes the binding and all sessions when mfaEpoch advanced', async () => {
+    findActiveBindingByIdMock.mockResolvedValue({
+      ...BOUND,
+      user: { ...BOUND.user, mfaEpoch: 4 },
     });
     const res = await buildApp().request(authed());
     expect(res.status).toBe(401);

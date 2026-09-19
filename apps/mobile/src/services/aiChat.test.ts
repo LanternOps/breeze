@@ -5,6 +5,7 @@ import type { AiStreamEvent } from './aiChat';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import { advanceSessionGeneration } from './sessionGeneration';
 
 vi.mock('./serverConfig', () => ({
   getServerUrl: vi.fn().mockResolvedValue('https://api.test'),
@@ -25,9 +26,14 @@ vi.mock('./fetchWithTimeout', () => ({
 
 // api.ts pulls in Sentry/installation-id modules that don't exist in the node
 // test environment — mock the whole module, we only need refreshToken.
-vi.mock('./api', () => ({
-  refreshToken: vi.fn(),
-}));
+vi.mock('./api', async () => {
+  // Mock the low-level POST, but build the single-flight refresher from the
+  // real factory around it, so these cases exercise the shared refresh logic
+  // (persist, generation guard, null on failure) rather than a stand-in.
+  const { createTokenRefresher } = await import('./tokenRefresh');
+  const refreshToken = vi.fn();
+  return { refreshToken, refreshAccessToken: createTokenRefresher(refreshToken) };
+});
 
 vi.mock('./auth', () => ({
   storeToken: vi.fn().mockResolvedValue(undefined),
@@ -177,6 +183,27 @@ describe('authedFetch 401 refresh-and-retry (via listAiSessions)', () => {
     expect(r1).toHaveLength(1);
     expect(r2).toHaveLength(1);
     expect(refreshMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry or accept bearer persistence superseded while storeToken is slow', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Unauthorized' }, 401));
+    refreshMock.mockResolvedValueOnce({ token: 'fresh-from-a' });
+    let releaseStore!: () => void;
+    let markStoreStarted!: () => void;
+    const storeStarted = new Promise<void>((resolve) => { markStoreStarted = resolve; });
+    const storeRelease = new Promise<void>((resolve) => { releaseStore = resolve; });
+    storeTokenMock.mockImplementationOnce(async () => {
+      markStoreStarted();
+      await storeRelease;
+    });
+
+    const staleRequest = listAiSessions();
+    await storeStarted;
+    advanceSessionGeneration();
+    releaseStore();
+
+    await expect(staleRequest).rejects.toThrow('listAiSessions failed: 401');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

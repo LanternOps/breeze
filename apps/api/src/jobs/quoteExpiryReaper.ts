@@ -6,6 +6,7 @@ import { quotes } from '../db/schema/quotes';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reaps `quotes` rows whose `expiry_date` has passed while still `sent`/`viewed`,
@@ -159,6 +160,7 @@ async function scheduleRepeatableJob(): Promise<void> {
 export async function initializeQuoteExpiryReaper(): Promise<void> {
   if (reaperWorker) return;
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'quoteExpiryReaper');
   reaperWorker.on('error', (error) => {
     console.error('[QuoteExpiryReaper] Worker error:', error);
     captureException(error);

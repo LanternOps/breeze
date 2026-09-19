@@ -2,13 +2,14 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
-	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // referenceDecision classifies one walked file against the previous
@@ -25,23 +26,42 @@ const (
 	decideReference
 )
 
-// previousManifest fetches the newest completed snapshot's manifest for
-// this provider — see ListSnapshots, which only returns snapshots that
-// actually have an uploaded manifest.json (a partial/aborted prefix without
-// one is not a completed snapshot) — for reference-decision comparisons.
+// previousManifest fetches the newest completed snapshot's manifest that
+// belongs to THIS run's backup identity — see ListSnapshots, which only
+// returns snapshots that actually have an uploaded manifest.json (a
+// partial/aborted prefix without one is not a completed snapshot) — for
+// reference-decision comparisons.
 //
-// Returns (nil, reason) when no previous manifest is usable: either there
-// simply isn't one yet (first run for this destination) or fetching/parsing
-// one failed. reason is always non-empty in that case so callers can log it
-// directly. Dedupe is strictly an optimization — it must never fail or
-// block a run — so this function never returns an error; every failure
-// mode collapses to "run full" via a nil *Snapshot.
-func previousManifest(ctx context.Context, provider providers.BackupProvider) (*Snapshot, string) {
+// identity is this run's BackupIdentity (see BackupManager.runBackupIdentity
+// / Snapshot.BackupIdentity's doc comment). A bucket can hold snapshots from
+// MULTIPLE devices and run kinds with no key prefix between them (D6), so
+// "the newest snapshot in the bucket" is a different question from "the
+// newest snapshot for THIS device/run". previousManifest answers the
+// second one: it scans ListSnapshots' results (ascending by Timestamp) from
+// the newest backward and returns the first candidate whose BackupIdentity
+// equals identity exactly. A candidate with any other identity — including
+// a legacy manifest with no BackupIdentity at all, which never equals
+// anything, empty string included — is skipped. If identity itself is
+// empty (this run has no known identity — see BackupConfig.AgentID), no
+// candidate can be proven to be "this run's own" snapshot, so this returns
+// immediately without even listing.
+//
+// Returns (nil, reason) when no previous manifest is usable: no snapshot
+// exists yet for this destination, every candidate belongs to a different
+// identity, this run itself has no identity, or fetching/parsing failed.
+// reason is always non-empty in that case so callers can log it directly.
+// Dedupe is strictly an optimization — it must never fail or block a run —
+// so this function never returns an error; every failure mode collapses to
+// "run full" via a nil *Snapshot.
+func previousManifest(ctx context.Context, provider providers.BackupProvider, identity string) (*Snapshot, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Sprintf("context already done: %v", err)
+	}
+	if identity == "" {
+		return nil, "this run has no known backup identity, nothing to safely match a previous snapshot against"
 	}
 	snapshots, err := ListSnapshots(provider)
 	if err != nil {
@@ -54,9 +74,95 @@ func previousManifest(ctx context.Context, provider providers.BackupProvider) (*
 	if len(snapshots) == 0 {
 		return nil, "no previous snapshot for this destination"
 	}
-	// ListSnapshots sorts ascending by Timestamp; the newest is last.
-	newest := snapshots[len(snapshots)-1]
-	return &newest, ""
+	// ListSnapshots sorts ascending by Timestamp; scan from the newest
+	// backward for the first candidate that actually belongs to this run's
+	// identity — see the doc comment above for why "newest overall" is the
+	// wrong question in a bucket shared by multiple devices/run-kinds.
+	skippedForeign := 0
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		candidate := snapshots[i]
+		if candidate.BackupIdentity != identity {
+			skippedForeign++
+			continue
+		}
+		log.Info("using previous manifest for incremental reference dedupe",
+			"baseSnapshotId", candidate.ID,
+			"baseTimestamp", candidate.Timestamp,
+			"candidates", len(snapshots),
+			"skippedForeign", skippedForeign,
+		)
+		return &candidate, ""
+	}
+	return nil, fmt.Sprintf(
+		"no matching previous snapshot for this backup identity (%d of %d candidate(s) belonged to a different device/run/destination)",
+		skippedForeign, len(snapshots))
+}
+
+// fetchServerOwnedBase downloads and validates the manifest for
+// baseSnapshotID as this run's incremental-dedupe base, per the D18
+// server-owned-base protocol (§3.1). Unlike previousManifest (legacy
+// bucket-listing mode), the server has already chosen the base id — this
+// function only fetches and validates it belongs to this device/
+// destination/run-kind (the same D6 identity guard as previousManifest); it
+// never lists the bucket. Returns (nil, reason) on ANY failure — empty id,
+// download error, decode error, or identity mismatch — collapsing to a full
+// run, exactly like previousManifest's fail-open contract. reason is always
+// non-empty in that case so callers can log it directly.
+func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider, baseSnapshotID, identity string) (*Snapshot, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if baseSnapshotID == "" {
+		return nil, "server selected no base for this run (full run)"
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Sprintf("context already done: %v", err)
+	}
+	if identity == "" {
+		return nil, "this run has no known backup identity, cannot safely validate the server-selected base"
+	}
+
+	manifestKey := path.Join(snapshotRootDir, baseSnapshotID, snapshotManifestKey)
+	tempFile, err := os.CreateTemp("", "base-manifest-*.json")
+	if err != nil {
+		return nil, fmt.Sprintf("failed to create temp file for base manifest: %v", err)
+	}
+	tempPath := tempFile.Name()
+	_ = tempFile.Close()
+	// Best-effort: tempPath is an OS temp file already read (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if err := provider.Download(manifestKey, tempPath); err != nil {
+		// Deliberately do NOT format the provider error's message (%v/
+		// .Error()) into this reason: it is logged verbatim by the caller
+		// (backup.go), and a storage-provider error can echo back request/
+		// signing details from a credentialed client (S3Provider holds the
+		// account's secret access key) — CodeQL's go/clear-text-logging
+		// flags exactly this shape. errors.Is(err, providers.ErrObjectNotFound)
+		// still distinguishes the common "never published" case; anything
+		// else is reported by error TYPE only, which carries no request or
+		// credential content.
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, fmt.Sprintf("server-selected base manifest %s not found", manifestKey)
+		}
+		return nil, fmt.Sprintf("failed to download server-selected base manifest %s (%T)", manifestKey, err)
+	}
+	data, err := os.ReadFile(tempPath)
+	if err != nil {
+		return nil, fmt.Sprintf("failed to read downloaded base manifest: %v", err)
+	}
+	var candidate Snapshot
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		return nil, fmt.Sprintf("failed to decode base manifest %s: %v", manifestKey, err)
+	}
+	if candidate.BackupIdentity != identity {
+		return nil, fmt.Sprintf(
+			"server-selected base %s has BackupIdentity %q, this run's identity is %q — refusing to use a foreign snapshot as a dedupe base (D6)",
+			baseSnapshotID, candidate.BackupIdentity, identity)
+	}
+	return &candidate, ""
 }
 
 // buildPreviousIndex converts a previous snapshot's file list into the
@@ -82,12 +188,6 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // index prev (nil = no usable previous manifest → always decideUpload),
 // implementing the design's decision table:
 //
-//   - f is a system-state staging artifact (f.systemState) → always
-//     decideUpload, never even looked up. CollectSystemState stages into a
-//     fresh os.MkdirTemp root every run, so these paths are inherently
-//     ephemeral and referencing them would be meaningless — see
-//     markSystemStateFiles for the explicit, defensive exclusion (rather
-//     than relying on the temp-dir path simply never colliding).
 //   - no entry for f's key → decideUpload (new file).
 //   - entry found but Size differs → decideUpload ("anything else" in the
 //     design table — a size change is never a reference even if some other
@@ -109,7 +209,12 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // entry itself after the upload actually completes, exactly as before
 // incremental backups existed.
 func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
-	if f.systemState {
+	if f.kind != "" {
+		// Content-less entries (symlinks/directories) are rebuilt from the
+		// live filesystem on every run — see contentlessEntry (snapshot.go).
+		// They never carry uploaded content, so "reference the old bytes"
+		// is meaningless for them regardless of what the previous manifest
+		// says about this key.
 		return decideUpload, SnapshotFile{}
 	}
 	entry, ok := prev[journalLookupKey(f)]
@@ -138,6 +243,8 @@ func referenceEntry(f backupFile, prevEntry SnapshotFile) SnapshotFile {
 		ModTime:      f.modTime,
 		Checksum:     prevEntry.Checksum,
 		Mode:         uint32(f.mode.Perm()),
+		ModeBits:     f.modeBits,
+		Owner:        f.owner,
 	}
 }
 
@@ -151,78 +258,35 @@ func referenceEntry(f backupFile, prevEntry SnapshotFile) SnapshotFile {
 // itself never needs extra reference-count fields (the manifest stays
 // clean — see the design's manifest-v2 section).
 func isReferenceEntry(entry SnapshotFile, snapshotID string) bool {
+	if entry.BackupPath == "" {
+		// A content-less entry (symlink/directory — see SnapshotFile.Kind)
+		// has no uploaded object at all, so it can never "belong to" any
+		// snapshot's prefix, older or otherwise: it is rebuilt fresh from
+		// the live filesystem on every run (decideFile always returns
+		// decideUpload for one). An empty BackupPath trivially fails the
+		// HasPrefix check below against ANY non-empty ownPrefix, which
+		// would otherwise misclassify it as a reference into some other
+		// snapshot — including on the very first run, which has no
+		// previous snapshot to reference at all (review finding, PR #5520).
+		return false
+	}
 	ownPrefix := path.Join(snapshotRootDir, snapshotID) + "/"
 	return !strings.HasPrefix(entry.BackupPath, ownPrefix)
 }
 
-// isUnderDir reports whether p is dir itself or a descendant of it. Used by
-// markSystemStateFiles; dir == "" always reports false (no staging dir to
-// exclude, e.g. a non-system-state run).
-func isUnderDir(p, dir string) bool {
-	if dir == "" {
-		return false
-	}
-	rel, err := filepath.Rel(dir, p)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-// markSystemStateFiles flags every file in files whose sourcePath falls
-// under stagingDir (the run's system-state staging root — see
-// collectSystemState's call site in RunBackupContext) as
-// backupFile.systemState = true, so decideFile always uploads them.
-//
-// stagingDir is always the live path collectSystemState returned, never a VSS
-// shadow-device path: rewritePathsForVSS deliberately skips the staging index
-// because the dir is created after the snapshot is taken (#3026). That is what
-// keeps this prefix comparable to the sourcePaths collectBackupFilesFromPaths
-// actually produced.
-//
-// This exclusion is defense-in-depth, not strictly load-bearing for
-// correctness in production: CollectSystemState creates a fresh
-// os.MkdirTemp root every run, so a staging file's sourcePath is already
-// guaranteed never to appear as a key in a PREVIOUS manifest's index
-// (buildPreviousIndex) — the natural "new file" miss in decideFile would
-// reach the same decideUpload outcome on its own. Making it explicit here
-// keeps the exclusion correct independent of that randomness assumption
-// (e.g. a test double that reuses a fixed staging path across simulated
-// runs) and gives readers/reviewers a single obvious place the "never
-// referenced" rule lives, matching the design doc's explicit callout.
-//
-// Returns the number of files marked, so the caller can detect a manifest that
-// describes artifacts no collected file was matched to — see
-// systemStateArtifactsMissing.
-func markSystemStateFiles(files []backupFile, stagingDir string) int {
-	if stagingDir == "" {
-		return 0
-	}
-	marked := 0
-	for i := range files {
-		if isUnderDir(files[i].sourcePath, stagingDir) {
-			files[i].systemState = true
-			marked++
-		}
-	}
-	return marked
-}
-
-// systemStateArtifactsMissing reports the #3026 failure signature: the run
-// recorded a manifest describing system-state artifacts, but not one collected
-// file was matched to the staging directory those artifacts were written to.
-//
-// The manifest is written from the collector's own return value, so it says
-// nothing about whether the artifacts reached the snapshot. #3026 was one route
-// to that divergence (the staging dir rewritten onto a VSS shadow path that
-// predates it); the walk failing on the staging root, or a user exclude pattern
-// matching artifact names, are others. On a run that also has configured file
-// paths each one produces a green job whose restore point is missing the system
-// state it claims. Rather than guard only the route that was fixed, make the
-// outcome itself loud.
-//
-// A manifest with no artifacts is not a divergence — there is nothing to match
-// — so it is excluded rather than reported on every such run.
-func systemStateArtifactsMissing(manifest *systemstate.SystemStateManifest, markedFiles int) bool {
-	return manifest != nil && len(manifest.Artifacts) > 0 && markedFiles == 0
-}
+// NOTE: this package used to also carry isUnderDir/markSystemStateFiles/
+// systemStateArtifactsMissing, a detector for the #3026 failure signature (a
+// manifest recording system-state artifacts that the file walk never actually
+// saw). That whole mechanism assumed system-state artifacts were walked as
+// ordinary files (appended into backupPaths) alongside everything else.
+// Wave 1 of the D15 bare-metal-recovery contract (see
+// docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md)
+// moved system-state artifacts to their own remote prefix, published
+// directly from the manifest by publishSystemState (snapshot.go) rather than
+// discovered via the file walk — so a walked `files` slice never contains
+// staging-dir entries at all anymore, and the old detector would misfire on
+// EVERY run that collects any system state (markedFiles would always be 0).
+// publishSystemState's own per-artifact stat/upload is a strictly stronger
+// replacement: it fails loudly if an artifact the manifest describes isn't
+// actually on disk, rather than inferring the mismatch indirectly from the
+// file walk. Removed rather than left inert.

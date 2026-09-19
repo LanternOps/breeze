@@ -311,3 +311,101 @@ func daclGrantsSID(t *testing.T, path string, sid *windows.SID) bool {
 	}
 	return false
 }
+
+// TestMainAgentPinnedShareModeAllowsWriteAndRefusesDelete locks the two halves
+// of the pin's contract so neither can be lost by a future edit: the pin must
+// grant FILE_SHARE_WRITE (without it every rename INTO the pinned directory
+// fails with ERROR_SHARING_VIOLATION — issue #4184, which silently broke
+// agent.state and the PAM v2 ledger from v0.96.0 through v0.108.0), and it must
+// withhold FILE_SHARE_DELETE (that is what actually stops the pinned directory
+// from being renamed or deleted out from under the agent).
+func TestMainAgentPinnedShareModeAllowsWriteAndRefusesDelete(t *testing.T) {
+	if MainAgentPinnedShareMode&windows.FILE_SHARE_READ == 0 {
+		t.Errorf("pin share mode %#x must grant FILE_SHARE_READ", MainAgentPinnedShareMode)
+	}
+	if MainAgentPinnedShareMode&windows.FILE_SHARE_WRITE == 0 {
+		t.Errorf("pin share mode %#x must grant FILE_SHARE_WRITE or renames into the pinned directory fail", MainAgentPinnedShareMode)
+	}
+	if MainAgentPinnedShareMode&windows.FILE_SHARE_DELETE != 0 {
+		t.Errorf("pin share mode %#x must withhold FILE_SHARE_DELETE so the pinned directory cannot be renamed or deleted", MainAgentPinnedShareMode)
+	}
+}
+
+// TestPinnedMainAgentDirectoriesAllowAtomicRenamesInside is the regression test
+// for issue #4184. While OpenPreparedMainAgentLockDir holds its lifetime pins,
+// the agent's own write-temp-then-rename persistence (state.renameReplace,
+// pamlifetime persist, config.SaveTo) must still work in BOTH pinned
+// directories. File creation always worked, so only the rename discriminates.
+func TestPinnedMainAgentDirectoriesAllowAtomicRenamesInside(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	if err := os.Mkdir(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreMainAgentDirectorySeams(t, dir)
+
+	pinned, err := OpenPreparedMainAgentLockDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+
+	for _, target := range []struct{ label, dir string }{
+		{"pinned config directory", dir},
+		{"pinned run directory", runDir},
+	} {
+		tmp, err := os.CreateTemp(target.dir, ".pin-rename-*")
+		if err != nil {
+			t.Fatalf("%s: create temp file: %v", target.label, err)
+		}
+		tmpPath := tmp.Name()
+		if _, err := tmp.WriteString("payload"); err != nil {
+			_ = tmp.Close()
+			t.Fatalf("%s: write temp file: %v", target.label, err)
+		}
+		if err := tmp.Close(); err != nil {
+			t.Fatalf("%s: close temp file: %v", target.label, err)
+		}
+		final := filepath.Join(target.dir, "agent.state")
+		if err := os.Rename(tmpPath, final); err != nil {
+			_ = os.Remove(tmpPath)
+			t.Fatalf("%s: rename into pinned directory: %v", target.label, err)
+		}
+		if _, err := os.Stat(final); err != nil {
+			t.Fatalf("%s: renamed file missing: %v", target.label, err)
+		}
+	}
+}
+
+// TestPinnedMainAgentDirectoriesRefuseNamespaceMutation guards the security
+// property the pin exists for. FILE_SHARE_DELETE stays out, so while the pin is
+// held neither the config directory nor the run child can be renamed or deleted
+// — the anti-tamper intent of #2520 survives the #4184 fix.
+func TestPinnedMainAgentDirectoriesRefuseNamespaceMutation(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	if err := os.Mkdir(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreMainAgentDirectorySeams(t, dir)
+
+	pinned, err := OpenPreparedMainAgentLockDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+
+	stolenRun := filepath.Join(dir, "run-stolen")
+	if err := os.Rename(runDir, stolenRun); err == nil {
+		_ = os.Rename(stolenRun, runDir)
+		t.Error("pinned run directory was renamed while pinned")
+	}
+	if err := os.Remove(runDir); err == nil {
+		t.Error("pinned run directory was deleted while pinned")
+	}
+	stolenConfig := dir + "-stolen"
+	if err := os.Rename(dir, stolenConfig); err == nil {
+		_ = os.Rename(stolenConfig, dir)
+		t.Error("pinned config directory was renamed while pinned")
+	}
+}

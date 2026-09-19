@@ -11,7 +11,7 @@ import { registerViaUi } from './phases/uiFlow';
 import { simulatePaymentAndAssertActivation } from './phases/simulatePayment';
 import { purgePartner, sweepStaleCanaries } from './phases/cleanup';
 
-loadEnv({ path: join(dirname(fileURLToPath(import.meta.url)), '.env') });
+loadEnv({ path: join(dirname(fileURLToPath(import.meta.url)), '.env'), quiet: true });
 
 function arg(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));

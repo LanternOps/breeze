@@ -1,35 +1,12 @@
 {
   "assetDetailModal": {
-    "actions": {
-      "connect": "Conectar",
-      "connecting": "Conectando...",
-      "deleteAsset": "Excluir ativo",
-      "deleting": "Excluindo...",
-      "enabling": "Ativando...",
-      "linkAsset": "Vincular ativo",
-      "linking": "Vinculando...",
-      "resetType": "Redefinir para o tipo detectado automaticamente",
-      "unlink": "Desvincular",
-      "working": "Processando..."
-    },
     "assetInfoTitle": "Informações do ativo",
-    "confirmDelete": "Excluir o ativo descoberto \"{{name}}\"?",
     "confirmUnlink": "Desvincular este dispositivo?",
-    "deleteDescription": "Remova este ativo dos resultados da descoberta.",
     "detailsUnavailableDescription": "Não foi possível carregar o registro deste dispositivo. Ele pode ter sido removido ou você pode não ter acesso a ele.",
     "detailsUnavailableTitle": "Detalhes indisponíveis",
     "deviceDetailsTitle": "Detalhes do dispositivo",
     "errors": {
-      "createAllowlist": "Falha ao criar a entrada na lista de permissões",
-      "createProxyTunnel": "Falha ao criar o túnel de proxy",
-      "createTunnel": "Falha ao criar o túnel",
-      "delete": "Falha ao excluir o ativo",
-      "generic": "Ocorreu um erro",
-      "link": "Falha ao vincular o ativo",
-      "resetType": "Falha ao redefinir o tipo",
-      "saveInfo": "Falha ao salvar as informações do ativo",
-      "selectDeviceToLink": "Selecione um dispositivo para vincular.",
-      "unlink": "Falha ao desvincular o ativo"
+      "generic": "Ocorreu um erro"
     },
     "fields": {
       "assetType": "Tipo de ativo",
@@ -41,23 +18,10 @@
     },
     "lastSeen": "Visto por último {{time}}",
     "loadingDetails": "Carregando detalhes do dispositivo…",
-    "messages": {
-      "linked": "Ativo vinculado. Agora ele está marcado como aprovado.",
-      "linkedToDevice": "Ativo vinculado a {{device}}. Agora ele está marcado como aprovado.",
-      "unlinked": "Dispositivo desvinculado."
-    },
     "networkDetailsTitle": "Detalhes da rede",
     "noOpenPorts": "Nenhuma porta aberta detectada.",
     "noSnmpData": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido verificado. Confirme se o método SNMP está habilitado e se a string de comunidade está definida no perfil de descoberta.",
     "openPorts": "Portaas abertas",
-    "options": {
-      "selectManagedDevice": "Selecione um dispositivo gerenciado"
-    },
-    "placeholders": {
-      "displayName": "Ex.: Switch principal",
-      "notes": "Ex.: Localizado no armário A, 2º andar",
-      "tags": "Ex.: crítico, andar-2, rede"
-    },
     "proxy": {
       "manageOnDevicePage": "Gerenciar o acesso por proxy na página do dispositivo de rede",
       "title": "Acesso por proxy"
@@ -67,41 +31,27 @@
       "systemName": "Nome do sistema",
       "objectId": "ID do objeto"
     },
-    "sameDeviceAs": "Mesmo dispositivo que {{name}}"
-  },
-  "assetMonitoringSection": {
-    "actions": {
-      "addUpdate": "Adicionar/atualizar monitoramento",
-      "disableActive": "Desativar monitoramento ativo",
-      "disabling": "Desativando...",
-      "enable": "Ativar monitoramento",
-      "open": "Abrir monitoramento"
-    },
-    "activeChecks": "{{active}}/{{total}} verificações de rede ativas",
-    "errors": {
-      "disable": "Falha ao desativar o monitoramento",
-      "loadMonitors": "Falha ao carregar os monitores de rede",
-      "loadStatus": "Falha ao carregar o status do monitoramento"
-    },
-    "loading": "Carregando status do monitoramento...",
-    "monitorTypes": {
-      "icmp_ping": "Ping ICMP",
-      "tcp_port": "Porta TCP",
-      "http_check": "Verificação HTTP",
-      "dns_check": "Verificação DNS"
-    },
-    "networkMonitorsTitle": "Monitores de rede ({{count}})",
-    "noChecks": "Nenhuma verificação de rede configurada",
-    "snmpSummary": "{{version}} · a cada {{seconds}}s",
-    "snmpTitle": "Monitor de dispositivo SNMP",
-    "state": {
-      "active": "Ativo",
-      "configuredPaused": "Configurado (Pausado)",
-      "paused": "Pausado",
-      "notConfigured": "Não configurado"
-    },
-    "title": "Monitoramento",
-    "lastPolled": " • última consulta em {{time}}"
+    "sameDeviceAs": "Mesmo dispositivo que {{name}}",
+    "peek": {
+      "manageTitle": "Gerenciar este ativo",
+      "manageDescription": "Identidade, monitoramento, vinculação e remoção são gerenciados na página do dispositivo.",
+      "openDevicePage": "Abrir página do dispositivo",
+      "settings": "Configurações…",
+      "reachabilityLine": "{{state}} · {{source}} {{age}}",
+      "lastSeenLine": "Última detecção · {{source}} {{age}}",
+      "state": {
+        "responding": "Respondendo",
+        "notResponding": "Não respondendo",
+        "unverified": "Não verificado"
+      },
+      "source": {
+        "networkCheck": "verificação de rede",
+        "probe": "verificar agora",
+        "scan": "varredura",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      }
+    }
   },
   "discoveredAssetList": {
     "actions": {
@@ -117,11 +67,12 @@
       "selectAllVisible": "Selecionar todos os visíveis",
       "selectAllVisibleAssets": "Selecionar todos os ativos visíveis",
       "selectAsset": "Selecionar ativo {{asset}}",
-      "viewDetails": "Ver detalhes"
+      "viewDetails": "Ver detalhes",
+      "settings": "Configurações…"
     },
     "columns": {
       "approval": "Aprovação",
-      "host": "Host",
+      "host": "Máquina",
       "lastSeen": "Visto por último"
     },
     "description": "Revise os ativos detectados em seu ambiente.",
@@ -143,7 +94,7 @@
     "monitored": "Monitorado",
     "title": "Ativos descobertos",
     "tryAgain": "Tentar novamente",
-    "sameDeviceAs": "Mesmo dispositivo que {{name}}"
+    "agentInstalled": "Agente"
   },
   "discoveryJobList": {
     "actions": {
@@ -230,7 +181,7 @@
     },
     "schedule": {
       "cron": "Agendamento cron",
-      "cronValue": "Cron: {{cron}}",
+      "cronValue": "Expressão cron: {{cron}}",
       "daily": "Diariamente às {{time}}",
       "everyHours": "A cada {{count}} horas",
       "everyMinutes": "A cada {{count}} min",
@@ -241,6 +192,7 @@
     },
     "tabs": {
       "assets": "Ativos",
+      "baselines": "Linhas de base",
       "changes": "Alterações",
       "jobs": "Trabalhos",
       "profiles": "Perfis",
@@ -377,39 +329,6 @@
     "title": "Perfis de descoberta",
     "tryAgain": "Tentar novamente"
   },
-  "enableMonitoringForm": {
-    "actions": {
-      "addNetworkMonitor": "Adicionar monitor de rede",
-      "enableSnmp": "Ativar monitoramento SNMP",
-      "enabling": "Ativando..."
-    },
-    "description": "O monitoramento oferece sondagem SNMP e verificações de rede (Ping/TCP/HTTP/DNS). Você pode configurar uma opção ou ambas.",
-    "errors": {
-      "communityRequired": "A string de comunidade é obrigatória para SNMP v1/v2c",
-      "enable": "Falha ao ativar monitoramento",
-      "generic": "Ocorreu um erro",
-      "loadTemplates": "Falha ao carregar os modelos",
-      "usernameRequired": "O nome de usuário é obrigatório para SNMP v3"
-    },
-    "fields": {
-      "authPassword": "Senha de autenticação",
-      "authProtocol": "Protocolo de autenticação",
-      "community": "String de comunidade",
-      "pollingInterval": "Intervalo de sondagem (segundos)",
-      "privacyPassword": "Senha de privacidade",
-      "privacyProtocol": "Protocolo de privacidade",
-      "snmpVersion": "Versão do SNMP",
-      "template": "Modelo",
-      "username": "Nome de usuário"
-    },
-    "networkChecksDescription": "Adicione monitores de ping, TCP, HTTP ou DNS para este ativo.",
-    "networkChecksTitle": "Verificações de rede",
-    "noTemplate": "Nenhum modelo",
-    "placeholders": {
-      "community": "public"
-    },
-    "snmpTitle": "Monitoramento de dispositivo SNMP"
-  },
   "networkBaselinesPanel": {
     "actions": {
       "changes": "Alterações",
@@ -479,6 +398,7 @@
       "selectSite": "Selecione o local"
     },
     "paused": "Pausado",
+    "scheduleBlocked": "Verificação recorrente pausada: nova aprovação necessária",
     "permissionManage": "As ações de alteração foram desabilitadas após uma falha na verificação de permissão. Requer `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -688,7 +608,12 @@
     "title": "Proxy para {{target}}",
     "throughAgent": "Por meio do agente",
     "connect": "Conectar",
-    "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)"
+    "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)",
+    "discoveredThisAsset": "descobriu este ativo",
+    "pickAgentHint": "Escolha um agente na mesma rede que {{ip}}.",
+    "scheme": "Protocolo",
+    "allowSelfSignedHint": "Ignora a verificação do certificado apenas para esta sessão.",
+    "throughAgentHelp": "O tráfego para este dispositivo é retransmitido pelo agente Breeze selecionado, que precisa estar na mesma rede."
   },
   "assetTypes": {
     "workstation": "Estação de trabalho",
@@ -702,6 +627,8 @@
     "iot": "IoT",
     "camera": "Câmera",
     "nas": "NAS",
+    "website": "Site",
+    "service": "Serviço",
     "unknown": "Desconhecido",
     "patchPanel": "Painel de conexão",
     "other": "Outro"

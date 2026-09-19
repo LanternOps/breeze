@@ -310,3 +310,126 @@ describe('MonitoringTab pointer to the Alerts feature', () => {
     expect(pointer.textContent).toContain('Open Alerts');
   });
 });
+
+// #5080: `featurePolicyId` means a standalone entity id — Monitoring is
+// inline settings, so it must never carry the parent CONFIG policy's own id.
+describe('MonitoringTab — featurePolicyId payload (#5080)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(
+      <MonitoringTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId="parent-1"
+        onLinkChanged={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
+    expect(payload.featurePolicyId).toBeNull();
+  });
+});
+
+// Fleet Designer W03 (#5653): a Fleet Design writes `rationale` on each watch
+// it creates. The tab must display it read-only, offer an edit affordance,
+// and round-trip an edited value through the tab's existing save payload.
+describe('MonitoringTab rationale (#5653)', () => {
+  const linkWithRationale = {
+    id: 'link-1',
+    featureType: 'monitoring' as const,
+    featurePolicyId: null,
+    inlineSettings: {
+      checkIntervalSeconds: 60,
+      watches: [
+        {
+          watchType: 'service',
+          name: 'nginx',
+          enabled: true,
+          alertOnStop: true,
+          alertAfterConsecutiveFailures: 2,
+          alertSeverity: 'high',
+          thresholdDurationSeconds: 300,
+          autoRestart: false,
+          maxRestartAttempts: 3,
+          restartCooldownSeconds: 300,
+          rationale: 'nginx serves customer traffic on this device function.',
+        },
+      ],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'monitoring',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  function renderWithRationale() {
+    return render(
+      <MonitoringTab
+        policyId="policy-1"
+        existingLink={linkWithRationale}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+  }
+
+  it('displays the rationale read-only when the watch is expanded', () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain(
+      'nginx serves customer traffic on this device function.',
+    );
+  });
+
+  it('says so when a watch carries no rationale', () => {
+    renderTab();
+    fireEvent.click(sectionHeader('Service & Process Watches'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Watch' }));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain('No rationale recorded.');
+  });
+
+  it('edits the rationale and carries it through the save payload', async () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    fireEvent.click(screen.getByTestId('watch-rationale-0-edit'));
+    const textarea = screen.getByTestId('watch-rationale-0-textarea');
+    fireEvent.change(textarea, { target: { value: 'Updated by the technician.' } });
+    fireEvent.click(screen.getByTestId('watch-rationale-0-save'));
+
+    // The editor closes and the new text renders read-only again.
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain('Updated by the technician.');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const settings = saveMock.mock.calls.at(-1)![1].inlineSettings as { watches: Array<{ rationale?: string | null }> };
+    expect(settings.watches[0]!.rationale).toBe('Updated by the technician.');
+  });
+
+  it('discards the draft on cancel', () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('nginx'));
+
+    fireEvent.click(screen.getByTestId('watch-rationale-0-edit'));
+    fireEvent.change(screen.getByTestId('watch-rationale-0-textarea'), { target: { value: 'discard me' } });
+    fireEvent.click(screen.getByTestId('watch-rationale-0-cancel'));
+
+    expect(screen.getByTestId('watch-rationale-0').textContent).toContain(
+      'nginx serves customer traffic on this device function.',
+    );
+  });
+});

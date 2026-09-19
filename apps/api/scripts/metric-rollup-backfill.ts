@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { closeDb, withSystemDbAccessContext } from '../src/db';
+import { closeDb } from '../src/db';
 import { rollupDeviceMetricsRange } from '../src/services/metricRollups';
 import { parseMetricRollupBackfillArgs } from './metric-rollup-backfill.lib';
 
@@ -18,14 +18,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await withSystemDbAccessContext(() =>
-    rollupDeviceMetricsRange({
-      orgId: options.orgId,
-      from: options.from,
-      to: options.to,
-      expectedSampleSeconds: options.expectedSampleSeconds,
-    })
-  );
+  // No context wrap (#4276): rollupDeviceMetricsRange owns one short-lived
+  // labeled context per statement, and each escapes any ambient context — an
+  // outer wrap here would do no work, just pin an idle-in-transaction
+  // connection for the whole (up to 31-day) pass, and a mid-pass
+  // idle_in_transaction_session_timeout would fail the script on COMMIT after
+  // every inner statement had already committed.
+  const result = await rollupDeviceMetricsRange({
+    orgId: options.orgId,
+    from: options.from,
+    to: options.to,
+    expectedSampleSeconds: options.expectedSampleSeconds,
+  });
 
   if (result.skipped) {
     // Feature flag off for this org — no rollups were written. Warn loudly on stderr

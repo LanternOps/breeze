@@ -64,16 +64,34 @@ In the Cloudflare dashboard, the public hostname's **Service** is `HTTP` → `ca
 
 ### Option B — Bypass Caddy
 
-Point the tunnel straight at the `api` and `web` containers and replicate the path split in the tunnel's ingress rules. cloudflared evaluates rules top to bottom, first match wins.
+Point the tunnel straight at the `api`, `web`, and (if you run them) `portal` and `billing` containers, and replicate Caddy's full path split in the tunnel's ingress rules. cloudflared evaluates rules top to bottom, first match wins — so order matters exactly as shown.
 
 **Tunnel ingress (`/opt/breeze/cloudflared/config.yml`):**
 
 ```yaml
 ingress:
+  # OAuth consent UI is an Astro page on the dashboard, not the API — this
+  # rule MUST come before the /oauth/* rule below, or /oauth/consent gets
+  # swallowed by it and users never see the consent screen.
+  - hostname: breeze.example.com
+    path: '^/oauth/consent(/.*)?$'
+    service: http://web:4321
   # API surface: REST, agents, websockets, health, metrics, oauth, activation
   - hostname: breeze.example.com
     path: '^/(api|oauth|\.well-known|s|i|activate|health|metrics|ready)(/.*)?$'
     service: http://api:3001
+  # Customer portal, served under /portal on the main hostname
+  - hostname: breeze.example.com
+    path: '^/portal(/.*)?$'
+    service: http://portal:4322
+  # Billing UI sidecar — only needed if you run the optional `billing`
+  # container (not part of the bundled self-host stack). Omit this rule
+  # entirely if you don't run it; the MSP Invoices/Quotes pages
+  # (/billing/invoices, /billing/quotes) then fall through correctly to the
+  # web catch-all below either way.
+  - hostname: breeze.example.com
+    path: '^/billing(/.*)?$'
+    service: http://billing:3002
   # Everything else → the dashboard
   - hostname: breeze.example.com
     service: http://web:4321

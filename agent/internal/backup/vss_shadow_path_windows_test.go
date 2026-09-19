@@ -317,34 +317,15 @@ func TestRewritePathsForVSS_LeavesSystemStateStagingDirUnrewritten(t *testing.T)
 	}
 }
 
-// TestRewritePathsForVSS_StagingDirStaysMatchableByMarkSystemStateFiles encodes
-// the downstream symptom of #3026 rather than only the rewrite itself.
-//
-// RunBackupContext passes the walked staging root to markSystemStateFiles,
-// which prefix-matches it against each collected file's sourcePath. Files under
-// the staging dir only ever exist on the live volume, so a shadow-rewritten
-// root matched zero of them — SystemStateManifest was set on a snapshot that
-// carried none of the artifacts it described. Leaving the index unrewritten is
-// what keeps the two ends of that comparison on the same volume.
-func TestRewritePathsForVSS_StagingDirStaysMatchableByMarkSystemStateFiles(t *testing.T) {
-	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
-	const staging = `C:\Windows\Temp\breeze-systemstate-1234`
-	shadowPaths := map[string]string{"C:": shadowRoot}
-
-	rewritten, _ := rewritePathsForVSS([]string{`C:\Users\data`, staging}, shadowPaths, 1)
-	walkedStagingRoot := rewritten[1]
-
-	// The artifact as it exists on disk — collectSystemState wrote it to the
-	// live volume moments ago, after the snapshot was already taken.
-	files := []backupFile{{sourcePath: filepath.Join(staging, "registry", "SOFTWARE.hiv")}}
-	markSystemStateFiles(files, walkedStagingRoot)
-
-	if !files[0].systemState {
-		t.Fatalf("system-state artifact %q was not matched against walked staging root %q — "+
-			"the manifest would be recorded with the artifacts missing (#3026)",
-			files[0].sourcePath, walkedStagingRoot)
-	}
-}
+// NOTE: TestRewritePathsForVSS_StagingDirStaysMatchableByMarkSystemStateFiles
+// used to live here, pinning that a shadow-rewritten staging root still
+// prefix-matched markSystemStateFiles. Both markSystemStateFiles and the
+// backupPaths-append it depended on were removed in Wave 1 of the D15
+// bare-metal-recovery contract (see incremental.go's NOTE) — system-state
+// artifacts are no longer part of the ordinary file walk at all, so there is
+// nothing for this rewrite to protect on their behalf anymore. rewritePathsForVSS
+// itself is untouched (see the tests above and below, which still exercise it
+// directly for ordinary VSS-rewritten paths).
 
 // The exclusion must not trade silent data loss for a warning that fires on
 // every system_image backup. The staging dir is genuinely a live read, so

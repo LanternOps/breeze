@@ -58,6 +58,7 @@ const fakeWs = { send: () => {} } as unknown as Parameters<
 
 interface Fixture {
   orgId: string;
+  partnerId: string;
   siteId: string;
   deviceId: string;
   agentId: string;
@@ -101,6 +102,7 @@ async function makeFixture(): Promise<Fixture> {
 
   return {
     orgId: env.organization.id,
+    partnerId: env.partner.id,
     siteId: env.site.id,
     deviceId: device.id,
     agentId,
@@ -118,6 +120,7 @@ async function seedTimedOutRun(
   fx: Fixture,
   opts: {
     executionStatus?: 'running' | 'timeout' | 'failed' | 'completed' | 'cancelled';
+    executionCancelState?: 'requested' | 'confirmed' | 'unconfirmed' | 'failed';
     executionExitCode?: number;
     executionStdout?: string;
     commandStatus?: 'failed' | 'cancelled';
@@ -138,6 +141,11 @@ async function seedTimedOutRun(
       startedAt: new Date(Date.now() - 90_000),
       exitCode: opts.executionExitCode ?? null,
       stdout: opts.executionStdout ?? null,
+      // #3525: `cancel_state` is orthogonal to `status` and carries the CANCEL
+      // REQUEST's outcome. The CHECK constraint ties it to cancel_requested_at.
+      ...(opts.executionCancelState
+        ? { cancelState: opts.executionCancelState, cancelRequestedAt: new Date(Date.now() - 60_000) }
+        : {}),
     })
     .returning({ id: scriptExecutions.id });
   if (!execution) throw new Error('seedTimedOutRun: no execution');
@@ -172,6 +180,7 @@ async function sendWsResult(
   const handlers = createAgentWsHandlers(fx.agentId, {
     deviceId: fx.deviceId,
     orgId: fx.orgId,
+    partnerId: fx.partnerId,
   });
   const event = {
     data: JSON.stringify({ type: 'command_result', commandId, ...body }),
@@ -200,6 +209,7 @@ async function sendHttpResult(
       deviceId: fx.deviceId,
       agentId: fx.agentId,
       orgId: fx.orgId,
+      partnerId: fx.partnerId,
       siteId: fx.siteId,
       role: 'agent',
     });
@@ -323,6 +333,7 @@ async function readExecution(executionId: string) {
       exitCode: scriptExecutions.exitCode,
       stdout: scriptExecutions.stdout,
       stderr: scriptExecutions.stderr,
+      cancelState: scriptExecutions.cancelState,
     })
     .from(scriptExecutions)
     .where(eq(scriptExecutions.id, executionId))
@@ -585,17 +596,20 @@ describe('#3607 late command result recovery', () => {
   );
 
   runDb(
-    'a CANCELLED execution is left alone — the operator abandoned the run',
+    'a CANCELLED execution KEEPS the late output — it is what the operator stopped the run to see',
     async () => {
       const fx = await makeFixture();
-      // routes/scripts.ts's cancel handler stamps the execution 'cancelled'
-      // but only cancels the paired command `WHERE status = 'pending'`. A
-      // command already 'sent' survives, later picks up the reaper's
-      // provisional timeout marker, and its real result now reaches
-      // handleScriptResult. Discarding the output is CORRECT here — and this
-      // is a routine race, so it must not be treated as a defect.
+      // CONTRACT CHANGE (#3525 closer 3). This test previously asserted the
+      // opposite — that the output was discarded — on the reasoning that "the
+      // operator asked for the run to be abandoned". The #3525 plan (W03, Task
+      // 3.1 Step 4, "Replace the 'drop the output' path with output recovery")
+      // identifies that as the design bug written down: an operator who stops a
+      // script wants to see how far it got, and the partial stdout is the only
+      // record of that. The race itself is unchanged and still routine — only
+      // what we do with the output changed.
       const { commandId, executionId } = await seedTimedOutRun(fx, {
         executionStatus: 'cancelled',
+        executionCancelState: 'confirmed',
       });
 
       await sendWsResult(fx, commandId, {
@@ -605,9 +619,56 @@ describe('#3607 late command result recovery', () => {
       });
 
       const execution = await readExecution(executionId);
+      // The output lands...
+      expect(execution.stdout).toBe('output for an abandoned run');
+      expect(execution.exitCode).toBe(0);
+      // ...and NOTHING else moves. No resurrection: a proven cancel stays
+      // cancelled and keeps its cancel_state, because the closer that
+      // terminalised this row already consumed the outcome.
       expect(execution.status).toBe('cancelled');
-      expect(execution.stdout).toBeNull();
-      expect(execution.exitCode).toBeNull();
+      expect(execution.cancelState).toBe('confirmed');
+    },
+    30_000,
+  );
+
+  runDb(
+    'the late-output recovery is idempotent — a replayed frame cannot overwrite it',
+    async () => {
+      const fx = await makeFixture();
+      // `exit_code IS NULL` on the EXECUTION row is the idempotency guard under
+      // test. Once the first late frame fills the output, a second frame is a
+      // no-op rather than a last-writer-wins overwrite.
+      const { commandId, executionId } = await seedTimedOutRun(fx, {
+        executionStatus: 'cancelled',
+        executionCancelState: 'confirmed',
+      });
+
+      await sendWsResult(fx, commandId, {
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'the first late frame',
+      });
+
+      // Put the COMMAND row back into the only shape `commandResultAcceptance`
+      // reopens. Without this the second frame is rejected one layer up and the
+      // assertion below would pass without the execution guard ever running —
+      // green for the wrong reason. Resetting isolates the guard being tested.
+      await getTestDb()
+        .update(deviceCommands)
+        .set({ status: 'failed', result: { status: 'timeout', error: 'reopened for replay' } })
+        .where(eq(deviceCommands.id, commandId));
+
+      await sendWsResult(fx, commandId, {
+        status: 'failed',
+        exitCode: 9,
+        stdout: 'a replayed frame that must not win',
+      });
+
+      const execution = await readExecution(executionId);
+      expect(execution.stdout).toBe('the first late frame');
+      expect(execution.exitCode).toBe(0);
+      expect(execution.status).toBe('cancelled');
+      expect(execution.cancelState).toBe('confirmed');
     },
     30_000,
   );

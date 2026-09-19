@@ -113,7 +113,7 @@ describe('DeviceDetails extension tabs (device.detail.tabs@1)', () => {
     await user.click(await screen.findByText('More'));
 
     const dropdown = (await screen.findByText('Demo Tab')).closest('div')!;
-    const labels = within(dropdown).getAllByRole('button').map((b) => b.textContent);
+    const labels = within(dropdown).getAllByRole('menuitem').map((b) => b.textContent);
     const demoIdx = labels.findIndex((l) => l?.includes('Demo Tab'));
     const otherIdx = labels.findIndex((l) => l?.includes('Other Tab'));
     // Every core tab beyond "Overview" (which alone fits as the single

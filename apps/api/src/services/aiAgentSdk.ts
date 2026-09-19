@@ -15,11 +15,25 @@ import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, devic
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
+import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
+import {
+  guardrailCheckForTenantTool,
+  tenantToolPermissionRequirement,
+  checkTenantToolRateLimit,
+} from './toolSources/guardrails';
+import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
+import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
+import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import {
+  resolveScriptRunContextForApproval,
+  describeScriptRunContext,
+  type ScriptApprovalRunContext,
+} from './scriptRunContextApproval';
+import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -27,9 +41,24 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
-import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
+import {
+  createActionIntent,
+  waitForIntentDecision,
+  waitForIntentTerminalOutcome,
+  transitionIntent,
+  type ActionIntentTransitionPatch,
+} from './actionIntents/intentService';
+import { buildActionLabel } from './actionIntents/actionLabel';
+import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
+import {
+  APPROVED_FAILED_STATUS,
+  describeIntentOutcome,
+  handoffDenialForOutcome,
+  type HandoffOutcome,
+  type ToolHandoffStatus,
+} from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -40,6 +69,7 @@ import {
 } from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
+import { recordActionIntentMetric } from './actionIntents/metrics';
 import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -63,6 +93,19 @@ const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
  * can still decide it and the durable release worker executes it (spec §6.1).
  */
 export const APPROVAL_WAIT_BUDGET_MS = 300_000;
+
+/**
+ * How long a handoff exit will wait for the durable worker to terminalize the
+ * intent before answering "approved, outcome not yet confirmed" (#6022).
+ *
+ * Small on purpose. It exists to catch outcomes that are effectively already
+ * decided — a guardrail refusal (#5934) terminalizes the intent in
+ * milliseconds — not to shadow the worker's real runtime, which can be
+ * minutes. It is additionally clamped by the cycle's REMAINING shared
+ * approval-wait budget, so it can never extend a turn past
+ * `APPROVAL_WAIT_BUDGET_MS`.
+ */
+export const TERMINAL_READBACK_BUDGET_MS = 3_000;
 
 /**
  * Begin an approval wait for this session's current assistant cycle.
@@ -277,12 +320,6 @@ const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 // than declared independently here, so the two paths cannot drift apart —
 // see the doc comments at their declaration site.
 
-function stripMcpPrefix(toolName: string): string {
-  if (!toolName.startsWith('mcp__')) return toolName;
-  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
-  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
-}
-
 /**
  * Human-readable verbs for the two M365 mutation tools that hit per-step
  * approval. The three read tools are tier 1 and never create an approval card,
@@ -309,11 +346,6 @@ export function buildM365RiskSummary(
   const user = String(input.userIdentifier ?? 'a user');
   const reason = input.reason ? ` Reason: ${String(input.reason)}.` : '';
   return `${verb} ${user} on ${conn.customerDisplayName}.${reason}`;
-}
-
-function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
-  const bareToolName = stripMcpPrefix(toolName);
-  return allowedTools.some((allowedTool) => stripMcpPrefix(allowedTool) === bareToolName);
 }
 
 // ============================================
@@ -387,7 +419,18 @@ export async function runPreFlightChecks(
   }
 
   if (session.status !== 'active') {
-    return { ok: false, error: 'Session is not active' };
+    // 'expired' must read as expired to the caller: routes map on the word to
+    // return 410, and a session retired eagerly by openaiSessionManager's
+    // eviction reaches this branch BEFORE the age checks below would have
+    // produced that wording lazily. Without this, the same terminal state
+    // surfaced as 410 or 400 depending purely on which path got there first.
+    return {
+      ok: false,
+      error:
+        session.status === 'expired'
+          ? 'Session has expired. Please start a new session.'
+          : 'Session is not active',
+    };
   }
 
   if (session.turnCount >= session.maxTurns) {
@@ -461,17 +504,182 @@ export async function runPreFlightChecks(
     ? await buildSystemPrompt(auth, sanitizedPageContext)
     : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
-  // Remaining budget
-  let maxBudgetUsd: number | undefined;
-  try {
-    const remaining = await getRemainingBudgetUsd(orgId);
-    if (remaining !== null) maxBudgetUsd = remaining;
-  } catch (err) {
-    console.error('[AI-SDK] Failed to get remaining budget:', err);
-    return { ok: false, error: 'Unable to verify spending budget. Please try again later.' };
+  // A durable reservation is acquired immediately before provider dispatch by
+  // the route. Returning an advisory remaining-budget snapshot here would
+  // recreate the check-then-spend race this preflight must not authorize.
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
+}
+
+/**
+ * #5205 W05 (#5210), spec §6.3: wraps a `transitionIntent` CAS to a terminal
+ * status with its `intent_outbox` publication in ONE atomic system-scoped
+ * transaction — `transitionIntent` opens its own `withSystemDbAccessContext`,
+ * which JOINS this already-open one (db/index.ts's "refuses to nest"), so
+ * both writes commit together. Only fires when the CAS actually wins,
+ * matching every other terminal writer's posture (a lost race means some
+ * other writer already terminalized this intent and owns its outbox row).
+ *
+ * `taskId` is always `null` here by construction: every intent this file
+ * transitions was created by THIS session's own
+ * `createActionIntent(session.auth, {...})` call above, which never threads a
+ * `task` context through — task-linked admission is a durable-worker-only
+ * path in the thin slice (spec P3-1: "supervised mode only... no direct
+ * act"). `publishIntentTerminalOutbox` is still the call site (not a bare
+ * `intentOutbox` insert) because it is the ONE helper every terminal writer
+ * in baseline §3.2's inventory uses, and the contract test enumerates that
+ * inventory by call site, not by whether task-linkage happens to be reachable
+ * today.
+ */
+async function transitionIntentAndPublish(
+  intentId: string,
+  to: 'completed' | 'failed',
+  patch: ActionIntentTransitionPatch,
+  orgId: string,
+  event: 'intent_completed' | 'intent_failed',
+): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const won = await transitionIntent(intentId, 'executing', to, patch);
+    if (won) {
+      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null }, event);
+    }
+    return won;
+  });
+}
+
+/**
+ * #5232: `transitionIntent` returns `false` on a lost compare-and-swap and
+ * never throws, so every `transitionIntentAndPublish` call site has to decide
+ * what a LOST race means for it. Two cases, and the difference is whether the
+ * tool already ran:
+ *
+ * - `executed: false` — the CAS is attempted BEFORE the tool runs (a
+ *   revalidation stop, an effect-digest mismatch, or the tier-3 catch's
+ *   self-heal). Losing means some other writer (the stale-executing reaper,
+ *   the durable release worker, or a duplicate delivery) already terminalized
+ *   this intent. There is no side effect to reconcile and no result to lose —
+ *   the intent is terminal either way. Mirrors `intentReleaseWorker.ts`'s
+ *   `failIntent`, which returns quietly on the same race rather than writing
+ *   a duplicate audit row for an event that already happened once. A warn
+ *   line, because "which writer won" is still worth being able to grep, plus
+ *   (#5326) a `breeze_action_intents_total{outcome="cas_lost"}` bump so the
+ *   contention rate is countable — the warn alone left this path invisible to
+ *   Prometheus. Still no Sentry event and no audit row: expected contention
+ *   with no side effect to reconcile is not an error.
+ *
+ * - `executed: true` — the CAS is attempted AFTER the tool had its real-world
+ *   side effect. The effect happened and cannot be undone, but the intent now
+ *   carries the winner's terminal state, so the result THIS execution produced
+ *   is recorded nowhere. That is the hole this helper exists to close: log,
+ *   `captureException`, and write an `action_intent.executed` /
+ *   `result: 'failure'` audit row carrying an explicit `execution_cas_lost`
+ *   marker.
+ *
+ *   The log + `captureException` half is taken straight from
+ *   `intentReleaseWorker.ts`'s own `executing -> completed` loss. The durable
+ *   record is NOT: the worker re-persists the outcome on the intent's TASK
+ *   OPERATION row (`persistTaskOperationOutcome`, #5209), which is a channel
+ *   this file does not have — every intent it transitions is created without a
+ *   task context, so `taskId` is null by construction (see
+ *   `transitionIntentAndPublish` above). The audit row is this path's
+ *   equivalent durable record, not a claim of parity. The worker's own three
+ *   lost-CAS branches still write no audit row of their own; backporting one
+ *   is a separate change, deliberately not made here.
+ *
+ * Never retries the tool: a lost CAS means another writer owns the intent, and
+ * re-running would double-execute a real side effect — the precise thing the
+ * `approved -> executing` CAS exists to prevent.
+ *
+ * Written as a direct `writeAuditEvent` rather than `recordActionIntentEvent`
+ * for the same reason `intentReleaseWorker.ts`'s `auditReleaseFailure` is:
+ * `ActionIntentOutcome` has no "outcome executed, but it failed" member, so
+ * routing through that helper would file this as `result: 'success'`. The
+ * Prometheus counter is bumped separately so `executed` totals still include
+ * this path.
+ *
+ * `actionName`/`source` are supplied by the caller rather than re-read from the
+ * intent row: every intent this file transitions was created by its own
+ * `createActionIntent(session.auth, { toolName, source: 'chat', ... })` call
+ * above, so both are known by construction and a DB read on an error path
+ * would only add a second way to fail.
+ */
+const INLINE_CAS_LOST_ERROR_CODE = 'execution_cas_lost';
+
+function reportLostTerminalCas(opts: {
+  intentId: string;
+  orgId: string;
+  toolName: string;
+  intendedStatus: 'completed' | 'failed';
+  /** Hardcoded string literal per call site; allowlisted Sentry tag. */
+  casLabel: string;
+  executed: boolean;
+}): void {
+  const { intentId, orgId, toolName, intendedStatus, casLabel, executed } = opts;
+
+  if (!executed) {
+    console.warn(
+      `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+      + 'another writer already terminalized it; the tool never ran',
+    );
+    // #5326: metric only — no Sentry, no audit marker. The tool never ran, so
+    // nothing was lost but the transition itself, and losing it to a reaper or
+    // the durable worker is expected under contention. It still has to be
+    // COUNTABLE: a rising cas_lost rate means the pre-execution paths are
+    // racing something, and a console.warn cannot carry that signal.
+    try {
+      recordActionIntentMetric('chat', toolName, 'cas_lost');
+    } catch (err) {
+      // Mirrors the `executed: true` branch's guard below, for the same
+      // reason: every caller of this helper is reporting SOME other failure
+      // (a revalidation stop, a digest mismatch, the tier-3 catch), and a
+      // throw out of the metrics layer here would unwind into that caller's
+      // outer catch — replacing the specific reason it had already computed
+      // with a generic `execution_error`. Observability must never be able
+      // to overwrite the diagnosis it exists to support.
+      console.error(`[AI-SDK] Failed to record the cas_lost metric for intent ${intentId}:`, err);
+    }
+    return;
   }
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, resolved };
+  console.error(
+    `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+    + 'a reaper or duplicate delivery likely already terminalized it; the tool DID execute',
+  );
+  captureException(
+    new Error(`intent ${intentId} executed but lost the executing->${intendedStatus} CAS`),
+    undefined,
+    { cas_label: casLabel },
+  );
+
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId,
+      action: 'action_intent.executed',
+      resourceType: 'action_intent',
+      resourceId: intentId,
+      actorType: 'system',
+      actorId: null,
+      result: 'failure',
+      details: {
+        actionName: toolName,
+        source: 'chat',
+        errorCode: INLINE_CAS_LOST_ERROR_CODE,
+        intendedStatus,
+        casLabel,
+        executed: true,
+      },
+    });
+    recordActionIntentMetric('chat', toolName, 'executed');
+  } catch (err) {
+    // Only a SYNCHRONOUS throw reaches here (a bug in the payload sanitiser,
+    // say): `writeAuditEvent` is a fire-and-forget `void writeAuditEventAsync`
+    // (auditEvents.ts) and the underlying `createAuditLogAsync` never rejects —
+    // it catches internally and routes a real DB-write failure to its own retry
+    // queue plus `captureException`. So this catch is not what makes a failed
+    // marker write observable; it exists so that the one failure mode the audit
+    // layer canNOT absorb doesn't take the rest of postToolUse down with it.
+    console.error(`[AI-SDK] Failed to write the CAS-lost audit marker for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }
 
 // ============================================
@@ -485,7 +693,7 @@ export async function runPreFlightChecks(
  * server tools.
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
-  return async (toolName, input) => {
+  return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
@@ -500,17 +708,59 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // reopening the check/use window the digest exists to close.
     let verifiedToolContext: ToolExecutionContext | undefined;
 
+    // Tenant (BYO MCP) tool for this session, if `toolName` names one — Task
+    // A10. Resolved once here and threaded through the guardrail/RBAC/rate-
+    // limit branches below instead of re-checked at each one. Optional
+    // chained even though the field is non-optional on `ActiveSession`:
+    // every REAL session (streamingSessionManager.ts) always sets it, but
+    // pre-existing test fixtures across this file's sibling suites build a
+    // hand-rolled `as any` session and predate this field.
+    const tenant = session.tenantTools?.get(toolName);
+
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
-    if (!TOOL_TIERS[toolName]) {
+    if (!TOOL_TIERS[toolName] && !tenant) {
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
-    if (session.allowedTools && !isAllowedForSession(toolName, session.allowedTools)) {
-      return { allowed: false, error: `Tool '${toolName}' is not allowed for this session` };
+    // Allowlist check runs on the EXPOSED name, not the handler name. The two
+    // coincide for every tool the `breeze` MCP server registers; script
+    // builder's `execute_script_on_device` dispatches to the `run_script`
+    // handler, and comparing THAT against an allowlist of
+    // `mcp__script_builder__*` names denied every call before tier/approval
+    // logic ran (#4883). Once this gate resolves, nothing further in this
+    // function reads `exposedToolName` — the capability being gated is the
+    // handler's, so tier, RBAC, rate limits, approval and audit all stay on
+    // `toolName`.
+    const exposedToolName = mcpToolName ?? toolName;
+    if (session.allowedTools && !isAllowedForSession(exposedToolName, session.allowedTools)) {
+      // The SDK is handed the SAME list as `allowedTools` on `query()`, so it
+      // should never offer the model a tool this branch then refuses. Reaching
+      // here means the two views disagree — a wiring bug, not a user-permission
+      // outcome — and #4883 proves that failure is invisible without a signal:
+      // it read as an ordinary tool refusal in chat for weeks while every
+      // Script Builder test run was dead.
+      const wiringError = new Error(
+        `Session allowlist denied '${exposedToolName}' (handler '${toolName}') — `
+        + 'the SDK exposed a tool the app-layer guard refuses',
+      );
+      console.error(`[AI-SDK] ${wiringError.message} (session ${session.breezeSessionId})`);
+      // Detail rides in the message, not in tags: the Sentry scrubber's tag
+      // allowlist silently voids tag keys it does not know.
+      captureException(wiringError, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+      return {
+        allowed: false,
+        error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,
+      };
     }
 
-    // Guardrails (tier check + action-based escalation)
-    const guardrailCheck = checkGuardrails(toolName, input);
+    // Guardrails (tier check + action-based escalation). A proposal-backed
+    // run_script needs the proposal's reviewed risk tier to pick supervised vs
+    // four_eyes; every other tool call passes `undefined` and is unchanged. A
+    // tenant (BYO MCP) tool has no proposal/action-escalation shape of its
+    // own — it maps straight to guardrailCheckForTenantTool's tier.
+    const guardrailCheck = tenant
+      ? guardrailCheckForTenantTool(tenant)
+      : checkGuardrails(toolName, input, await loadProposalGuardrailContext(input, session.orgId));
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -518,7 +768,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
     // RBAC permission check
     try {
-      const permError = await checkToolPermission(toolName, input, session.auth);
+      const permError = tenant
+        ? await checkPermissionRequirements(session.auth, [tenantToolPermissionRequirement(tenant.tier)])
+        : await checkToolPermission(toolName, input, session.auth);
       if (permError) {
         return { allowed: false, error: permError };
       }
@@ -529,7 +781,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
     // Per-tool rate limit
     try {
-      const rateLimitErr = await checkToolRateLimit(toolName, session.auth.user.id);
+      const rateLimitErr = tenant
+        ? await checkTenantToolRateLimit(tenant, session.auth.user.id)
+        : await checkToolRateLimit(toolName, session.auth.user.id);
       if (rateLimitErr) {
         return { allowed: false, error: rateLimitErr };
       }
@@ -753,6 +1007,73 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         return result;
       };
 
+      /**
+       * Hand the action off to the durable release worker AND report what it
+       * actually did, if it is already known (#6022).
+       *
+       * Both handoff exits used to return `approvedExecutingDenial()`
+       * unconditionally: "approved and running, the outcome is reported
+       * separately". Nothing reported it. When the worker's execution FAILED —
+       * the #5934 autoInstall guardrail refusing the call, leaving the intent
+       * `failed` / `tool_returned_error` — the chat still said "Approved ·
+       * running" and the model told the operator the arming had succeeded.
+       *
+       * So before answering, spend a SHORT slice of the cycle's shared
+       * approval-wait budget reading the intent's terminal outcome back. A
+       * guardrail refusal terminalizes in milliseconds, so the common failure
+       * becomes a truthful tool error; genuinely long-running work times out
+       * and still reports "approved, outcome not yet confirmed" — which is now
+       * what the message says, instead of promising a report that never comes.
+       *
+       * The read-back is an OBSERVER ONLY (`waitForIntentTerminalOutcome`
+       * never writes): this branch still returns BEFORE/without owning the
+       * `approved -> executing` CAS, so the worker's claim stays available and
+       * the COORDINATION INVARIANT is untouched. The wait is registered with
+       * `beginApprovalWait` so a new user message or an interrupt settles it
+       * (#3089) and it can never outlive the turn.
+       */
+      const releaseHandoffDenial = async (
+        intentId: string,
+      ): Promise<{ allowed: false; error: string; handoff: ToolHandoffStatus }> => {
+        const readBack = beginApprovalWait(session);
+        let outcome: HandoffOutcome;
+        try {
+          outcome = describeIntentOutcome(
+            await waitForIntentTerminalOutcome(
+              intentId,
+              Math.min(readBack.timeoutMs, TERMINAL_READBACK_BUDGET_MS),
+              readBack.signal,
+            ),
+          );
+        } catch (err) {
+          // An unreadable outcome is NOT evidence the action failed — say
+          // "still running" rather than inventing a failure.
+          //
+          // Captured, not just logged: `waitForIntentTerminalOutcome` already
+          // swallows every expected DB-poll failure internally, so anything
+          // reaching here is an unexpected bug in the read-back itself. Left
+          // on console only, a regression would degrade this whole feature
+          // back to "approved, running" forever — silently, which is the bug
+          // class #6022 is about.
+          console.error(`[AI-SDK] terminal read-back failed for intent ${intentId}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            area: 'ai_intent_terminal_readback',
+            intent_id: intentId,
+            tool_name: toolName,
+          });
+          outcome = describeIntentOutcome(null);
+        } finally {
+          readBack.end();
+        }
+
+        return await failMatchedPlanStep(
+          handoffDenialForOutcome(outcome),
+          // Only a confirmed failure stops the plan; an action that is still
+          // running (or completed) has not derailed it.
+          outcome.handoff === APPROVED_FAILED_STATUS ? ' The plan has been stopped.' : undefined,
+        );
+      };
+
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
         if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
@@ -905,7 +1226,43 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
       }
 
-      const description = guardrailCheck.description ?? `Execute ${toolName}`;
+      // #4888 — a script launch is the one approval where the ARGUMENTS decide
+      // a privilege level, so the effective run context is resolved here and
+      // stated on the card rather than left inside the collapsed parameter
+      // JSON. Non-fatal: any failure degrades to no run-context line, never to
+      // a failed approval. Returns null for every non-script tool.
+      let scriptRunContext: ScriptApprovalRunContext | null = null;
+      try {
+        scriptRunContext = await resolveScriptRunContextForApproval(
+          toolName,
+          input as Record<string, unknown>,
+          session.orgId,
+        );
+      } catch (err) {
+        // Reported, not just logged: `resolveScriptRunContextForApproval`
+        // already captures its own (expected) DB failure internally and
+        // degrades, so anything reaching HERE is a bug in the resolver rather
+        // than an outage — and its only symptom is an approval card that
+        // quietly stops naming the run context. That must not be invisible in
+        // Sentry, whatever the surrounding file's console-only convention.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
+      }
+
+      // W03 (#5612): the helper card has no API client of its own, so a
+      // proposal-backed run_script carries a trimmed summary on the event.
+      // Non-fatal and null for every other tool.
+      const scriptProposal = toolName === 'run_script'
+        ? await loadProposalApprovalSummary(input as Record<string, unknown>, session.orgId)
+        : null;
+
+      const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
+      // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
+      // every surface that renders one: the chat card, the durable intent's
+      // stored reason, the /approvals queue, and the mobile push.
+      const description = scriptRunContext
+        ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
+        : baseDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -938,6 +1295,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+          // #5363: the "on device 6eae0f70..." → "on KIT" substitution that
+          // used to live here is now `createActionIntent`'s, for every intent
+          // path rather than only a chat with a resolvable deviceContext (see
+          // actionIntents/approvalDeviceName.ts). `riskSummary` is passed as
+          // the label unchanged so an M365 risk summary still wins over the
+          // guardrail description — the intent service rewrites the stub
+          // inside whichever string it receives.
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -952,7 +1316,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               input: input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
+              actionLabel: riskSummary,
               orgId: session.orgId,
+              // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
+              // the intent to the exact tool row + revision this session
+              // resolved, so release revalidation reloads THAT row and fails
+              // closed on drift/disable. createActionIntent skips the core
+              // classifier for a bound intent — it would answer "unknown
+              // tool" for a qualified name. Absent for every core tool.
+              ...(tenant
+                ? {
+                    externalTool: {
+                      toolSourceToolId: tenant.id,
+                      revision: tenant.revision,
+                      sourceName: tenant.sourceName,
+                    },
+                  }
+                : {}),
             });
           } catch (err) {
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
@@ -980,6 +1360,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
           }
 
+          // W04 (#5612): an intent that is ALREADY `approved` at creation was
+          // decided by an autonomy path (script_reviewer here; ticket_autonomy
+          // too) and has NO approval_requests row for anyone to act on. Showing
+          // an approval card for it is a lie that resolves itself a second
+          // later. Publish an informational event instead, and fall through to
+          // the same wait/CAS/revalidate path — `waitForIntentDecision` returns
+          // `approved` on its first poll, so the release below is unchanged.
+          // Keyed on `status`, not `decidedVia`: the snapshot exposes `status`,
+          // and "already decided, nothing to approve" is the honest condition.
+          if (intent.status === 'approved') {
+            session.eventBus.publish({
+              type: 'unattended_release',
+              executionId: approvalExec.id,
+              intentId: intent.id,
+              toolName,
+              description,
+              deviceContext,
+              scriptRunContext,
+              ...(scriptProposal ? { scriptProposal } : {}),
+            });
+          } else {
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -1005,6 +1406,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // (AiApprovalDialog) uses this to decide whether the self-approve
             // button is itself the whole decision or just this user's half of one.
             approvalScope: guardrailCheck.approvalScope,
+            // #4888 — structured twin of the sentence in `description`, so
+            // the card can render a localized, always-visible run-context row
+            // instead of relying on the English prose.
+            scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1016,6 +1422,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             deviceContext,
             intentBacked: true,
           });
+          }
 
           // Block until an approver decides, OR the cycle's SHARED approval-wait
           // budget (up to 300s — matches the intent's own 5-minute chat expiry)
@@ -1108,11 +1515,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // (see DURABLE_RELEASE_ONLY_TOOLS). Winning the CAS here and then
           // discovering that would leave the intent claimed by a releaser that
           // must not run it, and the inline path cannot safely un-claim.
+          //
+          // APPROVAL HANDOFF, NOT A FAILURE (#5107): the human approved and
+          // the worker is executing. `allowed: false` here means only "this
+          // session will not run it" — so it carries `handoff`, which makes
+          // aiAgentSdkTools.ts publish the tool result with `isError: false`
+          // and `status: 'approved_executing'`. The COORDINATION INVARIANT is
+          // untouched: this branch still returns BEFORE the
+          // `approved -> executing` CAS below, so the worker's claim remains
+          // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
-            return await failMatchedPlanStep({
-              allowed: false,
-              error: 'This action was approved and is being completed by the approval worker.',
-            });
+            return await releaseHandoffDenial(intent.id);
           }
 
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
@@ -1140,10 +1553,19 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // already claimed this intent for execution. Do NOT run the tool
             // inline — that would double-execute a real side effect. The worker
             // owns the ledger write and the intent's final result/error_code.
-            return await failMatchedPlanStep({
-              allowed: false,
-              error: 'This action is already being completed by the approval worker; it will not run twice.',
-            });
+            //
+            // Same APPROVAL HANDOFF as the durable-release branch above, and
+            // the one that actually fires today (DURABLE_RELEASE_ONLY_TOOLS is
+            // still empty, so a human-approved intent reaches the user as
+            // "FAILED" through THIS exit — #5107's recording). Losing the CAS
+            // is the mutual-exclusion working, not an error: the action is
+            // approved and running under the worker. `handoff` is what stops
+            // the chat painting it deny-red.
+            //
+            // Nothing about the invariant changes: the CAS was attempted and
+            // lost, we still refuse to execute inline, and we still do not
+            // touch the intent (the winner owns every subsequent transition).
+            return await releaseHandoffDenial(intent.id);
           }
 
           // Won the CAS: record the intent id so the outer catch can
@@ -1184,7 +1606,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
-            await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
+            const revalidationCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: revalidation.errorCode },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!revalidationCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_revalidation_failed',
+                executed: false,
+              });
+            }
             console.error(
               `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
             );
@@ -1229,9 +1667,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {
-              await transitionIntent(intent.id, 'executing', 'failed', {
-                errorCode: 'content_changed',
-              });
+              const digestCasWon = await transitionIntentAndPublish(
+                intent.id,
+                'failed',
+                { errorCode: 'content_changed' },
+                session.orgId,
+                'intent_failed',
+              );
+              if (!digestCasWon) {
+                reportLostTerminalCas({
+                  intentId: intent.id,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_content_changed',
+                  executed: false,
+                });
+              }
               console.error(
                 `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
               );
@@ -1246,6 +1698,50 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // the mismatch branch above returns.
             verifiedToolContext = recomputed.context;
           }
+
+          // AI script authoring W04 (#5612), spec §4.6 invariant 11 — the
+          // SAME release precondition the durable worker enforces
+          // (jobs/intentReleaseWorker.ts): a lane intent whose evidence says a
+          // restore checkpoint was required takes one NOW, after the digest
+          // check and before the effect. No-op for every non-lane intent.
+          const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intentRow);
+          if (!laneCheckpoint.ok) {
+            const checkpointCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: 'checkpoint_unavailable' },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!checkpointCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_checkpoint_unavailable',
+                executed: false,
+              });
+            }
+            console.error(
+              `[AI-SDK] inline release restore checkpoint unavailable for intent ${intent.id}: ${laneCheckpoint.reason}`,
+            );
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'A System Restore checkpoint could not be taken before the unattended run; it was not executed.',
+            });
+          }
+
+          // #5645 — the handler gets the released intent's decision record
+          // alongside the verified material, exactly as the durable worker
+          // passes it (jobs/intentReleaseWorker.ts): `run_script`'s proposal
+          // branch derives the execution row's spec §4.1 `approval_method`
+          // from it. Unconditional for the same reason `actionIntentId` is
+          // (see toolExecutionContext.ts).
+          verifiedToolContext = {
+            ...verifiedToolContext,
+            releaseDecision: { approvalScope: intentRow.approvalScope, decidedVia: intentRow.decidedVia ?? null },
+          };
 
           // Won the release: track the intent id so createSessionPostToolUse can
           // CAS it executing -> completed|failed once the inline tool call
@@ -1292,13 +1788,40 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // original error being handled.
           if (wonIntentId) {
             try {
-              await transitionIntent(wonIntentId, 'executing', 'failed', { errorCode: 'execution_error' });
+              const selfHealCasWon = await transitionIntentAndPublish(
+                wonIntentId,
+                'failed',
+                { errorCode: 'execution_error' },
+                session.orgId,
+                'intent_failed',
+              );
+              if (!selfHealCasWon) {
+                reportLostTerminalCas({
+                  intentId: wonIntentId,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_self_heal',
+                  // This catch wraps the tier-3 admission flow inside
+                  // preToolUse — it can only be reached BEFORE the handler
+                  // runs the tool, which is exactly why the self-heal is safe
+                  // to attempt at all.
+                  executed: false,
+                });
+              }
             } catch (transitionErr) {
+              // #5205 W05 (#5210): transitionIntentAndPublish now couples the
+              // CAS to a constraint-guarded intentOutbox insert in the SAME
+              // transaction — a failure here rolls back the self-heal CAS
+              // too, exactly the case this code exists to prevent (a stranded
+              // `executing` row). Must not be console-only: this is the same
+              // "silent for weeks" risk class as the wiring-error check above.
               console.error(
                 '[AI-SDK] Failed to CAS action intent to failed after unexpected tier-3 error:',
                 wonIntentId,
                 transitionErr,
               );
+              captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
             }
           }
           return await failMatchedPlanStep({
@@ -1326,7 +1849,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // Tier → riskTier mapping (documented in the spec): Tier 2 → 'medium'.
         const riskTier: 'medium' | 'high' | 'critical' =
           guardrailCheck.tier >= 4 ? 'critical' : guardrailCheck.tier >= 3 ? 'high' : 'medium';
-        const actionLabel = description;
+        // #5363: this row is rendered by the SAME mobile takeover headline as
+        // a tier-3 intent's, so it gets the same builder — the id stub
+        // ("on device 6eae0f70...") becomes the device's name and a shouted
+        // verb is softened. No extra read: `deviceContext` was already
+        // resolved above from this call's own `deviceId` argument. This path
+        // inserts its approval_requests row directly (it must NOT call
+        // createActionIntent — see the comment block above), so the intent
+        // service's own resolution never reaches it.
+        const actionLabel = buildActionLabel({
+          toolName,
+          input: input as Record<string, unknown>,
+          reason: description,
+          deviceHostname: deviceContext?.displayName ?? deviceContext?.hostname ?? null,
+        });
         // For M365 mutation tools, enrich the approval card with the customer
         // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
         // the default description rather than throwing into the approval path.
@@ -1457,6 +1993,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             input,
             description,
             deviceContext,
+            scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
@@ -1584,8 +2122,38 @@ function isScriptApplyTool(toolName: string): boolean {
  * Creates a postToolUse callback that reads auth/auditSnapshot from the active
  * session and publishes tool_result events to the session's event bus.
  */
+/**
+ * Back-fill `script_proposals.session_id` for a chat-authored proposal. The
+ * UPDATE is org-scoped and `session_id IS NULL`-guarded inside
+ * attachProposalToSession, so a foreign-org id in the output cannot be claimed.
+ * Best-effort: a failure here must not break the tool_result the UI already
+ * received. Exported for its unit test.
+ */
+export async function attachChatProposalToSession(
+  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId'>,
+  parsedOutput: Record<string, unknown>,
+): Promise<void> {
+  const proposalId = parsedOutput.proposalId;
+  if (typeof proposalId !== 'string' || proposalId.length === 0) return;
+  try {
+    const attached = await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => attachProposalToSession(proposalId, session.orgId, session.breezeSessionId),
+    );
+    if (!attached) {
+      // Not an error (an idempotent retry lands here too), but a proposal the
+      // handler just created that is NOT attributable is worth a trace: it
+      // means the id in the output and the session's org disagree.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (foreign org or already attributed)`);
+    }
+  } catch (err) {
+    console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
+    captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+  }
+}
+
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs, sealed) => {
+  return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
     // Count this tool call toward the turn's tool_execution_count rollup
     // (consumed by streamingSessionManager's `result` handler) regardless of
     // whether the DB writes below succeed — postToolUse only fires for a tool
@@ -1606,7 +2174,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // Canonical session org (always set) — `auth.orgId` is null for partner-
     // scope logins, which left tool audit rows without an org attribution.
     const orgId = session.orgId;
-    const guardrailCheck = checkGuardrails(toolName, input);
+    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.
@@ -1627,6 +2196,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       toolUseId: toolUseId ?? '',
       output: uiOutput,
       isError,
+      // Server-asserted, from the gate's own decision — NOT read back out of
+      // `uiOutput` (#5107). `output.status` carries the same value for the
+      // model and for replayed history rows, but the tool owns that payload,
+      // so a client that trusted the shape alone would let any tool repaint
+      // its own failure as an approved, in-flight action.
+      ...(handoff ? { handoff } : {}),
     });
 
     // 1b. Plan step SSE events (also synchronous, emit before DB writes)
@@ -1658,6 +2233,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // 2. Persist to DB — best-effort with individual error handling.
     //    If any write fails, we warn but don't block the conversation.
     let persistenceError = false;
+
+    // 2-pre. Chat attribution for an AI script proposal. The propose_script
+    // handler receives `(input, auth)` and never the Breeze session id, so the
+    // row is inserted with session_id NULL and back-filled here, org-scoped,
+    // once the output carries the proposal id (roadmap reconciliation).
+    if (toolName === 'propose_script' && !isError) {
+      await attachChatProposalToSession(session, parsedOutput);
+    }
 
     // 2a. Save tool_result to aiMessages
     try {
@@ -1801,32 +2384,82 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           captureException(err instanceof Error ? err : new Error(String(err)));
           plaintextGuardTripped = true;
           try {
-            await transitionIntent(pendingIntentId, 'executing', 'failed', {
-              executedAt: new Date(),
-              errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
-            });
+            const guardCasWon = await transitionIntentAndPublish(
+              pendingIntentId,
+              'failed',
+              { executedAt: new Date(), errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!guardCasWon) {
+              // The tool ALREADY ran (this is postToolUse) and the credential
+              // it produced is being refused persistence — losing the CAS on
+              // top of that means the intent records neither the execution nor
+              // the guard trip. Loudest possible case for the marker.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_plaintext_guard',
+                executed: true,
+              });
+            }
           } catch (transitionErr) {
+            // #5205 W05 (#5210): the CAS is now coupled to a constraint-
+            // guarded intentOutbox insert in the SAME transaction — a
+            // failure here rolls the CAS back too, stranding the intent
+            // `executing`. Report, don't just log.
             console.error(
               `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
               pendingIntentId,
               transitionErr,
             );
+            captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
           }
         }
 
         if (!plaintextGuardTripped) {
           try {
-            await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
-              executedAt: new Date(),
-              // error_code is always the stable short code (matches the
-              // release worker's vocabulary); the raw tool error text is
-              // unbounded free-form and belongs in `result`, not `error_code`.
-              ...(isError
-                ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
-                : { result: sizedResult }),
-            });
+            const completionCasWon = await transitionIntentAndPublish(
+              pendingIntentId,
+              isError ? 'failed' : 'completed',
+              {
+                executedAt: new Date(),
+                // error_code is always the stable short code (matches the
+                // release worker's vocabulary); the raw tool error text is
+                // unbounded free-form and belongs in `result`, not `error_code`.
+                ...(isError
+                  ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                  : { result: sizedResult }),
+              },
+              session.orgId,
+              isError ? 'intent_failed' : 'intent_completed',
+            );
+            if (!completionCasWon) {
+              // #5232: the primary inline-execution completion write. The tool
+              // ran and had its real-world side effect; losing this CAS means
+              // the result it produced is recorded nowhere on the intent.
+              // Never retried — the winner owns the intent, and re-running
+              // would double-execute the side effect.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: isError ? 'failed' : 'completed',
+                casLabel: 'ai_sdk_inline_completion',
+                executed: true,
+              });
+            }
           } catch (err) {
+            // #5205 W05 (#5210): this is the primary inline-execution
+            // completion write — every non-durable-release tier-3 tool call
+            // ends here. The CAS is now coupled to a constraint-guarded
+            // intentOutbox insert in the SAME transaction, so a failure here
+            // rolls the CAS back too and would otherwise strand the intent
+            // `executing` with no signal beyond a console line.
             console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
           }
         }
       }
@@ -1884,6 +2517,24 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     }
 
     // 2e. Write audit event (fire-and-forget, non-blocking)
+    //
+    // An approval handoff (#5107) is neither success nor failure: the tool did
+    // not fail here, but it also did not run here — the durable worker owns the
+    // execution and writes the intent's own terminal record.
+    //
+    // `result` defaults to 'success' when omitted (auditEvents.ts), so simply
+    // flipping isError to false would have made anyone auditing "did the
+    // restart happen?" read `ai.tool.manage_services` as SUCCEEDED. Use
+    // 'dispatched' — the enum value that already exists for exactly this
+    // "handed to another execution path, outcome not yet known" case
+    // (AUDIT_RESULTS, and commandQueue.ts's enqueue-time rows). It is the
+    // indexed column real audit queries filter on; `details.toolOutcome`
+    // is the queryable-by-JSON detail, not a substitute for it.
+    //
+    // `handoff` comes from the pre-tool-use gate, NOT from `parsedOutput`:
+    // stamping this off the tool's own JSON would let a tool forge its own
+    // "routine authorized hand-off" audit row.
+    const handoffStatus = handoff;
     if (session.auditSnapshot) {
       writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
         orgId,
@@ -1893,12 +2544,28 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         actorId: session.auth.user.id,
         actorEmail: session.auth.user.email,
         initiatedBy: 'ai',
-        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) } : {}),
+        ...(isError
+          ? {
+              result: 'failure' as const,
+              // `message` is the handoff payload's field — #6022's
+              // `approved_failed` carries the worker's reason there, not in
+              // `error` — so read it before falling back to the raw output.
+              errorMessage:
+                typeof parsedOutput.error === 'string'
+                  ? parsedOutput.error
+                  : typeof parsedOutput.message === 'string'
+                    ? parsedOutput.message
+                    : safeOutput.slice(0, 500),
+            }
+          : handoffStatus
+            ? { result: 'dispatched' as const }
+            : {}),
         details: {
           sessionId,
           toolInput: input,
           durationMs,
           tier: guardrailCheck.tier,
+          ...(handoffStatus ? { toolOutcome: handoffStatus } : {}),
           // `approved` is true only when this specific call was explicitly
           // decided (human approver / PAM / an approved plan step);
           // `approvalMethod` records the concrete path. Auto-executions

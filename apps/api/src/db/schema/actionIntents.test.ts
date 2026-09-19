@@ -9,6 +9,7 @@ import {
   actionIntentStatusEnum,
   actionIntentSourceEnum,
   actionIntentApprovalScopeEnum,
+  actionIntentPolicyDecisionStateEnum,
   intentOutboxEventEnum,
 } from './actionIntents';
 import { approvalRequests } from './approvals';
@@ -37,15 +38,22 @@ describe('actionIntentSourceEnum', () => {
 });
 
 describe('intentOutboxEventEnum', () => {
-  it('has exactly the four outbox events', () => {
+  it('has exactly the eight outbox events', () => {
     // Widened in wave 2 (#3823): intent_rejected and intent_expired exist so a
     // requester can be told an outcome their chat turn did not wait for. A
-    // denied intent previously wrote no outbox row at all.
+    // denied intent previously wrote no outbox row at all. Widened again for
+    // #4798: intent_cancelled closes the same gap for cancellation. Widened
+    // again for #5205 W05 (#5210): intent_completed/intent_failed — there was
+    // no way to say a task-linked intent's EXECUTION finished.
     expect(intentOutboxEventEnum).toEqual([
       'intent_created',
       'intent_approved',
       'intent_rejected',
       'intent_expired',
+      'intent_cancelled',
+      'intent_completed',
+      'intent_failed',
+      'pam.desired_state_changed',
     ]);
   });
 
@@ -54,8 +62,16 @@ describe('intentOutboxEventEnum', () => {
     // written in two different files, so pin them to each other — a value added
     // here but not in SQL becomes a row that silently fails to insert, and one
     // added in SQL but not here becomes an event nothing consumes.
+    //
+    // Points at whichever migration shipped the CONSTRAINT's most recent
+    // DROP+re-ADD (a CHECK constraint has one name and is replaced wholesale,
+    // not appended to — the SQL file is the widest set only if it's the LAST
+    // one to touch this constraint). #5205 W05 (#5210) moved that to
+    // 2026-10-14-100300-ai-operator-intent-terminal-events.sql; update this
+    // path again the next time the constraint is widened, same as the
+    // approval-scope CHECK test below does for its own migration.
     const migration = readFileSync(
-      join(__dirname, '../../../migrations/2026-09-04-ai-agent-notifications.sql'),
+      join(__dirname, '../../../migrations/2026-10-14-100300-ai-operator-intent-terminal-events.sql'),
       'utf8',
     );
     const check = migration.slice(migration.indexOf('intent_outbox_event_type_check'));
@@ -102,6 +118,39 @@ describe('actionIntentApprovalScopeEnum', () => {
       });
 
     expect([...literals].sort()).toEqual([...actionIntentApprovalScopeEnum].sort());
+  });
+});
+
+describe('actionIntentPolicyDecisionStateEnum', () => {
+  it('has exactly unattempted, authorized, and human_required', () => {
+    expect(actionIntentPolicyDecisionStateEnum).toEqual([
+      'unattempted',
+      'authorized',
+      'human_required',
+    ]);
+  });
+
+  it('matches the SQL CHECK constraint literals exactly', () => {
+    const sqlPath = new URL(
+      '../../../migrations/2026-09-16-ai-agents-policy-decide-foundations.sql',
+      import.meta.url,
+    );
+    const sql = readFileSync(sqlPath, 'utf8');
+
+    const check = /CHECK\s*\(\s*policy_decision_state\s+IN\s*\(([^)]*)\)\s*\)/i.exec(sql);
+    const memberList = check?.[1];
+    expect(memberList, 'policy_decision_state CHECK constraint not found in the migration').toBeDefined();
+
+    const literals = (memberList ?? '')
+      .split(',')
+      .map((raw) => raw.trim())
+      .filter((raw) => raw.length > 0)
+      .map((raw) => {
+        expect(raw, `CHECK member ${raw} is not a single-quoted literal`).toMatch(/^'[^']*'$/);
+        return raw.slice(1, -1);
+      });
+
+    expect([...literals].sort()).toEqual([...actionIntentPolicyDecisionStateEnum].sort());
   });
 });
 
@@ -195,18 +244,66 @@ describe('action_intents schema', () => {
     expect(cols.releaseBy.notNull).toBe(false);
   });
 
+  it('exposes the policy-decide lifecycle + provenance columns (wave 5 part A, #3827)', () => {
+    const cols = getTableColumns(actionIntents);
+    expect(cols.policyDecisionState).toBeDefined();
+    expect(cols.policyDecisionState.notNull).toBe(true);
+    // The backfill value for pre-existing rows, NOT the value Part B's
+    // createActionIntent stamps on a new row (that's the stub returning
+    // 'human_required' unconditionally in THIS PR — same visible value,
+    // different mechanism; Part B changes the stamp to 'unattempted').
+    expect(cols.policyDecisionState.default).toBe('human_required');
+    // Part-B-written, nullable in this PR (no writer exists yet).
+    expect(cols.policyAuthorizationKey).toBeDefined();
+    expect(cols.policyAuthorizationKey.notNull).toBe(false);
+    expect(cols.policySnapshotDigest).toBeDefined();
+    expect(cols.policySnapshotDigest.notNull).toBe(false);
+    expect(cols.policyClassificationVersion).toBeDefined();
+    expect(cols.policyClassificationVersion.notNull).toBe(false);
+    expect(cols.policyReservationId).toBeDefined();
+    expect(cols.policyReservationId.notNull).toBe(false);
+    expect(cols.policyKillEpoch).toBeDefined();
+    expect(cols.policyKillEpoch.notNull).toBe(false);
+  });
+
+  it('exposes the external (tenant tool-source) binding columns (tool catalog W01 PR B, #5216)', () => {
+    const cols = getTableColumns(actionIntents);
+    // Bare uuid, NO FK: the intent row is immutable evidence and must never be
+    // blocked (or tombstoned by ON DELETE SET NULL) when the tool row goes
+    // away — release revalidation reads the live row and fails closed.
+    expect(cols.toolSourceToolId).toBeDefined();
+    expect(cols.toolSourceToolId.notNull).toBe(false);
+    expect(cols.toolSourceToolId.dataType).toBe('string');
+    expect(cols.toolSourceToolId.columnType).toBe('PgUUID');
+    expect(cols.toolRevision).toBeDefined();
+    expect(cols.toolRevision.notNull).toBe(false);
+    expect(cols.toolRevision.columnType).toBe('PgText');
+  });
+
   it('has no extra/missing top-level columns', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
       [
+        'triggerKind',
+        'triggerRefId',
+        'triggerKey',
         'id',
         'orgId',
         'partnerId',
         'requestedByUserId',
         'originPrincipalKind',
         'originPrincipalId',
+        // #5022 W01 — the AI surface the intent was created from, so the
+        // origin survives the release worker's from-scratch AuthContext
+        // rebuild. Distinct from originPrincipal*, which is the REQUESTER.
+        'aiOriginKind',
+        'aiOriginSessionId',
+        'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
+        'scopeKind',
+        'scopeDeviceId',
+        'scopeTicketId',
         'source',
         'requestingClientLabel',
         'actionName',
@@ -233,10 +330,24 @@ describe('action_intents schema', () => {
         'decidedByUserId',
         'decidedAssuranceLevel',
         'decidedVia',
+        // AI script authoring W04 (#5612)
+        'scriptReviewerEvidence',
         'executionStartedAt',
         'executedAt',
         'result',
         'errorCode',
+        'policyDecisionState',
+        'policyAuthorizationKey',
+        'policySnapshotDigest',
+        'policyClassificationVersion',
+        'policyReservationId',
+        'policyKillEpoch',
+        'taskId',
+        'taskStepKey',
+        'operationKey',
+        // Tool catalog W01 PR B (#5216): external Tier-3 tool binding.
+        'toolSourceToolId',
+        'toolRevision',
       ].sort(),
     );
   });
@@ -246,9 +357,13 @@ describe('intent_outbox schema', () => {
   it('exposes the outbox columns', () => {
     const cols = getTableColumns(intentOutbox);
     expect(Object.keys(cols).sort()).toEqual(
-      ['id', 'intentId', 'eventType', 'payload', 'createdAt', 'publishedAt', 'publishAttempts'].sort(),
+      [
+        'id', 'intentId', 'pamActuationId', 'eventType', 'payload',
+        'createdAt', 'publishedAt', 'publishAttempts',
+      ].sort(),
     );
-    expect(cols.intentId.notNull).toBe(true);
+    expect(cols.intentId.notNull).toBe(false);
+    expect(cols.pamActuationId.notNull).toBe(false);
     expect(cols.eventType.notNull).toBe(true);
     expect(cols.payload.notNull).toBe(true);
     expect(cols.payload.default).toEqual({});

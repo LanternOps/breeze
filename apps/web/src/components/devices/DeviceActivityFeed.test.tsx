@@ -44,15 +44,16 @@ describe('DeviceActivityFeed', () => {
       {
         id: 'e1',
         action: 'agent.command.install_patches',
-        message: 'Patches installed — host-1',
-        result: 'success',
+        // #4225: dispatch-time row — dispatch-tense copy, neutral result.
+        message: 'Patch install command sent — host-1',
+        result: 'dispatched',
         initiatedBy: null,
         timestamp: new Date().toISOString(),
         actor: { type: 'system', name: 'System' },
       },
     ]);
     render(<DeviceActivityFeed deviceId="dev-1" />);
-    expect(await screen.findByText('Patches installed — host-1')).toBeInTheDocument();
+    expect(await screen.findByText('Patch install command sent — host-1')).toBeInTheDocument();
     expect(screen.getByText('Automated')).toBeInTheDocument();
     // The "Automated" chip conveys the actor; the generic "System" must not also show.
     expect(screen.queryByText('System')).toBeNull();
@@ -89,8 +90,9 @@ describe('DeviceActivityFeed', () => {
       {
         id: 'e1',
         action: 'agent.command.script',
-        message: 'Script ran',
-        result: 'success',
+        // #4225: dispatch-time row — dispatch-tense copy, neutral result.
+        message: 'Script run command sent',
+        result: 'dispatched',
         initiatedBy: null,
         timestamp: new Date().toISOString(),
         actor: { type: 'system', name: 'System' },
@@ -196,5 +198,69 @@ describe('DeviceActivityFeed', () => {
     expect(await screen.findByText('Script e1')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Collapse activity' }));
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an AI chip and a proposal link for an AI-authored script run', async () => {
+    mockFeed([
+      {
+        id: 'e-ai-1',
+        action: 'ai.script.executed',
+        message: 'AI script run sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: '2026-09-11T00:00:00Z',
+        actor: { type: 'user', name: 'Jane Tech', email: 'jane@example.com' },
+        details: { proposalId: 'proposal-1' },
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByText(/AI script run sent/i)).toBeTruthy());
+
+    expect(screen.getByText('AI')).toBeTruthy();
+    const link = screen.getByRole('link', { name: /view proposal/i });
+    expect(link.getAttribute('href')).toBe('/ai-script-proposals/proposal-1');
+  });
+
+  it('requests the ai.command. prefix so AI commands reach the Overview feed (#5022 W02)', async () => {
+    mockFeed([]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const eventsCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/events'));
+    expect(eventsCall).toBeDefined();
+    const url = decodeURIComponent(String(eventsCall![0]));
+    expect(url).toContain('ai.command.');
+  });
+
+  it('renders an ai.command.executed row with the AI initiator chip (#5022 W02)', async () => {
+    mockFeed([
+      {
+        id: 'a1',
+        action: 'ai.command.executed',
+        message: 'AI command sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: new Date().toISOString(),
+        actor: { type: 'ai_agent', name: 'AI Agent' },
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    expect(await screen.findByText('AI')).toBeInTheDocument();
+  });
+
+  it('renders no proposal link when details.proposalId is absent', async () => {
+    mockFeed([
+      {
+        id: 'e-ai-2',
+        action: 'ai.script.executed',
+        message: 'AI script run sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: '2026-09-11T00:00:00Z',
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByText(/AI script run sent/i)).toBeTruthy());
+
+    expect(screen.queryByRole('link', { name: /view proposal/i })).toBeNull();
   });
 });

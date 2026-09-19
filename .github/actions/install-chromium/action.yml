@@ -1,0 +1,30 @@
+name: Install Playwright Chromium
+description: >-
+  Runs `playwright install --with-deps chromium` with a guard against the
+  Azure-hosted runner's packages.microsoft.com apt source, which intermittently
+  returns 403 and takes the whole install down (exit 100). That repo holds
+  nothing Playwright needs, so it is removed first; if apt still fails, the
+  browser-only install runs as a loud fallback (the ubuntu-24.04 image already
+  ships Chromium's shared libraries).
+inputs:
+  run-prefix:
+    description: Command prefix that resolves the playwright binary, e.g. `npx`, `pnpm exec`, `pnpm --filter @breeze/web exec`.
+    required: false
+    default: npx
+  working-directory:
+    description: Directory to run in.
+    required: false
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Install Chromium
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                   /etc/apt/sources.list.d/microsoft*.sources || true
+        if ! ${{ inputs.run-prefix }} playwright install --with-deps chromium; then
+          echo "::warning::playwright install --with-deps failed (apt); retrying without system deps"
+          ${{ inputs.run-prefix }} playwright install chromium
+        fi

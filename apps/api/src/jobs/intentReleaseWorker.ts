@@ -1,21 +1,49 @@
 import { Job, Worker } from 'bullmq';
-import type { AiAgentRecipients } from '@breeze/shared';
+import { parseSweepTriggerKey, type AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import {
+  claimTaskLinkedIntentForDispatch,
+  revertTaskLinkedDispatchClaim,
+} from '../services/aiOperator/dispatchClaim';
+import {
+  isTaskLinkedIntent,
+  markOperationDispatchFailed,
+  recordOperationExecutionRef,
+  recordOperationResult,
+  type OperationResultState,
+} from '../services/aiOperator/operationService';
+import { publishIntentTerminalOutbox } from '../services/aiOperator/taskOutbox';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
-import { transitionIntent } from '../services/actionIntents/intentService';
+import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
+import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
+import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
+import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
+import { isActEligibleSweepKind } from '../services/aiAgents/sweepSubjectProbe';
+import {
+  demoteSupervisedKey,
+  notifyDemotion,
+  type NotifyDemotionInput,
+} from '../services/aiAgents/supervisedKeyDemote';
+import { enqueueFixWatchPhase1 } from './fixWatchWorker';
+import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { checkToolPermission } from '../services/aiGuardrails';
+import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
+import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
+import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
@@ -38,6 +66,7 @@ import {
   MAX_RESULT_BYTES,
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Durable release worker (spec
@@ -54,9 +83,11 @@ import {
  * categorized `error_code` and skips execution entirely. Never a silent
  * no-op, never a downgrade to "execute anyway."
  *
- * Job data: `{ intentId, eventType }`. Only `eventType === 'intent_approved'`
- * is acted on; anything else is acknowledged as a no-op (forward-compat with
- * `intent_created`, which this worker does not consume).
+ * Job data: `{ intentId, eventType }`. `eventType === 'intent_approved'` is
+ * the release trigger; `intent_created` is the wave 5 Part B (#3827)
+ * policy-decide recovery hook (NOT flag-gated at this call site —
+ * `attemptPolicyDecision` itself is the single source of truth for flag-off
+ * inertness, see its own header); anything else is acknowledged as a no-op.
  *
  * CAS-idempotent by construction: the `approved -> executing` transition at
  * step 1 is a single-use release guard (mirrors the PAM `actuating` pattern).
@@ -98,6 +129,124 @@ function normalizeToolResult(raw: string): Record<string, unknown> {
   } catch {
     return { raw };
   }
+}
+
+/**
+ * #5205 W04 (#5209), baseline §2.5: pulls the typed execution reference out of
+ * a tool result. `manage_services` returns `JSON.stringify(CommandResult)`
+ * verbatim (aiToolsScripts.ts, the `manage_services` handler), and
+ * `CommandResult.commandId` IS the `device_commands` row id, attached by
+ * `executeCommand` "once a command row exists (success or failure)"
+ * (commandQueue.ts:76-83). Nothing has to be threaded through: the id is
+ * already in the result the release worker holds.
+ *
+ * `commandId` is OPTIONAL and absent on failures that happen before the row is
+ * created (device missing/offline, insert failure), so a null return is a real,
+ * expected case — a refusal with no reference — not a parse bug.
+ *
+ * Deliberately shape-based rather than keyed off the tool name: any tool whose
+ * result carries a `commandId` is dispatching a device command, and hard-coding
+ * `manage_services` here would silently stop capturing references the day a
+ * second device-command tool joins the slice.
+ */
+function executionRefFromToolResult(
+  result: Record<string, unknown>,
+): { kind: 'device_command'; id: string } | null {
+  const commandId = result.commandId;
+  return typeof commandId === 'string' && UUID_RE.test(commandId)
+    ? { kind: 'device_command', id: commandId }
+    : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Writes the execution reference and the bounded result onto a task-linked
+ * intent's operation row. A no-op for a legacy intent. Never throws: it runs
+ * after the tool already had its real-world effect, so a bookkeeping failure
+ * must not fail an action that already happened (see `recordOperationResult`).
+ *
+ * The reference is attached first and separately: it is what makes an UNKNOWN
+ * effect reconcilable at all, so it must land even if the result write is later
+ * out-ranked or the process dies between the two.
+ */
+async function persistTaskOperationOutcome(
+  intent: ActionIntent,
+  result: Record<string, unknown>,
+  isError: boolean,
+): Promise<void> {
+  if (!isTaskLinkedIntent(intent)) return;
+  const ref = executionRefFromToolResult(result);
+  if (ref) await recordOperationExecutionRef(intent.id, ref);
+  await recordOperationResult({
+    intentId: intent.id,
+    resultState: operationResultStateFromToolResult(result, isError),
+    result,
+    executionRef: ref,
+  });
+}
+
+/**
+ * Maps a tool result onto an operation `result_state`.
+ *
+ * `CommandResult.status` is `'completed' | 'failed' | 'timeout'`
+ * (commandQueue.ts:67-84). **`timeout` becomes `unknown`, never `failed`** —
+ * that is the single most important mapping in this file. The tool waits 30 s
+ * while the device command itself reaps at 5 min (baseline §2.6), so between
+ * those two clocks a `timeout` means "the effect may still be landing", and
+ * `commandAcceptsAgentResultCondition` deliberately keeps the device row open
+ * to a genuine late agent result. Recording `failed` there would assert a
+ * non-effect the system cannot prove, which §7.3 forbids.
+ *
+ * `isError` is the caller's own returned-error detection, which is a real
+ * failure of the tool call itself.
+ */
+function operationResultStateFromToolResult(
+  result: Record<string, unknown>,
+  isError: boolean,
+): Exclude<OperationResultState, 'pending'> {
+  if (result.status === 'timeout') return 'unknown';
+  if (isError || result.status === 'failed') return 'failed';
+  if (result.status === 'completed') return 'succeeded';
+  // No recognisable device-command status (a non-command tool, or a truncated
+  // result): the call returned without error, so the dispatch succeeded, but
+  // say nothing stronger than that.
+  return isError ? 'failed' : 'succeeded';
+}
+
+/**
+ * Wave-5A review fix (#3827): CAS `executing -> approved` (undoing the claim
+ * `releaseApprovedIntent` took at step 1) instead of `failIntent`'s
+ * `executing -> failed`. `agentReleaseAuthority.ts`'s 'kill_switch_engaged'
+ * errorCode is deliberately distinct from 'agent_policy_denied' for exactly
+ * this reason: a kill-derived denial (a real DB kill-switch flip, or the
+ * fail-closed synthetic state a transient DB read failure produces) must
+ * never terminally fail an already-human-approved intent. Leaving the row
+ * `approved` means it stays claimable by the next `intent_approved` job
+ * delivery/retry, and — if nothing ever releases it — is reaped into
+ * `expired` by `jobs/intentExpiryReaper.ts` once its `release_by` lease
+ * passes, same as any other still-`approved` intent. That is a normal,
+ * non-destructive terminal state, unlike `failed`.
+ *
+ * Lost CAS (`won === false`) mirrors `failIntent`'s own race handling: some
+ * other delivery already moved this row (e.g. the stale-executing reaper
+ * already reaped it to `failed:execution_lost`) — nothing further to do.
+ */
+async function pauseIntentForKillSwitch(
+  intent: ActionIntent,
+  details?: Record<string, unknown>,
+): Promise<void> {
+  // #5205 W04 (#5209), spec §7.3: for a task-linked intent the reversal also
+  // puts the operation back to `reserved`, in the SAME transaction. Leaving it
+  // `dispatched` would tell the reconciler an effect is in flight when the
+  // claim was explicitly undone and the intent is claimable again.
+  const won = isTaskLinkedIntent(intent)
+    ? await revertTaskLinkedDispatchClaim(intent.id, 'kill_switch_engaged')
+    : await transitionIntent(intent.id, 'executing', 'approved');
+  if (!won) return;
+  const message = `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`;
+  console.warn(message, details);
+  captureException(new Error(message));
 }
 
 /**
@@ -193,6 +342,427 @@ export function isSessionRequiredForRelease(toolName: string): boolean {
 }
 
 /**
+ * The subset of `ActionIntentTransitionPatch` a TERMINAL write may carry.
+ * Narrower than the full patch on purpose: `decided*` / `executionStartedAt`
+ * belong to the decide and claim transitions, not to terminalization.
+ */
+// Exported (test-only consumer today) so aiOperatorTerminalWriters.integration.test.ts
+// (#5205 W05, #5210) can drive the CAS + evidence + terminal-outbox publish
+// path directly, without standing up the full `releaseApprovedIntent` tool
+// dispatch — the writer contract test's whole point is the outbox
+// publication, not re-proving release/dispatch, which dispatchClaim's own
+// integration suite already covers.
+export type TerminalPatch = Pick<ActionIntentTransitionPatch, 'executedAt' | 'errorCode' | 'result'>;
+
+/**
+ * True iff this terminal write represents an ATTEMPTED operation — the one
+ * discriminator the graduation ledger grades on (P2-5, #4192; spec §4.5).
+ *
+ * The discriminator is already in this file and already documented: a
+ * terminal write stamps `executed_at` exactly when the provider-side effect
+ * happened. `failIntent`'s `executed: true` option marks `execution_error`
+ * and `secret_seal_invariant_violated` — "both of which mean a real attempt
+ * was made … the earlier revalidation stops never touched execution" — and
+ * the `tool_returned_error` and success CASes stamp it directly. There is
+ * deliberately no second, hand-maintained list of "which branches count":
+ * a new terminal exit is classified by whether it stamps `executedAt`, so
+ * the two can never drift apart.
+ */
+function isAttemptedTerminal(patch: TerminalPatch): boolean {
+  return patch.executedAt != null;
+}
+
+/**
+ * What a written evidence row leaves behind for the verification lane: the
+ * effective agent, the triggering alert (if any) an intent-anchored fix watch
+ * would hang off, and the exact op key + source id the `verified` /
+ * `recurred` row must reuse. Loaded once, inside the terminal transaction —
+ * a second round trip for `alert_id` alone would be pure waste.
+ */
+interface IntentEvidenceAnchor {
+  agentId: string;
+  alertId: string | null;
+  opKey: string;
+  sourceId: string;
+  runId: string;
+  /**
+   * #5751 W02 (#5753) — the sweep arm's inputs, read off the INTENT row the
+   * caller already holds (W01's `trigger_kind`/`trigger_key`, plus P2-2's
+   * `scope_device_id`). Carried on the anchor rather than re-read so
+   * `watchReleasedIntent` keeps needing no query of its own.
+   *
+   * `scopeDeviceId` is the device a subject watch probes. It is the INTENT's,
+   * never the run's: a sweep run is device-less by construction, and this
+   * column tombstones to NULL when the device is deleted or moved org — at
+   * which point there is no subject device left and the C4 fallback is the
+   * correct answer.
+   */
+  triggerKind: string | null;
+  triggerKey: string | null;
+  scopeDeviceId: string | null;
+  /**
+   * The ORG agent row a key was actually revoked from by the auto-demote that
+   * rode this evidence write (P2-5 Task 6), or null when nothing was revoked
+   * — a successful outcome, a key held only by the partner ceiling, or an org
+   * with no override row at all. It is the ONE thing the post-commit
+   * notification needs that the anchor did not already carry.
+   */
+  demotedOrgAgentId: string | null;
+}
+
+/**
+ * Writes the ONE `ai_agent_op_evidence` row this terminal outcome earns
+ * (P2-5, #4192), in a SAVEPOINT nested inside the terminal CAS's
+ * transaction. `terminalizeIntent` is the only caller, and it is what opens
+ * that transaction.
+ *
+ * **The evidence write is the side that yields.** The ledger is a grading
+ * side-channel; the terminal state is the record of a real-world side effect
+ * and outranks it. If an insert failure (a 23503 on the `agent_id` or the
+ * composite `(run_id, org_id)` FK, a CHECK, a transient error) were allowed
+ * to propagate, it would unwind an `executing -> completed` CAS for an action
+ * that ALREADY RAN: the throw escapes `releaseApprovedIntent`, BullMQ
+ * redelivers, the claim CAS `approved -> executing` loses because the row is
+ * still `executing`, and the stale-executing reaper terminalizes it
+ * `failed:execution_lost` — a successful action permanently recorded as a
+ * failure, with no result stored, no success audit and no notification. So a
+ * failure here rolls back to the SAVEPOINT and is captured, never rethrown.
+ * The happy path is still a single atomic commit, which is what the plan
+ * asks for; only the losing side changed.
+ *
+ * The SAVEPOINT must actually RECEIVE the statements, which is why the
+ * executor is threaded explicitly instead of using the ambient `db` proxy:
+ * postgres-js records the first failed query of a transaction scope in that
+ * scope's `uncaughtError` and rethrows it when the scope ends, EVEN IF the
+ * caller caught the rejection (`postgres/src/index.js`'s `scope()`), so a
+ * statement issued through the OUTER scope would abort the outer transaction
+ * no matter how it is wrapped. `insertOpEvidence`'s second parameter exists
+ * for exactly this.
+ *
+ * Only AGENT-originated intents produce evidence: a human/chat/MCP release
+ * has no agent to grade, and `requesting_agent_run_id` is the column that
+ * says so. The run row is loaded predicated by BOTH `id` AND `org_id` (RLS
+ * passes unconditionally under a system context, so the org predicate is the
+ * real isolation here), which also yields the EFFECTIVE agent id the run
+ * recorded — `ai_agent_runs.agent_id` is the partner-baseline row, which is
+ * exactly the grain graduation tracks. A run that is not readable in this
+ * org writes nothing rather than guessing an agent id.
+ *
+ * `alert_id` rides along on the same read: the released-intent fix watch
+ * (Task 5) is anchored to the triggering alert and must not pay for a second
+ * round trip inside the same transaction. That is what the RETURN value is —
+ * the anchor `watchReleasedIntent` needs. It is null whenever no ledger row
+ * was written (a human intent, an unreadable run, or a failed insert), which
+ * deliberately suppresses the watch too: a `verified` / `recurred` row whose
+ * `executed` counterpart never landed would read to `graduationService` as a
+ * verification of an operation that never happened.
+ *
+ * Leak rules: identifiers only — `op_key`, ids, timestamps. Never a tool
+ * result, an error message, or any model-authored text.
+ */
+async function recordIntentTerminalEvidence(
+  intent: ActionIntent,
+  metric: 'executed' | 'failed',
+): Promise<IntentEvidenceAnchor | null> {
+  const runId = intent.requestingAgentRunId;
+  if (!runId) return null;
+
+  try {
+    return await db.transaction(async (tx) => {
+      const [run] = await tx
+        .select({ agentId: aiAgentRuns.agentId, alertId: aiAgentRuns.alertId })
+        .from(aiAgentRuns)
+        .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, intent.orgId)))
+        .limit(1);
+      if (!run) return null;
+
+      const anchor: IntentEvidenceAnchor = {
+        agentId: run.agentId,
+        alertId: run.alertId,
+        // The SHARED resolver, never a second ad hoc parse of `arguments` —
+        // the graduation ledger and the policy-decide registry must agree on
+        // what "this operation" is called or a promoted key grades the wrong
+        // evidence (services/actionIntents/canonicalPolicyKey.ts).
+        opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
+        sourceId: intentEvidenceSourceId(intent.id),
+        runId,
+        triggerKind: intent.triggerKind ?? null,
+        triggerKey: intent.triggerKey ?? null,
+        scopeDeviceId: intent.scopeDeviceId ?? null,
+        demotedOrgAgentId: null,
+      };
+
+      await insertOpEvidence(
+        [
+          {
+            orgId: intent.orgId,
+            agentId: anchor.agentId,
+            namespace: 'policy_key',
+            opKey: anchor.opKey,
+            ruleId: null,
+            sourceKind: 'intent',
+            sourceId: anchor.sourceId,
+            metric,
+            runId,
+            occurredAt: new Date(),
+          },
+        ],
+        tx,
+      );
+
+      // AUTO-DEMOTE (P2-5 Task 6, #4192). An ATTEMPTED failure of a key this
+      // org actually granted revokes it, in THIS savepoint — the revoke and
+      // the `failed` row that justifies it commit together or not at all, so
+      // the ledger can never show a disqualifying failure next to a key that
+      // silently kept running unattended, nor the reverse. Always on: no
+      // feature flag is consulted (`supervisedKeyDemote.ts`).
+      //
+      // `tx` is threaded for the same reason `insertOpEvidence` gets it: a
+      // statement issued through the ambient `db` proxy inside a savepoint
+      // goes to the OUTER scope, and a failure there aborts the terminal CAS
+      // of an action that already ran.
+      if (metric === 'failed') {
+        const { revoked, orgAgentId } = await demoteSupervisedKey(
+          {
+            orgId: intent.orgId,
+            agentId: anchor.agentId,
+            opKey: anchor.opKey,
+            reason: 'attempted_failure',
+            runId,
+            watchId: null,
+            intentId: intent.id,
+          },
+          tx,
+        );
+        if (revoked && orgAgentId) anchor.demotedOrgAgentId = orgAgentId;
+      }
+      return anchor;
+    });
+  } catch (error) {
+    // Loud, but never at the cost of a terminal state that records a real
+    // side effect. Identifiers only in the message — no tool result, no
+    // model-authored text.
+    captureException(
+      new Error(
+        `ai_agent_op_evidence write failed for intent ${intent.id} (metric ${metric}); terminal state kept`,
+        { cause: error },
+      ),
+    );
+    return null;
+  }
+}
+
+/**
+ * Opens the VERIFICATION episode for a successfully released intent (P2-5
+ * Task 5, #4192 — closes #4206), in its OWN SAVEPOINT nested inside the
+ * terminal CAS's transaction. Returns the watch id whose phase-1 job the
+ * caller must enqueue AFTER that transaction commits, or null when there is
+ * nothing to enqueue.
+ *
+ * A separate savepoint from the ledger write on purpose: the `executed` row
+ * is already earned, and a watch insert that trips a constraint must not roll
+ * it back — nor, per `recordIntentTerminalEvidence`'s own header, the
+ * terminal state of an action that already ran.
+ *
+ * Three outcomes, and the difference between them is the whole point:
+ *  - a watch row exists → return its id; the watch will grade this operation
+ *    `verified` or `recurred` (Task 6), so nothing is credited now;
+ *  - no watch is POSSIBLE (the run has no triggering alert AND the intent
+ *    names no probeable sweep subject, or that alert is no longer readable in
+ *    this org) → credit `verified` on the same source id, in the same
+ *    transaction. C4: an operation no watch will ever look at must not sit
+ *    un-gradeable forever;
+ *  - the attempt FAILED → credit nothing. An operation whose verification
+ *    lane was lost is not "verified", and the ledger is immutable.
+ *
+ * #5751 W02 (#5753) NARROWED the middle branch. Its premise — "no watch is
+ * possible" — stopped being true for sweep-minted intents: a sweep run has no
+ * triggering alert, but a sweep FINDING has a subject, and a subject can be
+ * re-probed. Until the sweep arm below existed, every sweep-minted intent fell
+ * straight through to the `verified` credit, which made P2-5's graduation
+ * ladder a click-counter for the whole sweep lane (spec §1.1). The fallback is
+ * narrowed, NOT removed — it still stands for everything else.
+ */
+async function watchReleasedIntent(
+  intent: ActionIntent,
+  anchor: IntentEvidenceAnchor | null,
+): Promise<string | null> {
+  if (!anchor) return null;
+
+  try {
+    return await db.transaction(async (tx) => {
+      if (anchor.alertId) {
+        const watchId = await createIntentFixWatchRow(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: anchor.runId,
+            agentId: anchor.agentId,
+            alertId: anchor.alertId,
+            opKey: anchor.opKey,
+          },
+          tx,
+        );
+        if (watchId) return watchId;
+      }
+
+      // #5751 W02 (#5753) — the sweep arm, deliberately BETWEEN the alert arm
+      // and the unconditional credit, so the fallback is narrowed rather than
+      // deleted. All four conditions are required and each has a real failure
+      // it excludes: a non-sweep trigger (nothing to probe), a tombstoned
+      // scope device (the target is gone, and the run has no device of its
+      // own to substitute), an unparseable or subject-less key (a half-record
+      // cannot be probed), and a kind with no registered probe (a watch that
+      // could only ever answer `unknown` would strand the operation — which is
+      // precisely what C4 exists to prevent).
+      const subject = anchor.triggerKind === 'sweep_finding'
+        ? parseSweepTriggerKey(anchor.triggerKey)
+        : null;
+      if (subject && anchor.scopeDeviceId && isActEligibleSweepKind(subject.kind)) {
+        const watchId = await createSweepFixWatchRow(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: anchor.runId,
+            agentId: anchor.agentId,
+            deviceId: anchor.scopeDeviceId,
+            subjectKind: subject.kind,
+            subjectKey: subject.subjectKey,
+            opKey: anchor.opKey,
+          },
+          tx,
+        );
+        if (watchId) return watchId;
+        // Creation failed for a sweep intent: credit NOTHING and return null.
+        // Falling through would write the very `verified` row this wave exists
+        // to prevent — a LOST verification lane is not a verification, and the
+        // ledger is immutable, so there is no undoing it later.
+        return null;
+      }
+
+      await insertOpEvidence(
+        [
+          {
+            orgId: intent.orgId,
+            agentId: anchor.agentId,
+            namespace: 'policy_key',
+            opKey: anchor.opKey,
+            ruleId: null,
+            sourceKind: 'intent',
+            sourceId: anchor.sourceId,
+            metric: 'verified',
+            runId: anchor.runId,
+            occurredAt: new Date(),
+          },
+        ],
+        tx,
+      );
+      return null;
+    });
+  } catch (error) {
+    captureException(
+      new Error(
+        `fix watch for released intent ${intent.id} could not be opened; terminal state kept`,
+        { cause: error },
+      ),
+    );
+    return null;
+  }
+}
+
+/**
+ * Runs a terminal CAS and, only when it WINS, the evidence write, inside ONE
+ * outer system transaction (P2-5, #4192).
+ *
+ * `transitionIntent` opens its own `withSystemDbAccessContext`
+ * (intentService.ts), and a nested context JOINS an ambient one
+ * (db/index.ts's `withDbAccessContext`: `if (dbContextStorage.getStore())
+ * return fn()`), so the CAS and the evidence row land in the same commit.
+ * That atomicity is the point in ONE direction: an evidence row can only
+ * exist for an outcome that actually became terminal, so a rolled-back CAS
+ * can never leave a phantom row behind. It is deliberately NOT symmetric —
+ * the evidence insert runs in its own SAVEPOINT and a failure there is
+ * captured, not rethrown (see `recordIntentTerminalEvidence`): the ledger is
+ * a grading side-channel, while the terminal state is the record of a
+ * real-world side effect, and rolling a completed action back to
+ * `executing` to protect a counter trades a permanent, silent
+ * `failed:execution_lost` for a missing row that Sentry names out loud.
+ *
+ * NEVER wraps `executeTool` — the worker deliberately executes outside any
+ * DB context so a slow external call cannot pin a pooled connection
+ * idle-in-transaction. The audit/metric writes stay OUTSIDE too, exactly
+ * where they were: they are best-effort reporting, and a failing audit must
+ * not undo a committed terminal state.
+ *
+ * `onWon` is the in-transaction extension hook — Task 5's released-intent fix
+ * watch hangs off it. It runs AFTER the evidence insert and only when the CAS
+ * won, and receives whatever that insert resolved (the effective agent, the
+ * triggering alert, the op key) so it needs no second read of its own.
+ */
+export async function terminalizeIntent(
+  intent: ActionIntent,
+  to: 'completed' | 'failed',
+  patch: TerminalPatch,
+  onWon?: (anchor: IntentEvidenceAnchor | null) => Promise<void>,
+): Promise<boolean> {
+  // A holder, not a bare `let`: the assignment happens inside the context
+  // closure, and TypeScript does not track closure writes back to the outer
+  // binding's narrowed type.
+  const pending: { demotion: NotifyDemotionInput | null } = { demotion: null };
+
+  const won = await withSystemDbAccessContext(async () => {
+    const casWon = await transitionIntent(intent.id, 'executing', to, patch);
+    if (!casWon) return false;
+    // #5205 W05 (#5210), spec §6.3: the durable "this effect finished" wake —
+    // the ONLY writer that publishes nothing today. `transitionIntent` opens
+    // its own `withSystemDbAccessContext`, which JOINS this already-open one
+    // (db/index.ts's "refuses to nest"), so this insert commits atomically
+    // with the CAS above. `intent.taskId` is read from the pre-CAS row, which
+    // is safe because task linkage is immutable (action_intents_immutable_trg).
+    await publishIntentTerminalOutbox(
+      db,
+      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId },
+      to === 'completed' ? 'intent_completed' : 'intent_failed',
+    );
+    let anchor: IntentEvidenceAnchor | null = null;
+    if (isAttemptedTerminal(patch)) {
+      anchor = await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');
+    }
+    if (anchor?.demotedOrgAgentId) {
+      pending.demotion = {
+        orgId: intent.orgId,
+        agentId: anchor.agentId,
+        orgAgentId: anchor.demotedOrgAgentId,
+        opKey: anchor.opKey,
+        reason: 'attempted_failure',
+        runId: anchor.runId,
+        watchId: null,
+      };
+    }
+    if (onWon) await onWon(anchor);
+    return true;
+  });
+
+  // STRICTLY after the terminal transaction closed — same discipline as the
+  // fix-watch enqueue below: the revoke is committed, and a notification for
+  // a revoke that then rolled back is a false alarm an operator cannot tell
+  // from a real one. Swallowed on failure for the same reason: the authority
+  // change already happened and must not be undone by a notification outage.
+  if (won && pending.demotion) {
+    try {
+      await notifyDemotion(pending.demotion);
+    } catch (err) {
+      console.error(
+        `[IntentReleaseWorker] Failed to notify the supervised-key revoke for intent ${intent.id} — the revoke is committed:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return won;
+}
+
+/**
  * CAS `executing -> failed` with the given `error_code`, then (only if the
  * CAS actually won) writes the failure audit/metric. `executed: true` also
  * stamps `executedAt` — used for `execution_error` and
@@ -201,12 +771,87 @@ export function isSessionRequiredForRelease(toolName: string): boolean {
  * (digest/tier/actor/org) never touched execution, so they leave
  * `executedAt` null.
  */
+/**
+ * #4177 (W04): tool:action pairs whose released effect creates a row that a
+ * REAL user must own (a `users` FK), so an agent-originated intent cannot be
+ * executed under the rebuilt agent auth — `auth.user.id` there is an
+ * `aiAgents.id`, attribution only, never a users row, and the write is a
+ * guaranteed 23503 at approval time, in front of the technician.
+ *
+ * The approver IS the owner: they read the proposal and accepted the work as
+ * theirs. So the worker executes these as `decided_by_user_id` (see
+ * `resolveUserOwnedReleaseAuth`). An explicit allowlist, not a heuristic —
+ * do not generalise speculatively; add a pair only with its own release
+ * test and a handler that checks `context.approverRelease`.
+ */
+/**
+ * #6200 added the three `services/aiToolsFleet.ts` writers with the same
+ * shape as `log_time_entry`: agent-mintable as an action intent (a tier-3
+ * entry in `aiGuardrails.ts`'s `TIER3_SUPERVISED_ACTIONS` /
+ * `TIER3_FOUR_EYES_ACTIONS`) AND storing `auth.user.id` in a `users` FK
+ * column. Under the rebuilt agent auth that id is an `aiAgents.id`, so the
+ * insert was a guaranteed 23503 the technician saw as `execution_error`
+ * seconds after their own WebAuthn approval, with nothing done — observed
+ * three times on US prod for `install` (2026-09-18).
+ *
+ * `services/aiToolsFleet.userOwnedRelease.contract.test.ts` pins this set
+ * against the source, so a newly agent-mintable `auth.user.id` write into a
+ * users FK cannot be added to that file without landing here too.
+ */
+const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
+  'manage_tickets:log_time_entry',
+  // deployments.created_by (db/schema/deployments.ts) — tier 3 supervised.
+  'manage_deployments:create',
+  // patch_jobs.created_by (db/schema/patches.ts) — tier 3 supervised. The
+  // prod failure in #6200.
+  'manage_patches:install',
+  // patch_rollbacks.initiated_by (db/schema/patches.ts) — tier 3 four_eyes.
+  // Same FK, same 23503; only the approval scope differs, and the approver
+  // substitution is scope-independent.
+  'manage_patches:rollback',
+]);
+
+function userOwnedReleaseKey(intent: ActionIntent): string | null {
+  if (!intent.requestingAgentRunId) return null;
+  const args = intent.arguments as Record<string, unknown> | null;
+  const action = typeof args?.action === 'string' ? args.action : null;
+  const key = `${intent.actionName}:${action ?? ''}`;
+  return USER_OWNED_RELEASE_ACTIONS.has(key) ? key : null;
+}
+
 async function failIntent(
   intent: ActionIntent,
   errorCode: string,
   options: { details?: Record<string, unknown>; executed?: boolean } = {},
 ): Promise<void> {
-  const won = await transitionIntent(intent.id, 'executing', 'failed', {
+  // Routed through `terminalizeIntent` so `executed: true` — the ONE
+  // attempted-ness discriminator — also writes the `failed` evidence row in
+  // the same transaction as the CAS. The non-attempted stops (every
+  // revalidation/digest/session refusal) pass no `executedAt` and so write
+  // nothing, which is the whole point: an agent is never graded down for an
+  // action it was refused permission to try.
+  // #5205 W04 (#5209): the operation row is written BEFORE the CAS and
+  // regardless of whether the CAS is won — that independence is the whole
+  // reason the row exists (baseline §4). `options.executed` is the repo's own
+  // attempted-ness discriminator and maps exactly onto the two cases here:
+  //   - not executed (every revalidation/digest/session/connection refusal):
+  //     nothing was ever sent, so the operation is a terminal dispatch failure.
+  //   - executed (execution_error, secret_seal_invariant_violated): the
+  //     provider-side call DID happen and its outcome is unknowable from here,
+  //     so `unknown` — never `failed`. A device command may still finish and
+  //     W06 reconciles it (baseline §2.6, the three clocks).
+  if (isTaskLinkedIntent(intent)) {
+    if (options.executed) {
+      await recordOperationResult({
+        intentId: intent.id,
+        resultState: 'unknown',
+        result: { errorCode, ...(options.details ?? {}) },
+      });
+    } else {
+      await markOperationDispatchFailed(intent.id, errorCode);
+    }
+  }
+  const won = await terminalizeIntent(intent, 'failed', {
     errorCode,
     ...(options.executed ? { executedAt: new Date() } : {}),
   });
@@ -266,38 +911,20 @@ async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): P
  * testing without spinning up a real BullMQ Worker.
  */
 export async function releaseApprovedIntent(intentId: string): Promise<void> {
-  // Step 1 (spec §5.1): the single-use release guard. Zero rows = lost race
-  // (expiry, cancel, a prior delivery of this exact job, or the stale-
-  // executing reaper already claimed it) — exit silently. This is what
-  // makes repeated/duplicate `intent_approved` enqueues safe.
-  // requireNotExpired folds the deadline into the claim: an approved intent
-  // cannot be claimed for execution once past its release_by lease (falling
-  // back to expires_at for legacy rows with no lease — see
-  // intentService.ts's transitionIntent). release_by, not
-  // approval_expires_at, is what governs an already-approved intent — an
-  // intent approved just before approval_expires_at gets a FRESH lease
-  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
-  // header), so it stays claimable here even though approval_expires_at has
-  // since passed. Once release_by itself passes, the 30s expiry reaper
-  // terminalizes the leftover approved row. Without this check an action
-  // could execute after its authorization window closed.
-  const claimed = await transitionIntent(
-    intentId,
-    'approved',
-    'executing',
-    { executedAt: null, executionStartedAt: new Date() },
-    { requireNotExpired: 'release' },
-  );
-  if (!claimed) {
-    return;
-  }
-
-  // Step 2: load the intent + its winning approval row. Both are fast local
+  // Step 1: load the intent + its winning approval row. Both are fast local
   // reads with no external I/O, so they share one short system-scoped
   // transaction — mirrors intentOutboxPublisher.ts's phase discipline
   // (DB-only work gets its own short context; the network/tool-execution
   // step below runs in its own, entirely separate, context boundary so a
   // slow external call never pins a pooled connection idle-in-transaction).
+  //
+  // `intentRow` is a bare `select()` — every column rides along, including
+  // Wave 5 Part B's (#3827) `policy_*` provenance columns and `decided_via`.
+  // For a policy-decided intent `approvalRow` comes back null (there is no
+  // `approval_requests` row by construction — see revalidateRelease.ts's
+  // header), which is exactly what `revalidateApprovedIntentForRelease`
+  // reads off `intent` itself to take its policy-evidence branch; no second
+  // query is needed to "load the policy columns" separately.
   const { intent, winningApproval } = await withSystemDbAccessContext(async () => {
     const [intentRow] = await db
       .select()
@@ -320,10 +947,83 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   });
 
   if (!intent) {
-    // Unreachable in practice — the CAS above requires the row to exist —
-    // but there is nothing to CAS to failed if the row itself is gone, so
-    // just log and stop rather than throwing out of a BullMQ processor.
-    console.error(`[IntentReleaseWorker] intent ${intentId} not found after CAS to executing`);
+    // The row is gone (erased, or an outbox row outliving its intent). There is
+    // nothing to claim and nothing to CAS to failed, so log and stop rather
+    // than throwing out of a BullMQ processor. #5205 W04 moved this check ahead
+    // of the claim — it used to read "not found after CAS to executing".
+    console.error(`[IntentReleaseWorker] intent ${intentId} not found`);
+    return;
+  }
+
+  // Step 2 (spec §5.1): the single-use release guard. Zero rows = lost race
+  // (expiry, cancel, a prior delivery of this exact job, or the stale-
+  // executing reaper already claimed it) — exit silently. This is what
+  // makes repeated/duplicate `intent_approved` enqueues safe.
+  // requireNotExpired folds the deadline into the claim: an approved intent
+  // cannot be claimed for execution once past its release_by lease (falling
+  // back to expires_at for legacy rows with no lease — see
+  // intentService.ts's transitionIntent). release_by, not
+  // approval_expires_at, is what governs an already-approved intent — an
+  // intent approved just before approval_expires_at gets a FRESH lease
+  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
+  // header), so it stays claimable here even though approval_expires_at has
+  // since passed. Once release_by itself passes, the 30s expiry reaper
+  // terminalizes the leftover approved row. Without this check an action
+  // could execute after its authorization window closed.
+  //
+  // #5205 W04 (#5209), spec §7.3: for a TASK-LINKED intent this same claim
+  // additionally carries the task's state, plan revision, deadline and target
+  // detachment — one conditional UPDATE inside one transaction that also flips
+  // the operation to `dispatched`, not a second claim taken afterwards.
+  //
+  // The load above used to sit AFTER the claim. It was moved in front of it so
+  // the claim can branch on `intent.taskId` without a second read: the row's
+  // content columns are DB-immutable, and nothing below reads its `status`
+  // (the outcome notifier re-reads the live status itself). Query count on the
+  // won path is unchanged; the lost-claim path now pays one read it did not
+  // pay before, which is a path that does nothing else.
+  let claimed: boolean;
+  if (isTaskLinkedIntent(intent) && intent.taskId) {
+    const claim = await claimTaskLinkedIntentForDispatch({
+      id: intent.id,
+      orgId: intent.orgId,
+      taskId: intent.taskId,
+    });
+    claimed = claim.won;
+    if (!claim.won) {
+      // A lost claim NEVER dispatches and NEVER writes a result. Record why on
+      // the operation so the coordinator sees a reason rather than a stall —
+      // except when another claimant already owns the row, where writing would
+      // overwrite the winner's bookkeeping.
+      if (claim.refusal !== 'operation_already_claimed') {
+        await markOperationDispatchFailed(intent.id, `${claim.refusal}: ${claim.detail}`);
+      }
+      const message =
+        `[IntentReleaseWorker] task-linked intent ${intentId} refused the dispatch claim `
+        + `(${claim.refusal}): ${claim.detail}`;
+      if (claim.refusal === 'operation_missing') {
+        // A task-linked intent with NO operation row is a broken invariant, not
+        // a race: `reserveOperation` commits in the same transaction as the
+        // intent insert. There is also no operation row to record the reason
+        // ON, so without this the intent would sit `approved` until an
+        // unrelated deadline reaper noticed — up to 24 h later for an
+        // `mcp_api` source — with nothing naming what actually went wrong.
+        console.error(message);
+        captureException(new Error(message));
+      } else {
+        console.warn(message);
+      }
+    }
+  } else {
+    claimed = await transitionIntent(
+      intentId,
+      'approved',
+      'executing',
+      { executedAt: null, executionStartedAt: new Date() },
+      { requireNotExpired: 'release' },
+    );
+  }
+  if (!claimed) {
     return;
   }
 
@@ -335,10 +1035,64 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // calling executeTool. The rebuilt `auth` is what this worker executes under.
   const revalidation = await revalidateApprovedIntentForRelease(intent, winningApproval);
   if (!revalidation.ok) {
+    // Wave-5A review fix (#3827): a kill-derived denial PAUSES, never
+    // terminally fails, an already-human-approved intent — see
+    // `pauseIntentForKillSwitch`'s header. Every other revalidation stop
+    // (digest mismatch, tier escalated, actor/org invalid, rbac denied, a
+    // non-kill structural policy denial, …) is unchanged: CAS straight to
+    // `failed`.
+    if (revalidation.errorCode === 'kill_switch_engaged') {
+      await pauseIntentForKillSwitch(intent, revalidation.details);
+      return;
+    }
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }
-  const { auth } = revalidation;
+  let { auth } = revalidation;
+
+  // #4177 (W04): a user-owned release action executes as the APPROVER, never
+  // the agent (see USER_OWNED_RELEASE_ACTIONS). Fail loudly rather than
+  // substitute a sentinel — a time entry with no real owner is an invoice
+  // line no one can defend. Both stops are terminal (`failed`), like every
+  // other structural revalidation stop: a row with no approver is not going
+  // to grow one on retry.
+  let approverRelease: { approverUserId: string } | undefined;
+  const userOwnedKey = userOwnedReleaseKey(intent);
+  if (userOwnedKey) {
+    if (!intent.decidedByUserId) {
+      await failIntent(intent, 'approver_required', {
+        details: {
+          reason: `${userOwnedKey} requires decided_by_user_id to own the created row; the intent has none`,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    const approverAuth = await buildApproverAuthContextForIntent(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    // The approver must hold the tool's own RBAC (time_entries:write for
+    // log_time_entry) — the structural agent authority check above vouched
+    // for the AGENT, not for the human the row will be written under. Same
+    // check revalidateRelease applies to every user-owned intent.
+    const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, approverAuth);
+    if (permissionDenial) {
+      await failIntent(intent, 'rbac_denied', {
+        details: { reason: permissionDenial, decidedByUserId: intent.decidedByUserId, actionName: intent.actionName },
+      });
+      return;
+    }
+    auth = approverAuth;
+    approverRelease = { approverUserId: intent.decidedByUserId };
+  }
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
   // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
@@ -435,6 +1189,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     verifiedContext = recomputed.context;
   }
 
+  // AI script authoring W04 (#5612), spec §4.6 invariant 11: the recovery
+  // prerequisite is a RELEASE precondition, read back immediately before the
+  // effect. After the digest recompute (a drifted proposal never costs a
+  // checkpoint), before the session gate and the dispatch (nothing mutates
+  // the device without a rollback point). No-op for every non-lane intent.
+  const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intent);
+  if (!laneCheckpoint.ok) {
+    await failIntent(intent, 'checkpoint_unavailable', {
+      details: { actionName: intent.actionName, reason: laneCheckpoint.reason },
+    });
+    return;
+  }
+
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
@@ -447,6 +1214,36 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   if (isSessionRequiredForRelease(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
+  }
+
+  // Wave 5 Part B (#3827) final pre-effect kill read: one more fresh
+  // `readAiKillState()` immediately before dispatch, for AGENT-ORIGINATED
+  // releases only (review fix: an earlier version ran this unconditionally,
+  // which reached human-approved chat/mcp_api releases that have never
+  // consulted the kill switch and made the flag-off/human lane non-inert —
+  // see the plan's dark-ship constraint). The kill switch governs autonomous
+  // agent action (`checkAgentReleaseAuthority` is agent-only, and is the
+  // only OTHER caller of `readAiKillState` on this path); a human who
+  // clicked Approve is not "the agent" and this read must not be able to
+  // pause their release. Scoped this way, everything above this line
+  // (revalidation, the effect-digest recompute, its own I/O) can still take
+  // real wall-clock time, during which an operator's emergency kill can land
+  // — `checkAgentReleaseAuthority`'s own kill read (agentReleaseAuthority.ts)
+  // only covers the window up through step 2's revalidation, not the gap
+  // between there and the tool actually dispatching. Same pause semantics as
+  // that read: a real kill (or a transient read failure, which
+  // `readAiKillState` maps fail-closed to `killed: true`) PAUSES the intent
+  // back to `approved` rather than terminally failing it — see
+  // `pauseIntentForKillSwitch`'s header.
+  if (intent.requestingAgentRunId) {
+    const preDispatchKillState = await readAiKillState();
+    if (preDispatchKillState.killed) {
+      await pauseIntentForKillSwitch(intent, {
+        epoch: preDispatchKillState.epoch,
+        stage: 'pre_dispatch',
+      });
+      return;
+    }
   }
 
   // Step 3: execute with the rebuilt context. Escape any inherited DB context,
@@ -465,6 +1262,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
+  // Tool catalog W01 PR B (#5216): the AUTHORITATIVE failure signal for an
+  // external (BYO MCP) call, straight from `executeTenantToolDetailed`.
+  // `isReturnedToolError` below is a shape heuristic written against Breeze's
+  // own compact tool bodies — it keys on a JSON object carrying `error` and
+  // none of `success`/`data`/`configured`. Third-party MCP bodies are not
+  // ours to shape: `{"error": null, "result": {...}}` would read as a failure,
+  // and an error body over the 64 KiB store cap would be suppressed by the
+  // `!truncated` guard and recorded as a COMPLETION. Neither can happen when
+  // the executor already told us. Stays null for every core tool.
+  let externalIsError: boolean | null = null;
   try {
     if (secretAction) {
       carrier = await withToolTimeout(
@@ -476,17 +1283,74 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
       rawResult = carrier.llmText;
     } else {
-      const invoke = isHeadlessGoogleTool(intent.actionName)
+      // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
+      // dispatched through the tenant executor with the descriptor
+      // revalidation reloaded under the rebuilt actor — never `executeTool`,
+      // which knows nothing about `<slug>__<name>` names. The executor
+      // already re-applies the owner predicate + kill switch at call time
+      // and returns `JSON.stringify({ error })` on failure, which the
+      // `tool_returned_error` classification below reads as a failed release.
+      const tenantTool = revalidation.tenantTool;
+      const invoke = tenantTool
+        ? async () => {
+            const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
+              surface: 'chat',
+              orgId: intent.orgId,
+              actor: { kind: 'user', id: auth.user.id },
+            });
+            externalIsError = outcome.isError;
+            // Same string shape `executeTenantTool` produces, so the stored
+            // result body is unchanged — only the CLASSIFICATION now comes
+            // from `isError` instead of being re-derived from this string.
+            return outcome.isError ? JSON.stringify({ error: outcome.text }) : outcome.text;
+          }
+        : isHeadlessGoogleTool(intent.actionName)
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
-        : // The options bag is passed ONLY when something was actually
-          // verified, so every other release keeps the exact three-argument
-          // call it has always made.
+        : // The context bag is ALWAYS passed on this path (P2-5, #4192): every
+          // call the durable worker makes IS the release of an approved
+          // intent, and `actionIntentId` is how a handler that may only run
+          // as such a release names the approval it is executing —
+          // `manage_ai_agents:authorize_supervised_key` stamps it onto the
+          // graduation row and re-checks its org. `verifiedRunScript` keeps
+          // its previous "only when something was actually verified"
+          // semantics, so no existing handler observes a change: it reads
+          // `context?.verifiedRunScript`, which is still undefined here
+          // unless the effect-digest recompute produced one.
+          //
+          // Gating the bag on the tool name was considered and rejected:
+          // passing it unconditionally is structurally unobservable to every
+          // other tool, while a name gate would have to be edited by the next
+          // consumer. Exactly TWO core handlers declare a third parameter at
+          // all — `run_script` (`aiToolsScripts.ts`, reads `verifiedRunScript`)
+          // and `manage_ai_agents`; every other core handler is a
+          // two-parameter function, which ignores a third argument
+          // structurally, and EXTENSION handlers are called with exactly two
+          // arguments by construction (`aiTools.ts`, "Only CORE handlers
+          // receive the execution context"). The no-verified-material case in
+          // this file's suite asserts the bag's EXACT shape, so a future field
+          // cannot ride along unnoticed.
+          //
+          // `releaseDecision` (#5645) rides with it on the same terms: it is
+          // the intent's own decision record (approval scope + decided_via),
+          // which `run_script`'s proposal branch turns into the execution
+          // row's spec §4.1 `approval_method` — so a reviewer-decided lane
+          // run reads as `unattended_reviewer_gated` instead of the
+          // constant it used to be stamped with.
           () =>
-            verifiedContext
-              ? executeTool(intent.actionName, intent.arguments, auth, { context: verifiedContext })
-              : executeTool(intent.actionName, intent.arguments, auth);
+            executeTool(intent.actionName, intent.arguments, auth, {
+              context: {
+                ...verifiedContext,
+                actionIntentId: intent.id,
+                releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+                // #4177: present ONLY for a user-owned release (above); the
+                // handler asserts the auth it got is this approver and stamps
+                // `source: 'ai_suggested'`. Spread so the no-swap case keeps
+                // the exact bag shape the existing suite pins.
+                ...(approverRelease ? { approverRelease } : {}),
+              },
+            });
       rawResult = await withToolTimeout(
         withAuthDbAccessContext(auth, invoke),
         getToolTimeout(intent.actionName),
@@ -538,14 +1402,21 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // checks rawResult === carrier.llmText: an error carrier's llmText keeps the
   // errorString() JSON shape ({error, message}), so the existing detection
   // still applies unchanged.
-  if (!truncated && isReturnedToolError(rawResult)) {
+  // `externalIsError` (when set) OVERRIDES both the heuristic and the
+  // truncation guard — see its declaration. A truncated external error body is
+  // still a failed release; it just stores `{truncated:true}` as its evidence.
+  const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
+  if (returnedToolError) {
     try {
       assertNoPlaintextSecret(intent.actionName, storedResult);
     } catch (err) {
       await failOnPlaintextSecretGuard(intent, err);
       return;
     }
-    const failed = await transitionIntent(intent.id, 'executing', 'failed', {
+    // #5205 W04 (#5209): the operation row records the outcome BEFORE the CAS
+    // is attempted, so a lost race cannot discard it (baseline §4).
+    await persistTaskOperationOutcome(intent, storedResult, true);
+    const failed = await terminalizeIntent(intent, 'failed', {
       executedAt: new Date(),
       errorCode: 'tool_returned_error',
       result: storedResult,
@@ -554,6 +1425,8 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       auditReleaseFailure(intent, 'tool_returned_error', { returnedError: true });
     } else {
       // Lost the CAS after the tool ran — the side effect happened; surface it.
+      // The operation row above already holds the result, so this is now a
+      // reporting gap on the INTENT only, not a lost outcome.
       console.error(
         `[IntentReleaseWorker] Lost the executing->failed CAS for intent ${intent.id} after a returned tool error`,
       );
@@ -581,10 +1454,21 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failOnPlaintextSecretGuard(intent, err);
     return;
   }
-  const completed = await transitionIntent(intent.id, 'executing', 'completed', {
-    executedAt: new Date(),
-    result: finalResult,
-  });
+  // #5205 W04 (#5209), spec §6.3 / baseline §4: execution reference + bounded
+  // result land on the operation row in their own write, BEFORE the intent CAS
+  // is attempted. The intent is terminal-and-immutable the moment it moves, and
+  // the losing-CAS path below used to drop the result entirely.
+  await persistTaskOperationOutcome(intent, finalResult, false);
+
+  let fixWatchId: string | null = null;
+  const completed = await terminalizeIntent(
+    intent,
+    'completed',
+    { executedAt: new Date(), result: finalResult },
+    async (anchor) => {
+      fixWatchId = await watchReleasedIntent(intent, anchor);
+    },
+  );
 
   if (!completed) {
     // Lost the executing -> completed CAS AFTER the tool already ran (via
@@ -600,7 +1484,34 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       + 'a reaper or duplicate delivery likely already terminalized it; the tool DID execute',
     );
     captureException(new Error(`intent ${intent.id} executed but lost the completed CAS`));
+    // #5205 W04 (#5209): write the outcome AGAIN on the losing path. It already
+    // landed above, but repeating it here is deliberate — the reaper may have
+    // stamped `unknown` in between, and `recordOperationResult` is rank-ordered
+    // so a definite outcome overwrites `unknown` while `unknown` never
+    // overwrites a definite one. This is the exact hole baseline §4 documented:
+    // "the result this execution produced is not recorded anywhere".
+    await persistTaskOperationOutcome(intent, finalResult, false);
     return;
+  }
+
+  // STRICTLY after the terminal transaction closed: `bullmqQueue.ts`'s #1105
+  // tripwire throws (in strict mode) on a `queue.add` inside a held DB
+  // context, and pinning a pooled connection across a Redis round trip is
+  // what that tripwire exists to prevent. Swallowed on failure for the same
+  // reason `scheduleFixWatch` swallows: the watch row is committed, and
+  // `recoverStrandedFixWatches` re-adds its job within PENDING_RECOVERY_MS —
+  // failing an action that already had its real-world effect would be far
+  // worse than a two-minute-late verification.
+  if (fixWatchId) {
+    try {
+      await enqueueFixWatchPhase1(fixWatchId);
+    } catch (err) {
+      console.error(
+        `[IntentReleaseWorker] Failed to enqueue the fix watch for intent ${intent.id} — the recovery sweep will re-add it:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   try {
@@ -682,6 +1593,82 @@ async function loadRunAndAgent(runId: string): Promise<{
 }
 
 /**
+ * The identity of an outcome notification, for dedupe purposes — deliberately
+ * NOT the raw status (#4465).
+ *
+ * One autonomy intent carries TWO outbox rows (`intent_created` and
+ * `intent_approved`, both written by `createActionIntent`), so
+ * `releaseAndNotify` runs twice for it by design — the second is a backstop
+ * for the first — and outbox delivery is at-least-once on top of that. The
+ * release itself is CAS-guarded and safely idempotent; this key is the only
+ * thing that makes the NOTIFICATION idempotent too. Keying it on
+ * `intent.status` broke that the moment the status advanced between the two
+ * reads (the CAS loser observes `approved` while the winner is still
+ * executing; the winner then observes `completed`), ringing the bell twice
+ * for one outcome.
+ *
+ * Collapsing to a class keeps the property the status key was protecting — a
+ * later, MATERIALLY DIFFERENT outcome must still be able to correct an earlier
+ * one — without paying a bell for each intermediate observation of the same
+ * one:
+ *
+ * | status          | class       | shares a key with `granted`? | why                                                             |
+ * |-----------------|-------------|------------------------------|-----------------------------------------------------------------|
+ * | approved        | `granted`   | —                            | approved; execution pending                                     |
+ * | executing       | `granted`   | yes (silent)                 | same outcome, later observation                                 |
+ * | completed       | `granted`   | yes (silent)                 | same outcome, settled as expected                               |
+ * | failed          | `failed`    | no (corrects it)             | approved but did NOT run — the earlier "is now running" was wrong |
+ * | rejected        | `rejected`  | no                           | terminal negative decision                                      |
+ * | cancelled       | `cancelled` | no                           | terminal, withdrawn                                             |
+ * | expired         | `expired`   | no                           | terminal, nobody decided                                        |
+ * | anything else   | `update`    | no                           | unknown/pending — say only what is certain, and never share a key with a real outcome |
+ *
+ * "no" means only that the two do not share a key — not that both bells
+ * normally ring. `rejected` genuinely cannot follow `granted` (a rejected
+ * intent is never released), but `cancelled` CAN:
+ * `cancelActionIntent` transitions from `['pending_approval', 'approved']`
+ * (intentService.ts), so an approver can withdraw an intent that already rang
+ * a `granted` bell. `granted` -> `failed` and `granted` -> `cancelled` are
+ * therefore both real corrections that must survive the dedupe.
+ *
+ * #4798: `cancelActionIntent` now writes its own `intent_cancelled` outbox row
+ * (in the same transaction as the CAS, mirroring `intent_created` /
+ * `intent_approved`) instead of relying solely on a late delivery of some
+ * OTHER event (e.g. an `intent_expired` row processed after the cancel
+ * landed) to surface the correction. Keeping `cancelled` in its own class is
+ * what makes both paths — the dedicated event and a stale late delivery —
+ * able to correct an earlier `granted` bell without duplicating it.
+ *
+ * Every unknown status shares the one `update` key on purpose: they all render
+ * the same "changed state" copy, so a second one is noise, not news.
+ *
+ * Repeating the SAME class always dedupes — that is what makes the intentional
+ * duplicate delivery silent.
+ */
+const OUTCOME_CLASS_BY_STATUS: Record<ActionIntentStatus, string> = {
+  // Not yet an outcome. Shares the catch-all key so the generic "changed
+  // state" copy can never ring twice.
+  pending_approval: 'update',
+  approved: 'granted',
+  executing: 'granted',
+  completed: 'granted',
+  failed: 'failed',
+  rejected: 'rejected',
+  cancelled: 'cancelled',
+  expired: 'expired',
+};
+
+function outcomeNotificationClass(status: string): string {
+  // The Record is exhaustive over ActionIntentStatus ON PURPOSE: a 9th status
+  // added to the enum is a COMPILE error here until somebody decides whether
+  // it corrects an earlier bell or is the same outcome seen again. The runtime
+  // fallback is for a value the DB holds that the type does not (drift, or a
+  // rollback across a status-adding deploy) — not a substitute for that
+  // decision.
+  return OUTCOME_CLASS_BY_STATUS[status as ActionIntentStatus] ?? 'update';
+}
+
+/**
  * Same status switch the requester path uses below — the copy MUST derive
  * from the freshly re-read `intent.status`, never the outbox event (see the
  * long rationale in notifyRequesterOfOutcome) — but worded for a recipient
@@ -727,7 +1714,7 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
  */
 async function notifyRequesterOfOutcome(
   intentId: string,
-  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired',
+  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired' | 'intent_cancelled',
 ): Promise<void> {
   const [intent] = await withSystemDbAccessContext(() =>
     db
@@ -783,9 +1770,12 @@ async function notifyRequesterOfOutcome(
             message: `${intent.requestingClientLabel ?? 'AI agent'}: ${message}`,
             link: '/approvals',
             metadata: { intentId: intent.id, agentId: agent.id, agentRunId: run.id, status: intent.status },
-            // Status-scoped: a later, MORE ACCURATE status (approved -> failed)
-            // must not be suppressed by the earlier notification's dedupe row.
-            dedupeKey: `agent-intent-outcome:${intent.id}:${intent.status}`,
+            // Outcome-CLASS scoped, never status-scoped (#4465): a later,
+            // materially different outcome (granted -> failed) must not be
+            // suppressed by the earlier notification's dedupe row, while a
+            // mere status advance between two deliveries of the SAME outcome
+            // must be. Truth table: outcomeNotificationClass.
+            dedupeKey: `agent-intent-outcome:${intent.id}:${outcomeNotificationClass(intent.status)}`,
           })));
     }
     return;
@@ -857,10 +1847,13 @@ async function notifyRequesterOfOutcome(
       message: copy.message,
       link: '/approvals',
       metadata: { intentId: intent.id, outcome: eventType, status: intent.status },
-      // Scoped to the STATUS, not just the intent. A per-intent key meant that
-      // once a premature "is now running" had been written, the later truthful
-      // notification deduped to null and the person was never corrected.
-      dedupeKey: `intent-outcome:${intent.id}:${intent.status}`,
+      // Scoped to the outcome CLASS, not to the intent alone and not to the raw
+      // status (#4465). A per-intent key meant that once a premature "is now
+      // running" had been written, the later truthful notification deduped to
+      // null and the person was never corrected; a per-status key meant the two
+      // deliveries every autonomy intent gets rang the bell twice for one
+      // outcome. Truth table: outcomeNotificationClass.
+      dedupeKey: `intent-outcome:${intent.id}:${outcomeNotificationClass(intent.status)}`,
     }));
 }
 
@@ -869,13 +1862,91 @@ async function notifyRequesterOfOutcome(
  * it can be unit tested without spinning up a real BullMQ Worker.
  *
  * `intent_approved` is the release trigger AND an outcome to report.
- * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
- * acknowledged as a no-op rather than thrown on, so it doesn't retry forever
- * (intentOutboxPublisher.ts shares this queue but not this consumer role).
+ * `intent_rejected` / `intent_expired` / `intent_cancelled` (#4798) are
+ * outcome-only. `intent_created` is
+ * the policy-decide recovery hook (wave 5 Part B, #3827) — deliberately NOT
+ * flag-gated at this call site (see the comment on that branch below for
+ * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
+ * `attemptPolicyDecision` (it returns normally either way) always acks, but
+ * a TRANSIENT failure (it throws `PolicyDecisionTransientError`, review fix
+ * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
+ * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
+ * consumer's retry policy, but this IS the branch that relies on BullMQ's
+ * own per-job retry policy to make that redelivery real.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
-  if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
+  if (
+    data.eventType === 'intent_rejected' ||
+    data.eventType === 'intent_expired' ||
+    data.eventType === 'intent_cancelled'
+  ) {
     await notifyRequesterOfOutcome(data.intentId, data.eventType);
+    return { released: false };
+  }
+
+  // Wave 5 Part B (#3827) — the outbox at-least-once recovery branch for a
+  // policy-decide attempt that never ran (the creation-time fire-and-forget
+  // trigger was dropped by a crash/restart), that only got as far as a
+  // TRANSIENT failure (left `unattempted` on purpose — see
+  // policyDecide.ts's header), or that never got attempted because the flag
+  // was off at creation and has since been flipped back on.
+  //
+  // Deliberately NOT flag-gated here (review fix, #3827): this is the ONLY
+  // durable caller of `attemptPolicyDecision` — the creation-time trigger is
+  // fire-and-forget and does not survive a restart — so gating the call site
+  // too would strand every intent left `unattempted` by an operator's
+  // emergency flag-off: with nothing left to move it out of `unattempted`,
+  // it would sit with zero `approval_requests` rows and zero notifications,
+  // invisible until the expiry reaper eventually cancels it.
+  // `attemptPolicyDecision` itself is the single source of truth for flag-off
+  // behavior: it checks the intent is genuinely `unattempted` BEFORE reading
+  // the flag, and degrades a flag-off `unattempted` intent to human review
+  // rather than leaving it stranded. It also re-derives every other
+  // precondition itself (status === 'pending_approval', agent-originated),
+  // so a human-authored or already-decided intent's `intent_created` event
+  // reaches it and no-ops — this call site does not need to duplicate those
+  // checks.
+  //
+  // Review fix (#3827): a DETERMINISTIC outcome (every no-op above, a
+  // degrade-to-human, or a clean authorize — `attemptPolicyDecision` returns
+  // normally in all of them) still acks unconditionally, same as before. A
+  // TRANSIENT failure now throws `PolicyDecisionTransientError` instead of
+  // being swallowed — rethrown here rather than acked, this is what turns
+  // "left `unattempted`" into REAL at-least-once recovery: BullMQ redelivers
+  // the job per this job's retry policy instead of the event being marked
+  // processed and gone forever. Any OTHER error shape reaching this catch
+  // would mean `attemptPolicyDecision` grew an exit path that neither
+  // returns nor throws the discriminated signal — a bug in that function,
+  // not something retrying here can fix — so it stays logged-and-acked
+  // rather than retried forever.
+  if (data.eventType === 'intent_created') {
+    // P2-4 Task A3 (#4191): a `decidedVia: 'ticket_autonomy'` row was
+    // ALREADY approved inside `createActionIntent`'s own transaction — its
+    // `policyDecisionState` is 'human_required' (the `resolvePolicyDecisionState`
+    // stub forces that for every scoped intent), never 'unattempted', so
+    // `attemptPolicyDecision`'s own precondition would silently no-op it
+    // regardless. Route it straight to release instead: this `intent_created`
+    // delivery is a SECOND, independent recovery path alongside the
+    // `intent_approved` outbox row `createActionIntent` also wrote for it
+    // (see that module's header) — a backstop for the case where that
+    // sibling row's own publish is the one that gets stuck.
+    const decidedVia = await loadIntentDecidedVia(data.intentId);
+    if (decidedVia === 'ticket_autonomy') {
+      return releaseAndNotify(data.intentId);
+    }
+    try {
+      await attemptPolicyDecision(data.intentId);
+    } catch (err) {
+      if (err instanceof PolicyDecisionTransientError) {
+        console.error(
+          `[IntentReleaseWorker] attemptPolicyDecision transient failure for intent ${data.intentId} — rethrowing for BullMQ retry:`,
+          err,
+        );
+        throw err;
+      }
+      console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
     return { released: false };
   }
 
@@ -883,16 +1954,56 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
     return { released: false };
   }
 
-  await releaseApprovedIntent(data.intentId);
+  return releaseAndNotify(data.intentId);
+}
+
+/**
+ * Narrow, defensive read used ONLY to route the `intent_created` recovery
+ * branch above — `null` (missing row, or any read fault) falls through to
+ * the ordinary `attemptPolicyDecision` call, which is itself a safe no-op
+ * for a row it does not recognize as `unattempted`.
+ *
+ * #4464: the SELECT is wrapped rather than left to throw — this runs once
+ * per `intent_created` event in a batch, and an unhandled rejection here
+ * previously aborted the whole batch instead of degrading just this one
+ * event to the existing fail-open path.
+ */
+async function loadIntentDecidedVia(intentId: string): Promise<string | null> {
+  try {
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ decidedVia: actionIntents.decidedVia })
+        .from(actionIntents)
+        .where(eq(actionIntents.id, intentId))
+        .limit(1),
+    );
+    return row?.decidedVia ?? null;
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] loadIntentDecidedVia failed for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/**
+ * Shared release + best-effort outcome notification, extracted so the
+ * `intent_approved` release trigger and the `ticket_autonomy` `intent_created`
+ * recovery branch above run the IDENTICAL sequence. `releaseApprovedIntent`
+ * is itself CAS-guarded (`approved -> executing`), so calling this twice for
+ * the same intent (once from each event) is safe — the loser finds the
+ * intent already claimed and returns without executing anything twice.
+ */
+async function releaseAndNotify(intentId: string): Promise<{ released: boolean }> {
+  await releaseApprovedIntent(intentId);
 
   // AFTER the release, and deliberately not allowed to undo it. The release
   // already committed; throwing here would retry the whole job and re-run
   // releaseApprovedIntent, which is why the notification is swallowed and the
   // CAS inside the release path is what makes a retry safe.
   try {
-    await notifyRequesterOfOutcome(data.intentId, 'intent_approved');
+    await notifyRequesterOfOutcome(intentId, 'intent_approved');
   } catch (err) {
-    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${data.intentId}:`, err);
+    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${intentId}:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
@@ -927,6 +2038,7 @@ export async function initializeIntentReleaseWorker(): Promise<void> {
   if (releaseWorker) return;
 
   releaseWorker = createWorker();
+  attachWorkerObservability(releaseWorker, 'intentReleaseWorker');
   releaseWorker.on('error', (error) => {
     console.error('[IntentReleaseWorker] Worker error:', error);
     captureException(error);

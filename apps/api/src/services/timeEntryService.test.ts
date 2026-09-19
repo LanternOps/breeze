@@ -19,6 +19,7 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
     forUpdateCalls: 0,
     deleteError: null as Error | null,
     deleteResult: [] as unknown[],
+    deleteCalls: 0,
   };
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
@@ -99,6 +100,7 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => {
+        dbMocks.deleteCalls += 1;
         const terminal = dbMocks.deleteError
           ? Promise.reject(dbMocks.deleteError)
           : Promise.resolve();
@@ -118,6 +120,7 @@ vi.mock('../db/schema', () => ({
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
     isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
+    source: 'source',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -142,7 +145,9 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
-  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate
+  deleteTicketPart,
+  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate,
+  resolveAndLockOrgLink, readTimeEntryById, getTicketTimeEntryDefaults
 } from './timeEntryService';
 
 describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
@@ -186,6 +191,7 @@ beforeEach(() => {
   dbMocks.forUpdateCalls = 0;
   dbMocks.deleteError = null;
   dbMocks.deleteResult = [];
+  dbMocks.deleteCalls = 0;
   emitMock.mockClear();
   configMocks.getOrgBillingDefaults.mockResolvedValue(null);
 });
@@ -653,14 +659,67 @@ describe('deleteTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: true, partnerId: 'p-1', ticketId: null }]);
     await expect(deleteTimeEntry('te-1', ACTOR)).rejects.toMatchObject({ code: 'APPROVED_IMMUTABLE' });
   });
-  it('owner deletes own unapproved entry: emits deleted event with entry userId', async () => {
-    dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: null }]);
-    await deleteTimeEntry('te-1', ACTOR);
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'time_entry.deleted',
-      payload: expect.objectContaining({ userId: 'u-1' })
-    }));
+  it.each(['not_billed', 'no_charge', 'contract'] as const)(
+    'owner deletes an own unapproved %s entry and emits its userId',
+    async (billingStatus) => {
+      dbMocks.selectResults.push([{
+        id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1',
+        ticketId: null, billingStatus,
+      }]);
+      await deleteTimeEntry('te-1', ACTOR);
+      expect(dbMocks.deleteCalls).toBe(1);
+      expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'time_entry.deleted',
+        payload: expect.objectContaining({ userId: 'u-1' })
+      }));
+    },
+  );
+
+  it('409s before delete, feed, audit, or lifecycle event when the locked entry is billed', async () => {
+    const recordAuditMutation = vi.fn();
+    dbMocks.selectResults.push([{
+      id: 'te-billed', orgId: 'o-1', userId: 'u-1', isApproved: false,
+      partnerId: 'p-1', ticketId: 't-1', durationMinutes: 30,
+      billingStatus: 'billed',
+    }]);
+
+    await expect(deleteTimeEntry('te-billed', { ...ACTOR, recordAuditMutation }))
+      .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(recordAuditMutation).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(dbMocks.forUpdateCalls).toBe(1);
   });
+});
+
+describe('deleteTicketPart', () => {
+  it('409s before delete when the locked part is billed', async () => {
+    dbMocks.selectResults.push([{
+      id: 'part-billed', billingStatus: 'billed', currencyCode: 'USD',
+    }]);
+
+    await expect(deleteTicketPart('part-billed', ACTOR))
+      .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
+
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it.each(['not_billed', 'no_charge', 'contract'] as const)(
+    'allows deletion after locked re-read when status is %s',
+    async (billingStatus) => {
+      dbMocks.selectResults.push([{
+        id: `part-${billingStatus}`, billingStatus, currencyCode: 'USD',
+      }]);
+
+      await deleteTicketPart(`part-${billingStatus}`, ACTOR);
+
+      expect(dbMocks.deleteCalls).toBe(1);
+      expect(dbMocks.forUpdateCalls).toBe(1);
+    },
+  );
 });
 
 describe('approveTimeEntries', () => {
@@ -971,6 +1030,52 @@ describe('addTicketPart', () => {
     dbMocks.insertResult = [];
     await expect(addTicketPart('t-3', { description: 'Cable', quantity: 1, unitPrice: 5 }, ACTOR))
       .rejects.toThrow('Failed to create ticket part');
+  });
+});
+
+describe('routine billed-state admission', () => {
+  const range = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  it('rejects billed on time-entry creation before any database work', async () => {
+    await expect(createTimeEntry(
+      { ...range, billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  it('rejects a direct transition to billed before locking or updating the entry', async () => {
+    await expect(updateTimeEntry(
+      'te-1',
+      { billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('rejects billed on part creation before ticket lookup or insert', async () => {
+    await expect(addTicketPart(
+      't-1',
+      { description: 'SSD', quantity: 1, billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('rejects a direct transition to billed before locking or updating the part', async () => {
+    await expect(updateTicketPart(
+      'part-1',
+      { billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
   });
 });
 
@@ -1597,5 +1702,171 @@ describe('timeEntryService currency representability guard (W6-G4-2 / W6-G4-3)',
     dbMocks.updateResult = [{ id: 'part-1' }];
     await updateTicketPart('part-1', { unitPrice: 100 }, ACTOR);
     expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('100.00');
+  });
+});
+
+// ── W06 (#3900): server-stamped provenance ──────────────────────────────────
+describe('provenance (W06 #3900)', () => {
+  const auditActor = () => ({ ...ACTOR, recordAuditMutation: vi.fn() });
+
+  it('POST-path createTimeEntry stamps source=manual by default', async () => {
+    const actor = auditActor();
+    dbMocks.insertResult = [{ id: 'e1', ticketId: null, durationMinutes: 30, isBillable: false, orgId: null, source: 'manual' }];
+    await createTimeEntry({ startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') }, actor);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'manual' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'time_entry.created',
+      payload: expect.objectContaining({ source: 'manual' }),
+    }));
+    expect(actor.recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_entry.created', source: 'manual' }));
+  });
+
+  it('startTimer stamps source=timer', async () => {
+    const actor = auditActor();
+    dbMocks.updateResult = [];   // no running entry to auto-stop
+    dbMocks.insertResult = [{ id: 'e2', ticketId: null, isBillable: false, orgId: null, source: 'timer' }];
+    await startTimer({}, actor);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'timer' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'time_entry.created',
+      payload: expect.objectContaining({ source: 'timer' }),
+    }));
+  });
+
+  it('internal provenance stamps remote_session and uses the org link for org/currency', async () => {
+    dbMocks.insertResult = [{ id: 'e3', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'remote_session', orgId: 'o1', currencyCode: 'EUR' });
+  });
+
+  it('an org-linked create WITH a rate keeps the ORG currency — the partner fallback stays gated (review W06A)', async () => {
+    // The confirm path forwards a technician-entered hourlyRate alongside the
+    // org link, so this branch is reachable from POST /suggestions/confirm.
+    // Queue a partners read returning USD: if the `currencyCode == null` guard
+    // on the standalone-money fallback ever regresses, it is consumed and the
+    // row lands org_id=<EUR org> with currency_code='USD' — money denominated
+    // in a currency that customer never uses, then invoiced.
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]); // must NOT be consumed
+    dbMocks.insertResult = [{ id: 'e6', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z'), hourlyRate: 90 },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o1', currencyCode: 'EUR', hourlyRate: '90.00', source: 'remote_session' });
+    expect(dbMocks.selectResults).toHaveLength(1); // getPartnerCurrency was never consulted
+  });
+
+  it('support_session provenance with no org link lands org_id NULL and currency NULL (D6)', async () => {
+    dbMocks.insertResult = [{ id: 'e4', ticketId: null, durationMinutes: 10, isBillable: false, orgId: null, source: 'support_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:12:00Z') },
+      ACTOR,
+      { source: 'support_session', orgLink: null }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'support_session', orgId: null, currencyCode: null });
+  });
+
+  it('a ticket link wins over an org link (the ticket path is the locked, authoritative one)', async () => {
+    // Same queue the existing "allows a ticket in a granted org" case uses:
+    // ticket, org system read, org SHARE barrier, ticket lock row.
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-ticket', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-ticket' }]);
+    dbMocks.insertResult = [{ id: 'e5', ticketId: 't-1', durationMinutes: 38, isBillable: false, orgId: 'o-ticket', source: 'remote_session' }];
+    await createTimeEntry(
+      { ticketId: 't-1', startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o-session', currencyCode: 'EUR' } }
+    );
+    // insertedValues[0] is the time entry; [1] is the ticket feed comment.
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', currencyCode: 'USD', source: 'remote_session' });
+  });
+
+  it('readTimeEntryById returns the same camelCase shape as createTimeEntry', async () => {
+    dbMocks.selectResults.push([{ id: 'e9', durationMinutes: 38, isBillable: true, orgId: 'o1', source: 'remote_session' }]);
+    await expect(readTimeEntryById('e9')).resolves.toMatchObject({ id: 'e9', durationMinutes: 38, source: 'remote_session' });
+  });
+
+  it('readTimeEntryById returns null when the row is invisible under RLS', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(readTimeEntryById('gone')).resolves.toBeNull();
+  });
+});
+
+describe('resolveAndLockOrgLink (W06 #3900)', () => {
+  it('denies an org outside accessibleOrgIds with ORG_DENIED (403)', async () => {
+    await expect(resolveAndLockOrgLink('o9', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: ['o1'] }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+  it('denies an org of another partner with ORG_DENIED', async () => {
+    dbMocks.selectResults.push([{ id: 'o2', partnerId: 'p-other' }]);
+    await expect(resolveAndLockOrgLink('o2', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED' });
+  });
+  it('denies an org RLS hides entirely (no row) with ORG_DENIED', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(resolveAndLockOrgLink('o2', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED' });
+  });
+  it('locks the org FOR SHARE and returns its currency', async () => {
+    dbMocks.selectResults.push([{ id: 'o1', partnerId: 'p-1' }], [{ currencyCode: 'EUR' }]);
+    const before = dbMocks.forUpdateCalls;
+    await expect(resolveAndLockOrgLink('o1', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .resolves.toEqual({ orgId: 'o1', currencyCode: 'EUR' });
+    // The harness counts .for('share') and .for('update') alike.
+    expect(dbMocks.forUpdateCalls).toBe(before + 1);
+  });
+});
+
+// #5321: the ticket quick-add ("Log time") had no rate field and no way to see
+// what the server WOULD stamp, so a billable entry could be created with a NULL
+// rate and only fail much later at invoice assembly (ALL_MISSING_RATE 409).
+// These defaults are what the quick-add prefills and warns from.
+describe('getTicketTimeEntryDefaults (#5321)', () => {
+  const ACTOR_D = {
+    userId: 'u-1', name: 'Tech', email: 't@example.com', partnerId: 'p-1',
+    accessibleOrgIds: null as string[] | null, manageAll: false,
+  };
+
+  beforeEach(() => {
+    dbMocks.selectResults = [];
+    configMocks.getOrgBillingDefaults.mockReset();
+    configMocks.getOrgBillingDefaults.mockResolvedValue(null);
+  });
+
+  it('returns the org default rate, the org currency and the billable default', async () => {
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'USD', defaultBillable: true });
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+    await expect(getTicketTimeEntryDefaults('t-1', ACTOR_D)).resolves.toEqual({
+      hourlyRate: '150.00', currencyCode: 'USD', isBillable: true,
+    });
+  });
+
+  it('reports hourlyRate null when nothing upstream carries a rate in the org currency', async () => {
+    // org default entered in CAD, org bills in USD → match-or-skip yields null,
+    // and the category has no rate either. This is exactly the state that made
+    // "Create invoice" 409 for every quick-added entry.
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'CAD', defaultBillable: true });
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null, rateCurrency: null }]);
+    await expect(getTicketTimeEntryDefaults('t-1', ACTOR_D)).resolves.toEqual({
+      hourlyRate: null, currencyCode: 'USD', isBillable: true,
+    });
+  });
+
+  it('refuses a ticket outside the caller org allowlist', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    await expect(getTicketTimeEntryDefaults('t-1', { ...ACTOR_D, accessibleOrgIds: ['o-1'] }))
+      .rejects.toMatchObject({ status: 404, code: 'TICKET_ORG_DENIED' });
   });
 });

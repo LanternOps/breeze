@@ -76,6 +76,34 @@ describe('mfaStepUpSchema operation field', () => {
     expect(parsed.operation).toBe('register_approver_device');
   });
 
+  it('accepts rotate_recovery_codes as a distinct purpose', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'rotate_recovery_codes',
+    });
+    expect(parsed.operation).toBe('rotate_recovery_codes');
+  });
+
+  it('accepts delete_passkey only with a UUID resource identifier', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(parsed).toMatchObject({
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(() => mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: 'not-a-uuid',
+    })).toThrow();
+  });
+
   it('rejects unknown operations', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })
@@ -93,6 +121,81 @@ describe('mfaStepUpSchema operation field', () => {
   it('rejects enroll_first_factor — SSO-reauth-mint only, never client-requestable', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'enroll_first_factor' })
+    ).toThrow();
+  });
+
+  // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
+  // client-requestable step-up operation, and its resource binding must be
+  // accepted by this schema. The duration cap is imported from the grant
+  // service, so a value the device route would refuse can never mint a grant.
+  it('accepts device_maintenance with a maintenance resource binding', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'device_maintenance',
+      resource: { deviceIds: ['00000000-0000-4000-8000-000000000010'], reason: 'scheduled patching', durationHours: 4 },
+    });
+    expect(parsed.operation).toBe('device_maintenance');
+    expect(parsed.resource).toMatchObject({ durationHours: 4, reason: 'scheduled patching' });
+  });
+
+  it('rejects a maintenance resource with a duration above the shared cap', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({
+        method: 'totp',
+        code: '123456',
+        operation: 'device_maintenance',
+        resource: { deviceIds: ['00000000-0000-4000-8000-000000000010'], reason: 'scheduled patching', durationHours: 169 },
+      })
+    ).toThrow();
+  });
+
+  // Device move-org step-up (spec 2026-09-18 D2): client-requestable, and its
+  // resource binding must be accepted by this schema. acceptCurrencyMismatch
+  // is optional here because the device route's body schema makes it optional
+  // — the digest normalises the omission to false.
+  it('accepts device_move_org with a move-org resource binding', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'device_move_org',
+      resource: {
+        deviceId: '00000000-0000-4000-8000-000000000010',
+        targetOrgId: '00000000-0000-4000-8000-000000000020',
+        targetSiteId: '00000000-0000-4000-8000-000000000030',
+      },
+    });
+    expect(parsed.operation).toBe('device_move_org');
+    expect(parsed.resource).toMatchObject({ targetOrgId: '00000000-0000-4000-8000-000000000020' });
+  });
+
+  it('accepts device_move_org with acceptCurrencyMismatch: true', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'passkey',
+      credential: { id: 'cred-1' },
+      operation: 'device_move_org',
+      resource: {
+        deviceId: '00000000-0000-4000-8000-000000000010',
+        targetOrgId: '00000000-0000-4000-8000-000000000020',
+        targetSiteId: '00000000-0000-4000-8000-000000000030',
+        acceptCurrencyMismatch: true,
+      },
+    });
+    expect(parsed.resource).toMatchObject({ acceptCurrencyMismatch: true });
+  });
+
+  it('rejects a move-org resource with a non-uuid target site', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({
+        method: 'totp',
+        code: '123456',
+        operation: 'device_move_org',
+        resource: {
+          deviceId: '00000000-0000-4000-8000-000000000010',
+          targetOrgId: '00000000-0000-4000-8000-000000000020',
+          targetSiteId: 'site-1',
+        },
+      })
     ).toThrow();
   });
 });

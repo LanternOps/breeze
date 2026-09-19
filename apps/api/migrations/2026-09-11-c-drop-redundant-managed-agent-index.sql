@@ -1,0 +1,19 @@
+-- AI agents wave 3.5a (#3979): drop the redundant partial index on
+-- automations.managed_by_agent_id.
+--
+-- 2026-09-08-managed-by-agent.sql created TWO indexes over the same column
+-- with the identical partial predicate:
+--
+--   automations_managed_by_agent_id_idx  (plain,  WHERE managed_by_agent_id IS NOT NULL)
+--   automations_managed_by_agent_uq      (UNIQUE, WHERE managed_by_agent_id IS NOT NULL)
+--
+-- A unique btree serves every lookup a plain btree on the same column and
+-- predicate would, so the plain one buys nothing and costs an extra index
+-- write on every automation insert/update plus its own storage and vacuum.
+--
+-- Forward-only: the shipped migration is content-hash immutable and must not
+-- be edited. Dropping is safe to re-run and safe to roll back past — the
+-- unique index continues to serve the managed-automation lookups in
+-- services/aiAgents/managedAutomation.ts and the ai_triage action's agent
+-- resolution.
+DROP INDEX IF EXISTS automations_managed_by_agent_id_idx;

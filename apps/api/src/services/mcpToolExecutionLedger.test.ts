@@ -83,3 +83,20 @@ describe('beginMcpToolExecutionLedger — tenant isolation (defense-in-depth)', 
     expect(db.insert).toHaveBeenCalled();
   });
 });
+
+describe('beginMcpToolExecutionLedger — AI origin (#5022 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns an ai_assistant origin naming the PERSISTED ai_sessions row, not the transport session', async () => {
+    const handle = await beginMcpToolExecutionLedger(
+      baseInput({ transportSessionId: 'mcp-transport-abc' }),
+    );
+
+    expect(handle.aiOrigin.kind).toBe('ai_assistant');
+    expect(handle.aiOrigin.sessionId).toBe(handle.sessionId);
+    expect(handle.aiOrigin.sessionId).not.toBe('mcp-transport-abc');
+    expect(handle.aiOrigin.agentRunId).toBeUndefined();
+  });
+});

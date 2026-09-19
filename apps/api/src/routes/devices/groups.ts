@@ -4,12 +4,14 @@ import { and, eq, sql, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../../services/permissions';
 import { getPagination, ensureOrgAccess } from './helpers';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
 export const groupsRoutes = new Hono();
 
@@ -261,6 +263,7 @@ groupsRoutes.patch(
 
     const siteChanged = data.siteId !== undefined && data.siteId !== group.siteId;
 
+    let prunedDeviceIds: string[] = [];
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(deviceGroups)
@@ -269,11 +272,24 @@ groupsRoutes.patch(
         .returning();
 
       if (siteChanged && row?.siteId) {
-        await pruneGroupMembershipsOutsideSite(groupId, row.siteId, group.orgId, tx);
+        const pruned = await pruneGroupMembershipsOutsideSite(
+          groupId,
+          row.siteId,
+          group.orgId,
+          tx,
+          { deferPeripheralReconciliation: true },
+        );
+        prunedDeviceIds = pruned.deviceIds ?? [];
       }
 
       return row;
     });
+
+    await Promise.all(prunedDeviceIds.map((deviceId) =>
+      schedulePeripheralPolicyDevice(deviceId, 'dynamic_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -313,15 +329,35 @@ groupsRoutes.delete(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Delete memberships first
-    await db
-      .delete(deviceGroupMemberships)
-      .where(eq(deviceGroupMemberships.groupId, groupId));
+    let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+    try {
+      result = await deleteDeviceGroup(groupId, group.orgId);
+    } catch (err) {
+      if (err instanceof DeviceGroupDeleteError) {
+        if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
+        if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
+        // Contract and quote names/numbers are billing data — disclose each
+        // list only to a caller with that domain's read permission.
+        const perms = c.get('permissions') as UserPermissions | undefined;
+        const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        const canReadQuotes = !!perms && hasPermission(perms, PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
+        return c.json({
+          error: err.message,
+          code: err.code === 'QUOTED_BY_QUOTES' ? 'GROUP_IN_USE_BY_QUOTES' : 'GROUP_IN_USE_BY_CONTRACTS',
+          ...(err.contractCount ? { contractCount: err.contractCount } : {}),
+          ...(err.quoteCount ? { quoteCount: err.quoteCount } : {}),
+          ...(canReadContracts && err.contracts ? { contracts: err.contracts } : {}),
+          ...(canReadQuotes && err.quotes ? { quotes: err.quotes } : {}),
+        }, 409);
+      }
+      throw err;
+    }
 
-    // Delete the group
-    await db
-      .delete(deviceGroups)
-      .where(eq(deviceGroups.id, groupId));
+    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
+      schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -391,7 +427,7 @@ groupsRoutes.post(
     const validDeviceIds = validDevices.map(d => d.id);
 
     // Insert memberships (ignore duplicates)
-    await db
+    const insertedMemberships = await db
       .insert(deviceGroupMemberships)
       .values(
         validDeviceIds.map(deviceId => ({
@@ -401,7 +437,14 @@ groupsRoutes.post(
           addedBy: 'manual' as const
         }))
       )
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+    await Promise.all(insertedMemberships.map(({ deviceId }) =>
+      schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -411,13 +454,13 @@ groupsRoutes.post(
       resourceName: group.name,
       details: {
         requestedCount: deviceIds.length,
-        addedCount: validDeviceIds.length
+        addedCount: insertedMemberships.length
       }
     });
 
     return c.json({
       success: true,
-      added: validDeviceIds.length
+      added: insertedMemberships.length
     });
   }
 );
@@ -476,14 +519,21 @@ groupsRoutes.delete(
       targetDeviceIds = uniqueDeviceIds;
     }
 
-    await db
+    const removedMemberships = await db
       .delete(deviceGroupMemberships)
       .where(
         and(
           eq(deviceGroupMemberships.groupId, groupId),
           inArray(deviceGroupMemberships.deviceId, targetDeviceIds)
         )
-      );
+      )
+      .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+    await Promise.all(removedMemberships.map(({ deviceId }) =>
+      schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,

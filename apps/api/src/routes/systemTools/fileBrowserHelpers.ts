@@ -1,3 +1,13 @@
+/**
+ * Agent command-failure classification for **every** systemTools route.
+ *
+ * Named for the File Browser because that is where it was extracted from, but
+ * as of #4025 `processes`, `services`, `registry`, `eventLogs` and
+ * `scheduledTasks` all classify through it too. The name is kept so the merged
+ * `fileBrowserHelpers.test.ts` — which owns the Cloudflare property test over
+ * every classifier outcome — keeps its co-located pairing; treat this module as
+ * the shared one it now is, not as file-browser-private.
+ */
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
   DEVICE_UNREACHABLE_ERROR,
@@ -8,8 +18,31 @@ import {
 // Both 'failed' and 'timeout' must be treated as failures: previously the
 // route code only checked 'failed', which let timeouts silently fall through
 // to the JSON.parse path and surface a generic 500.
+//
+// Written as an exhaustive switch rather than `status === 'failed' || status
+// === 'timeout'` so that adding a fourth CommandResult status is a COMPILE
+// ERROR here instead of a silent new fall-through. That is exactly how #4025
+// happened: a status the success path had never considered ('timeout') was
+// treated as success by every route that enumerated failures positively.
 export function isCommandFailure(result: CommandResult): boolean {
-  return result.status === 'failed' || result.status === 'timeout';
+  switch (result.status) {
+    case 'failed':
+    case 'timeout':
+      return true;
+    case 'completed':
+      return false;
+    default: {
+      // If this stops compiling, a new status was added to CommandResult.
+      // Decide deliberately whether it is a failure — do not let it default.
+      const exhaustive: never = result.status;
+      void exhaustive;
+      // Fail closed if one ever slips past the type system (an `any` at a
+      // call site, a payload off the wire): an unrecognised status is treated
+      // as a failure, never silently as a success. Returning `exhaustive`
+      // here would return the status STRING from a function typed `boolean`.
+      return true;
+    }
+  }
 }
 
 /**
@@ -160,9 +193,40 @@ export function classifyCommandFailure(
   }
 
   if (/cannot execute command|is offline|is unknown/i.test(raw)) {
+    // The queue refuses ANY non-online device with the same sentence:
+    // `Device is ${device.status}, cannot execute command`
+    // (commandQueue.ts:1013, inside executeCommand — the similar string at
+    // :832 returns a bare `{ error }` with no `status`, is not a
+    // CommandResult, and never reaches this classifier).
+    // `device_status` has seven values, so answering a flat "The device is
+    // offline." is wrong for five of the six non-online ones — and not in a
+    // cosmetic way:
+    //
+    //   - `updating` is set on every agent self-update (agentWs.ts:2156), so a
+    //     technician who restarts a service mid-upgrade is told the device is
+    //     offline and goes hunting a network fault that isn't there.
+    //   - `quarantined` is a security-containment state. Reporting it as
+    //     "offline" hides the containment from the person investigating.
+    //
+    // Keep the clean copy for the genuinely-offline case (the raw string's
+    // ", cannot execute command" tail is internal noise), and name the real
+    // state otherwise. `code` stays `device_offline` either way: it is the
+    // machine-readable "device would not take the command" discriminant, and
+    // callers branch on it, not on the prose.
+    //
+    // The guard regex above also admits two shapes this sentence does not
+    // cover (`is offline` / `is unknown` on their own). Those keep the clean
+    // default rather than echoing `raw`: no production code emits them today,
+    // and passing unrecognised internal text through with a confident 503
+    // would be worse than the generic sentence — the 500 fallback at the end
+    // of this function is where genuinely unclassified text belongs.
+    const deviceState = /^Device is (\w+), cannot execute command$/i.exec(raw)?.[1]?.toLowerCase();
     return {
       kind: 'device_offline',
-      message: 'The device is offline.',
+      message:
+        deviceState && deviceState !== 'offline'
+          ? `The device is ${deviceState} and cannot run commands.`
+          : 'The device is offline.',
       status: 503,
       code: 'device_offline',
     };
@@ -254,6 +318,40 @@ export function buildSingleItemUploadBody(
     code: failure.code,
     status: failure.status,
     ...(failure.unverified ? { unverified: true as const } : {}),
+  };
+}
+
+/**
+ * The whole error response for a route that must stop on an agent failure:
+ * the JSON body and the status to send it with.
+ *
+ * Every systemTools route needs the identical three-part shape (`error`,
+ * `code`, and `unverified` only when set), and hand-rolling it at each of the
+ * ~25 call sites is how the `unverified` flag gets dropped from one of them —
+ * exactly the class of copy-paste divergence that produced issue #4025. Pass
+ * `mutating: true` from any route that changes device state so a timeout is
+ * reported as unverified rather than as a plain retryable error.
+ *
+ * Returns body and status separately rather than one flat object because
+ * several routes already bind a local `status` (e.g. the service-list query
+ * filter), which a destructured `{ status, ...payload }` would collide with.
+ */
+export function buildCommandFailureResponse(
+  result: CommandResult,
+  fallback: string,
+  opts: { mutating?: boolean } = {},
+): {
+  body: { error: string; code: CommandFailureKind; unverified?: true };
+  status: ContentfulStatusCode;
+} {
+  const failure = mapCommandFailure(result, fallback, opts);
+  return {
+    body: {
+      error: failure.message,
+      code: failure.code,
+      ...(failure.unverified ? { unverified: true as const } : {}),
+    },
+    status: failure.status,
   };
 }
 

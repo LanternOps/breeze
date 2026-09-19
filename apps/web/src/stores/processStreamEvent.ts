@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, ActionPlanStep } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -9,6 +9,13 @@ export interface AiMessage {
   toolOutput?: unknown;
   toolUseId?: string;
   isError?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107) — copied off the SSE event, never
+   * derived from `toolOutput`, which the tool itself controls. Absent on rows
+   * replayed from history (it is not persisted on the message row), where
+   * AiToolCallCard falls back to the payload shape gated on `!isError`.
+   */
+  handoff?: string;
   isStreaming?: boolean;
   createdAt: Date;
 }
@@ -31,8 +38,27 @@ export interface PendingApproval {
   intentBacked?: boolean;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
+  /**
+   * The intent's approval scope as classified server-side (#5600). `'supervised'`
+   * means the viewer's self-approve IS the whole authorization, and the server
+   * no longer requires an L3 proof for it — so the card decides prooflessly and
+   * only runs the passkey ceremony if an enforcing partner policy asks for it.
+   * `'four_eyes'` (and an absent scope, on older servers) keeps the always-L3
+   * behaviour. Never defaulted here: inventing a value would drop the proof
+   * from a four_eyes self-approve.
+   */
+  approvalScope?: AiApprovalScope;
   /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
   intentExpiresAt?: string;
+  /**
+   * #4888 — the run context a script launch will actually execute in, resolved
+   * server-side. Present only for `run_script` / `execute_script_on_device`.
+   * The card renders it as its own visible row: letting an assistant pick
+   * SYSTEM for a script whose saved default is the logged-in user is a
+   * privilege escalation, and the human approving it has to be told, not left
+   * to expand a JSON blob.
+   */
+  scriptRunContext?: AiScriptRunContext | null;
 }
 
 export interface PendingPlan {
@@ -51,6 +77,32 @@ export interface ActivePlan {
  * The subset of state that processStreamEvent needs to read and write.
  * Both aiStore (flat) and workspaceStore (per-tab) implement this shape.
  */
+export interface ChatRunProgressEntry {
+  step: string;
+  label: string;
+  ordinal: number;
+}
+
+/**
+ * A workspace `analysis` run associated with this conversation
+ * (execution-plane spec §5.5), advanced by `run_progress`/`run_result` while a
+ * turn is open, and reconciled by `AiRunCard`'s poll of
+ * `GET /ai/agents/runs/:runId` — which is the source of truth, because the
+ * SSE stream only exists during a turn and the run outlives it. Keyed by run
+ * id, not by tool-use id: a run survives the turn that started it and can be
+ * referred to again later in the conversation. Chat-initiated launch is
+ * currently disabled (#6086 — no tool seeds this from within a turn), but the
+ * shape and the reconciliation contract are retained for when delegated
+ * authorization lands.
+ */
+export interface ChatRunState {
+  runId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: ChatRunProgressEntry[];
+  summary: string | null;
+  artifacts: AiRunResultArtifactRef[];
+}
+
 export interface StreamableState {
   messages: AiMessage[];
   pendingApproval: PendingApproval | null;
@@ -62,6 +114,8 @@ export interface StreamableState {
   error: string | null;
   sessionId: string | null;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
+  /** Analysis runs launched from this conversation, keyed by run id. */
+  chatRuns: Record<string, ChatRunState>;
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
@@ -121,9 +175,35 @@ export function processStreamEvent(
         toolOutput: event.output as Record<string, unknown>,
         toolUseId: event.toolUseId,
         isError: event.isError,
+        handoff: event.handoff,
         createdAt: new Date()
       };
-      set((s) => ({ messages: [...s.messages, resultMsg] }));
+      set((s) => {
+        // The approval this card is waiting on can be decided somewhere else
+        // (mobile push, the Approvals queue). The server then runs the tool and
+        // this result arrives on the still-open stream — so a result for the
+        // awaited tool IS the decision landing, and the card must go with it.
+        // Matched by tool name via the tool_use row: the event carries no
+        // executionId, and the awaited tool is by construction the one whose
+        // result has not yet arrived.
+        const awaited = s.pendingApproval;
+        const toolUse = s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId);
+        // Parallel calls to the same tool: the awaited one is the LATEST
+        // tool_use of that name (approval_required is published from the
+        // pre-tool hook, i.e. right after its tool_use_start), so an earlier
+        // sibling's result must not dismiss it.
+        const latestOfName = toolUse
+          ? [...s.messages].reverse().find((m) => m.role === 'tool_use' && m.toolName === toolUse.toolName)
+          : undefined;
+        const resolvesPending =
+          !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
+        return {
+          // Specialized result cards (including analysis runs) need the tool
+          // name even when the tool did not require approval.
+          messages: [...s.messages, { ...resultMsg, toolName: toolUse?.toolName }],
+          ...(resolvesPending ? { pendingApproval: null } : {}),
+        };
+      });
       return currentAssistantId;
     }
 
@@ -137,7 +217,9 @@ export function processStreamEvent(
           deviceContext: event.deviceContext,
           intentBacked: event.intentBacked,
           selfApprovalRequestId: event.selfApprovalRequestId,
+          approvalScope: event.approvalScope,
           intentExpiresAt: event.intentExpiresAt,
+          scriptRunContext: event.scriptRunContext ?? null,
         }
       }));
       return currentAssistantId;
@@ -219,14 +301,115 @@ export function processStreamEvent(
       return currentAssistantId;
     }
 
+    // W04 (#5612): the reviewer-gated unattended lane approved this run at
+    // creation — no card, an inline note instead (never dropped silently).
+    case 'unattended_release': {
+      const releaseMsg: AiMessage = {
+        id: `unattended-release-${event.intentId}`,
+        role: 'tool_result',
+        content: '',
+        toolName: 'unattended_release',
+        toolOutput: {
+          intentId: event.intentId,
+          executionId: event.executionId,
+          description: event.description,
+          deviceContext: event.deviceContext ?? null,
+          scriptRunContext: event.scriptRunContext ?? null,
+          scriptProposal: event.scriptProposal ?? null,
+        },
+        createdAt: new Date(),
+      };
+      set((s) => ({ messages: [...s.messages, releaseMsg], pendingApproval: null }));
+      return currentAssistantId;
+    }
+
     case 'approval_mode_changed': {
       set(() => ({ approvalMode: event.mode, isPaused: event.mode === 'per_step' }));
+      return currentAssistantId;
+    }
+
+    case 'run_progress': {
+      set((s) => {
+        const existing = s.chatRuns[event.runId];
+        const entry: ChatRunProgressEntry = { step: event.step, label: event.label, ordinal: event.ordinal };
+        // De-duplicate by ordinal: the bridge is best-effort and BullMQ can
+        // redeliver a job, so the same step can arrive twice. Sorting rather
+        // than appending also survives out-of-order pub/sub delivery.
+        const progress = [...(existing?.progress ?? []).filter((p) => p.ordinal !== entry.ordinal), entry]
+          .sort((a, b) => a.ordinal - b.ordinal);
+        return {
+          chatRuns: {
+            ...s.chatRuns,
+            [event.runId]: {
+              runId: event.runId,
+              // Never downgrade a run that already reported terminal: a late
+              // progress event must not resurrect a finished card.
+              status: existing?.status === 'completed' || existing?.status === 'failed'
+                ? existing.status
+                : 'running',
+              progress,
+              summary: existing?.summary ?? null,
+              artifacts: existing?.artifacts ?? [],
+            },
+          },
+        };
+      });
+      return currentAssistantId;
+    }
+
+    case 'run_result': {
+      set((s) => {
+        const existing = s.chatRuns[event.runId];
+        return {
+          chatRuns: {
+            ...s.chatRuns,
+            [event.runId]: {
+              runId: event.runId,
+              status: event.status,
+              progress: existing?.progress ?? [],
+              summary: event.summary,
+              artifacts: event.artifacts,
+            },
+          },
+        };
+      });
       return currentAssistantId;
     }
 
     case 'done':
       set(() => ({ isStreaming: false }));
       return null;
+
+    // Deliberate no-ops, named so the exhaustiveness guard below can be exact.
+    // Each of these is handled by a DIFFERENT surface, not by this technician
+    // chat store: `warning` and `tool_completed`/`tool_request`/
+    // `client_tool_request` belong to the Office/Helper client-session loops,
+    // and `script_proposal_update` is delivered durably as an ai_messages row
+    // that history replay picks up. Listing them as cases rather than letting
+    // them fall through is the point — a fall-through is indistinguishable from
+    // a forgotten event.
+    case 'warning':
+    case 'client_tool_request':
+    case 'tool_request':
+    case 'tool_completed':
+    case 'script_proposal_update':
+      return currentAssistantId;
+
+    default: {
+      /*
+       * Every member of `AiStreamEvent` must be handled above. If a new event
+       * type is added to the shared union and not here, `event` is no longer
+       * `never` at this point and THIS LINE fails to compile — which is the
+       * only signal there is, because the runtime behaviour of forgetting a
+       * case is "nothing happens", indistinguishable from an event that never
+       * arrived. Do not "fix" a red here by widening the annotation.
+       */
+      const _exhaustive: never = event;
+      // Unreachable when the compiler is satisfied; kept so a hand-built event
+      // object from an older client is dropped rather than throwing.
+      void _exhaustive;
+      return currentAssistantId;
+    }
   }
 
   return null;

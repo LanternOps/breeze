@@ -3,6 +3,7 @@ import {
   Bell,
   Clock,
   FileCode,
+  Keyboard,
   Loader2,
   Monitor,
   Plus,
@@ -17,6 +18,8 @@ import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
+import { useUiStore } from '../../stores/uiStore';
+import { useRecentsStore } from '../../stores/recentsStore';
 
 type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'users' | 'settings';
 
@@ -28,20 +31,13 @@ type SearchResult = {
   href?: string;
 };
 
-type RecentItem = {
-  key: string;
-  title: string;
-  description?: string;
-  href?: string;
-  category?: SearchCategory;
-  kind: 'action' | 'result';
-};
-
 type CommandItem = {
   key: string;
   title: string;
   description?: string;
   href?: string;
+  /** Runs instead of navigating (e.g. open the shortcuts sheet). */
+  onSelect?: () => void;
   icon: LucideIcon;
   kind: 'action' | 'recent' | 'result';
   category?: SearchCategory;
@@ -100,38 +96,23 @@ const CATEGORY_CONFIG: Record<
   }
 };
 
+// Labels live under common.json `layout.search.actions.<id>` / `<id>Description`.
 const QUICK_ACTIONS: Array<{
   key: string;
-  title: string;
-  description: string;
-  href: string;
+  id: 'newDevice' | 'runScript' | 'alertRules' | 'keyboardShortcuts';
+  href?: string;
   icon: LucideIcon;
 }> = [
-  {
-    key: 'action:new-device',
-    title: 'New device',
-    description: 'Add a device to your fleet',
-    href: '/devices',
-    icon: Plus
-  },
-  {
-    key: 'action:run-script',
-    title: 'Run script',
-    description: 'Execute a script on devices',
-    href: '/scripts',
-    icon: Terminal
-  },
-  {
-    key: 'action:manage-config-policies',
-    title: 'Alert rules',
-    description: 'Manage alerting in Configuration Policies',
-    href: '/configuration-policies',
-    icon: Bell
-  }
+  { key: 'action:new-device', id: 'newDevice', href: '/devices', icon: Plus },
+  { key: 'action:run-script', id: 'runScript', href: '/scripts', icon: Terminal },
+  { key: 'action:manage-config-policies', id: 'alertRules', href: '/configuration-policies', icon: Bell },
+  { key: 'action:keyboard-shortcuts', id: 'keyboardShortcuts', icon: Keyboard }
 ];
 
-const RECENT_STORAGE_KEY = 'breeze.commandPalette.recent';
-const MAX_RECENTS = 6;
+// How many recents the empty state shows. The store keeps a few more pages so
+// a typed query can still match something that scrolled off this list.
+const PALETTE_RECENT_DEVICES = 5;
+const PALETTE_RECENT_PAGES = 5;
 const SEARCH_DEBOUNCE_MS = 200;
 
 const pickString = (value: unknown): string | undefined => {
@@ -234,12 +215,19 @@ const buildResultHref = (result: SearchResult): string => {
 
 export default function CommandPalette() {
   const { t } = useTranslation('common');
-  const [open, setOpen] = useState(false);
+  // Open state lives in the ui store so the "/" shortcut (useGlobalShortcuts)
+  // and any other island can open the same palette.
+  const open = useUiStore((s) => s.isCommandPaletteOpen);
+  const openPalette = useUiStore((s) => s.openCommandPalette);
+  const closePalette = useUiStore((s) => s.closeCommandPalette);
+  const togglePalette = useUiStore((s) => s.toggleCommandPalette);
+  const openShortcutsHelp = useUiStore((s) => s.openShortcutsHelp);
+  const recentDevices = useRecentsStore((s) => s.devices);
+  const recentPages = useRecentsStore((s) => s.pages);
   const [modifierLabel, setModifierLabel] = useState('');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -247,26 +235,11 @@ export default function CommandPalette() {
 
   const trimmedQuery = query.trim();
   const showQuickActions = trimmedQuery.length === 0;
-  const showRecent = trimmedQuery.length === 0 && recentItems.length > 0;
   const showResults = trimmedQuery.length > 0;
 
   useEffect(() => {
     if (typeof navigator !== 'undefined') {
       setModifierLabel(/mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl');
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = window.localStorage.getItem(RECENT_STORAGE_KEY);
-    if (!stored) return;
-    try {
-      const parsed = JSON.parse(stored) as RecentItem[];
-      if (Array.isArray(parsed)) {
-        setRecentItems(parsed.slice(0, MAX_RECENTS));
-      }
-    } catch {
-      setRecentItems([]);
     }
   }, []);
 
@@ -289,6 +262,10 @@ export default function CommandPalette() {
     let isActive = true;
     setIsLoading(true);
     setErrorMessage(null);
+    // Drop the previous query's results now, not when the new ones land:
+    // anything still in `results` stays keyboard-selectable, so it must not
+    // be something the user can no longer see.
+    setResults([]);
 
     const performSearch = async () => {
       try {
@@ -344,59 +321,73 @@ export default function CommandPalette() {
     return () => cancelAnimationFrame(frame);
   }, [open]);
 
-  const addRecentItem = useCallback((item: CommandItem) => {
-    const nextItem: RecentItem = {
-      key: item.key,
-      title: item.title,
-      description: item.description,
-      href: item.href,
-      category: item.category,
-      kind: item.category ? 'result' : 'action'
-    };
-
-    setRecentItems((prev) => {
-      const next = [nextItem, ...prev.filter((entry) => entry.key !== nextItem.key)];
-      const sliced = next.slice(0, MAX_RECENTS);
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(sliced));
-      }
-      return sliced;
-    });
-  }, []);
-
   const handleSelectItem = useCallback(
     (item: CommandItem) => {
+      // Close first: onSelect may open another overlay (the shortcuts sheet),
+      // and the store's open* actions already close the palette — but an
+      // explicit close keeps a plain navigation symmetrical.
+      closePalette();
+      if (item.onSelect) {
+        item.onSelect();
+        return;
+      }
       if (item.href && typeof window !== 'undefined') {
         void navigateTo(item.href);
       }
-      addRecentItem(item);
-      setOpen(false);
     },
-    [addRecentItem]
+    [closePalette]
   );
 
   const quickActionItems = useMemo<CommandItem[]>(() => {
     return QUICK_ACTIONS.map((action) => ({
       key: action.key,
-      title: action.title,
-      description: action.description,
+      title: t(/* i18n-dynamic */ `layout.search.actions.${action.id}`),
+      description: t(/* i18n-dynamic */ `layout.search.actions.${action.id}Description`),
       href: action.href,
+      onSelect: action.id === 'keyboardShortcuts' ? openShortcutsHelp : undefined,
       icon: action.icon,
       kind: 'action'
     }));
-  }, []);
+  }, [openShortcutsHelp, t]);
 
-  const recentCommandItems = useMemo<CommandItem[]>(() => {
-    return recentItems.map((item) => ({
-      key: item.key,
-      title: item.title,
-      description: item.description,
-      href: item.href,
-      icon: item.category ? CATEGORY_CONFIG[item.category].icon : Zap,
-      kind: 'recent',
-      category: item.category
-    }));
-  }, [recentItems]);
+  // Recents come from the shared store (sidebar shows the same devices). Pages
+  // carry their path as the description so two pages with one title (e.g. two
+  // organizations, both titled "Organization") stay distinguishable.
+  const recentDeviceItems = useMemo<CommandItem[]>(
+    () =>
+      recentDevices.map((device) => ({
+        key: `recent-device:${device.id}`,
+        title: device.name,
+        href: `/devices/${device.id}`,
+        icon: Monitor,
+        kind: 'recent',
+        category: 'devices'
+      })),
+    [recentDevices]
+  );
+
+  const recentPageItems = useMemo<CommandItem[]>(
+    () =>
+      recentPages.map((page) => ({
+        key: `recent-page:${page.path}`,
+        title: page.title,
+        description: page.path,
+        href: page.path,
+        icon: Clock,
+        kind: 'recent'
+      })),
+    [recentPages]
+  );
+
+  // Instant local matches while the server round-trip is still in flight.
+  const localRecentMatches = useMemo<CommandItem[]>(() => {
+    if (!trimmedQuery) return [];
+    const needle = trimmedQuery.toLowerCase();
+    const matches = (item: CommandItem) =>
+      item.title.toLowerCase().includes(needle) ||
+      (item.description?.toLowerCase().includes(needle) ?? false);
+    return [...recentDeviceItems.filter(matches), ...recentPageItems.filter(matches)];
+  }, [recentDeviceItems, recentPageItems, trimmedQuery]);
 
   const resultItemsByCategory = useMemo(() => {
     const grouped = CATEGORY_ORDER.reduce((acc, category) => {
@@ -435,6 +426,19 @@ export default function CommandPalette() {
     };
 
     if (showQuickActions) {
+      // Most recent first so Cmd+K, Enter is "take me back to what I was doing".
+      pushSection({
+        id: 'recent-devices',
+        label: 'Recent devices',
+        icon: Monitor,
+        items: recentDeviceItems.slice(0, PALETTE_RECENT_DEVICES)
+      });
+      pushSection({
+        id: 'recent-pages',
+        label: 'Recently visited',
+        icon: Clock,
+        items: recentPageItems.slice(0, PALETTE_RECENT_PAGES)
+      });
       pushSection({
         id: 'quick-actions',
         label: 'Quick actions',
@@ -443,16 +447,13 @@ export default function CommandPalette() {
       });
     }
 
-    if (showRecent) {
+    if (showResults) {
       pushSection({
         id: 'recent',
         label: 'Recent',
         icon: Clock,
-        items: recentCommandItems
+        items: localRecentMatches
       });
-    }
-
-    if (showResults) {
       CATEGORY_ORDER.forEach((category) => {
         const items = resultItemsByCategory[category];
         if (items.length === 0) return;
@@ -467,11 +468,12 @@ export default function CommandPalette() {
 
     return { sections: builtSections, selectableItems: selectable, indexByKey: indexMap };
   }, [
+    localRecentMatches,
     quickActionItems,
-    recentCommandItems,
+    recentDeviceItems,
+    recentPageItems,
     resultItemsByCategory,
     showQuickActions,
-    showRecent,
     showResults
   ]);
 
@@ -494,12 +496,12 @@ export default function CommandPalette() {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        setOpen((prev) => !prev);
+        togglePalette();
       }
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, []);
+  }, [togglePalette]);
 
   useEffect(() => {
     if (!open) return;
@@ -527,12 +529,12 @@ export default function CommandPalette() {
       }
       if (event.key === 'Escape') {
         event.preventDefault();
-        setOpen(false);
+        closePalette();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeIndex, handleSelectItem, open, selectableItems]);
+  }, [activeIndex, closePalette, handleSelectItem, open, selectableItems]);
 
   return (
     <>
@@ -540,7 +542,7 @@ export default function CommandPalette() {
           the full search bar takes over at sm+. Both open the same palette. */}
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={openPalette}
         className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:hidden"
         aria-label={t('actions.search')}
       >
@@ -548,7 +550,7 @@ export default function CommandPalette() {
       </button>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={openPalette}
         className="hidden h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:flex"
         aria-label={t('actions.search')}
       >
@@ -562,7 +564,7 @@ export default function CommandPalette() {
       {open && (
         <div
           className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 py-8"
-          onClick={() => setOpen(false)}
+          onClick={closePalette}
         >
           <div
             role="dialog"
@@ -605,10 +607,14 @@ export default function CommandPalette() {
                 </div>
               )}
 
-              {!isLoading &&
-                sections.map((section) => (
-                  <div key={section.id} className="border-t first:border-t-0">
-                    <div className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {/* Rendered while loading too: local recent matches are already
+                  selectable, so they must stay visible under the spinner. */}
+              {sections.map((section) => (
+                  <div key={section.id} data-testid={`palette-section-${section.id}`} className="border-t first:border-t-0">
+                    <div
+                      data-testid="palette-section-heading"
+                      className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
                       <section.icon className="h-4 w-4" />
                       {t(/* i18n-dynamic */ `layout.search.sections.${section.id}`, { defaultValue: section.label })}
                     </div>

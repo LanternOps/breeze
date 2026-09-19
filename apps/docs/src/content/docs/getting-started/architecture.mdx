@@ -26,7 +26,7 @@ Every database query is scoped to the user's tenant context. A partner admin see
 
 ### API Server (Hono)
 
-The API is a TypeScript application built with [Hono](https://hono.dev) running on Node.js 20. It handles:
+The API is a TypeScript application built with [Hono](https://hono.dev) running on Node.js >= 22.22.2. It handles:
 
 - REST endpoints for all CRUD operations
 - WebSocket connections from agents (telemetry, commands, terminal)
@@ -108,19 +108,19 @@ Agent Enrollment:
        ← 201 { agentToken: "brz_...", deviceId, orgId, siteId }
 
 Heartbeat:
-  Agent → WS /api/v1/agents/:id/ws (Bearer token auth)
+  Agent → WS /api/v1/agent-ws/:id/ws (Bearer token auth)
        → { type: "heartbeat", cpu, memory, disk, ... }
        ← { type: "command", id, action, payload }
 
 Terminal:
-  Browser → WS /api/v1/terminal/:deviceId (JWT auth)
+  Browser → WS /api/v1/remote/sessions/:id/ws?ticket=... (one-time ticket)
          → { type: "input", data: "ls -la\n" }
          ← { type: "output", data: "total 48\n..." }
 
   API relays between browser and agent WebSocket connections.
 
 Command Execution:
-  Dashboard → POST /api/v1/devices/:id/commands { action: "run_script", scriptId }
+  Dashboard → POST /api/v1/scripts/:id/execute { deviceIds: [...] }
            → BullMQ job → WebSocket message to agent
            → Agent executes → WebSocket result back
            ← Command result stored in database

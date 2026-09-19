@@ -8,14 +8,21 @@
  * lived only in route handlers with no service-layer chokepoint — this module
  * is that chokepoint. Do not add a second script-insert path that bypasses it.
  */
-import type { ScriptParameterDefinition } from '@breeze/shared';
+import type { ScriptOrigin, ScriptParameterDefinition } from '@breeze/shared';
 import { db } from '../db';
+import {
+  cutScriptVersion,
+  type ScriptVersionExecutor,
+  type ScriptVersionProvenance,
+  type ScriptVersionTx,
+} from './scriptVersions';
 import { scripts } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE
 } from './partnerWideAccess';
+import { resolveScriptSecurityAcknowledgement } from './scriptSecurityAcknowledgement';
 
 export type ScriptWriteAuth = Pick<
   AuthContext,
@@ -89,6 +96,83 @@ export function resolveScriptCreateScope(
   return { orgId: requestedOrgId ?? null, partnerId: null };
 }
 
+/** The tenancy shape of the script being cloned, as read from its row. */
+export type ScriptCloneSource = { orgId: string | null; partnerId: string | null; isSystem: boolean };
+
+/**
+ * Resolve the `{ orgId, partnerId }` a CLONE of `source` should land under
+ * (#4887). Delegates every actual tenancy/capability decision to
+ * `resolveScriptCreateScope` — this function only decides WHICH availability
+ * to ask it for, based on how the clone request relates to its source, so a
+ * clone can never silently change tenancy shape:
+ *
+ * - A system-library script (`is_system`, `org_id` AND `partner_id` both
+ *   NULL) is always duplicated into a specific org — the same rule
+ *   `POST /import/:id` already applies, the other system-script duplication
+ *   path. A caller who omits `orgId` here gets the same "which org?"
+ *   resolution `POST /import/:id` and plain create use (own org for an
+ *   org-scope caller, the single accessible org for a partner-scope caller
+ *   with only one, else a 400). System scope MUST name an org explicitly —
+ *   `resolveScriptCreateScope`'s system branch has no "which org" fallback of
+ *   its own and would otherwise resolve to `org_id: null, partner_id: null`,
+ *   an ownerless row invisible under RLS to everyone who isn't system scope.
+ * - Organization scope ALWAYS lands the clone in the caller's own org,
+ *   regardless of the source's scope (mirrors `resolveScriptCreateScope`'s
+ *   own org branch, which likewise ignores `availability`/`requestedOrgId`).
+ *   This is not a "downgrade" of a capability the caller ever held: org
+ *   scope can never create OR maintain a partner-wide script through any
+ *   path in this system (`canManagePartnerWidePolicies` is unconditionally
+ *   false for it), so there is no other org-scoped-writable destination to
+ *   land in even when the source (readable to them per `canReadScript`,
+ *   which also lets org-scope callers read their own partner's partner-wide
+ *   rows — see the scripts.ts list route) happens to be partner-wide.
+ * - An explicit `requestedOrgId` on a non-system source (partner/system
+ *   scope) is always an intentional target: a genuine cross-org copy, or a
+ *   deliberate narrowing of a partner-wide script into one org. Checked with
+ *   the same org-access rule as create; this is narrowing, not widening, so
+ *   it never requires the partner-wide capability.
+ * - No `requestedOrgId` on a non-system source (partner/system scope): the
+ *   clone preserves the SOURCE's scope rather than picking a new one. An
+ *   org-owned source clones into that same org. A partner-wide source
+ *   (`org_id` NULL, `partner_id` set) stays partner-wide by default — which
+ *   still runs through `canManagePartnerWidePolicies` via
+ *   `resolveScriptCreateScope('partner', …)`, so a partner-scope caller who
+ *   could not have CREATED a partner-wide script is refused (403) rather
+ *   than silently getting an org-scoped downgrade of it (CLAUDE.md
+ *   Partner-Wide First: never silently narrow ownership either). System-scope
+ *   tokens carry no `partnerId` to preserve partner-wide under, so they must
+ *   name a target org explicitly in this case too.
+ */
+export function resolveScriptCloneScope(
+  auth: ScriptWriteAuth,
+  source: ScriptCloneSource,
+  requestedOrgId: string | null | undefined
+): ScriptCreateScope | ScriptScopeError {
+  if (source.isSystem) {
+    if (auth.scope === 'system' && !requestedOrgId) {
+      return { error: 'orgId is required to clone this script', status: 400 };
+    }
+    return resolveScriptCreateScope(auth, 'org', requestedOrgId ?? undefined);
+  }
+
+  if (auth.scope === 'organization') {
+    return resolveScriptCreateScope(auth, undefined, undefined);
+  }
+
+  if (requestedOrgId) {
+    return resolveScriptCreateScope(auth, 'org', requestedOrgId);
+  }
+
+  if (source.orgId === null) {
+    if (auth.scope !== 'partner') {
+      return { error: 'orgId is required to clone this script', status: 400 };
+    }
+    return resolveScriptCreateScope(auth, 'partner', undefined);
+  }
+
+  return resolveScriptCreateScope(auth, 'org', source.orgId);
+}
+
 export type ScriptInsertInput = {
   name: string;
   description?: string | null;
@@ -103,6 +187,12 @@ export type ScriptInsertInput = {
   timeoutSeconds: number;
   runAs: 'system' | 'user' | 'elevated';
   exitCodeSeverityMapping?: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info' | null> | null;
+  // #5129 — agent STRICT-pattern descriptions the author acknowledged. Clamped
+  // here to the patterns `content` actually matches (see insertScriptRow), so
+  // no intake can store an approval for a risk the script does not contain.
+  // Omitted by the bundle importer, which therefore imports every script with
+  // nothing acknowledged — fail closed, deliberately.
+  acknowledgedSecurityPatterns?: readonly string[] | null;
 };
 
 /**
@@ -114,15 +204,55 @@ export type ScriptInsertInput = {
  * can NEVER produce an `isSystem: true` row — at any caller scope, including
  * system — which is deliberately stricter than `POST /scripts`.
  */
+export type ScriptInsertOptions = {
+  requestedIsSystem?: boolean;
+  /** Birth record for the version row this insert cuts. Defaults to 'system'
+   *  for a clamped system script and 'human' otherwise; the bundle importer
+   *  passes 'imported'. Ignored when `provenance` is given. */
+  origin?: ScriptOrigin;
+  /** Full provenance for the v1 row, for callers that have more than an origin
+   *  in hand (W03's promote passes the proposal's review evidence here rather
+   *  than cutting a second version on top of the create). */
+  provenance?: ScriptVersionProvenance;
+  /** W03 promotion: the APPROVER who acknowledged the STRICT patterns on the
+   *  card, stamped as security_acknowledged_by instead of the caller. Only
+   *  consulted when something was actually acknowledged. */
+  securityAcknowledgedBy?: string | null;
+  /** W03 promotion: run inside the caller's transaction (as a savepoint) so the
+   *  script insert and the proposal's `promoted` CAS commit or roll back as one
+   *  unit. Default: a fresh transaction, as every existing caller expects. */
+  tx?: ScriptVersionTx;
+};
+
 export async function insertScriptRow(
   auth: Pick<AuthContext, 'scope' | 'user'>,
   scope: ScriptCreateScope,
   input: ScriptInsertInput,
-  opts: { requestedIsSystem?: boolean } = {}
+  opts: ScriptInsertOptions = {}
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
+  const origin: ScriptOrigin = opts.provenance?.origin ?? opts.origin ?? (isSystem ? 'system' : 'human');
 
-  const [script] = await db
+  // Clamped at the chokepoint for the same reason `isSystem` is (#5129): both
+  // intakes — POST /scripts and the bundle importer — go through here, so
+  // neither can persist an acknowledgement for a pattern the content does not
+  // contain, whatever it asked for. The route re-runs the same resolution to
+  // decide the 400 and the audit entry; this is the write-side guard.
+  const acknowledgement = resolveScriptSecurityAcknowledgement({
+    content: input.content,
+    submitted: input.acknowledgedSecurityPatterns,
+  });
+
+  // The row and its v1 version are one unit of work: a create that left no
+  // version behind would make headScriptVersion() null for a live script, and
+  // script_versions is append-only so it could not be repaired afterwards.
+  //
+  // `version: 0` is transient — cutScriptVersion locks the row, moves it to 1,
+  // and snapshots it. Nothing outside this transaction ever sees 0.
+  const acknowledgedBy = opts.securityAcknowledgedBy ?? auth.user.id;
+  const handle: ScriptVersionExecutor = opts.tx ?? db;
+  return handle.transaction(async (tx) => {
+  const [script] = await tx
     .insert(scripts)
     .values({
       orgId: isSystem && !scope.orgId ? null : scope.orgId,
@@ -137,11 +267,34 @@ export async function insertScriptRow(
       timeoutSeconds: input.timeoutSeconds,
       runAs: input.runAs,
       isSystem,
-      version: 1,
+      version: 0,
+      // The RECORD's birth (spec §4.1); the version row below carries the same
+      // origin plus the review evidence, when there is any.
+      origin,
+      originProposalId: opts.provenance?.proposalId ?? null,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
+      acknowledgedSecurityPatterns: acknowledgement.acknowledged,
+      // Only stamp attribution when something was actually acknowledged; an
+      // ordinary script with no risky pattern must not look risk-approved.
+      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? acknowledgedBy : null,
+      securityAcknowledgedAt: acknowledgement.acknowledged.length > 0 ? new Date() : null,
       createdBy: auth.user.id
     })
     .returning();
 
-  return script;
+    if (!script) {
+      throw new Error('Script insert returned no row');
+    }
+
+    const cut = await cutScriptVersion(tx, {
+      scriptId: script.id,
+      provenance: opts.provenance ?? {
+        origin,
+        changelog: 'Initial version',
+        createdBy: auth.user.id
+      }
+    });
+
+    return { ...script, version: cut.version, headVersionId: cut.id };
+  });
 }

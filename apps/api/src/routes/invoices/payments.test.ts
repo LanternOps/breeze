@@ -93,6 +93,7 @@ describe('invoice payment audit logging', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(INV_ID);
+    expect(body.quickbooksRecordUntouched).toBe(false);
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
       orgId: ORG_ID,
@@ -102,6 +103,32 @@ describe('invoice payment audit logging', () => {
       // The destroyed row's amount/method/recordedBy must survive in the chain.
       details: { amount: '40.00', method: 'card', reference: 'REF-1', invoiceId: INV_ID, recordedBy: 'u9' }
     });
+  });
+
+  it('DELETE /:id/payments/:pid carries the untouched-QuickBooks flag into the audit details', async () => {
+    // A QuickBooks-origin void Breeze was allowed to take because no CDC sweep
+    // would re-import it. The QuickBooks Payment is still standing, and a reader
+    // of this event must not have to infer that (review wave 3, finding D2).
+    (svc.voidPayment as any).mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent' },
+      audit: {
+        orgId: ORG_ID, paymentId: PAY_ID, invoiceId: INV_ID,
+        amount: '40.00', method: 'card', reference: 'REF-1', recordedBy: 'u9',
+        quickbooksRecordUntouched: true, untouchedReason: 'pull_disabled',
+      }
+    });
+
+    const res = await app().request(`/${INV_ID}/payments/${PAY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ data: { id: INV_ID }, quickbooksRecordUntouched: true });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided',
+      details: expect.objectContaining({
+        quickbooksRecordUntouched: true,
+        untouchedReason: 'pull_disabled',
+      }),
+    }));
   });
 
   it('does not write an audit entry when the service throws', async () => {

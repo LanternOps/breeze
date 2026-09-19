@@ -26,9 +26,10 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -36,14 +37,27 @@ import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND
 import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 import {
-  applySoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
+  reconcileSoftwareInstallResult,
 } from '../../services/softwareDeploymentResult';
 
 import {
+  ACCEPTED_COMMAND_RESULT_STATUSES,
+  BACKUP_QUEUE_ACK_RESULT_STATUS,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
+import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
+import {
+  pamAgentResultV2Schema,
+  type PamActuationResultClassification,
+} from '../../services/pamActuationResult';
+import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
+
+export type PamResultAcknowledgement = {
+  protocolVersion: 1;
+  classification: PamActuationResultClassification;
+};
 
 export const commandsRoutes = new Hono();
 
@@ -78,7 +92,17 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'mssql_backup',
   'snmp_poll',
   'script',
+  // #3525: the agent's script_cancel ack is the ONLY evidence that lets an
+  // execution terminalise as `cancelled`. Omitting it here drops that evidence
+  // on the HTTP-polling transport specifically, leaving the row stuck in
+  // `cancelling` until a sweep gives up on it.
+  'script_cancel',
+  'peripheral_policy_sync_v2',
+  'pam_apply_v2',
+  'pam_cleanup_v2',
 ]);
+
+const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
 
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {
   return data.stdout ??
@@ -185,7 +209,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   // Both the claim AND the delivery pass run inside the SAME system context.
   // This route is self-managed-context (agentAuth leaves no ambient context
   // behind on the REST paths), and since #3409 PR4c-2 the delivery pass is no
-  // longer pure CPU: `decryptClaimedCommandsForDelivery` first runs the
+  // longer pure CPU: `prepareClaimedCommandsForDelivery` first runs the
   // secret-delivery claim gate, which reads `devices` (RLS-scoped) and drives
   // offending `device_commands` / `script_executions` rows terminal. Called
   // outside the closure those would be contextless bare-pool queries (#1375).
@@ -203,7 +227,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
         // default — so read the context value, never restate the literal.
         agent.claimTypeAllowlist
       );
-      return decryptClaimedCommandsForDelivery(commands);
+      return prepareClaimedCommandsForDelivery(commands);
     })
   );
 
@@ -220,18 +244,9 @@ commandsRoutes.get('/:id/commands', async (c) => {
 // window keeps the handler visible to the scanner. See #4019.
 //
 // The endpoint accepts results ONLY for the command types the claim allowlist
-// permits while the agent sits on a narrowed drain surface. Being on the drain
-// ROUTE allowlist is not the same as being harmless: this route has a second,
-// id-shaped entrance.
-//
-// A NON-UUID commandId short-circuits into the `sw-install-…` branch, which
-// writes deployment history via `applySoftwareInstallResult` with NO
-// `device_commands` row to consult — its only gate is that the device UUID
-// embedded in the caller-supplied id matches the authenticated device. A
-// command-type allowlist cannot see that path at all, so a draining agent could
-// keep stamping deployment_results rows for its org. Refuse the whole shape
-// while draining; the drain only ever delivers real, UUID-keyed
-// `device_commands` rows.
+// permits while the agent sits on a narrowed drain surface.
+// Draining agents may only report results for persisted, UUID-keyed commands
+// whose type can be checked against their claim allowlist.
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -255,30 +270,6 @@ commandsRoutes.post(
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
-      // Software install commands carry their tracking IDs in the commandId
-      // itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`.
-      // Persist the outcome to deployment_results so the dashboard reflects
-      // reality. The attempt suffix is optional (legacy ids default to 0);
-      // applySoftwareInstallResult rejects results whose attempt no longer
-      // matches the row's current retryCount (superseded by a retry).
-      const swInstallMatch = commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
-      if (swInstallMatch) {
-        const [, deploymentIdFromCmd, deviceIdFromCmd, attemptFromCmd] = swInstallMatch;
-        if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
-          await applySoftwareInstallResult({
-            deploymentId: deploymentIdFromCmd,
-            deviceId,
-            status: data.status,
-            exitCode: data.exitCode,
-            stdout: data.stdout,
-            stderr: data.stderr,
-            error: data.error,
-            startedAt: data.startedAt,
-            durationMs: data.durationMs,
-            attemptNumber: attemptFromCmd ? parseInt(attemptFromCmd, 10) : 0,
-          });
-        }
-      }
       return c.json({ success: true });
     }
 
@@ -329,11 +320,53 @@ commandsRoutes.post(
       return c.json({ error: 'Command role mismatch' }, 403);
     }
 
+    // Supplemental PAM evidence for every terminal command state, including a
+    // server-side timeout, enters only the frozen PAM result transaction. It
+    // must never use #3607's timeout exception to rewrite the command row.
+    const isTerminalPamCommand = PAM_COMMAND_TYPES.has(command.type)
+      && !(ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(command.status);
+    const parsedTerminalPamResult = isTerminalPamCommand
+      ? pamAgentResultV2Schema.safeParse(data.result)
+      : null;
+    if (parsedTerminalPamResult?.success) {
+      const rate = await consumePamReconciliationRateLimit(deviceId);
+      if (!rate.allowed) {
+        return c.json({
+          error: 'Rate limit exceeded',
+          resetAt: rate.resetAt.toISOString(),
+        }, 429);
+      }
+
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      const handler = commandResultHandlers[command.type];
+      if (!handler) {
+        throw new Error(`Missing PAM result handler for ${command.type}`);
+      }
+      const outcome = await handler({
+        agentId: agent.agentId ?? agentId,
+        command,
+        commandId,
+        result: { ...data, result: parsedTerminalPamResult.data },
+        resolvedDeviceId: command.deviceId,
+        stdout: commandResultToStdout({ ...data, result: parsedTerminalPamResult.data }),
+      });
+      if (!outcome || outcome.kind !== 'pam') {
+        throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+      }
+      return c.json<PamResultAcknowledgement>({
+        protocolVersion: 1,
+        classification: outcome.classification,
+      });
+    }
+    if (isTerminalPamCommand) {
+      return c.json({ success: true });
+    }
+
     // #3607: a row terminalized by a SERVER-SIDE timeout (`result.status ===
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
-    // reaper) is still allowed through — the agent's real output is the whole
-    // point. Any other terminal state short-circuits exactly as before.
-    if (!commandAcceptsAgentResult(command.status, command.result)) {
+    // reaper) remains acceptable for non-PAM commands. Every other terminal
+    // result preserves the historical short circuit.
+    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
       return c.json({ success: true });
     }
 
@@ -364,6 +397,21 @@ commandsRoutes.post(
       rawStdout,
     );
 
+    // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
+    // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
+    // started ack rather than the real outcome. Detected the same way the
+    // WS twin and the backup_run orphaned-result branch already do
+    // (tryParseBackupResultPayload + isBackupQueuedAck/isBackupStartedAck).
+    const isQueuedBackupWorkload = QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES.includes(
+      command.type as (typeof QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES)[number],
+    );
+    const isBackupAck =
+      isQueuedBackupWorkload &&
+      (() => {
+        const parsed = tryParseBackupResultPayload(normalizedData.result, stdout);
+        return isBackupQueuedAck(parsed) || isBackupStartedAck(parsed);
+      })();
+
     // Terminal compare-and-set, outside the agentAuth transaction for the same
     // visibility reasons as the lookup above, and under an explicit system
     // context so this is not a contextless bare-pool write (#1375). Mirrors the
@@ -380,6 +428,8 @@ commandsRoutes.post(
     // should be RARER than the WS twin because the terminal pre-read above
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
+    const terminalCompletedAt = new Date();
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -388,8 +438,15 @@ commandsRoutes.post(
             .update(deviceCommands)
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
-              completedAt: new Date(),
-              result: buildStoredCommandResult(command.type, normalizedData, stdout),
+              completedAt: terminalCompletedAt,
+              // D20-D: a queue-ack stays 'completed' at the top level (the
+              // caller — e.g. a HTTP-polling agent's dispatch loop — must
+              // still see it as delivered) but the STORED result.status is
+              // overridden to the marker so commandAcceptsAgentResultCondition
+              // reopens the row for the real terminal result later.
+              result: isBackupAck
+                ? { ...storedCommandResult, status: BACKUP_QUEUE_ACK_RESULT_STATUS }
+                : storedCommandResult,
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
               // once the command is terminal. Shared with the ten other
@@ -420,6 +477,28 @@ commandsRoutes.post(
     if (updatedRows.length === 0) {
       return c.json({ success: true });
     }
+
+    if (isBackupAck) {
+      // D20-D: non-terminal signal — no applyCommandAutomationTerminal, no
+      // per-type handler dispatch. Without this guard,
+      // handleProviderBackedBackupResult would parse {"queued":true}/
+      // {"started":true} against the all-optional backupCommandResultSchema,
+      // "succeed" vacuously, and mark the backup_jobs row completed with no
+      // snapshot at all — a false-positive this fix would otherwise introduce
+      // now that the command payload carries jobId (D20-E).
+      return c.json({ success: true });
+    }
+
+    // The guarded command transition is the authority. Reconcile before the
+    // validation-error return so malformed terminal frames cannot strand an
+    // automation action after the command itself became terminal.
+    await applyCommandAutomationTerminal({
+      commandId,
+      result: normalizedData,
+      output: stdout ?? null,
+      error: normalizedData.error ?? normalizedData.stderr ?? null,
+      completedAt: terminalCompletedAt,
+    });
 
     if (validationError) {
       console.warn(`[agents] ${validationError}`);
@@ -464,34 +543,14 @@ commandsRoutes.post(
       }
     }
 
-    // Offline-queued software installs (dispatchSoftwareInstallToDevice
-    // fallback): the result arrives with the device_commands UUID instead of
-    // the sw-install-<deployment>-<device>-<attempt> id, so reconcile the
-    // matching deployment_results row here. deviceId comes from the
-    // authenticated agent context; the payload's deploymentId/retryCount were
-    // written server-side at queue time (see buildAndDispatchSoftwareInstalls).
-    // The status='pending' + retryCount=attempt guard in the helper makes
-    // replays AND results from a retry-superseded queued command a no-op.
+    // Software-install results carry the persisted command UUID. Reconcile
+    // deployment_results using the authenticated device and the server-written
+    // deploymentId/retryCount payload. The helper's pending-status and attempt
+    // guards make replays and retry-superseded results a no-op.
     if (command.type === 'software_install') {
       try {
-        const payload =
-          command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
-            ? (command.payload as Record<string, unknown>)
-            : {};
-        if (typeof payload.deploymentId === 'string') {
-          await applySoftwareInstallResult({
-            deploymentId: payload.deploymentId,
-            deviceId,
-            status: normalizedData.status,
-            exitCode: normalizedData.exitCode,
-            stdout: normalizedData.stdout,
-            stderr: normalizedData.stderr,
-            error: normalizedData.error,
-            startedAt: normalizedData.startedAt,
-            durationMs: normalizedData.durationMs,
-            attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
-          });
-        }
+        // #5128: shared with the websocket transport so the two cannot drift.
+        await reconcileSoftwareInstallResult(command, deviceId, normalizedData);
       } catch (err) {
         console.error(`[agents] software install deployment-result reconciliation failed for ${commandId}:`, err);
         captureException(err);
@@ -645,6 +704,7 @@ commandsRoutes.post(
     // `withDbAccessContext` returns `fn()` unchanged when a context is already
     // on the async-local store, and opening a second real transaction is the
     // #1105 double-hold this route was explicitly cleaned up to avoid.
+    let pamAcknowledgement: PamResultAcknowledgement | undefined;
     if (REGISTRY_DISPATCHED_COMMAND_TYPES.has(command.type)) {
       // Imported dynamically, like the DR handler below: the registry pulls in
       // the discovery and SNMP workers, and through them the Drizzle schema
@@ -654,7 +714,7 @@ commandsRoutes.post(
       const handler = commandResultHandlers[command.type];
       if (handler) {
         try {
-          await handler({
+          const outcome = await handler({
             // Handlers use this for log lines and one audit `actorId`, never a
             // lookup. Prefer the authenticated agent record over the path
             // param, matching this route's own writeAuditEvent actor below.
@@ -667,9 +727,19 @@ commandsRoutes.post(
             resolvedDeviceId: command.deviceId,
             stdout,
           });
+          if (PAM_COMMAND_TYPES.has(command.type)) {
+            if (!outcome || outcome.kind !== 'pam') {
+              throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+            }
+            pamAcknowledgement = {
+              protocolVersion: 1,
+              classification: outcome.classification,
+            };
+          }
         } catch (err) {
           console.error(`[agents] shared ${command.type} result handler failed for ${commandId}:`, err);
           captureException(err);
+          if (PAM_COMMAND_TYPES.has(command.type)) throw err;
         }
       }
     }
@@ -689,6 +759,6 @@ commandsRoutes.post(
       result: normalizedData.status === 'completed' ? 'success' : 'failure',
     });
 
-    return c.json({ success: true });
+    return c.json(pamAcknowledgement ?? { success: true });
   }
 );

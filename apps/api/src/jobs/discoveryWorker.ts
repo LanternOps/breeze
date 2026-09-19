@@ -25,16 +25,19 @@ import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
-import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
-import { isCronDue } from '../services/automationRuntime';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
+import { isCronDue } from '../services/cronDue';
+import { utcMsFromOffsetlessDbTimestamp } from '../utils/offsetlessTimestamp';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { resolveAssetIdentity, type ResolvedAssetIdentity } from '../services/assetIdentity';
 import {
   buildClassificationWrite,
   type DiscoveredAssetDetectionSource,
 } from '../services/discoveredAssetClassification';
 import type { discoveredAssetTypeEnum } from '../db/schema';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
-import { buildEventFingerprint } from '../services/networkBaseline';
+import { buildEventFingerprint, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { decryptSnmpCommunities, decryptSnmpCredentials } from '../services/snmpSecrets';
@@ -181,15 +184,22 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
   return new Worker<DiscoveryJobData>(
     DISCOVERY_QUEUE,
     async (job: Job<DiscoveryJobData>) => {
+      const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
+      // dispatch-scan is handled OUTSIDE the blanket context below (final-review
+      // fix, #4084/#1105): processDispatchScan calls the agentCommandRelay
+      // facade (isAgentConnectedAnywhere, dispatchCommandToAgent — Redis/WS
+      // I/O) and manages its own short-lived system DB contexts around just
+      // its reads/writes, so no pooled connection sits idle-in-transaction
+      // across that I/O.
+      if (data.type === 'dispatch-scan') {
+        assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
+        return await processDispatchScan(data);
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
         switch (data.type) {
           case 'schedule-profiles':
             assertQueueJobName(DISCOVERY_QUEUE, job, 'schedule-profiles');
             return await processScheduleProfiles();
-          case 'dispatch-scan':
-            assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
-            return await processDispatchScan(data);
           case 'process-results':
             assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
             return await processResults(data);
@@ -411,6 +421,31 @@ async function expireStaleRunningJobs(): Promise<number> {
   return staleJobs.length;
 }
 
+/**
+ * Whether an interval-scheduled discovery profile is due, given the most
+ * recent job's run timestamp.
+ *
+ * `discovery_jobs.scheduled_at` / `.created_at` are `timestamp(...)` columns
+ * with no `withTimezone: true` (`db/schema/discovery.ts:132,139`), so the
+ * driver hands back the UTC wall clock re-read as this process's LOCAL time
+ * and `getTime()` is wrong by the host's offset (#4059 gap 2 — see
+ * `utils/offsetlessTimestamp.ts`). Subtracting that from a true-instant `now`
+ * skews the elapsed interval by the same amount: on a host west of UTC the
+ * last run reads as more recent than it was, so interval discovery silently
+ * stops firing for up to the host's offset; east of UTC it fires early.
+ *
+ * Exported as a pure seam so this is assertable without a database — see
+ * `discoveryWorker.intervalDue.test.ts`, registered in `vitest.config.tz.ts`.
+ */
+export function isIntervalScheduleDue(
+  latestRunAt: Date | null,
+  now: Date,
+  thresholdMs: number,
+): boolean {
+  if (!latestRunAt) return true;
+  return now.getTime() - utcMsFromOffsetlessDbTimestamp(latestRunAt) >= thresholdMs;
+}
+
 async function processScheduleProfiles(): Promise<{ enqueued: number }> {
   const now = new Date();
   const minuteStart = new Date(now);
@@ -461,8 +496,7 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
         .limit(1);
 
       const latestRunAt = latest?.scheduledAt ?? latest?.createdAt ?? null;
-      const isDue = !latestRunAt || (now.getTime() - latestRunAt.getTime() >= thresholdMs);
-      if (!isDue) continue;
+      if (!isIntervalScheduleDue(latestRunAt, now, thresholdMs)) continue;
 
       const result = await enqueueScheduledProfileRun(profile.id, profile.orgId, profile.siteId);
       if (result.queued) enqueued++;
@@ -503,16 +537,33 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
 }
 
 /**
- * Dispatch a discovery scan command to an agent
+ * Outcome of the dispatch-scan read/select phase (final-review fix, #4084 /
+ * #1105). Discriminated so each terminal cause (profile missing, requested
+ * agent invalid, no candidate agent) is distinct rather than inferred from
+ * guard order.
  */
-async function processDispatchScan(data: DispatchScanJobData): Promise<{
-  dispatched: boolean;
-  agentId: string | null;
-  durationMs: number;
-}> {
-  const startTime = Date.now();
+type DispatchScanInputs =
+  | { status: 'profile-missing' }
+  | { status: 'invalid-agent' }
+  | { status: 'no-agent' }
+  | {
+      status: 'ok';
+      profile: typeof discoveryProfiles.$inferSelect;
+      agentId: string;
+      requestedAgentId: string | null;
+      selectionSource: 'requested' | 'site-auto';
+    };
 
-  // Load the profile
+/**
+ * Phase 1 of a dispatch-scan job: load the profile and resolve/validate the
+ * execution agent, inside ONE short system DB context. Every early-failure
+ * write (`markJobFailed`) that can be determined from these reads alone
+ * happens here too, since none of it involves Redis or the agent WebSocket.
+ * The connectivity check (`isAgentConnectedAnywhere`) is NOT here — that is
+ * Redis I/O via the agentCommandRelay facade and must run with no context
+ * held (#1105).
+ */
+async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<DispatchScanInputs> {
   const [profile] = await db
     .select()
     .from(discoveryProfiles)
@@ -521,18 +572,18 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 
   if (!profile) {
     await markJobFailed(data.jobId, 'Profile not found');
-    return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+    return { status: 'profile-missing' };
   }
 
   // Find an online agent to run the scan
   let agentId = data.agentId;
   const requestedAgentId = data.agentId ?? null;
-  let selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
+  const selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
   if (requestedAgentId) {
     const validation = await validateRequestedAgentForDiscovery(requestedAgentId, data.orgId, data.siteId);
     if (!validation.ok) {
       await markJobFailed(data.jobId, validation.message);
-      return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+      return { status: 'invalid-agent' };
     }
   }
   if (!agentId) {
@@ -565,20 +616,43 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource})`
     );
     await markJobFailed(data.jobId, 'No online agent available for this site');
+    return { status: 'no-agent' };
+  }
+
+  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource };
+}
+
+/**
+ * Dispatch a discovery scan command to an agent
+ */
+async function processDispatchScan(data: DispatchScanJobData): Promise<{
+  dispatched: boolean;
+  agentId: string | null;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+
+  // Phase 1 — profile load, agent validation/selection and every terminal
+  // failure write reachable from those reads alone: ONE short system DB
+  // context, which then CLOSES before any Redis or WS I/O.
+  const inputs = await runWithSystemDbAccess(() => loadDispatchScanInputs(data));
+
+  if (inputs.status !== 'ok') {
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  if (!isAgentConnected(agentId)) {
+  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource } = inputs;
+
+  // Phase 2 — connectivity check with NO DB context open (#1105).
+  if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(
-      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${selectionSource})`
+      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${initialSelectionSource})`
     );
-    await markJobFailed(data.jobId, 'No online agent available for this site');
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, 'No online agent available for this site'));
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  if (!requestedAgentId) {
-    selectionSource = 'site-auto';
-  }
+  const selectionSource = requestedAgentId ? initialSelectionSource : 'site-auto';
   console.log(
     `[DiscoveryWorker] Selected agent ${agentId} for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
   );
@@ -603,25 +677,141 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     }
   };
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
-    await markJobFailed(data.jobId, 'Failed to send command to agent');
+  // Phase 3 — the WS/relay dispatch itself, no DB context open (#1105).
+  const outcome = await dispatchCommandToAgent(agentId, command);
+  if (outcome.status !== 'sent') {
+    await runWithSystemDbAccess(() =>
+      markJobFailed(
+        data.jobId,
+        outcome.status === 'offline'
+          ? 'Failed to send command to agent'
+          : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+      )
+    );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
   }
 
-  // Update job status to running
-  await db
-    .update(discoveryJobs)
-    .set({
-      status: 'running',
-      agentId,
-      startedAt: new Date(),
-      updatedAt: new Date()
-    })
-    .where(eq(discoveryJobs.id, data.jobId));
+  // Phase 4 — job status flip to running: its own short system DB context.
+  await runWithSystemDbAccess(() =>
+    db
+      .update(discoveryJobs)
+      .set({
+        status: 'running',
+        agentId,
+        startedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(discoveryJobs.id, data.jobId))
+  );
 
   console.log(`[DiscoveryWorker] Scan dispatched to agent ${agentId} for job ${data.jobId}`);
   return { dispatched: true, agentId, durationMs: Date.now() - startTime };
+}
+
+// Exposed for the wave 3.5b (#4084) dispatch-facade migration tests — mirrors
+// snmpWorker.ts's __testables pattern. Each handler here manages its own
+// short-lived system DB context(s) around just its reads/writes (final-review
+// fix, #1105), so calling it directly is safe from a context standpoint.
+export const __testables = {
+  processDispatchScan,
+};
+
+/**
+ * Identity for one scanned host (spec §9, D6).
+ *
+ * Exported so it can be unit-tested without a database; `processResults` is the
+ * only caller, and it is the single point BOTH the INSERT and the UPDATE branch
+ * read manufacturer/model from. Manual precedence is enforced afterwards, in
+ * SQL, by buildScanUpdateSet — not here.
+ */
+export function resolveScanIdentity(
+  host: DiscoveredHostResult,
+  nicVendor: string | null,
+): ResolvedAssetIdentity {
+  return resolveAssetIdentity({
+    sysObjectId: host.snmpData?.sysObjectId ?? null,
+    sysDescr: host.snmpData?.sysDescr ?? null,
+    snmpData: (host.snmpData ?? null) as Record<string, unknown> | null,
+    macVendor: nicVendor,
+    current: { manufacturer: host.manufacturer ?? null, model: host.model ?? null },
+  });
+}
+
+/**
+ * The scan's UPDATE set for an already-known asset (#5213).
+ *
+ * A scan re-finding a manual row updates it IN PLACE — one identity, no
+ * duplicate, which is the whole point of keeping the (org_id, ip_address)
+ * index — but it must not overwrite what the operator typed. `asset_type` is
+ * already covered by `type_source = 'manual'`
+ * (services/discoveredAssetClassification.ts). `hostname` / `manufacturer` /
+ * `model` were NOT, and they are exactly the fields an operator fills in on a
+ * printer that DNS does not resolve, so each is written as a guarded CASE
+ * evaluated by Postgres against the STORED row (never against the SELECT above,
+ * which can go stale mid-scan — the same race #3011 was about).
+ *
+ * `label` needs no guard: the scan never writes it (assetData has no `label`
+ * key). Do not add one.
+ */
+export function buildScanUpdateSet(
+  assetData: Record<string, unknown>,
+  classification: { type: DiscoveredAssetType; source: DiscoveredAssetDetectionSource } | null,
+): PgUpdateSetSource<typeof discoveredAssets> {
+  const updateSet: PgUpdateSetSource<typeof discoveredAssets> = {
+    ...(assetData as PgUpdateSetSource<typeof discoveredAssets>),
+  };
+  // Spec §4.3 — every writer of `is_online` dates and attributes its verdict.
+  // A scan sighting is a `scan`-sourced observation taken now; `last_seen_at`
+  // keeps its own meaning (last POSITIVE sighting) and is untouched here.
+  updateSet.statusObservedAt = new Date();
+  updateSet.statusSource = 'scan';
+  for (const col of ['hostname', 'manufacturer', 'model'] as const) {
+    const proposed = assetData[col] ?? null;
+    updateSet[col] = sql`case when ${discoveredAssets.source} = 'manual'
+                              then ${discoveredAssets[col]}
+                              else ${proposed} end`;
+  }
+  if (classification) {
+    const write = buildClassificationWrite(classification.source, {
+      assetType: sql`${classification.type}`,
+      detectedAssetType: sql`${classification.type}`,
+    });
+    updateSet.assetType = write.assetType;
+    updateSet.detectedAssetType = write.detectedAssetType;
+    updateSet.detectedTypeSource = write.detectedTypeSource;
+  }
+  return updateSet;
+}
+
+/**
+ * Conditions selecting the assets the "went offline" sweep may consider (#5213).
+ *
+ * The `is_online = true` condition ALREADY excludes a never-scanned manual row
+ * (born `is_online = false`), so the `last_seen_at IS NOT NULL` condition is
+ * belt and braces — but it is the condition that states the intent, and it
+ * survives someone "helpfully" defaulting `is_online` to true later. The create
+ * route must never set `is_online`; the route test (W02) asserts that.
+ */
+export function buildMonitoredAssetConditions(
+  orgId: string,
+  siteId: string,
+  profileSubnets: string[],
+): SQL<unknown>[] {
+  const conditions: SQL<unknown>[] = [
+    eq(discoveredAssets.orgId, orgId),
+    eq(discoveredAssets.siteId, siteId),
+    eq(discoveredAssets.approvalStatus, 'approved'),
+    eq(discoveredAssets.isOnline, true),
+    sql`${discoveredAssets.lastSeenAt} is not null`,
+  ];
+  const subnetPredicates = profileSubnets
+    .map((subnet) => subnet.trim())
+    .filter(Boolean)
+    .map((subnet) => sql`${discoveredAssets.ipAddress} <<= ${subnet}::inet`);
+  if (subnetPredicates.length > 0) {
+    conditions.push(or(...subnetPredicates)!);
+  }
+  return conditions;
 }
 
 /**
@@ -711,19 +901,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     : [];
   const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
 
-  const monitoredAssetConditions: SQL<unknown>[] = [
-    eq(discoveredAssets.orgId, data.orgId),
-    eq(discoveredAssets.siteId, data.siteId),
-    eq(discoveredAssets.approvalStatus, 'approved'),
-    eq(discoveredAssets.isOnline, true)
-  ];
-  const subnetPredicates = profileSubnets
-    .map((subnet) => subnet.trim())
-    .filter(Boolean)
-    .map((subnet) => sql`${discoveredAssets.ipAddress} <<= ${subnet}::inet`);
-  if (subnetPredicates.length > 0) {
-    monitoredAssetConditions.push(or(...subnetPredicates)!);
-  }
+  const monitoredAssetConditions = buildMonitoredAssetConditions(
+    data.orgId,
+    data.siteId,
+    profileSubnets,
+  );
   const monitoredExistingAssets = await db
     .select({
       id: discoveredAssets.id,
@@ -759,6 +941,16 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           orgId: data.orgId,
           siteId: data.siteId,
           subnet,
+          // SEC-2026-09-05-146: this baseline is created by the system on the
+          // back of a scan, so there is no principal whose revocation could ever
+          // stop a recurring schedule on it. Leaving scan_schedule NULL was not
+          // neutral: normalizeBaselineScanSchedule reads NULL back as
+          // `enabled: true` and compareBaselineScan then PERSISTS that, turning
+          // the row into an enabled recurring schedule with no envelope —
+          // permanently blocked by the dispatch gate and invisible to the
+          // migration's quarantine sweep. Start it explicitly disabled; an
+          // operator arms it (and becomes its authority) by saving the schedule.
+          scanSchedule: normalizeBaselineScanSchedule({ enabled: false }),
         })
         .onConflictDoNothing()
         .returning({ id: networkBaselines.id });
@@ -807,11 +999,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       )
       .limit(1);
 
-    // Use agent-provided manufacturer (SNMP); fall back to OUI lookup
-    let resolvedManufacturer = host.manufacturer ?? null;
-    if (!resolvedManufacturer && host.mac) {
-      resolvedManufacturer = lookupMacVendor(host.mac);
-    }
+    // Identity is resolved SERVER-side now (spec §9): the IANA enterprise arc
+    // of the sysObjectID outranks the NIC OUI, and the raw sysObjectID can no
+    // longer reach `model`. The OUI vendor is still computed — it remains the
+    // last manufacturer fallback and W01 exposes it separately as `nicVendor`.
+    const nicVendor = host.mac ? lookupMacVendor(host.mac) : null;
+    const identity = resolveScanIdentity(host, nicVendor);
+    const resolvedManufacturer = identity.manufacturer;
 
     // What did this scan actually manage to classify, and how strong is that
     // evidence? The agent's own classification is real observation (ports, SNMP,
@@ -843,7 +1037,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
       manufacturer: resolvedManufacturer,
-      model: host.model ?? null,
+      model: identity.model,
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
       snmpData: host.snmpData ?? null,
@@ -870,16 +1064,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // assigned one at a time: drizzle silently DROPS set keys that name no
       // column, and `Object.assign` would defeat the check (its signature does
       // not constrain the source's keys to the target's).
-      const updateSet: PgUpdateSetSource<typeof discoveredAssets> = { ...assetData };
-      if (classification) {
-        const write = buildClassificationWrite(classification.source, {
-          assetType: sql`${classification.type}`,
-          detectedAssetType: sql`${classification.type}`,
-        });
-        updateSet.assetType = write.assetType;
-        updateSet.detectedAssetType = write.detectedAssetType;
-        updateSet.detectedTypeSource = write.detectedTypeSource;
-      }
+      // #5213: hostname/manufacturer/model are additionally guarded against
+      // clobbering an operator's manual row. See buildScanUpdateSet.
+      const updateSet = buildScanUpdateSet(assetData, classification);
       await db
         .update(discoveredAssets)
         .set(updateSet)
@@ -925,7 +1112,10 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               detectedTypeSource: classification.source,
             }
           : {}),
-        typeSource: 'auto'
+        typeSource: 'auto',
+        // #5213 — insert side only. A scan that later re-finds a manual row
+        // must not relabel it (see buildScanUpdateSet, which omits `source`).
+        source: 'scan'
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
       newCount++;
@@ -989,7 +1179,10 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
                 })
                 .where(and(
                   eq(devices.id, match.deviceId),
-                  sql`${devices.deviceRoleSource} is distinct from 'manual'`,
+                  // Neither a technician's ('manual') nor a Fleet Design
+                  // correction the technician approved ('ai', W03 #5653) is
+                  // overwritten by a discovery guess.
+                  sql`coalesce(${devices.deviceRoleSource}, 'auto') not in ('manual', 'ai')`,
                   sql`exists (select 1 from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId} and ${discoveredAssets.typeSource} <> 'manual' and ${discoveredAssets.assetType} <> 'unknown')`,
                 ));
             }
@@ -1019,7 +1212,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     // Update approvalStatus and isOnline
     if (upsertedAssetId) {
       await db.update(discoveredAssets)
-        .set({ approvalStatus: decision.approvalStatus, isOnline: true })
+        .set({
+          approvalStatus: decision.approvalStatus,
+          isOnline: true,
+          // Spec §4.3 — this is the second place a scan writes is_online, and
+          // it runs AFTER buildScanUpdateSet's upsert, so it would otherwise
+          // leave a newer verdict wearing the older stamp.
+          statusObservedAt: new Date(),
+          statusSource: 'scan',
+        })
         .where(eq(discoveredAssets.id, upsertedAssetId));
     }
 
@@ -1130,9 +1331,36 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
   if (scannedIps.length > 0) {
     const seenIps = new Set(data.hosts.map(h => h.ip));
     for (const asset of monitoredExistingAssets) {
+      // #5213: ip_address is nullable now, while network_change_events.ip_address
+      // is inet NOT NULL. An IP-less asset can never legitimately reach here (it
+      // cannot have been "seen" by an IP scan — buildMonitoredAssetConditions
+      // requires is_online = true AND last_seen_at IS NOT NULL, and only the
+      // IP-matched scan branch ever sets those), so this narrows the type AND
+      // states the guard. It is unreachable by design, which is exactly why it
+      // LOGS rather than skipping silently: if it ever fires, an invariant broke
+      // (e.g. a writer started defaulting is_online to true on a manual row) and
+      // a bare `continue` would hide that regression instead of surfacing it.
+      if (!asset.ipAddress) {
+        console.warn(
+          `[DiscoveryWorker] Invariant violated: monitored asset ${asset.id} reached the ` +
+          'disappeared sweep with a NULL ip_address — skipping. A row with no IP should ' +
+          'never be is_online=true with a non-null last_seen_at (#5213).'
+        );
+        continue;
+      }
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
-          .set({ isOnline: false })
+          .set({
+            isOnline: false,
+            // Spec §4.3 — THE stamp that matters most. Before this, the sweep
+            // wrote is_online = false without touching any timestamp, so the
+            // row said "offline" with no way to tell whether that verdict was
+            // five minutes or five weeks old. deriveReachability refuses to
+            // rank an undated negative at all, so an unstamped sweep result is
+            // silently ignored — this line is what makes the sweep count.
+            statusObservedAt: new Date(),
+            statusSource: 'scan',
+          })
           .where(eq(discoveredAssets.id, asset.id));
 
         // Log disappeared event if configured

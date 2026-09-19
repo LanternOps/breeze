@@ -2,6 +2,10 @@ package heartbeat
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -182,9 +186,9 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 			opts: base,
 			wantOrder: []string{
 				"sleep 5",
-				"launchctl bootout system/'com.breeze.watchdog'",
+				"breeze_bootout system/'com.breeze.watchdog' || exit 1",
 				"pkill -x 'breeze-watchdog'",
-				"launchctl bootout system/'com.breeze.agent' || launchctl unload '/Library/LaunchDaemons/com.breeze.agent.plist'",
+				"breeze_bootout system/'com.breeze.agent' || exit 1",
 				"rm -f '/Library/LaunchDaemons/com.breeze.agent.plist'",
 				"rm -f '/usr/local/bin/breeze-agent'",
 				"rm -rf '/Library/Application Support/Breeze'",
@@ -404,6 +408,54 @@ func TestPsQuote(t *testing.T) {
 	for _, tt := range tests {
 		if got := psQuote(tt.in); got != tt.want {
 			t.Errorf("psQuote(%q) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+// Execute the detached script with all endpoint effects replaced by recorders.
+// This proves the acknowledgement delay and optional data policy survive the
+// package cleanup, without invoking launchctl, pkill, pkgutil or rm on the host.
+func TestDarwinUninstallScriptExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	for _, removeConfig := range []bool{false, true} {
+		root := t.TempDir()
+		calls := filepath.Join(root, "calls")
+		for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "ps", "sleep"} {
+			body := "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$FIXTURE_CALLS\"\n"
+			switch name {
+			case "ps":
+				body += "printf '101 501 loginwindow\\n102 502 loginwindow\\n'\n"
+			case "pkgutil":
+				body += "[ \"$1\" != --pkgs ] || echo com.breeze.agent\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		script := buildDarwinUninstallScript(darwinUninstallScriptOptions{Label: "com.breeze.agent", WatchdogLabel: "com.breeze.watchdog", WatchdogProcess: "breeze-watchdog", PlistPath: "/Library/LaunchDaemons/com.breeze.agent.plist", BinaryPath: "/usr/local/bin/breeze-agent", ConfigDir: "/Library/Application Support/Breeze", RemoveConfig: removeConfig, DelaySeconds: 5})
+		cmd := exec.Command("/bin/sh", "-c", script)
+		cmd.Env = append(os.Environ(), "PATH="+root+":/usr/bin:/bin", "FIXTURE_CALLS="+calls)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		b, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		assertOrder(t, s, "sleep 5", "launchctl bootout system/com.breeze.watchdog", "pkill -x breeze-watchdog", "launchctl bootout gui/501/com.breeze.desktop-helper-user", "launchctl bootout gui/502/com.breeze.desktop-helper-user", "launchctl bootout pid/101/com.breeze.desktop-helper-loginwindow", "launchctl bootout pid/102/com.breeze.desktop-helper-loginwindow", "launchctl bootout system/com.breeze.agent", "rm -f /Library/LaunchDaemons/com.breeze.agent.plist", "pkgutil --forget com.breeze.agent")
+		for _, artifact := range []string{"/usr/local/bin/breeze-desktop-helper", "/usr/local/bin/breeze-backup", "/Library/LaunchAgents/com.breeze.desktop-helper-user.plist", "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"} {
+			if !strings.Contains(s, artifact) {
+				t.Errorf("missing %s", artifact)
+			}
+		}
+		if strings.Contains(s, "rm -rf /Library/Application Support/Breeze") != removeConfig {
+			t.Errorf("changed optional config policy: %s", s)
+		}
+		if strings.Contains(s, "com.breeze.agent-user") || strings.Contains(s, "com.breeze.helper") {
+			t.Errorf("unowned label: %s", s)
 		}
 	}
 }

@@ -31,8 +31,15 @@ vi.mock('../services/filterEngine', () => ({
     evaluatedAt: new Date('2026-01-01')
   }),
   extractFieldsFromFilter: vi.fn().mockReturnValue(['osType']),
-  validateFilter: vi.fn().mockReturnValue({ valid: true, errors: [] })
+  validateFilter: vi.fn().mockReturnValue({ valid: true, errors: [] }),
+  // Same class identity the route imports, so its `instanceof` check is real.
+  FilterQueryTimeoutError: class FilterQueryTimeoutError extends Error {
+    readonly errorCode = 'filter_query_timeout';
+  }
 }));
+
+const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureMessage: captureMessageMock }));
 
 vi.mock('../services/groupMembership', () => ({
   evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
@@ -111,7 +118,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { evaluateFilterWithPreview, validateFilter } from '../services/filterEngine';
+import { evaluateFilterWithPreview, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
 import { pinDeviceToGroup } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
@@ -248,6 +255,70 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data.totalCount).toBe(1);
       expect(body.data.devices).toHaveLength(1);
+    });
+
+    /**
+     * #5181 / BREEZE-2C. A dynamic group's stored filter runs against the whole
+     * org and is never typed interactively, so this is the preview most likely
+     * to hit the 500ms bound — and it was the endpoint left answering an
+     * anonymous 500 when the three in routes/filters.ts were fixed.
+     */
+    it('answers 422 with the shared timeout body when the group preview hits its statement_timeout', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({
+              type: 'dynamic',
+              filterConditions: {
+                operator: 'AND',
+                conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }]
+              }
+            })])
+          })
+        })
+      } as any);
+      vi.mocked(evaluateFilterWithPreview).mockRejectedValueOnce(new FilterQueryTimeoutError());
+
+      const res = await app.request(`/groups/${GROUP_ID}/preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({
+        error: 'Filter preview took too long to run. Narrow the filter and try again.',
+        code: 'filter_query_timeout'
+      });
+      expect(captureMessageMock).toHaveBeenCalledWith(expect.any(String), {
+        eventCode: 'filter_preview_statement_timeout',
+        level: 'warning',
+        tags: { pg_code: '57014' }
+      });
+    });
+
+    it('keeps a non-timeout engine failure on the existing 500 path', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({
+              type: 'dynamic',
+              filterConditions: {
+                operator: 'AND',
+                conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }]
+              }
+            })])
+          })
+        })
+      } as any);
+      vi.mocked(evaluateFilterWithPreview).mockRejectedValueOnce(new Error('relation does not exist'));
+
+      const res = await app.request(`/groups/${GROUP_ID}/preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(500);
+      expect(captureMessageMock).not.toHaveBeenCalled();
     });
 
     it('should reject preview for static group', async () => {

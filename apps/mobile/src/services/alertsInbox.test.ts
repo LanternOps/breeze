@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlerts } from './api';
+import { getAlerts, getAlertStats } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -27,6 +27,16 @@ beforeEach(() => {
 });
 
 describe('getAlerts inbox query', () => {
+  it('preserves summary permission denial as a rejected read, never zero counts', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Permission denied' }), { status: 403 }));
+    await expect(getAlertStats()).rejects.toThrow();
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/alerts/summary');
+  });
+
+  it('preserves scoped summary counts', async () => {
+    jsonOnce({ total: 3, bySeverity: { critical: 1, high: 1, medium: 0, low: 0 }, byStatus: { acknowledged: 1 } });
+    await expect(getAlertStats()).resolves.toEqual({ total: 3, critical: 1, high: 1, medium: 0, low: 0, acknowledged: 1 });
+  });
   it('requests active alerts by default', async () => {
     // The inbox is ordered by recency with no severity weighting. Asking for
     // everything lets resolved low-severity rows consume the page, which is how
@@ -60,5 +70,27 @@ describe('getAlerts inbox query', () => {
     // The Systems org filter matches on metadata.orgId — losing it silently
     // empties the filtered view.
     expect((alerts[0].metadata as Record<string, unknown>).orgId).toBe('org-1');
+  });
+
+  it('surfaces the rule template category from the inbox row (#4535)', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a1', title: 't', message: 'm', severity: 'high', status: 'active',
+          orgId: 'org-1', triggeredAt: '2026-08-18T00:00:00Z', category: 'Security' },
+      ],
+    });
+    const alerts = await getAlerts();
+    expect(alerts[0].category).toBe('Security');
+  });
+
+  it('leaves category undefined for alerts with no rule (nullable join)', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a2', title: 't', message: 'm', severity: 'low', status: 'active',
+          orgId: 'org-1', triggeredAt: '2026-08-18T00:00:00Z', category: null },
+      ],
+    });
+    const alerts = await getAlerts();
+    expect(alerts[0].category).toBeUndefined();
   });
 });

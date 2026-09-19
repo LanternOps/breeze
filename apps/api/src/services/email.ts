@@ -1,11 +1,14 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
+import { captureException } from './sentry';
 import {
   escapeHtml,
   getSupportEmail,
   renderButton,
   renderLayout,
 } from './emailLayout';
+import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
+import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
 
 export interface EmailAttachment {
   filename: string;
@@ -13,13 +16,56 @@ export interface EmailAttachment {
   contentType?: string;
 }
 
-export interface SendEmailParams {
+/** Which transport produced a failure, and whatever structure it reported. */
+export interface EmailTransportErrorFields {
+  transport: 'resend' | 'smtp' | 'mailgun';
+  /** HTTP status, for the two API transports. */
+  statusCode?: number;
+  /** Resend's own error name, e.g. `validation_error`. */
+  providerErrorName?: string;
+  /** nodemailer's parsed SMTP reply code. Absent when it reported `false`. */
+  smtpResponseCode?: number;
+  /** nodemailer's raw SMTP reply line. */
+  smtpResponse?: string;
+}
+
+/**
+ * A transport failure with its structure intact.
+ *
+ * WHY: the partner lane has to tell "the relay refused this SENDER" (fall back
+ * to EMAIL_FROM, spec §8.4) from "the relay refused this MESSAGE" (throw), and
+ * before this class the only evidence was a flattened string — see the `static`
+ * adapter's classifier and W02 plan amendment 7.
+ *
+ * `message` is IDENTICAL to what this service threw before. Three live matchers
+ * key on that text (services/reportNarrativeDelivery.ts:138, :145, :146), so a
+ * reworded message would silently reclassify narrative-delivery failures. This
+ * class adds fields; it never edits prose.
+ */
+export class EmailTransportError extends Error implements EmailTransportErrorFields {
+  readonly transport: 'resend' | 'smtp' | 'mailgun';
+  readonly statusCode?: number;
+  readonly providerErrorName?: string;
+  readonly smtpResponseCode?: number;
+  readonly smtpResponse?: string;
+
+  constructor(message: string, fields: EmailTransportErrorFields, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'EmailTransportError';
+    this.transport = fields.transport;
+    this.statusCode = fields.statusCode;
+    this.providerErrorName = fields.providerErrorName;
+    this.smtpResponseCode = fields.smtpResponseCode;
+    this.smtpResponse = fields.smtpResponse;
+  }
+}
+
+export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
   subject: string;
   html: string;
   text?: string;
-  from?: string;
   replyTo?: string | string[];
   // Custom RFC headers for threading + loop-prevention (Phase 4):
   // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
@@ -27,6 +73,31 @@ export interface SendEmailParams {
   headers?: Record<string, string>;
   attachments?: EmailAttachment[];
 }
+
+/**
+ * A message whose sender has already been decided. The ONLY shape that reaches
+ * a transport. `services/emailDomains/**` uses it for the `static` and `fake`
+ * adapters and the test send, which hand a custom From to the platform
+ * transport (plan index amendment 2).
+ */
+export interface RawEmailMessage extends SendEmailBase {
+  from: string;
+}
+
+/**
+ * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
+ * decides who it is from. There is no raw `from`: an unclassified send does
+ * not compile (spec G5), and a spoofed envelope address is unrepresentable.
+ *
+ * A partner-lane purpose MUST state its partner — `null` is allowed and means
+ * "the platform sender", for call sites that cannot always resolve one. It has
+ * to come from a row the call site already read or from the verified auth
+ * context, never from request input (spec §8.1).
+ */
+export type SendEmailParams = SendEmailBase & (
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
+  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+);
 
 export interface InvoiceEmailParams {
   invoiceNumber: string;
@@ -53,12 +124,21 @@ export interface InvoiceEmailParams {
   payEnabled?: boolean;
 }
 
-export interface PasswordResetEmailParams {
+/**
+ * Two audiences share this template: an MSP staff account (platform lane —
+ * account recovery must never depend on a partner's DNS, spec §8.2) and a
+ * customer's portal login (partner lane, `support` stream). The purpose is
+ * therefore a caller decision, and it drags `partnerId` with it.
+ */
+export type PasswordResetEmailParams = {
   to: string | string[];
   name?: string;
   resetUrl: string;
   supportEmail?: string;
-}
+} & (
+  | { purpose: 'auth.password_reset' }
+  | { purpose: 'portal.password_reset'; partnerId: string | null }
+);
 
 export interface PortalInviteEmailParams {
   to: string | string[];
@@ -67,6 +147,12 @@ export interface PortalInviteEmailParams {
   inviterName?: string;
   message?: string;
   supportEmail?: string;
+  /**
+   * The partner that owns the org this invite belongs to — the `support`
+   * stream's sender once W04 lands. Must come from a row the call site already
+   * read or from the verified auth context, never from request input (§8.1).
+   */
+  partnerId: string | null;
 }
 
 export interface VerificationEmailParams {
@@ -74,6 +160,12 @@ export interface VerificationEmailParams {
   name?: string;
   verificationUrl: string;
   supportEmail?: string;
+  /**
+   * `auth.email_verification` for signup and resend; `auth.email_change_verify`
+   * for the link sent to a NEW address during an email change. Both are
+   * platform purposes — same lane, different delivery-event tag (§9.3).
+   */
+  purpose: 'auth.email_verification' | 'auth.email_change_verify';
 }
 
 export interface InviteEmailParams {
@@ -154,6 +246,8 @@ type SmtpProviderConfig = {
   from: string;
   user?: string;
   pass?: string;
+  /** #3905 — connection/greeting/socket deadline, ms. Never undefined. */
+  timeoutMs: number;
 };
 
 type MailgunProviderConfig = {
@@ -162,6 +256,8 @@ type MailgunProviderConfig = {
   domain: string;
   baseUrl: string;
   from: string;
+  /** #3905 — whole-request deadline for the Mailgun API call, ms. */
+  timeoutMs: number;
 };
 
 type ResolvedProviderConfig = ResendProviderConfig | SmtpProviderConfig | MailgunProviderConfig;
@@ -188,10 +284,26 @@ export class EmailService {
       return;
     }
 
+    // #3905 — explicit deadlines. Without these nodemailer inherits its own
+    // defaults (2min connect, 30s greeting, 10min socket), so a mail server
+    // that accepts the TCP connection and then goes silent holds the send for
+    // ten minutes. Quote/invoice sends are best-effort and swallow failures,
+    // so an unbounded hang is strictly worse than a bounded failure: the
+    // caller can record `send_email_reason` and show the "no email was
+    // delivered" banner instead of leaking a worker (and, before the
+    // deferred-send fix, a pooled Postgres connection and a row lock).
+    //
+    // All three take the same value on purpose. `socketTimeout` is an
+    // INACTIVITY timeout, not a total-transfer budget, so it does not cap how
+    // long a large PDF attachment may take to upload — only how long the
+    // socket may stall mid-transfer.
     this.smtpTransport = nodemailer.createTransport({
       host: config.host,
       port: config.port,
       secure: config.secure,
+      connectionTimeout: config.timeoutMs,
+      greetingTimeout: config.timeoutMs,
+      socketTimeout: config.timeoutMs,
       auth: config.user && config.pass
         ? {
           user: config.user,
@@ -202,23 +314,96 @@ export class EmailService {
   }
 
   /**
-   * The default sender with a custom display name — keeps the envelope address
-   * (so SPF/DKIM alignment is untouched) while showing e.g.
-   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
-   * The display name is stripped of header-breaking characters; falls back to
-   * the plain default sender when nothing usable survives.
+   * Which platform transport this instance resolved to. Callers that need to
+   * decide whether a real external send would occur (e.g. the sending-domains
+   * `fake` provider, which must never make an external call) branch on this
+   * instead of re-deriving provider selection themselves.
    */
-  fromWithDisplayName(displayName: string): string {
-    const match = this.defaultFrom.match(/<([^<>\s]+@[^<>\s]+)>/);
-    const address = (match?.[1] ?? this.defaultFrom).trim();
-    const safe = displayName.replace(/[\r\n"<>\\]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!safe || !address.includes('@')) return this.defaultFrom;
-    return `"${safe}" <${address}>`;
+  transportKind(): EmailProvider {
+    return this.provider;
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
-    const sender = from ?? this.defaultFrom;
+    const { to, cc, subject, html, text, replyTo, headers, attachments } = params;
+
+    const resolved = await resolveSender({
+      purpose: params.purpose,
+      partnerId: params.partnerId ?? null,
+      partnerName: params.partnerName ?? null,
+      defaultFrom: this.defaultFrom,
+    });
+
+    if (resolved.lane === 'partner') {
+      // Dynamic so a platform-lane send never loads the provider registry, the
+      // Resend SDK or BullMQ — and so `email.ts -> partnerLaneSend.ts ->
+      // providerRegistry.ts -> adapters/static.ts -> email.ts` is not a static
+      // import cycle (plan amendment 1).
+      const { sendOnPartnerLane } = await import('./emailDomains/partnerLaneSend');
+      const outcome = await sendOnPartnerLane({
+        message: {
+          to,
+          cc,
+          subject,
+          html,
+          text,
+          // Reply-To precedence (spec §8.3): the call site's replyTo, then the
+          // identity's default, then none. Tickets therefore keep
+          // {slug}@TICKETS_INBOUND_DOMAIN and quotes/invoices keep
+          // partner.billingEmail, because those call sites set replyTo.
+          replyTo: replyTo ?? resolved.replyTo ?? undefined,
+          headers,
+          attachments,
+          from: resolved.from,
+        },
+        purpose: params.purpose,
+        partnerId: resolved.partnerId,
+        domainId: resolved.domainId,
+        stream: resolved.stream,
+      });
+      if (outcome.delivered) return;
+
+      // Definitively not sent (spec §8.4). Put it on the platform lane with the
+      // purpose's fallback From — the exact envelope this send site produced
+      // before the feature existed. Deliberately rebuilt from the ORIGINAL
+      // params: no X-Breeze-Outbound, no partner tags, and the call site's own
+      // Reply-To rather than the identity's, whose domain is the one that just
+      // refused us.
+      await this.deliverRaw({
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        headers,
+        attachments,
+        from: platformFallbackFrom(params.purpose, this.defaultFrom, params.partnerName ?? null),
+      });
+      return;
+    }
+
+    await this.deliverRaw({
+      to,
+      cc,
+      subject,
+      html,
+      text,
+      replyTo,
+      headers,
+      attachments,
+      from: resolved.from,
+    });
+  }
+
+  /**
+   * @internal The one raw entry point: it takes an explicit From and asks no
+   * questions. Only `services/emailDomains/**` may call it (enforced by
+   * `email.deliverRawScope.test.ts`) — product code calls `sendEmail` and
+   * declares a purpose, or the classification G5 depends on leaks away.
+   */
+  async deliverRaw(message: RawEmailMessage): Promise<void> {
+    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
+    const sender = from;
 
     if (this.provider === 'resend') {
       if (!this.resend) {
@@ -241,7 +426,14 @@ export class EmailService {
         }))
       });
       if (error) {
-        throw new Error(`Resend error: ${error.message}`);
+        // Text unchanged; the SDK's own name/statusCode now ride along so the
+        // partner lane can classify without regex-matching prose.
+        const detail = error as { name?: unknown; statusCode?: unknown };
+        throw new EmailTransportError(`Resend error: ${error.message}`, {
+          transport: 'resend',
+          providerErrorName: typeof detail.name === 'string' ? detail.name : undefined,
+          statusCode: typeof detail.statusCode === 'number' ? detail.statusCode : undefined,
+        }, { cause: error });
       }
       return;
     }
@@ -251,6 +443,9 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
+      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
+      // call has never passed it, and W01 is byte-identical by construction.
+      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
@@ -276,33 +471,62 @@ export class EmailService {
     // headers (e.g. Auto-Submitted) stay in the generic map.
     const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
 
-    await this.smtpTransport.sendMail({
-      from: sender,
-      to,
-      cc,
-      subject,
-      html,
-      text,
-      replyTo,
-      messageId,
-      inReplyTo,
-      references,
-      headers: rest,
-      attachments: attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.contentType
-      }))
-    });
+    try {
+      await this.smtpTransport.sendMail({
+        from: sender,
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        messageId,
+        inReplyTo,
+        references,
+        headers: rest,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType
+        }))
+      });
+    } catch (err) {
+      // nodemailer's error is the only one that already carried structure, so
+      // the message is simply forwarded. `responseCode` is `false` — not
+      // missing — when the reply had no leading digits, which is why this is a
+      // typeof check and not a truthiness check.
+      const detail = err as { responseCode?: unknown; response?: unknown } | null;
+      throw new EmailTransportError(
+        err instanceof Error ? err.message : String(err),
+        {
+          transport: 'smtp',
+          smtpResponseCode: typeof detail?.responseCode === 'number' ? detail.responseCode : undefined,
+          smtpResponse: typeof detail?.response === 'string' ? detail.response : undefined,
+        },
+        { cause: err },
+      );
+    }
   }
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
     const template = buildPasswordResetTemplate(params);
+    if (params.purpose === 'portal.password_reset') {
+      await this.sendEmail({
+        to: params.to,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        purpose: 'portal.password_reset',
+        partnerId: params.partnerId
+      });
+      return;
+    }
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.password_reset'
     });
   }
 
@@ -312,7 +536,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: params.purpose
     });
   }
 
@@ -322,7 +547,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.staff_invite'
     });
   }
 
@@ -332,7 +558,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'staff.alert_notification'
     });
   }
 
@@ -342,7 +569,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.account_locked'
     });
   }
 
@@ -352,7 +580,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.email_changed'
     });
   }
 
@@ -362,7 +591,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.signup_existing_account'
     });
   }
 
@@ -372,7 +602,9 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'portal.invite',
+      partnerId: params.partnerId
     });
   }
 }
@@ -399,11 +631,37 @@ export function getEmailService(): EmailService | null {
       emailServiceAvailable = false;
       const reason = err instanceof Error ? err.message : 'unknown error';
       console.warn(`Email service not configured: ${reason}`);
+      // A malformed VALUE is an incident: the verdict is cached for the life of
+      // the process, so every outbound email in the product stops until someone
+      // restarts with a corrected env. An UNSET var is the supported
+      // self-hosted-without-email state and stays log-only. See
+      // EmailConfigValueError.
+      if (err instanceof EmailConfigValueError) captureException(err);
       return null;
     }
   }
 
   return cachedService;
+}
+
+/**
+ * An email env var whose VALUE is malformed — as opposed to email simply not
+ * being configured, which is a supported self-hosted state.
+ *
+ * The distinction matters because `getEmailService` collapses every config
+ * failure into "email is not configured" + a `console.warn`, then caches that
+ * verdict for the life of the process. For an operator who never set email up
+ * that is correct and silent by design. For an operator who typed
+ * `SMTP_TIMEOUT_MS=30s` it means ALL outbound mail — password resets,
+ * verification, invites, quotes, invoices, alerts — stops until someone
+ * notices, with nothing but a log line to notice. Only this class is reported
+ * to Sentry (#3905 review): a typo is an incident, an unset var is not.
+ */
+class EmailConfigValueError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmailConfigValueError';
+  }
 }
 
 function getEnvString(name: string): string | undefined {
@@ -423,7 +681,7 @@ function parseEmailProviderSelection(): EmailProviderSelection {
     return raw;
   }
 
-  throw new Error(`EMAIL_PROVIDER must be one of: auto, resend, smtp, mailgun (received "${raw}")`);
+  throw new EmailConfigValueError(`EMAIL_PROVIDER must be one of: auto, resend, smtp, mailgun (received "${raw}")`);
 }
 
 function parseSmtpPort(): number {
@@ -434,11 +692,49 @@ function parseSmtpPort(): number {
 
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-    throw new Error(`SMTP_PORT must be an integer between 1 and 65535 (received "${raw}")`);
+    throw new EmailConfigValueError(`SMTP_PORT must be an integer between 1 and 65535 (received "${raw}")`);
   }
 
   return parsed;
 }
+
+/**
+ * #3905 — parse a transport deadline in milliseconds.
+ *
+ * Deliberately THROWS on a malformed value rather than falling back to the
+ * default. `resolveEmailProviderConfig` is called from `getEmailService`,
+ * which turns a config error into a null service + a startup warning — so a
+ * typo surfaces as "email is not configured", not as a transport that is
+ * silently unbounded again. Silently defaulting is how an operator who typed
+ * `SMTP_TIMEOUT_MS=30s` ends up back at the ten-minute nodemailer default with
+ * no signal that their setting was ignored.
+ *
+ * Range: 1s-10min. Below a second no real mail server completes a handshake;
+ * above ten minutes the bound stops being one.
+ */
+function parseTransportTimeoutMs(name: string, defaultMs: number): number {
+  const raw = getEnvString(name);
+  if (!raw) {
+    return defaultMs;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || String(parsed) !== raw || parsed < 1000 || parsed > 600_000) {
+    throw new EmailConfigValueError(`${name} must be an integer between 1000 and 600000 milliseconds (received "${raw}")`);
+  }
+
+  return parsed;
+}
+
+/** SMTP connection/greeting/socket deadline. 30s is generous for a handshake
+ *  and, being an inactivity timeout, does not cap a slow attachment upload. */
+const DEFAULT_SMTP_TIMEOUT_MS = 30_000;
+
+/** Mailgun whole-request deadline. Larger than the SMTP one because
+ *  `AbortSignal.timeout` bounds the ENTIRE request including the multipart
+ *  attachment upload, not just an idle socket — a multi-MB proposal PDF on a
+ *  slow uplink must still be able to finish. */
+const DEFAULT_MAILGUN_TIMEOUT_MS = 120_000;
 
 function parseSmtpSecure(): boolean {
   const raw = getEnvString('SMTP_SECURE');
@@ -454,7 +750,7 @@ function parseSmtpSecure(): boolean {
     return false;
   }
 
-  throw new Error(`SMTP_SECURE must be a boolean value (received "${raw}")`);
+  throw new EmailConfigValueError(`SMTP_SECURE must be a boolean value (received "${raw}")`);
 }
 
 function resolveResendConfig(resendApiKey: string | undefined, emailFrom: string | undefined): ResendProviderConfig {
@@ -495,7 +791,8 @@ function resolveSmtpConfig(
     secure: parseSmtpSecure(),
     from: smtpFrom,
     user: smtpUser,
-    pass: smtpPass
+    pass: smtpPass,
+    timeoutMs: parseTransportTimeoutMs('SMTP_TIMEOUT_MS', DEFAULT_SMTP_TIMEOUT_MS)
   };
 }
 
@@ -520,7 +817,8 @@ function resolveMailgunConfig(
     apiKey: mailgunApiKey,
     domain: mailgunDomain,
     baseUrl: normalizeBaseUrl(mailgunBaseUrl ?? 'https://api.mailgun.net'),
-    from: mailgunFrom
+    from: mailgunFrom,
+    timeoutMs: parseTransportTimeoutMs('MAILGUN_TIMEOUT_MS', DEFAULT_MAILGUN_TIMEOUT_MS)
   };
 }
 
@@ -618,9 +916,31 @@ function buildMailgunEndpoint(config: MailgunProviderConfig): string {
   return `${config.baseUrl}/v3/${encodeURIComponent(config.domain)}/messages`;
 }
 
+/**
+ * #3905 — the Mailgun POST with its deadline translated.
+ *
+ * An aborted `fetch` rejects with a bare `TimeoutError: The operation was
+ * aborted due to timeout`, which names neither the transport nor the budget
+ * that expired. Callers persist the failure as an opaque `send_failed` reason
+ * and an operator then has to guess whether Mailgun was down, slow, or simply
+ * bounded too tightly — so re-throw with both facts attached, preserving the
+ * original as `cause`. Non-timeout failures (DNS, TLS, connection refused)
+ * pass through untouched: they already carry a usable message.
+ */
+async function mailgunFetch(config: MailgunProviderConfig, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(buildMailgunEndpoint(config), init);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(`Mailgun request timed out after ${config.timeoutMs}ms`, { cause: err });
+    }
+    throw err;
+  }
+}
+
 async function sendViaMailgun(
   config: MailgunProviderConfig,
-  params: SendEmailParams & { from: string }
+  params: RawEmailMessage
 ): Promise<void> {
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
@@ -628,6 +948,12 @@ async function sendViaMailgun(
   const replyTos = params.replyTo
     ? (Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo])
     : [];
+
+  // #3905 — a whole-request deadline. Both fetches previously passed no
+  // AbortSignal, so a Mailgun endpoint that accepted the connection and then
+  // stalled had NO client-side bound at all. `AbortSignal.timeout` is created
+  // per send (not shared) because its clock starts at construction.
+  const signal = AbortSignal.timeout(config.timeoutMs);
 
   // Attachments require multipart/form-data; otherwise keep the simpler
   // urlencoded body (matches the long-standing contract + the email.test.ts
@@ -654,10 +980,11 @@ async function sendViaMailgun(
       });
       body.append('attachment', blob, attachment.filename);
     }
-    response = await fetch(buildMailgunEndpoint(config), {
+    response = await mailgunFetch(config, {
       method: 'POST',
       headers: { Authorization: `Basic ${authToken}` },
-      body
+      body,
+      signal
     });
   } else {
     const body = new URLSearchParams();
@@ -674,20 +1001,26 @@ async function sendViaMailgun(
         body.set(`h:${name}`, value);
       }
     }
-    response = await fetch(buildMailgunEndpoint(config), {
+    response = await mailgunFetch(config, {
       method: 'POST',
       headers: {
         Authorization: `Basic ${authToken}`,
         'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: body.toString()
+      body: body.toString(),
+      signal
     });
   }
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
     const details = message ? `: ${message}` : '';
-    throw new Error(`Mailgun API error (${response.status})${details}`);
+    // `Mailgun API error (<status>)<details>` is matched verbatim by
+    // services/reportNarrativeDelivery.ts:145-146. Only the shape changes.
+    throw new EmailTransportError(`Mailgun API error (${response.status})${details}`, {
+      transport: 'mailgun',
+      statusCode: response.status,
+    });
   }
 }
 

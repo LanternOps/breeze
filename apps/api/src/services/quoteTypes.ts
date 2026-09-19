@@ -67,6 +67,11 @@ export type QuoteServiceErrorCode =
   // the caller adds a manual line or fills the price book.
   | 'NO_PRICE_FOR_CURRENCY'
   | 'PRICE_NOT_REPRESENTABLE'
+  | 'GROUP_NOT_IN_ORG'
+  | 'SITE_NOT_IN_ORG'
+  | 'DEVICE_SET_UNCOUNTABLE'
+  | 'INVALID_LINE_PATCH'
+  | 'QUOTE_LINE_REFERENCE_DELETED'
   // Durable single-use replay backstop (#2875, quoteAcceptService): the public
   // response token's jti was already consumed on the quote row (2026-08-06-c
   // columns) — a replayed link, rejected 401 even when the Redis revocation
@@ -124,6 +129,12 @@ export type QuoteServiceErrorCode =
 export type QuoteServiceErrorMeta = {
   successorQuoteId?: string;
   revisionQuoteId?: string;
+  reason?: 'GROUP_EVALUATION_FAILED' | 'GROUP_DELETED' | 'SITE_DELETED';
+  groupName?: string | null;
+  issues?: Array<{ path: string; message: string }>;
+  quoteLineId?: string;
+  reference?: 'device_group' | 'site';
+  name?: string;
 };
 
 export class QuoteServiceError extends Error {

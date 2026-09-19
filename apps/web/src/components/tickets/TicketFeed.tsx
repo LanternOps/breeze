@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { statusConfig, type TicketComment, type TicketStatus } from './ticketConfig';
 import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
+import { TicketAttachmentList } from './TicketAttachments';
 
 const SYSTEM_TYPES = new Set(['status_change', 'assignment', 'system', 'time_entry']);
 
@@ -75,14 +76,28 @@ function SystemRun({ items }: { items: TicketComment[] }) {
 }
 
 export default function TicketFeed({
+  ticketId,
   comments,
   onEditComment,
   onDeleteComment,
+  onDeleteAttachment,
   canManageComment,
 }: {
+  /** W08 #3902 — needed to build the authenticated attachment content URL.
+   *  Optional so existing callers keep compiling; attachments simply do not
+   *  render without it. */
+  ticketId?: string;
   comments: TicketComment[];
   onEditComment?: (id: string, content: string) => void;
   onDeleteComment?: (id: string) => void;
+  /** NOT passed by TicketWorkbench today, so `canDelete` is false there and the
+   *  delete control does not render in the web app. This is the plan's scope,
+   *  not an oversight: Task 17 specifies the control and its gate at the
+   *  COMPONENT level only (covered by TicketAttachments.test.tsx) and no task
+   *  wires a workbench-level delete handler. The API route
+   *  (DELETE /tickets/:id/attachments/:attachmentId) is complete and tested;
+   *  wiring a caller is follow-up work (W08A review). */
+  onDeleteAttachment?: (attachmentId: string) => void;
   canManageComment?: (c: TicketComment) => boolean;
 }) {
   const { t } = useTranslation('tickets');
@@ -198,6 +213,18 @@ export default function TicketFeed({
                 </div>
               ) : (
                 <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
+              )}
+              {/* W08 #3902. A soft-deleted comment renders through the branch
+                  above and therefore never reaches this line — its photos go
+                  with its text. */}
+              {ticketId && (
+                <TicketAttachmentList
+                  ticketId={ticketId}
+                  commentId={b.item.id}
+                  attachments={b.item.attachments ?? []}
+                  canDelete={Boolean(onDeleteAttachment) && canManageComment?.(b.item)}
+                  onDelete={onDeleteAttachment}
+                />
               )}
             </div>
           )

@@ -17,10 +17,18 @@ import { Aside } from '@astrojs/starlight/components';
 **Fix**: Ensure all required variables are set:
 
 ```bash
-# Required variables:
-BREEZE_DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, JWT_SECRET,
-AGENT_ENROLLMENT_SECRET, METRICS_SCRAPE_TOKEN, PUBLIC_API_URL,
-GRAFANA_ADMIN_PASSWORD
+# Required in every deployment:
+BREEZE_DOMAIN, DATABASE_URL, BREEZE_VERSION, BREEZE_API_IMAGE_DIGEST,
+BREEZE_WEB_IMAGE_DIGEST, BREEZE_BINARIES_IMAGE_DIGEST, CADDY_IMAGE_REF,
+CLOUDFLARED_IMAGE_REF, REDIS_IMAGE_REF, COTURN_IMAGE_REF, BILLING_IMAGE_REF,
+REDIS_PASSWORD, JWT_SECRET, AGENT_ENROLLMENT_SECRET, APP_ENCRYPTION_KEY,
+MFA_ENCRYPTION_KEY, ENROLLMENT_KEY_PEPPER, MFA_RECOVERY_CODE_PEPPER,
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS, PUBLIC_API_URL,
+REMOTE_ACCESS_ADMISSION_MODE, REMOTE_WS_AUTH_MODE, REMOTE_WS_REDIS_TOPOLOGY,
+REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT, REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT
+
+# Additionally required when ENABLE_MONITORING=true:
+METRICS_SCRAPE_TOKEN, GRAFANA_ADMIN_PASSWORD, POSTGRES_EXPORTER_DSN
 ```
 
 ### API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`
@@ -50,13 +58,14 @@ This is a **public** key (also embedded in the agent and CI), so it is safe to c
 
 **Cause**: PostgreSQL not ready or connection string incorrect.
 
-**Fix**:
+**Fix**: run from the host with `.env.prod` sourced (`set -a; source .env.prod; set +a`):
 ```bash
-# Check PostgreSQL is running
-docker compose -f docker/docker-compose.prod.yml exec postgres pg_isready
+# Check PostgreSQL is running (prod uses a managed Postgres instance, not a
+# local container)
+pg_isready -d "$DATABASE_URL"
 
 # Check connection string
-docker compose -f docker/docker-compose.prod.yml exec api env | grep DATABASE_URL
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec api env | grep DATABASE_URL
 ```
 
 ## Agent Issues
@@ -107,9 +116,9 @@ sudo cat /etc/breeze/config.json
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket[5m]))
 
-# Database slow queries
-docker compose -f docker/docker-compose.prod.yml exec postgres \
-  psql -U breeze -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
+# Database slow queries (prod uses a managed Postgres instance, not a
+# local container; run with .env.prod sourced)
+psql "$DATABASE_URL" -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
 ```
 
 ### Postgres `write CONNECT_TIMEOUT` while the database is healthy
@@ -147,9 +156,10 @@ alone only lengthens the failing request; it does not unstall the loop.
 
 ### Redis memory growing
 
-**Check**:
+**Check**: prod Redis requires auth (`requirepass`), so pass the password from the mounted secret:
 ```bash
-docker compose -f docker/docker-compose.prod.yml exec redis redis-cli info memory
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T redis \
+  sh -ec 'redis-cli --no-auth-warning -a "$(cat /run/secrets/redis_password)" info memory'
 ```
 
 **Fix**: Adjust `REDIS_MAXMEMORY` in `.env.prod`. Redis uses `allkeys-lru` eviction by default.
@@ -173,20 +183,20 @@ ls -la /var/backups/breeze/
 
 ```bash
 # Check container logs
-docker compose -f docker/docker-compose.prod.yml logs <service-name>
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod logs <service-name>
 
 # Check resource limits
 docker stats --no-stream
 
 # Recreate container
-docker compose -f docker/docker-compose.prod.yml up -d --force-recreate <service-name>
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --force-recreate <service-name>
 ```
 
 ### Health check failing
 
 ```bash
 # Manual health check
-docker compose -f docker/docker-compose.prod.yml exec api \
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec api \
   wget --no-verbose --tries=1 --spider http://localhost:3001/health
 
 # Check readiness
@@ -306,24 +316,6 @@ for WebSocket/firewall causes.
    ```
 3. `docker compose up -d api` to recreate the container.
 
-### "Generate Link" fails with `MSI build pipeline not reachable. Retry`
-
-**Cause**: The release-manifest verifier is rejecting the live MSI because the manifest's `repository` field is `LanternOps/breeze` but the code default expects `lanternops/breeze` (case mismatch). Fix is on `main` ([#867](https://github.com/LanternOps/breeze/pull/867)) and will ship in the next release after v0.67.0.
-
-**Fix** (workaround on v0.67.0): add to `.env` and map into the `api` service.
-
-```
-BINARY_GITHUB_REPOSITORY=LanternOps/breeze
-```
-
-```yaml
-api:
-  environment:
-    BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY}
-```
-
-Then `docker compose up -d api`. Same workaround unblocks **Download Installer**, which hits the same code path silently.
-
 ## Reporting an Issue
 
 Before opening a [GitHub issue](https://github.com/LanternOps/breeze/issues),
@@ -343,7 +335,8 @@ one, include the following so it can be triaged without a back-and-forth:
   | Agent enrollment | `enroll-last-error.txt` and the `BreezeAgent` Event Log entries |
   | Agent (Linux) | `sudo journalctl -u breeze-agent -n 200` |
   | Agent (macOS) | `/Library/Application Support/Breeze/logs/agent.log` |
-  | Server / API | `docker compose -f docker/docker-compose.prod.yml logs -f api` |
+  | Desktop/user helper (macOS) | `~/Library/Logs/Breeze/desktop-helper.log` (per logged-in user) |
+  | Server / API | `docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod logs -f api` |
 
 <Aside type="caution">
   Scrub bearer tokens (`brz_...`), enrollment secrets, and any internal hostnames

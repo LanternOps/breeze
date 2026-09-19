@@ -124,43 +124,47 @@ describe('processPolicyDistribution race handling', () => {
     expect(queueCommand).not.toHaveBeenCalled();
   });
 
-  it('distributes the policy once it is visible (post-commit / retry)', async () => {
+  it('schedules device-keyed reconciliation once the policy is visible', async () => {
     tableResults.set(policiesTable, [activePolicyRow]);
     tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
-    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+    const scheduleDevice = vi.fn().mockResolvedValue('job-d1');
 
-    const result = await processPolicyDistribution({
-      type: 'policy-distribution',
-      orgId: 'org-1',
-      changedPolicyIds: ['p1'],
-      reason: 'policy-created',
-      queuedAt: '2026-06-24T00:00:00.000Z'
-    });
+    const result = await processPolicyDistribution(
+      {
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p1'],
+        reason: 'policy-created',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      },
+      { scheduleDevice },
+    );
 
-    expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
-    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: Array<{ id: string }> };
-    expect(payload.policies).toHaveLength(1);
-    expect(payload.policies[0]!.id).toBe('p1');
+    expect(scheduleDevice).toHaveBeenCalledWith('d1', 'policy-created');
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
     expect(result.queued).toBe(1);
   });
 
-  it('excludes disabled policies from the payload but does not treat them as a race', async () => {
+  it('does not treat a visible disabled policy as a race', async () => {
     const disabled = { ...activePolicyRow, id: 'p2', isActive: false };
     tableResults.set(policiesTable, [activePolicyRow, disabled]);
     tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
-    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+    const scheduleDevice = vi.fn().mockResolvedValue('job-d1');
 
-    await processPolicyDistribution({
-      type: 'policy-distribution',
-      orgId: 'org-1',
-      changedPolicyIds: ['p2'], // the just-disabled policy — exists, so not a race
-      reason: 'policy-disabled',
-      queuedAt: '2026-06-24T00:00:00.000Z'
-    });
+    await processPolicyDistribution(
+      {
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p2'], // the just-disabled policy — exists, so not a race
+        reason: 'policy-disabled',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      },
+      { scheduleDevice },
+    );
 
-    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: Array<{ id: string }> };
-    const ids = payload.policies.map((p) => p.id);
-    expect(ids).toEqual(['p1']); // active only; disabled p2 excluded, no throw
+    expect(scheduleDevice).toHaveBeenCalledWith('d1', 'policy-disabled');
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });
 
@@ -200,24 +204,26 @@ describe('processPolicyDistribution race edge cases', () => {
   it('does NOT throw when there are no changed ids (manual/periodic distribution)', async () => {
     tableResults.set(policiesTable, []);
     tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
-    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+    const scheduleDevice = vi.fn().mockResolvedValue('job-d1');
 
-    const result = await processPolicyDistribution({
-      type: 'policy-distribution',
-      orgId: 'org-1',
-      changedPolicyIds: [],
-      reason: 'manual',
-      queuedAt: '2026-06-24T00:00:00.000Z'
-    });
+    const result = await processPolicyDistribution(
+      {
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: [],
+        reason: 'manual',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      },
+      { scheduleDevice },
+    );
     expect(result.queued).toBe(1);
-    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: unknown[] };
-    expect(payload.policies).toHaveLength(0);
+    expect(scheduleDevice).toHaveBeenCalledWith('d1', 'manual');
   });
 
   it('on the FINAL attempt degrades instead of throwing — distributes the current active set, excluding the vanished id', async () => {
     tableResults.set(policiesTable, [activePolicyRow]); // p1 present; pX gone
     tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
-    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+    const scheduleDevice = vi.fn().mockResolvedValue('job-d1');
 
     const result = await processPolicyDistribution(
       {
@@ -227,28 +233,29 @@ describe('processPolicyDistribution race edge cases', () => {
         reason: 'policy-created',
         queuedAt: '2026-06-24T00:00:00.000Z'
       },
-      { isFinalAttempt: true }
+      { isFinalAttempt: true, scheduleDevice }
     );
 
     expect(result.queued).toBe(1);
-    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: Array<{ id: string }> };
-    expect(payload.policies.map((p) => p.id)).toEqual(['p1']);
+    expect(scheduleDevice).toHaveBeenCalledWith('d1', 'policy-created');
   });
 
   it('throws when EVERY device enqueue fails (no silent drop of a correct payload)', async () => {
     tableResults.set(policiesTable, [activePolicyRow]);
     tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
-    queueCommandForExecution.mockResolvedValue({}); // no command -> falls through
-    queueCommand.mockRejectedValue(new Error('redis down'));
+    const scheduleDevice = vi.fn().mockRejectedValue(new Error('redis down'));
 
     await expect(
-      processPolicyDistribution({
-        type: 'policy-distribution',
-        orgId: 'org-1',
-        changedPolicyIds: ['p1'],
-        reason: 'policy-created',
-        queuedAt: '2026-06-24T00:00:00.000Z'
-      })
+      processPolicyDistribution(
+        {
+          type: 'policy-distribution',
+          orgId: 'org-1',
+          changedPolicyIds: ['p1'],
+          reason: 'policy-created',
+          queuedAt: '2026-06-24T00:00:00.000Z'
+        },
+        { scheduleDevice },
+      )
     ).rejects.toThrow(/all 1 device enqueue/i);
   });
 });

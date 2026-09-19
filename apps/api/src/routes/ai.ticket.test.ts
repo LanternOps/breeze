@@ -28,7 +28,11 @@ const routeMocks = vi.hoisted(() => ({
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
   anthropicClient: { messages: { create: vi.fn() } },
+  reserveAiBudget: vi.fn(),
+  markAiBudgetReservationIndeterminate: vi.fn(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
 }));
 
 const configRef = vi.hoisted(() => ({
@@ -47,6 +51,7 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
     }
   },
   getAnthropicClientForPartner: routeMocks.getAnthropicClientForPartnerMock,
+  resolveWireModel: routeMocks.resolveWireModelMock,
 }));
 
 vi.mock('../db', () => ({
@@ -143,6 +148,14 @@ vi.mock('../services/aiCostTracker', () => ({
   getUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
   recordUsage: vi.fn(),
+  calculateCostCents: vi.fn(() => 1),
+  calculateCatalogCostCents: vi.fn(() => 1),
+}));
+
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: routeMocks.reserveAiBudget,
+  markAiBudgetReservationIndeterminate: routeMocks.markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation: routeMocks.releaseUnusedAiBudgetReservation,
 }));
 
 vi.mock('../services/aiTicketDraft', () => ({
@@ -152,6 +165,11 @@ vi.mock('../services/aiTicketDraft', () => ({
       super('Not enough conversation to draft a ticket');
       this.name = 'ThinTranscriptError';
     }
+  },
+  TicketDraftFailedError: class TicketDraftFailedError extends Error {
+    inputTokens = 0;
+    outputTokens = 0;
+    providerOutcomeUnknown = false;
   },
 }));
 
@@ -243,6 +261,19 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
+    routeMocks.reserveAiBudget.mockResolvedValue({
+      kind: 'unlimited',
+      reservationId: '66666666-6666-4666-8666-666666666666',
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    routeMocks.markAiBudgetReservationIndeterminate.mockResolvedValue({
+      kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
+    routeMocks.releaseUnusedAiBudgetReservation.mockResolvedValue({
+      kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
 
     routeMocks.getAnthropicClientForPartnerMock.mockResolvedValue({
       client: routeMocks.anthropicClient,
@@ -269,6 +300,24 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       headers: { Authorization: 'Bearer token' },
     });
   }
+
+  it('does not call the ticket drafter when durable budget admission denies', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: {
+        id: 's1', orgId: 'org1', deviceId: null, model: null,
+        createdAt: new Date(), contextSnapshot: null,
+      },
+      messages: [{ role: 'assistant', content: 'fixed' }],
+    } as any);
+    routeMocks.reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(429);
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
 
   it('returns a draft assembled from the session + summarizer', async () => {
     const createdAt = new Date(Date.now() - 25 * 60000);
@@ -320,7 +369,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       })
     );
     expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledTimes(1);
-    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org');
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org', { surface: 'one_shot_ticket_draft', orgId: 'org1' });
     expect(recordUsage).toHaveBeenCalledWith(
       's1',
       'org1',
@@ -329,6 +378,52 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       5,
       false,
       'partner_key',
+      undefined,
+      '66666666-6666-4666-8666-666666666666',
+    );
+  });
+
+  it('sends the WIRE model to the summarizer and meters catalog traffic at revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    // A catalog endpoint speaks its own ids; the platform-logical one 404s.
+    routeMocks.resolveWireModelMock.mockReturnValueOnce({
+      model: 'anthropic/claude-test',
+      catalogPricing: CATALOG_PRICING,
+    });
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-sonnet-4-6', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'fixed' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 'S', problemSummary: 'P', resolutionSummary: 'R', wasFixed: true,
+      suggestedTimeMinutes: 15, inputTokens: 10, outputTokens: 5,
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+    expect(res.status).toBe(200);
+
+    // Translated from the SESSION's model, not the partner default.
+    expect(routeMocks.resolveWireModelMock).toHaveBeenCalledWith(
+      expect.anything(), 'claude-sonnet-4-6',
+    );
+    expect(draftTicketFromTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-test' }),
+    );
+    // Metered from the revision snapshot, never Anthropic list rates — and the
+    // ledger keeps the platform-logical id.
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1', 'org1', 'claude-sonnet-4-6', 10, 5, false, 'partner_key', CATALOG_PRICING,
+      '66666666-6666-4666-8666-666666666666',
     );
   });
 
@@ -436,6 +531,34 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The client resolving fine says nothing about the MODEL (#3922 W3 review
+   * round 2). `ai_sessions.model` is free-form client input, so a session can
+   * name a model the pinned revision never mapped or never verified — that
+   * throws from INSIDE the same try, and must land on the 503 branch rather
+   * than the generic 502 below it.
+   */
+  it('503s with ai_unavailable when the pinned revision has no mapping for the session model', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-opus-4-8', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    routeMocks.resolveWireModelMock.mockImplementationOnce(() => {
+      throw new LlmUnavailableError();
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: never re-pointed at the partner default, never metered.
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
   });
 });
 

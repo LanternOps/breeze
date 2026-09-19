@@ -7,6 +7,7 @@ vi.mock('./auth', () => ({
 
 import { fetchWithAuth } from './auth';
 import { getCurrentOrganization, useOrgStore } from './orgStore';
+import type { ServiceManagementMode } from './orgStore';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
@@ -36,7 +37,8 @@ describe('org store', () => {
       organizationsLoaded: false,
       sites: [],
       isLoading: false,
-      error: null
+      error: null,
+      serviceManagementMode: 'native'
     });
   });
 
@@ -318,5 +320,46 @@ describe('org store', () => {
     // Concrete selection wins; the contradictory allOrgs is dropped.
     expect(useOrgStore.getState().currentOrgId).toBe('org-1');
     expect(useOrgStore.getState().allOrgs).toBe(false);
+  });
+
+  describe('serviceManagementMode (#5075 W04)', () => {
+    it('defaults to native', () => {
+      expect(useOrgStore.getState().serviceManagementMode).toBe('native');
+    });
+
+    it('setServiceManagementMode updates it', () => {
+      useOrgStore.getState().setServiceManagementMode('off');
+      expect(useOrgStore.getState().serviceManagementMode).toBe('off');
+    });
+
+    it('clearOrgContext resets it to native (no cross-session/cross-partner leak)', () => {
+      useOrgStore.getState().setServiceManagementMode('off');
+      useOrgStore.getState().clearOrgContext();
+      expect(useOrgStore.getState().serviceManagementMode).toBe('native');
+    });
+
+    it('rehydrate merge sanitises a bogus persisted mode to native (fail open, never crash-loop on unknown data)', () => {
+      localStorage.setItem(
+        'breeze-org',
+        JSON.stringify({
+          state: { currentOrgId: null, allOrgs: false, serviceManagementMode: 'bogus-mode' as ServiceManagementMode },
+          version: 0
+        })
+      );
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().serviceManagementMode).toBe('native');
+    });
+
+    it('rehydrate merge lets a VALID persisted mode survive (a merge that always forces native must not pass this)', () => {
+      localStorage.setItem(
+        'breeze-org',
+        JSON.stringify({
+          state: { currentOrgId: null, allOrgs: false, serviceManagementMode: 'off' },
+          version: 0
+        })
+      );
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().serviceManagementMode).toBe('off');
+    });
   });
 });

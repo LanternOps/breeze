@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { discoveredAssetSourceEnum } from '../../db/schema/discovery';
 
 export const PARTNER_EXPORT_RESOURCES = [
   'organizations',
@@ -246,9 +247,25 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
 });
 
 const partnerNetworkEquipmentSchema = z.object({
-  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']),
-  name: z.string().max(255).nullable(), address: z.string().min(1).max(45), macAddress: z.string().max(17).nullable(),
+  // #5213 W03: 'website'/'service' — an IP-less manual asset whose identity
+  // is a URL. `address` was already reachable as null even for a
+  // pre-existing type before this PR (a hand-entered printer/router/etc. only
+  // needs ONE of ip/hostname/url — see AddNetworkAssetModal's identity rule
+  // and discovered_assets_manual_identity_chk), it just wasn't declared
+  // `.nullable()` here yet; this only makes the schema match what the column
+  // has always allowed. `url`/`source` are new, ordinary (non-secret) fields
+  // — see the `included` bucket for `discovered_assets` in
+  // tenantExportPolicyRegistry.ts. `source`'s enum is DERIVED from the DB
+  // enum (not hand-copied) so a future 4th source value fails loudly at the
+  // type level instead of 500ing the whole export in production the moment
+  // one ships — same reasoning as DISCOVERED_ASSET_TYPES in
+  // routes/devices/schemas.ts. This schema is the strict allowlist
+  // projectSiteInventory's output is validated against, so a field missing
+  // here fails the whole export closed with a 500.
+  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service']),
+  name: z.string().max(255).nullable(), address: z.string().min(1).max(45).nullable(), macAddress: z.string().max(17).nullable(),
   manufacturer: z.string().max(255).nullable(), model: z.string().max(255).nullable(),
+  url: z.string().max(2048).nullable(), source: z.enum(discoveredAssetSourceEnum.enumValues),
 }).strict();
 
 export const partnerSiteInventoryExportRecordSchema = strictPartnerExportRecordSchema({
@@ -332,6 +349,11 @@ export const partnerConfigurationPolicyExportRecordSchema = strictPartnerExportR
   name: z.string().min(1).max(255),
   description: nullableDefinitionString,
   status: z.enum(['active', 'inactive', 'archived']),
+  // One-level inheritance (#5080). `features` stays the AUTHORED links only —
+  // consumers derive the effective set by following this id. A parent of an
+  // exported policy is itself exported (the parent closure in policySource), so
+  // this never dangles inside a single export.
+  parentPolicyId: z.string().uuid().nullable(),
   features: z.array(z.object({
     id: z.string().uuid(),
     type: z.string().min(1).max(100),
@@ -530,6 +552,50 @@ export const enrollmentKeyCreateResponseSchema = z.object({
   data: partnerEnrollmentKeyCreateRecordSchema,
   /** Returned exactly once, at creation. 64-char hex, as on the human route. */
   key: z.string().regex(/^[0-9a-f]{64}$/u),
+  /**
+   * Per-key enrollment secret, returned exactly once alongside `key` — and
+   * ONLY when the request set `issueEnrollmentSecret: true`.
+   *
+   * Optional rather than nullable on purpose. Its presence is the signal that
+   * `enrollment_keys.key_secret_hash` was written, which is what makes the
+   * agent enrollment path require this secret instead of the global
+   * `AGENT_ENROLLMENT_SECRET`. A key minted without it is absent here, so a
+   * client cannot read `null` as "issued but empty".
+   *
+   * Agents present it as the enrollment secret; it is stored as an unpeppered
+   * SHA-256 because that is what the agent enrollment path compares against.
+   */
+  enrollmentSecret: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+  /**
+   * Which secret the agent must present when it redeems `key`.
+   *
+   * Always present, in both directions, because the failure it prevents is
+   * silent and remote: a caller that assumes the wrong model gets a clean 201
+   * here and a `403 Enrollment secret required` from
+   * `routes/agents/enrollment.ts` at install time, with nothing tying the two
+   * together. Deriving it from "is `enrollmentSecret` present?" would work for
+   * a create and not at all for a replay, which never carries the secret.
+   */
+  enrollmentSecretSource: z.enum(['global', 'per_key']),
+}).strict();
+
+/**
+ * Replay of a completed idempotent create. Deliberately a separate schema with
+ * no `key` or `enrollmentSecret`: one-time credentials are returned by the
+ * single committing request and can never be re-read, so a retry gets metadata
+ * only. Keeping this strict and separate means a future edit cannot widen the
+ * replay path into a credential-disclosure path.
+ */
+export const enrollmentKeyReplayResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: partnerEnrollmentKeyCreateRecordSchema,
+  /**
+   * Same contract as on the create response. Derived from whether the stored
+   * row has a `key_secret_hash`, never from the secret itself — a replay is
+   * metadata-only and the one-time credentials stay unrecoverable.
+   */
+  enrollmentSecretSource: z.enum(['global', 'per_key']),
+  idempotencyReplay: z.literal(true),
 }).strict();
 
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {

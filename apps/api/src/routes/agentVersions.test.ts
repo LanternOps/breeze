@@ -30,6 +30,14 @@ vi.mock("../db", () => ({
   },
 }));
 
+// #3499: the component=backup rewrite guard asks this resolver what the
+// versionless download route will actually serve. Default to "no promoted
+// row", which makes the guard fall back to comparing against the env version —
+// the behavior every pre-existing test in this file was written against.
+vi.mock("../services/promotedAgentVersion", () => ({
+  getPromotedComponentVersion: vi.fn(async () => null),
+}));
+
 vi.mock("../services/manifestSigning", () => ({
   // Simulate no DB-provisioned deployment keys by default so tests that
   // don't set env vars still get a soft-pass (no env + no DB = empty keyset).
@@ -39,6 +47,15 @@ vi.mock("../services/manifestSigning", () => ({
   signManifest: vi.fn().mockResolvedValue("test-signature"),
 }));
 
+// #4262: the sync-github route now classifies SSRF-guard refusals. Mock the
+// service so the route's error branches can be driven directly, and the Sentry
+// capture so it can be asserted without a DSN.
+vi.mock("../services/binarySync", () => ({
+  syncFromGitHub: vi.fn(),
+}));
+vi.mock("../services/sentry", () => ({
+  captureException: vi.fn(),
+}));
 vi.mock("../services/auditEvents", () => ({
   writeRouteAudit: vi.fn(),
 }));
@@ -76,6 +93,10 @@ import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
+import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
+import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
 // Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
@@ -208,6 +229,11 @@ describe("agentVersions routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears calls but KEEPS implementations, so a
+    // mockResolvedValue set by one backup-guard test would leak into every
+    // later one and silently stop it exercising the branch its name claims.
+    vi.mocked(getPromotedComponentVersion).mockReset();
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(null);
     platformAdminState.allow = true;
     delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
@@ -244,6 +270,72 @@ describe("agentVersions routes", () => {
       }),
     };
   }
+
+  describe("POST /agent-versions/sync-github — guard-refusal classification (#4262)", () => {
+    it("answers 502 and does NOT leak the resolved internal address", async () => {
+      // The refusal message and .resolvedIps both name internal addresses.
+      // Pre-#4262 the raw err.message was echoed straight into the body; the
+      // route must now return a fixed operator-facing string instead. This is
+      // the assertion most at risk of being silently refactored away, because
+      // "just echo the error" reads like an improvement.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new SsrfBlockedError(
+          "all resolved IPs for api.github.com are private/loopback/link-local",
+          { hostname: "api.github.com", resolvedIps: ["10.1.2.3", "169.254.169.254"] },
+        ),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/private or link-local/i);
+      // The whole point: no internal address reaches the client.
+      expect(body.error).not.toMatch(/10\.1\.2\.3|169\.254\.169\.254/);
+      // …but it IS escalated server-side, since the catch otherwise loses it.
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "ssrf-blocked",
+      });
+    });
+
+    it("answers 502 on a body-ceiling abort", async () => {
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new ResponseTooLargeError(1024 * 1024),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/1048576-byte limit/);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "response-too-large",
+      });
+    });
+
+    it("leaves the pre-existing generic classification alone", async () => {
+      // Guards against over-reach: a plain failure must still take the original
+      // 422 path, not be swept into the new 502 branches.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new Error("something mundane broke"),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json() as { error: string }).error).toBe(
+        "something mundane broke",
+      );
+      expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+    });
+  });
 
   describe("GET /agent-versions (platform-admin list)", () => {
     it("non-platform-admin → 403", async () => {
@@ -661,21 +753,26 @@ describe("agentVersions routes", () => {
 
   describe("GET /agent-versions/latest", () => {
     it("should return latest version for platform/arch", async () => {
+      const rows = [
+        {
+          version: "1.2.0",
+          downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(45000000),
+          releaseNotes: "Bug fixes",
+        },
+      ];
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
+          // .orderBy() is the created_at tiebreak that keeps this endpoint in
+          // lockstep with services/promotedAgentVersion.ts (#3499).
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                version: "1.2.0",
-                downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
-                checksum: "a".repeat(64),
-                releaseManifest: null,
-                manifestSignature: null,
-                signingKeyId: null,
-                fileSize: BigInt(45000000),
-                releaseNotes: "Bug fixes",
-              },
-            ]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
           }),
         }),
       } as any);
@@ -693,11 +790,161 @@ describe("agentVersions routes", () => {
       expect(body.releaseNotes).toBe("Bug fixes");
     });
 
+    it("pins the server-relative downloadUrl to the promoted row's version in github mode (#5159)", async () => {
+      // The versionless route resolves the promoted row, so this is normally
+      // the same release — but naming it removes the last way the checksum and
+      // the bytes can select different rows (a duplicate isLatest row breaking
+      // the ORDER BY tiebreak) and keeps the URL shape identical to the one
+      // /:version/download hands out.
+      const rows = [
+        {
+          version: "1.2.0",
+          downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(1),
+          releaseNotes: null,
+        },
+      ];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/latest?platform=linux&arch=amd64",
+        );
+        const body = await res.json();
+        expect(body.downloadUrl).toBe(
+          "https://us.example.com/api/v1/agents/download/linux/amd64?version=1.2.0",
+        );
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("does NOT pin the \"unknown\" sentinel version, which is not a release tag (#5159)", async () => {
+      // binarySync stores the literal "unknown" for a locally-registered
+      // binary with no version file. Pinning it would build a URL the download
+      // route answers with a 404 ("vunknown" is not a release tag), where
+      // today it falls back to the env-resolved release and keeps working.
+      const rows = [
+        {
+          version: "unknown",
+          downloadUrl: "https://s3.example.com/agent-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(1),
+          releaseNotes: null,
+        },
+      ];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/latest?platform=linux&arch=amd64",
+        );
+        const body = await res.json();
+        expect(body.downloadUrl).toBe(
+          "https://us.example.com/api/v1/agents/download/linux/amd64",
+        );
+        expect(body.downloadUrl).not.toContain("unknown");
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("does NOT pin the version in local mode, where the route serves one disk build (#5159)", async () => {
+      // Local mode streams the single binary in the binaries volume and cannot
+      // select a release; pinning there would turn a working download into a
+      // 409 whenever the promoted row and the disk build differ.
+      const rows = [
+        {
+          version: "1.2.0",
+          downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(1),
+          releaseNotes: null,
+        },
+      ];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
+          }),
+        }),
+      } as any);
+
+      process.env.BINARY_SOURCE = "local";
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/latest?platform=linux&arch=amd64",
+        );
+        const body = await res.json();
+        expect(body.downloadUrl).toBe(
+          "https://us.example.com/api/v1/agents/download/linux/amd64",
+        );
+      } finally {
+        delete process.env.BINARY_SOURCE;
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("orders by created_at DESC, matching the resolver that serves the bytes (#3499)", async () => {
+      // This endpoint hands out the checksum; services/promotedAgentVersion.ts
+      // resolves the bytes it is verified against. Nothing in the schema
+      // enforces one isLatest row per (component, platform, arch, edition) —
+      // the invariant is demote-then-insert, not a unique constraint. If only
+      // one of the two ordered, a duplicate promoted row would make them
+      // select DIFFERENT rows: a checksum for a release the download route
+      // does not serve, silently. That is #3499 again.
+      const orderByMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: orderByMock }),
+        }),
+      } as any);
+
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+
+      expect(orderByMock).toHaveBeenCalledTimes(1);
+    });
+
     it("should return 404 when no version exists", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
           }),
         }),
       } as any);
@@ -711,7 +958,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to this server's own edition (default self-host)", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -726,7 +975,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to BINARY_EDITION=hosted when configured", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -961,7 +1212,7 @@ describe("agentVersions routes", () => {
         // passes. The actual binary is served via /agents/download/:os/:arch
         // (which 302s to github in BINARY_SOURCE=github mode).
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/windows/amd64",
+          "https://us.example.com/api/v1/agents/download/windows/amd64?version=1.0.0",
         );
         expect(body.checksum).toBe(checksum);
         // Manifest stays unmodified — its url field still references the
@@ -1019,7 +1270,7 @@ describe("agentVersions routes", () => {
         // rejects. It must resolve to the user-helper route, which is distinct
         // from the Tauri /helper app route.
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/user-helper/windows/amd64",
+          "https://us.example.com/api/v1/agents/download/user-helper/windows/amd64?version=1.0.0",
         );
         expect(body.url).not.toContain("github.com");
         expect(body.checksum).toBe(checksum);
@@ -1068,7 +1319,7 @@ describe("agentVersions routes", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/darwin/arm64",
+          "https://us.example.com/api/v1/agents/download/darwin/arm64?version=1.0.0",
         );
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1120,7 +1371,7 @@ describe("agentVersions routes", () => {
         // accepts it; the /agents/download/helper/:os/:arch route 302s to github
         // server-side, and the signed-manifest SHA-256 binds the bytes.
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/helper/windows/amd64",
+          "https://us.example.com/api/v1/agents/download/helper/windows/amd64?version=1.0.0",
         );
         // Manifest is unmodified; its url field still references the canonical
         // github asset. Checksum is the trust binding.
@@ -1173,7 +1424,7 @@ describe("agentVersions routes", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/watchdog/linux/amd64",
+          "https://us.example.com/api/v1/agents/download/watchdog/linux/amd64?version=1.0.0",
         );
         expect(body.checksum).toBe(checksum);
         expect(body.manifest).toBe(signed.manifest);
@@ -1226,7 +1477,7 @@ describe("agentVersions routes", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64?version=1.0.0",
         );
         expect(body.checksum).toBe(checksum);
         expect(body.manifest).toBe(signed.manifest);
@@ -1236,14 +1487,17 @@ describe("agentVersions routes", () => {
       }
     });
 
-    // AGENT_AUTO_PROMOTE=false means isLatest can point at a fleet version
-    // that is NOT what the server currently serves at the versionless route
-    // (deploy-to-promote window). isLatest must never be treated as
-    // sufficient on its own — only an exact match against the server's
-    // pinned current version (getGithubReleaseVersion) may trigger the
-    // rewrite. See the invariant comment on
-    // backupVersionIsServableByVersionlessRoute in agentVersions.ts.
-    it("does NOT rewrite component=backup when the row is isLatest but not the server's current version — returns the stored immutable URL untouched", async () => {
+    // #3499 inverted this case. The versionless /download/backup/:os/:arch
+    // route used to serve the server's env version (BINARY_VERSION), so a
+    // promoted row that the env had moved past was NOT servable by it and the
+    // rewrite had to be withheld — the guard tested the env version and
+    // isLatest was explicitly not sufficient. The route now serves the
+    // promoted row, so this row IS exactly what it serves and the rewrite is
+    // correct. This is the deploy-to-promote window (AGENT_AUTO_PROMOTE=false,
+    // server on 1.1.0, fleet still promoted to 1.0.0) that used to hand out
+    // mismatched bytes. The guard no longer restates either rule: it asks the
+    // route's own resolver what will be served and compares.
+    it("rewrites component=backup when the row IS the promoted isLatest row, even though the server's env version has moved ahead (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "f".repeat(64);
@@ -1271,17 +1525,21 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // isLatest in the DB, but the server has already deployed a
-                // newer version and is pinned to it (AGENT_AUTO_PROMOTE=false
-                // means the fleet-wide promotion of 1.0.0 hasn't happened
-                // yet). The versionless route would serve 1.1.0's bytes, not
-                // this row's — must NOT rewrite.
+                // Promoted in the DB even though the server has already
+                // deployed a newer version (AGENT_AUTO_PROMOTE=false, so
+                // 1.1.0 is not the fleet target yet). Since #3499 the
+                // versionless route resolves this promoted row, so it serves
+                // exactly these bytes — rewrite is correct.
                 isLatest: true,
               },
             ]),
           }),
         }),
       } as any);
+
+      // The versionless route resolves the promoted row — this one — even
+      // though the server's own env version has moved ahead to 1.1.0.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.0.0");
 
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.1.0";
@@ -1291,9 +1549,11 @@ describe("agentVersions routes", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Stored canonical (immutable GitHub asset) URL, NOT the
-        // server-relative versionless route.
-        expect(body.url).toBe(canonical);
+        // Server-relative versionless route: it now resolves this same
+        // promoted row, so the bytes it serves match this row's checksum.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64?version=1.0.0",
+        );
         expect(body.checksum).toBe(checksum);
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1302,15 +1562,18 @@ describe("agentVersions routes", () => {
     });
 
     // Design: breeze-backup's version is slaved to the agent's, and agents
-    // request it by EXACT version. buildServerRelativeAgentDownloadUrl points
-    // at the versionless /download/backup/:os/:arch route, which can only
-    // ever serve whatever the server currently considers latest. Rewriting a
-    // non-latest, non-current backup version to that route would silently
-    // hand the agent NEWER bytes than the version it pinned — the updater's
-    // checksum/manifest check then (correctly) rejects them, and the agent
-    // can never heal. So the rewrite must be gated to rows the versionless
-    // route would actually serve.
-    it("does NOT rewrite component=backup when the row is neither latest nor the server's current version — returns the stored immutable URL untouched", async () => {
+    // request it by EXACT version. Before #5159 the rewrite pointed at the
+    // VERSIONLESS /download/backup/:os/:arch route, which can only serve ONE
+    // release (since #3499, the promoted row) — so a non-promoted backup
+    // version had to be left on its stored canonical URL, and an agent whose
+    // host check refused that URL simply never healed.
+    //
+    // In github mode the URL now carries ?version=, so the route resolves this
+    // exact row instead of the promoted one: the rewrite is safe for ANY
+    // registered version, and a pinned/unpromoted backup can finally heal
+    // over the trusted control-plane origin. (Local mode still cannot select
+    // a release — see the local-mode case below, which keeps the old guard.)
+    it("rewrites a non-promoted component=backup row to a VERSION-PINNED server-relative URL in github mode (#5159)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v0.90.0/breeze-backup-linux-amd64";
       const checksum = "d".repeat(64);
@@ -1356,9 +1619,12 @@ describe("agentVersions routes", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Stored canonical (immutable GitHub asset) URL, NOT the
-        // server-relative versionless route.
-        expect(body.url).toBe(canonical);
+        // Version-pinned server-relative URL: the download route will
+        // resolve 0.90.0 specifically, so these bytes match this checksum
+        // even though 0.90.0 is not the promoted release.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64?version=0.90.0",
+        );
         expect(body.checksum).toBe(checksum);
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1366,7 +1632,10 @@ describe("agentVersions routes", () => {
       }
     });
 
-    it("rewrites component=backup when the requested version matches the server's pinned current version, even though isLatest is false", async () => {
+    // The other half of the #3499 change, now resolved by the #5159 pin: it no
+    // longer matters which row is promoted, because the URL names the version
+    // the caller asked for. The promoted-row lookup is not even consulted.
+    it("rewrites component=backup to its own version even while a DIFFERENT row is promoted (#3499 → #5159)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "e".repeat(64);
@@ -1394,16 +1663,88 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // Not (yet) flagged isLatest in the DB, but it's the version
-                // BINARY_VERSION pins the server to — the versionless route
-                // would serve exactly this.
+                // Matches BINARY_VERSION, but is NOT the promoted row. Before
+                // #5159 that withheld the rewrite; the version pin makes the
+                // promotion state irrelevant.
                 isLatest: false,
+
               },
             ]),
           }),
         }),
       } as any);
 
+      // 1.1.0 is promoted, so that — not this row — is what the versionless
+      // route serves, even though this row matches BINARY_VERSION.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Version-pinned server-relative URL naming THIS row's version;
+        // the promoted row (1.1.0) is irrelevant to what gets served.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64?version=1.0.0",
+        );
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    // The guard must mirror the download route's BINARY_SOURCE branch, not
+    // just its github half. In local mode that route streams ONE unversioned
+    // file from disk/S3 whose version is the binaries-volume build — the env
+    // version — and never consults the promoted row. Deriving the promoted row
+    // here would withhold the rewrite (and cost a pointless query) whenever the
+    // promoted row differs from the disk build, e.g. AGENT_AUTO_PROMOTE=false
+    // or after a rollback via POST /agent-versions/promote, silently ending
+    // backup self-heal for those deployments.
+    it("compares against the env version in local mode, without consulting the promoted row", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                // Not promoted — 1.1.0 is. In github mode that would withhold
+                // the rewrite; in local mode the disk build is what matters.
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
+
+      process.env.BINARY_SOURCE = "local";
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.0.0";
       try {
@@ -1415,8 +1756,9 @@ describe("agentVersions routes", () => {
         expect(body.url).toBe(
           "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
         );
-        expect(body.checksum).toBe(checksum);
+        expect(getPromotedComponentVersion).not.toHaveBeenCalled();
       } finally {
+        delete process.env.BINARY_SOURCE;
         delete process.env.PUBLIC_API_URL;
         delete process.env.BINARY_VERSION;
       }
@@ -1456,7 +1798,7 @@ describe("agentVersions routes", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/linux/amd64",
+          "https://us.example.com/api/v1/agents/download/linux/amd64?version=1.0.0",
         );
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1512,7 +1854,7 @@ describe("agentVersions routes", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/helper/darwin/arm64",
+          "https://us.example.com/api/v1/agents/download/helper/darwin/arm64?version=1.0.0",
         );
       } finally {
         delete process.env.PUBLIC_API_URL;

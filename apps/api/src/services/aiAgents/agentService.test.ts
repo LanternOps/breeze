@@ -10,13 +10,19 @@ const state = vi.hoisted(() => ({
   returnedRow: null as Record<string, unknown> | null,
   insertedValues: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
+  assertScriptIdsAuthorizable: vi.fn(async () => undefined),
   selectWhere: undefined as unknown,
+  selectFor: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
   validateRecipients: vi.fn(),
+  hasResolvableAgentRecipient: vi.fn(),
   ensureManagedTriageAutomation: vi.fn(),
   setManagedAutomationEnabled: vi.fn(),
   syncManagedAutomation: vi.fn(),
+  validateAuthorizationKeys: vi.fn(),
+  ensureDefaultPatchSchedule: vi.fn(async () => ({ created: true })),
+  transactions: 0,
 }));
 
 const schema = vi.hoisted(() => ({
@@ -41,12 +47,31 @@ vi.mock('../../db/schema', () => ({ aiAgents: schema.aiAgents }));
 
 vi.mock('../../db', () => ({
   db: {
+    // AI patch agent W01: the default-schedule hook runs in a SAVEPOINT
+    // (`db.transaction(tx => …)`); the fake hands the callback a sentinel tx.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      state.transactions += 1;
+      return fn({ tx: true });
+    }),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn((condition: unknown) => {
           state.selectWhere = condition;
+          const rows = state.currentRow ? [state.currentRow] : [];
           return ({
-          limit: vi.fn(async () => state.currentRow ? [state.currentRow] : []),
+          // `.limit(n)` must itself be awaitable (getAgent/createAgent's
+          // duplicate check both `await` it directly with no further
+          // chaining) AND support a chained `.for('update')` (withAgentRowLocked)
+          // — a plain Promise is a valid target for an extra method since
+          // promises are ordinary objects.
+          limit: vi.fn(() => {
+            const result = Promise.resolve(rows) as Promise<unknown[]> & { for: (mode: string) => Promise<unknown[]> };
+            result.for = vi.fn((mode: string) => {
+              state.selectFor = mode;
+              return Promise.resolve(rows);
+            });
+            return result;
+          }),
           orderBy: vi.fn(async () => state.listRows),
         });
         }),
@@ -83,8 +108,24 @@ vi.mock('./recipients', () => {
       this.name = 'InvalidAgentRecipientsError';
     }
   }
-  return { InvalidAgentRecipientsError, validateAgentRecipients: state.validateRecipients };
+  return {
+    InvalidAgentRecipientsError,
+    validateAgentRecipients: state.validateRecipients,
+    hasResolvableAgentRecipient: state.hasResolvableAgentRecipient,
+  };
 });
+
+// Real POLICY_DECIDABLE_TIER3 membership/registry semantics have their own
+// exhaustive suite (policyDecidable.test.ts). Real aiTools.ts/aiGuardrails.ts
+// also pull in the full db/schema barrel (peripheralEventTypeEnum et al.),
+// which this file's minimal `../../db/schema` mock does not provide — so this
+// is isolated the same way ./recipients is above: a controllable stub whose
+// CONTRACT (called with exactly the keys this write is setting, before
+// anything is written) is what agentService.ts owns and this suite asserts.
+vi.mock('./scriptAuthorization', () => ({ assertScriptIdsAuthorizable: state.assertScriptIdsAuthorizable }));
+vi.mock('../actionIntents/policyDecidable', () => ({
+  validateAuthorizationKeys: state.validateAuthorizationKeys,
+}));
 
 vi.mock('./managedAutomation', () => ({
   ensureManagedTriageAutomation: state.ensureManagedTriageAutomation,
@@ -93,6 +134,7 @@ vi.mock('./managedAutomation', () => ({
 }));
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
+vi.mock('./scheduleService', () => ({ ensureDefaultPatchSchedule: state.ensureDefaultPatchSchedule }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
 // NOT mocked on purpose. Stubbing isSupportedAgentMode made the "rejects the
 // DB-legal act mode" test assert the STUB's opinion — adding 'act' (the wave-4
@@ -108,18 +150,26 @@ vi.mock('./effectivePolicy', () => ({
     limits: row.limits,
     triggers: row.triggers,
     recipients: row.recipients,
+    actAssets: row.actAssets ?? { scriptIds: [] },
     instructions: row.instructions,
     cooldownSeconds: row.cooldownSeconds,
   }),
 }));
 
+import { db } from '../../db';
 import {
+  ActPrerequisitesNotMetError,
   AgentKindConflictError,
+  InvalidSupervisedActionKeysError,
+  ModeNotAllowedForKindError,
+  SupervisedKeysGrantOnlyError,
   UnsupportedAgentModeError,
+  assertOrgRowSupervisedKeysGrantOnly,
   createAgent,
   disableAgent,
   listAgents,
   updateAgent,
+  withAgentRowLocked,
 } from './agentService';
 
 function auth(over: Partial<AuthContext> = {}): AuthContext {
@@ -176,6 +226,7 @@ const storedRow = {
     respectMaintenanceWindows: true,
   },
   recipients: { userIds: ['u1'], roleIds: ['r1'] },
+  actAssets: { scriptIds: [] },
   instructions: 'Be careful',
   cooldownSeconds: 900,
   disabledAt: null,
@@ -197,6 +248,7 @@ const createInput = {
   limits: storedRow.limits,
   triggers: storedRow.triggers,
   recipients: { userIds: [], roleIds: [] },
+  actAssets: { scriptIds: [] },
   instructions: null,
   cooldownSeconds: 900,
 };
@@ -210,11 +262,17 @@ beforeEach(() => {
   state.syncManagedAutomation.mockReset();
   state.syncManagedAutomation.mockResolvedValue(undefined);
   state.validateRecipients.mockResolvedValue(undefined);
+  state.hasResolvableAgentRecipient.mockReset();
+  state.hasResolvableAgentRecipient.mockResolvedValue(true);
+  state.validateAuthorizationKeys.mockReset();
+  state.validateAuthorizationKeys.mockImplementation((keys: string[]) => ({ ok: keys, rejected: [] }));
   state.currentRow = null;
   state.listRows = [];
   state.returnedRow = null;
   state.insertedValues = null;
   state.updatedValues = null;
+  state.assertScriptIdsAuthorizable.mockClear();
+  state.selectFor = undefined;
 });
 
 describe('assertAgentWriteAllowed', () => {
@@ -242,6 +300,68 @@ describe('assertAgentWriteAllowed', () => {
       auth({ principal: { kind: 'ai_agent', agentId: 'a', runId: 'r' } }),
       { orgId: 'o1', partnerId: null },
     )).toThrow(AgentAccessDeniedError);
+  });
+});
+
+describe('script authorization wiring (#5065, #5089 review)', () => {
+  const S = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+
+  it('createAgent validates EVERY id of the create against the row\'s owner and kind, with the create\'s own allowlist, before writing', async () => {
+    state.returnedRow = storedRow;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, toolAllowlist: ['run_script'], actAssets: { scriptIds: [S], supervisedActionKeys: [] } } as never,
+    );
+
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      createInput.kind,
+      { existing: [], next: [S], toolAllowlist: ['run_script'] },
+    );
+    const assertOrder = state.assertScriptIdsAuthorizable.mock.invocationCallOrder[0] as number;
+    const insertOrder = vi.mocked(db.insert).mock.invocationCallOrder[0] as number;
+    expect(assertOrder).toBeLessThan(insertOrder);
+  });
+
+  it('updateAgent validates only what the patch sets, against the stored list and the POST-patch allowlist', async () => {
+    state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'], actAssets: { scriptIds: ['old-id'], supervisedActionKeys: [] } };
+    state.returnedRow = state.currentRow;
+
+    await updateAgent(auth(), 'a1', { actAssets: { scriptIds: ['old-id', S] } } as never);
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      storedRow.kind,
+      { existing: ['old-id'], next: ['old-id', S], toolAllowlist: ['alerts:list'] },
+    );
+
+    state.assertScriptIdsAuthorizable.mockClear();
+    await updateAgent(auth(), 'a1', { toolAllowlist: ['run_script'], actAssets: { scriptIds: [S] } } as never);
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      expect.anything(),
+      storedRow.kind,
+      expect.objectContaining({ toolAllowlist: ['run_script'] }),
+    );
+
+    state.assertScriptIdsAuthorizable.mockClear();
+    await updateAgent(auth(), 'a1', { name: 'renamed' } as never);
+    expect(state.assertScriptIdsAuthorizable).not.toHaveBeenCalled();
+  });
+
+  it('a rejected id aborts the write — nothing is inserted or updated', async () => {
+    state.assertScriptIdsAuthorizable.mockRejectedValueOnce(new Error('invalid_script_ids'));
+    await expect(createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, toolAllowlist: ['run_script'], actAssets: { scriptIds: [S], supervisedActionKeys: [] } } as never,
+    )).rejects.toThrow('invalid_script_ids');
+    expect(state.insertedValues).toBeNull();
+
+    state.currentRow = storedRow;
+    state.assertScriptIdsAuthorizable.mockRejectedValueOnce(new Error('invalid_script_ids'));
+    await expect(updateAgent(auth(), 'a1', { actAssets: { scriptIds: [S] } } as never)).rejects.toThrow('invalid_script_ids');
+    expect(state.updatedValues).toBeNull();
   });
 });
 
@@ -405,6 +525,19 @@ describe('agent mutations', () => {
     expect(state.publish).not.toHaveBeenCalled();
   });
 
+  // AI patch agent W04 (#5750): `triggers.alertCategories: null` on a PATCH
+  // clears a stored filter (deletes the key) instead of storing a null.
+  it('clears triggers.alertCategories when the patch sends null, leaving every sibling alone', async () => {
+    state.currentRow = { ...storedRow, triggers: { ...storedRow.triggers, alertCategories: ['patching'] } };
+    state.returnedRow = state.currentRow;
+
+    await updateAgent(auth(), 'a1', { triggers: { alertCategories: null } } as never);
+
+    const triggers = (state.updatedValues as { triggers: Record<string, unknown> }).triggers;
+    expect(triggers).not.toHaveProperty('alertCategories');
+    expect(triggers).toMatchObject(storedRow.triggers);
+  });
+
   it('deep-merges every nested patch object so stored siblings survive', async () => {
     state.currentRow = storedRow;
     state.returnedRow = storedRow;
@@ -459,12 +592,358 @@ describe('agent mutations', () => {
     expect(state.validateRecipients).not.toHaveBeenCalled();
   });
 
-  it('rejects the DB-legal act mode as unsupported', async () => {
+  it('rejects an unsupported mode value even though act now ships (Task 6, #3826)', async () => {
     state.currentRow = storedRow;
 
-    await expect(updateAgent(auth(), 'a1', { mode: 'act' } as never))
+    await expect(updateAgent(auth(), 'a1', { mode: 'bogus' } as never))
       .rejects.toBeInstanceOf(UnsupportedAgentModeError);
     expect(state.updatedValues).toBeNull();
+  });
+
+  it('rejects shadow mode for a designer agent with ModeNotAllowedForKindError (Fleet Designer W01)', async () => {
+    state.currentRow = { ...storedRow, kind: 'designer' };
+
+    await expect(updateAgent(auth(), 'a1', { mode: 'shadow' } as never))
+      .rejects.toBeInstanceOf(ModeNotAllowedForKindError);
+    expect(state.updatedValues).toBeNull();
+  });
+
+
+  describe('act-mode activation prerequisites (Task 6, #3826)', () => {
+    it('accepts an update to act mode when the merged row already has a resolvable recipient and an act-eligible surface', async () => {
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['run_script'],
+        actAssets: { scriptIds: ['s-1'] },
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+      expect(state.hasResolvableAgentRecipient).toHaveBeenCalledWith(
+        { orgId: 'o1', partnerId: null },
+        actReady.recipients,
+      );
+    });
+
+    it('refuses an update to act mode with no act-eligible allowlisted surface', async () => {
+      state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('a designer agent needs a recipient but no act-eligible surface — it only writes reports (Fleet Designer W01)', async () => {
+      const designer = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.currentRow = designer;
+      state.returnedRow = { ...designer, mode: 'act' };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(true);
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('a designer agent without a resolvable recipient is still refused act mode (Fleet Designer W01)', async () => {
+      state.currentRow = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(false);
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it("run_script alone does not count unless actAssets has at least one authorized script", async () => {
+      state.currentRow = { ...storedRow, toolAllowlist: ['run_script'], actAssets: { scriptIds: [] } };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+    });
+
+    it('accepts a scoped `tool:action` allowlist entry (manage_services:restart) — the guardrail honours it too, so the tightest act config must not be refused', async () => {
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['manage_services:restart'],
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it("a non-null supervisedActionKeys set alone satisfies act_eligible_tool — a policy-decide-only agent (no run_script/manage_services/disk_cleanup/execute_playbook manifest surface) must still be able to enter act mode (Task 5, #3827)", async () => {
+      // security_scan is POLICY_DECIDABLE_TIER3-eligible but is NOT in
+      // ACT_MANIFEST/ACT_ELIGIBLE_TOOL_NAMES (that set is the wave-4
+      // rule-equivalent-operation manifest, a different lane) — before this
+      // fix, an agent configured ONLY for policy-decide on security_scan/
+      // manage_startup_items/manage_scheduled_tasks (no wave-4 act-lane
+      // surface at all) could never activate act mode: hasActEligibleSurface
+      // would see an empty intersection with ACT_ELIGIBLE_TOOL_NAMES and
+      // reject with act_eligible_tool even though supervisedActionKeys was
+      // correctly configured.
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('an empty supervisedActionKeys does NOT satisfy act_eligible_tool on its own — still requires a real wave-4 manifest surface', async () => {
+      state.currentRow = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
+      };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('refuses an update to act mode with no resolvable recipient', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, toolAllowlist: ['manage_services'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('reports BOTH missing prerequisites together, not just the first', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient', 'act_eligible_tool']);
+    });
+
+    it('checks prerequisites against the MERGED row, not the raw patch — an allowlist-only patch on an already act-mode agent is refused when it narrows away the surface', async () => {
+      state.currentRow = { ...storedRow, mode: 'act', toolAllowlist: ['run_script'], actAssets: { scriptIds: ['s-1'] } };
+
+      const err = await updateAgent(auth(), 'a1', { toolAllowlist: ['alerts:list'] } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('does not check prerequisites for a write that does not resolve to act mode', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, mode: 'shadow', toolAllowlist: ['alerts:list'] };
+      state.returnedRow = { ...storedRow, mode: 'shadow', instructions: 'Updated' };
+
+      await updateAgent(auth(), 'a1', { instructions: 'Updated' } as never);
+
+      expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+      expect(state.updatedValues).toMatchObject({ instructions: 'Updated' });
+    });
+
+    it('gates createAgent the same way, before the insert runs', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(true);
+      state.returnedRow = storedRow;
+
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, mode: 'act', toolAllowlist: [] } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.insertedValues).toBeNull();
+    });
+
+    it('a create with a satisfied surface and recipient succeeds', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(true);
+      state.returnedRow = { ...storedRow, mode: 'act', toolAllowlist: ['manage_services'] };
+
+      await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, mode: 'act', toolAllowlist: ['manage_services'], recipients: { userIds: ['u1'], roleIds: [] } } as never,
+      );
+
+      expect(state.insertedValues).toMatchObject({ mode: 'act' });
+    });
+  });
+
+  describe('supervisedActionKeys write-time validation (wave 5 Part B, #3827)', () => {
+    it('refuses a create whose supervisedActionKeys is rejected by validateAuthorizationKeys, before the insert runs', async () => {
+      state.returnedRow = storedRow;
+      state.validateAuthorizationKeys.mockReturnValue({
+        ok: [],
+        rejected: [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+      });
+
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['bogus_key'] } } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(InvalidSupervisedActionKeysError);
+      expect((err as InvalidSupervisedActionKeysError).rejected).toEqual([
+        { key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' },
+      ]);
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['bogus_key']);
+      expect(state.insertedValues).toBeNull();
+      expect(state.audit).not.toHaveBeenCalled();
+    });
+
+    it('refuses an org-owned create adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the insert runs', async () => {
+      // Value-validation alone (validateAuthorizationKeys) would accept this
+      // key — it is a real POLICY_DECIDABLE_TIER3 key. What must still refuse
+      // it is the separate grant-only rule: an ORG row may only go from not
+      // having a key to having one via the four-eyes grant executor
+      // (supervisedKeyGrant.ts), never through create/update.
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'manage_services:restart', reason: 'grant_only' },
+      ]);
+      expect(state.insertedValues).toBeNull();
+      expect(state.audit).not.toHaveBeenCalled();
+    });
+
+    // A partner-owned row is the CEILING and is edited directly (never
+    // through the grant executor), so this fixture must own the row at the
+    // partner axis, not the org axis — an org-owned create with the same
+    // supervisedActionKeys patch is now refused by the grant-only rule above.
+    it('accepts a partner-owned create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
+      state.returnedRow = {
+        ...storedRow,
+        orgId: null,
+        partnerId: 'p1',
+        actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] },
+      };
+
+      await createAgent(
+        auth(),
+        { orgId: null, partnerId: 'p1' },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
+      );
+
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['manage_services:restart']);
+      expect(state.insertedValues).toMatchObject({
+        actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] },
+      });
+    });
+
+    it('an absent or empty supervisedActionKeys is a no-op — validateAuthorizationKeys is never called', async () => {
+      state.returnedRow = storedRow;
+
+      await createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.insertedValues).not.toBeNull();
+    });
+
+    it('refuses an update whose supervisedActionKeys patch is rejected, before the update runs', async () => {
+      state.currentRow = storedRow;
+      state.validateAuthorizationKeys.mockReturnValue({
+        ok: [],
+        rejected: [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+      });
+
+      const err = await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['bogus_key'] },
+      } as never).catch((e) => e);
+
+      expect(err).toBeInstanceOf(InvalidSupervisedActionKeysError);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    // A partner-owned row is the CEILING and is edited directly, so this
+    // fixture must own the row at the partner axis, not the org axis — an
+    // org-owned update adding a key it does not already hold is now refused
+    // by the grant-only rule (spec §4.4), covered separately below.
+    it('accepts an update to a partner-owned row whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
+      state.currentRow = { ...storedRow, orgId: null, partnerId: 'p1', actAssets: { scriptIds: ['s-1'] } };
+      state.returnedRow = { ...storedRow, orgId: null, partnerId: 'p1' };
+
+      await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
+      } as never);
+
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['security_scan:quarantine']);
+      expect(state.updatedValues).toMatchObject({
+        actAssets: { scriptIds: ['s-1'], supervisedActionKeys: ['security_scan:quarantine'] },
+      });
+    });
+
+    it('refuses an org-owned update adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the update runs', async () => {
+      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
+
+      const err = await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
+      } as never).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'security_scan:quarantine', reason: 'grant_only' },
+      ]);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('allows an org-owned update that keeps or removes an already-held supervisedActionKeys entry', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: [] } };
+
+      await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: [] },
+      } as never);
+
+      expect(state.updatedValues).toMatchObject({
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
+      });
+    });
+
+    it('does NOT re-validate a stored supervisedActionKeys value on an update that never touches actAssets — stored-but-registry-dropped keys are tolerated-but-inert, not write-blocking', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['now_dropped_from_registry'] },
+      };
+      state.returnedRow = { ...storedRow, instructions: 'Updated' };
+
+      await updateAgent(auth(), 'a1', { instructions: 'Updated' } as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.updatedValues).toMatchObject({ instructions: 'Updated' });
+    });
+
+    it('an update patch that sets actAssets but omits supervisedActionKeys does not re-validate the untouched stored value', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['now_dropped_from_registry'] },
+      };
+      state.returnedRow = storedRow;
+
+      await updateAgent(auth(), 'a1', { actAssets: { scriptIds: ['s-2'] } } as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.updatedValues).not.toBeNull();
+    });
   });
 
   it('soft-disables and records audit and event side effects', async () => {
@@ -528,6 +1007,114 @@ describe('agent mutations', () => {
   });
 });
 
+// Task 8 (#4192): a read-modify-write of `actAssets` (the jsonb A2's
+// promote/demote executors will also patch) without a row lock loses a
+// concurrent key append. `withAgentRowLocked` is the one place every writer
+// of that column is meant to route through — updateAgent here, promote/demote
+// in a later PR.
+describe('withAgentRowLocked', () => {
+  it('locks one row FOR UPDATE, bound by the same accessible-agent predicate as getAgent', async () => {
+    state.currentRow = storedRow;
+
+    const seen = await withAgentRowLocked(auth(), 'a1', async (row) => row);
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    // Walk the bound predicate the same way the create-conflict tests do
+    // above — asserting only that a row came back would pass even with the
+    // org/id predicate silently dropped.
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('throws AgentAccessDeniedError instead of running fn when the predicate excludes the row', async () => {
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(withAgentRowLocked(auth(), 'missing', fn)).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1/5 (Critical): the system-caller (auth: null) branch used to
+  // drop the tenancy predicate to `id` alone. It must now bind `id + org_id`
+  // from opts, the same way the auth branch binds `id + accessibleAgentCondition`.
+  it('system caller (auth: null) binds id + org_id from opts, not id alone', async () => {
+    state.currentRow = storedRow; // storedRow.orgId === 'o1'
+
+    const seen = await withAgentRowLocked(null, 'a1', async (row) => row, { orgId: 'o1' });
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('system caller with a mismatched orgId throws AgentAccessDeniedError rather than returning the row', async () => {
+    // The mock's `where` returns state.currentRow unconditionally (there is
+    // no real SQL engine here), so a predicate miss is simulated the same
+    // way as the auth-bound "excludes the row" test above. The assertion on
+    // state.selectWhere below is what actually proves the mismatched orgId
+    // was bound into the predicate rather than silently ignored.
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(
+      withAgentRowLocked(null, 'a1', fn, { orgId: 'wrong-org' }),
+    ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('wrong-org');
+  });
+
+  it('system caller without opts.orgId throws AgentInvariantError before issuing any SELECT', async () => {
+    state.currentRow = storedRow;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    // @ts-expect-error — exercising the runtime guard behind the overload that
+    // makes this uncallable at compile time.
+    await expect(withAgentRowLocked(null, 'a1', fn)).rejects.toThrow(/requires opts\.orgId/);
+    expect(fn).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateAgent row lock', () => {
+  it('acquires the lock before validating recipients or issuing the UPDATE', async () => {
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+
+    await updateAgent(auth(), 'a1', { recipients: { userIds: ['u1'], roleIds: [] } } as never);
+
+    const selectOrder = vi.mocked(db.select).mock.invocationCallOrder[0] as number;
+    const validateOrder = state.validateRecipients.mock.invocationCallOrder[0] as number;
+    const updateOrder = vi.mocked(db.update).mock.invocationCallOrder[0] as number;
+    expect(selectOrder).toBeLessThan(validateOrder);
+    expect(selectOrder).toBeLessThan(updateOrder);
+    // Fix round 1/5 (Important): call-order alone is satisfied by the
+    // pre-refactor select-then-validate-then-update code too (no FOR UPDATE
+    // involved) — it does not prove updateAgent is actually routing through
+    // withAgentRowLocked's lock. This is the one assertion that does: the
+    // mock's `.for()` chain only gets invoked by withAgentRowLocked's own
+    // `.limit(1).for('update')` call, never by a plain `getAgent`-style read.
+    expect(state.selectFor).toBe('update');
+  });
+
+  it('a disabled row seen inside the lock still throws AgentAccessDeniedError', async () => {
+    state.currentRow = { ...storedRow, disabledAt: new Date('2026-08-01T00:00:00Z') };
+
+    await expect(updateAgent(auth(), 'a1', { name: 'Renamed' })).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(state.updatedValues).toBeNull();
+    expect(state.validateRecipients).not.toHaveBeenCalled();
+  });
+});
+
 describe('listAgents', () => {
   it('binds a tenant predicate — RLS is not the only defence', async () => {
     // Previously this asserted back the rows the mock supplied, which is true
@@ -548,5 +1135,78 @@ describe('listAgents', () => {
     state.selectWhere = undefined;
     await listAgents(auth({ scope: 'organization', orgId: 'o1', partnerOrgAccess: null }));
     expect(JSON.stringify(state.selectWhere ?? {})).not.toContain('p1');
+  });
+});
+
+describe('assertOrgRowSupervisedKeysGrantOnly (spec §4.4)', () => {
+  const org = { orgId: 'org-1', partnerId: 'p-1' };
+  const partner = { orgId: null, partnerId: 'p-1' };
+
+  it('rejects an org row adding a key it does not already hold', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, [], ['manage_services:restart']))
+      .toThrow(SupervisedKeysGrantOnlyError);
+    try {
+      assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:stop'], ['manage_services:stop', 'manage_services:restart']);
+      expect.fail('expected SupervisedKeysGrantOnlyError to throw');
+    } catch (e) {
+      expect((e as SupervisedKeysGrantOnlyError).rejected).toEqual([{ key: 'manage_services:restart', reason: 'grant_only' }]);
+    }
+  });
+
+  it('allows an org row to keep or remove keys', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], ['manage_services:restart'])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], [])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], undefined)).not.toThrow();
+  });
+
+  it('leaves partner rows alone (their keys are the ceiling, edited directly)', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(partner, [], ['manage_services:restart'])).not.toThrow();
+  });
+});
+
+// AI patch agent W01 (#5747, OD-9 A) — enabling a partner-wide patch agent
+// creates its default 02:00 schedule; a failure there never fails the enable.
+describe('default patch schedule on enable', () => {
+  beforeEach(() => {
+    state.ensureDefaultPatchSchedule.mockReset().mockResolvedValue({ created: true });
+    state.transactions = 0;
+  });
+
+  it('ensures the default schedule in a SAVEPOINT when a patch agent is created', async () => {
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await createAgent(auth(), { orgId: null, partnerId: 'p1' }, { ...createInput, kind: 'patch', enabled: true } as never);
+    expect(state.transactions).toBe(1);
+    expect(state.ensureDefaultPatchSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'patch', partnerId: 'p1', enabled: true }),
+      { tx: true },
+    );
+  });
+
+  it('never touches schedules for a non-patch agent', async () => {
+    state.returnedRow = { ...storedRow, kind: 'triage' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, kind: 'triage' } as never);
+    expect(state.ensureDefaultPatchSchedule).not.toHaveBeenCalled();
+    expect(state.transactions).toBe(0);
+  });
+
+  it('ensures it on the enabled false -> true transition of a patch agent, and not otherwise', async () => {
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await updateAgent(auth(), 'a1', { enabled: true });
+    expect(state.ensureDefaultPatchSchedule).toHaveBeenCalledTimes(1);
+
+    state.ensureDefaultPatchSchedule.mockClear();
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true, name: 'x' };
+    await updateAgent(auth(), 'a1', { name: 'x' });
+    expect(state.ensureDefaultPatchSchedule).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the enable when schedule creation throws', async () => {
+    state.ensureDefaultPatchSchedule.mockRejectedValue(new Error('boom'));
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await expect(updateAgent(auth(), 'a1', { enabled: true })).resolves.toMatchObject({ enabled: true });
+    expect(state.audit).toHaveBeenCalled();
   });
 });

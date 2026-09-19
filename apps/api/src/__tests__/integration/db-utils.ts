@@ -8,7 +8,7 @@
  * that will catch any actual type errors at runtime against a real database.
  */
 import { randomUUID } from 'crypto';
-import { getTestDb } from './setup';
+import { getTestDb, type TestDatabase } from './setup';
 import { hashPassword } from '../../services/password';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import {
@@ -24,12 +24,82 @@ import {
   catalogItems,
   catalogItemPrices
 } from '../../db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 // Use any for database to avoid complex type inference issues in tests
 // Runtime errors will be caught by actual integration test execution
 function db() {
   return getTestDb() as any;
+}
+
+// ============================================
+// Durable Session-Binding Utilities
+// ============================================
+
+export interface AuthBindingFixture {
+  /** Raw 64-hex binding value (the `breeze_auth_binding` cookie's value). */
+  value: string;
+  /** Ready-to-send `Cookie` header value, e.g. `breeze_auth_binding=<value>`. */
+  cookie: string;
+}
+
+/**
+ * Bootstraps a fresh durable session-binding the way a real browser client
+ * does before calling any session-issuance route (login, mfa/passkey verify,
+ * refresh, verify-email, accept-invite, register-partner, recovery-code
+ * login, SSO callback, ...). Every such issuance path now requires a valid
+ * `breeze_auth_binding` cookie (or the signed native header for mobile) and
+ * answers 428 `auth_binding_rotation_required` without one — see
+ * services/authBrowserTransition.ts. Mirrors the pattern used by
+ * `freshBrowserBinding` in auth-browser-transition.integration.test.ts.
+ *
+ * Imports `routes/auth/binding` LAZILY (inside the function, not at this
+ * file's top level): that module transitively loads `routes/auth/schemas.ts`,
+ * which freezes module-level consts like `ENABLE_REGISTRATION` from
+ * `process.env` at first import. Several integration suites (e.g.
+ * registerPartnerMfaPolicy, emailRecoveryRegistration) set those env vars in
+ * `beforeAll` and only THEN dynamically import the route modules that read
+ * them — a static top-level import here would have forced that freeze at this
+ * file's own (much earlier) import time, silently reading the pre-`beforeAll`
+ * (unset) value instead. db-utils.ts is imported statically by nearly every
+ * integration test file, so this file must never force-load route modules at
+ * its own top level.
+ */
+export async function bootstrapAuthBinding(): Promise<AuthBindingFixture> {
+  const { AUTH_BINDING_COOKIE_NAME, authBindingRoutes } = await import('../../routes/auth/binding');
+  const response = await authBindingRoutes.request('/browser-binding/bootstrap', { method: 'POST' });
+  if (response.status !== 204) {
+    throw new Error(`auth binding bootstrap failed: ${response.status} ${await response.text()}`);
+  }
+  const setCookie = response.headers.get('set-cookie') ?? '';
+  const value = new RegExp(`(?:^|,\\s*)${AUTH_BINDING_COOKIE_NAME}=([0-9a-f]{64})`).exec(setCookie)?.[1];
+  if (!value) throw new Error(`bootstrap did not return an auth binding cookie: ${setCookie}`);
+  return { value, cookie: `${AUTH_BINDING_COOKIE_NAME}=${value}` };
+}
+
+/**
+ * Bootstraps a binding AND opens + immediately releases one issuance lease
+ * against it, returning the live `{transitionId, generation}` pair that a
+ * completion route (e.g. POST /auth/mfa/verify, POST /auth/mfa/passkey/verify)
+ * independently re-derives from the SAME binding cookie at completion time.
+ *
+ * Use this when a test seeds a pending-MFA (or similar) record directly,
+ * bypassing the real /auth/login step that would normally have captured this
+ * pair — the pending record's `transitionId` / `browserGeneration` must match
+ * what the completion route recomputes from the binding cookie it is sent, or
+ * it 409s `Invalid or expired MFA session` (see routes/auth/mfa.ts and
+ * routes/auth/passkeys.ts). `cancelAuthIssuance` releases the operation lease
+ * without touching the transition's state/generation, exactly as a real
+ * login's finishAuthIssuance does for its own capability.
+ */
+export async function bootstrapAuthTransition(): Promise<
+  AuthBindingFixture & { transitionId: string; generation: number }
+> {
+  const { beginAuthIssuance, cancelAuthIssuance } = await import('../../services/authBrowserTransition');
+  const binding = await bootstrapAuthBinding();
+  const capability = await beginAuthIssuance({ kind: 'browser', value: binding.value });
+  await cancelAuthIssuance(capability);
+  return { ...binding, transitionId: capability.transitionId, generation: capability.generation };
 }
 
 // ============================================
@@ -183,7 +253,7 @@ export interface CreateCatalogItemWithPriceOptions {
 /**
  * Insert a catalog item plus ONE catalog_item_prices row (multi-currency wave
  * 3). Document services resolve sell prices from the price book, never from
- * the deprecated catalog_items.unit_price mirror, so a fixture item with no
+ * a column on catalog_items, so a fixture item with no
  * price-book row hits NO_PRICE_FOR_CURRENCY when a line is added from it.
  * Caller supplies the DB context (system scope for seeds).
  */
@@ -195,7 +265,6 @@ export async function createCatalogItemWithPrice(opts: CreateCatalogItemWithPric
       partnerId: opts.partnerId,
       itemType: opts.itemType ?? 'service',
       name: opts.name,
-      unitPrice: opts.unitPrice,
       costBasis: opts.costBasis ?? null,
       costCurrency: opts.costCurrency ?? opts.currencyCode,
       billingType: 'one_time',
@@ -521,4 +590,101 @@ export async function createIntegrationTestClient(
     put: (path: string, body?: unknown) => makeRequest('PUT', path, body),
     delete: (path: string) => makeRequest('DELETE', path)
   };
+}
+
+// ============================================
+// Deferrable-FK Replay Restoration
+// ============================================
+
+/**
+ * Restores the org-lifecycle deferrable-FK contract
+ * (`migrations/2026-09-12-100001-org-lifecycle-foundations.sql` Section 2)
+ * for the NAMED constraints only: every composite FK referencing an `org_id`
+ * column must be `DEFERRABLE INITIALLY IMMEDIATE`, because the org-merge
+ * transaction (Wave 2) runs `SET CONSTRAINTS ALL DEFERRED` and re-points
+ * parent+child `org_id` in separate statements — a non-deferrable composite
+ * FK breaks it. `orgLifecycleFoundations.integration.test.ts` asserts this
+ * against live `pg_constraint` state at test-run time, so it cannot
+ * distinguish "never fixed" from "fixed, then un-fixed by a later migration
+ * replay in the same shared test DB."
+ *
+ * A handful of already-shipped migrations, replayed raw by other integration
+ * suites for their own idempotency/regression coverage, unconditionally
+ * recreate a composite `org_id` FK non-deferrable — an unguarded
+ * `ALTER CONSTRAINT ... NOT DEFERRABLE` in the partner-export material-state
+ * hardening migration, and unconditional `DROP CONSTRAINT` + `ADD CONSTRAINT`
+ * (with no `DEFERRABLE` clause) in the m365 graph-read-consent and
+ * agent-originated-intents migrations. Per CLAUDE.md, never edit a shipped
+ * migration to "fix" this. Instead, every suite that replays one of these
+ * migrations raw must call this helper immediately after, naming the
+ * constraint(s) its own replay just un-deferred.
+ *
+ * `constraintNames` is REQUIRED and the repair is scoped to it. This helper
+ * used to run the migration's whole-database sweep, which repaired every
+ * non-deferrable composite `org_id` FK it found — including ones no replay
+ * had touched. That silently papered over a genuine defect: the three FKs
+ * added non-deferrable by `2026-10-01-100000-ai-agents-graduation-evidence.sql`
+ * were repaired by `m365ConnectionsRls` and `agentIntentConstraints` running
+ * earlier in the same CI shard, so the contract test read GREEN in CI for
+ * days while failing on any fresh database. A blanket sweep here cannot tell
+ * "damaged by the replay I just ran" from "shipped broken", and the second is
+ * exactly what the contract test exists to catch — so it must not be repaired.
+ *
+ * Throws when a named constraint does not exist, so a rename fails loudly here
+ * instead of silently leaving the contract un-restored.
+ *
+ * The initial mode is read from the catalog rather than hard-coded: the org
+ * lifecycle sweep's `INITIALLY IMMEDIATE` is the right default for the FKs it
+ * converted, but several later migrations declare a composite `org_id` FK
+ * `DEFERRABLE INITIALLY DEFERRED` on purpose
+ * (`2026-09-13-agent-rollback-lifecycle.sql`,
+ * `2026-09-28-100002-software-inventory-observations.sql`). Forcing IMMEDIATE
+ * would silently downgrade one the first time a caller named it, changing when
+ * Postgres checks that FK for the rest of the shard.
+ *
+ * Contract test: `orgIdFkDeferrabilityHelper.integration.test.ts`.
+ */
+export async function reapplyOrgIdFkDeferrability(
+  db: TestDatabase,
+  constraintNames: readonly string[],
+): Promise<void> {
+  if (constraintNames.length === 0) {
+    throw new Error(
+      'reapplyOrgIdFkDeferrability: name the constraint(s) your migration replay un-deferred. ' +
+        'A blanket sweep would hide genuinely non-deferrable composite org_id FKs from ' +
+        'orgLifecycleFoundations.integration.test.ts.',
+    );
+  }
+
+  const rows = (await db.execute(sql`
+    SELECT con.conname, con.conrelid::regclass::text AS child_table, con.condeferred
+    FROM pg_constraint con
+    WHERE con.contype = 'f'
+      AND con.connamespace = 'public'::regnamespace
+      AND con.conname IN (${sql.join(
+        constraintNames.map((name) => sql`${name}`),
+        sql`, `,
+      )})
+  `)) as unknown as Array<{ conname: string; child_table: string; condeferred: boolean }>;
+
+  const byName = new Map(rows.map((row) => [row.conname, row]));
+  const missing = constraintNames.filter((name) => !byName.has(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `reapplyOrgIdFkDeferrability: no such foreign-key constraint(s) in public: ${missing.join(', ')}. ` +
+        'Was one renamed by a later migration? Update the caller.',
+    );
+  }
+
+  for (const { conname, child_table: childTable, condeferred } of byName.values()) {
+    // Keep whatever initial mode the constraint currently carries; a replay
+    // that knocked it to NOT DEFERRABLE also cleared condeferred, so those
+    // come back INITIALLY IMMEDIATE as the org-lifecycle sweep intends.
+    const initialMode = condeferred ? 'INITIALLY DEFERRED' : 'INITIALLY IMMEDIATE';
+    // `child_table` comes from regclass::text, which Postgres already quotes
+    // when the identifier needs it; conname is quoted here for the same reason.
+    await db.execute(
+      sql.raw(`ALTER TABLE ${childTable} ALTER CONSTRAINT "${conname}" DEFERRABLE ${initialMode}`),
+    );
+  }
 }

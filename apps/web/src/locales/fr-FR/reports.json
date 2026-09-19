@@ -212,6 +212,34 @@
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },
+    "lifecycleOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeManualAssets": "Inclure les actifs saisis manuellement",
+      "includeManualAssetsHelp": "Les actifs manuels avec une date d’achat ou de garantie apparaissent aux côtés des appareils avec agent.",
+      "includeOtherEquipment": "Lister les autres équipements",
+      "includeOtherEquipmentHelp": "Imprimantes, matériel réseau et IoT sont listés sans calendrier de remplacement.",
+      "replaceAgeYears": "Planifier le remplacement après (années)",
+      "replaceAgeYearsHelp": "Un appareil est à remplacer ce nombre d’années après l’achat, ou à la fin de la garantie active si elle est plus tardive.",
+      "serverReplaceAgeYears": "Planifier le remplacement des serveurs après (années)",
+      "serverReplaceAgeYearsHelp": "Les serveurs suivent leur propre calendrier et figurent dans une section distincte du rapport."
+    },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeAccepted": "Inclure les risques acceptés et les exceptions",
+      "includeAcceptedHelp": "Liste les constats acceptés et atténués, en signalant ceux dont l’acceptation expire à la prochaine période.",
+      "severity": {
+        "critical": "Critique",
+        "high": "Élevée",
+        "low": "Faible",
+        "medium": "Moyenne"
+      },
+      "severityFloor": "Gravité minimale à lister",
+      "severityFloorHelp": "Les constats sous cette gravité sont exclus des tableaux. Cela ne masque jamais un constat activement exploité (KEV) ni à EPSS élevé : ceux-ci sont toujours comptés et listés.",
+      "topN": "Longueur de la liste de correction",
+      "topNHelp": "Nombre de constats corrigeables retenus dans le tableau « à corriger en premier ». Le rapport indique combien ont été écartés au lieu de tronquer en silence."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuration du rapport",
       "description": "Générez un rapport unique sans le enregistrer.",
@@ -264,14 +292,47 @@
         "showing": "Affichage de {{start}} à {{end}} sur {{total}} enregistrements"
       },
       "refresh": "Actualiser",
+      "lifecycle": {
+        "dueSoon": "Bientôt à remplacer",
+        "onTrack": "Dans les temps",
+        "otherEquipment": "Autres équipements",
+        "recommendations": "Ce que nous recommandons",
+        "replaceNow": "À remplacer maintenant",
+        "unknownAge": "Âge inconnu"
+      },
+      "vulnerabilityManagement": {
+        "critical": "Critiques ouverts",
+        "expiringExceptions": "Exceptions expirant à la prochaine période",
+        "high": "Élevés ouverts",
+        "highEpss": "Exploitation probable",
+        "knownExploited": "Activement exploités (KEV)",
+        "notMeasured": "S. O."
+      },
       "reportTypes": {
+        "ai_fleet_design": "Conception de flotte",
+        "ai_org_narrative": "Récit hebdomadaire des opérations IA",
         "alert_summary": "Résumé de l’alerte",
         "compliance": "Rapport de conformité",
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
+        "vulnerability_management": "Gestion des vulnérabilités",
+        "identity_access_review": "Revue des identités et des accès",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de détection des menaces",
+        "endpoint_management_review": "Revue de gestion des terminaux"
+      },
+      "threatDetection": {
+        "agents": "Postes dotés d’un agent de détection",
+        "breezeDevices": "Appareils gérés par Breeze",
+        "carriedIn": "Reportées, encore ouvertes",
+        "coverage": "Limites de ce rapport",
+        "devicesWithoutAgent": "Appareils gérés sans agent",
+        "notMeasured": "N. D.",
+        "opened": "Détections signalées",
+        "resolved": "Détections résolues"
       },
       "tryAgain": "Réessayer",
       "values": {
@@ -281,6 +342,26 @@
       "viewModes": {
         "chart": "Classement",
         "table": "Tableau"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Appareils Breeze non inscrits",
+        "dataGaps": "Ce que nous n'avons pas pu mesurer",
+        "intuneDevices": "Inscrits dans Intune",
+        "intuneWithoutBreezeLink": "Enregistrements Intune non liés",
+        "noncompliant": "Non conformes",
+        "notMeasured": "S. O.",
+        "staleEnrolments": "Inscriptions obsolètes"
+      },
+      "identityAccess": {
+        "notMeasured": "N. D.",
+        "coverage": "Limites de ce rapport",
+        "signins": "Connexions interactives",
+        "distinctUsers": "Comptes connectés",
+        "failures": "Connexions en échec",
+        "admins": "Comptes avec rôle d’administrateur",
+        "adminsWithoutMfa": "Administrateurs sans MFA",
+        "mfaUnknown": "État MFA inconnu",
+        "dormant": "Comptes dormants"
       }
     },
     "reportsList": {
@@ -290,6 +371,10 @@
         "generateNow": "Générez maintenant"
       },
       "adhocReport": "Rapport ad hoc",
+      "aiNarrative": {
+        "managedBySchedule": "Géré par la planification IA",
+        "openLatest": "Ouvrir le plus récent"
+      },
       "confirmDelete": "Voulez-vous vraiment supprimer « {{name}} » ?",
       "createReport": "Créer un rapport",
       "description": "Générez et planifiez des rapports pour votre infrastructure.",
@@ -304,7 +389,8 @@
         "downloadFailed": "Téléchargement échoué",
         "fetchReports": "Impossible de récupérer des rapports",
         "generateReport": "Impossible de générer un rapport",
-        "generic": "Une erreur s’est produite"
+        "generic": "Une erreur s’est produite",
+        "noCompletedRun": "Aucun récit terminé à ouvrir pour l’instant"
       },
       "formats": {
         "csv": "CSV",
@@ -313,16 +399,27 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "success": {
+        "generated": "Rapport « {{name}} » généré."
+      },
+      "visibleInPortal": "Visible dans le portail client",
       "newReport": "Nouveau rapport",
       "nextOccurrence": "Suite : {{next}}",
       "reportTypes": {
+        "ai_fleet_design": "Conception de flotte",
+        "ai_org_narrative": "Récit hebdomadaire des opérations IA",
         "alert_summary": "Résumé de l’alerte",
         "compliance": "Rapport de conformité",
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
+        "vulnerability_management": "Gestion des vulnérabilités",
+        "identity_access_review": "Revue des identités et des accès",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de détection des menaces",
+        "endpoint_management_review": "Revue de gestion des terminaux"
       },
       "runsTable": {
         "actions": "Actions",
@@ -693,6 +790,18 @@
         "templateName": "Pack de conformité trimestriel",
         "value": "Valeur"
       },
+      "recipients": {
+        "contacts": "Contacts de l’organisation",
+        "legacy": "Anciennes adresses e-mail",
+        "convert": "Convertir en contact",
+        "added": "Destinataire du rapport ajouté",
+        "removed": "Destinataire du rapport supprimé",
+        "converted": "Adresse e-mail convertie en contact",
+        "updateFailed": "Impossible de mettre à jour les destinataires du rapport",
+        "convertFailed": "Impossible de convertir cette adresse e-mail",
+        "mfaRequired": "La conversion d’un destinataire nécessite une authentification multifacteur. Activez la MFA dans votre profil, puis réessayez.",
+        "loadFailed": "Impossible de charger les destinataires du rapport"
+      },
       "previewTable": {
         "selectFields": "Sélectionnez les champs pour remplir la table d’aperçu."
       },
@@ -770,6 +879,10 @@
         }
       },
       "selectedFields": "Domaines sélectionnés",
+      "success": {
+        "created": "Rapport « {{name}} » enregistré.",
+        "updated": "Rapport « {{name}} » mis à jour."
+      },
       "values": {
         "enabled": "Activé",
         "off": "Désactivé",
@@ -805,16 +918,23 @@
       "previewAlt": "{{name}} aperçu",
       "reportTypes": {
         "activity": "Activité",
+        "ai_fleet_design": "Conception de flotte",
+        "ai_org_narrative": "Récit hebdomadaire des opérations IA",
         "alert_summary": "Résumé de l’alerte",
         "alerts": "Alertes",
         "compliance": "Rapport de conformité",
         "device_inventory": "Inventaire des appareils",
         "devices": "Dispositifs",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
+        "vulnerability_management": "Gestion des vulnérabilités",
+        "identity_access_review": "Revue des identités et des accès",
         "patches": "Correctifs",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de détection des menaces",
+        "endpoint_management_review": "Revue de gestion des terminaux"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -837,10 +957,6 @@
           "description": "Alertes principales, tendances de gravité et charge de travail en réponse.",
           "name": "Rapport de résumé des alertes"
         },
-        "billing_usage": {
-          "description": "Utilisation des licences, niveaux d’utilisation et résumés de rétrofacturation.",
-          "name": "Rapport de facturation/utilisation"
-        },
         "device_health": {
           "description": "CPU, la mémoire et les tendances de temps d’activité avec le score de santé des appareils.",
           "name": "Rapport sur l’état de l’appareil"
@@ -849,26 +965,65 @@
           "description": "KPI de haut niveau, posture de risque et tendances stratégiques pour le leadership.",
           "name": "Résumé exécutif"
         },
-        "patch_compliance": {
-          "description": "Couverture des correctifs, mises à jour en retard et statut de remédiation.",
-          "name": "Rapport de conformité des correctifs"
+        "hardware_lifecycle": {
+          "description": "Plan de remplacement des appareils prêt pour le client : âge, garantie, dates de remplacement et statut de support du système, avec une recommandation par étapes.",
+          "name": "Rapport de cycle de vie du matériel"
+        },
+        "vulnerability_management": {
+          "description": "Constats ouverts par gravité, avec les vulnérabilités activement exploitées (KEV) et à EPSS élevé signalées séparément, les constats corrigeables à traiter en premier et les exceptions de risque accepté qui expirent à la prochaine période.",
+          "name": "Rapport de gestion des vulnérabilités"
+        },
+        "identity_access_review": {
+          "name": "Revue des identités et des accès",
+          "description": "Les connexions interactives Microsoft 365 sur une période, avec l’inventaire des identités, les comptes dormants, l’état de l’accès conditionnel et la présence des clients d’accès distant — la fenêtre réellement couverte étant annoncée sur le rapport lui-même."
         },
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
         },
-        "sla_compliance": {
-          "description": "SLA adhésion, risque de violation et délais de réponse.",
-          "name": "SLA Rapport de conformité"
+        "threat_detection_review": {
+          "description": "Les détections de menaces détenues pour une période, avec la fenêtre réellement couverte annoncée sur le rapport lui-même — jamais un zéro pour une source non connectée.",
+          "name": "Revue de détection des menaces"
         },
-        "technician_activity": {
-          "description": "Volume de tickets, interventions sur les appareils et rapidité de résolution.",
-          "name": "Rapport d’activité des techniciens"
+        "endpoint_management_review": {
+          "description": "Preuve issue de Microsoft Intune : couverture des inscriptions, répartition de la conformité avec une tendance sur 30 jours, inscriptions obsolètes et sièges de licence, avec la fraîcheur de chaque synchronisation.",
+          "name": "Revue de gestion des terminaux Intune"
         }
       },
       "title": "Modèles de rapports",
       "useTemplate": "Utiliser le modèle",
       "useTemplateTitle": "Utilisez {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Annuler",
+      "coverageNote": "Le rapport indique la fenêtre qu’il couvre réellement. Si la source de détection n’était pas connectée sur une partie de la période, il le signale au lieu d’annoncer zéro.",
+      "createReport": "Créer le rapport",
+      "includeCarriedIn": "Inclure les détections reportées",
+      "includeCarriedInHelp": "Les détections ouvertes avant cette période et encore non résolues figurent aux côtés de celles de la période.",
+      "topIncidents": "Afficher au maximum (détections)",
+      "topIncidentsHelp": "Plafonne le tableau des détections afin qu’un mois chargé ne génère pas un PDF de cent pages. Le rapport précise le nombre écarté au lieu de tronquer silencieusement."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeLicences": "Inclure les sièges de licence",
+      "includeLicencesHelp": "Affiche les sièges utilisés au regard des sièges achetés pour chaque produit Microsoft 365.",
+      "staleEnrolmentDays": "Signaler les inscriptions inactives depuis (jours)",
+      "staleEnrolmentDaysHelp": "Un appareil qui n'a pas communiqué avec Intune depuis ce nombre de jours est compté comme inscription obsolète. L'évaluation se fait selon la cadence de synchronisation d'Intune, et non selon la période du rapport.",
+      "trendDays": "Fenêtre de tendance de conformité (jours)",
+      "trendDaysHelp": "Profondeur d'historique de la tendance quotidienne de conformité dans les relevés d'état Microsoft 365."
+    },
+    "identityAccessOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "orgWideNote": "Ce rapport porte sur l’ensemble de l’organisation. Les données d’identité Microsoft 365 n’ont pas de dimension de site : elles ne peuvent pas être restreintes à certains sites, et un compte limité à des sites donnés ne peut pas le générer.",
+      "dormantDays": "Considérer un compte comme dormant après (jours)",
+      "dormantDaysHelp": "Les comptes actifs sans connexion réussie enregistrée depuis ce nombre de jours sont listés. Un compte jamais vu se connecter apparaît comme « jamais observé », ce qui n’est pas la même chose qu’une longue absence.",
+      "homeCountries": "Pays de connexion attendus (codes ISO)",
+      "homeCountriesHelp": "Codes pays à deux lettres séparés par des virgules, par exemple US, CA. Les connexions hors de cette liste sont comptées. Laissez le champ vide et la section indique « non configuré », jamais « aucune connexion depuis l’étranger ».",
+      "adminDetail": "Inclure le détail des connexions administrateur",
+      "adminDetailHelp": "Liste chaque connexion interactive d’un compte disposant d’un rôle d’administrateur, adresse d’origine comprise. C’est la section qu’un auditeur lit en premier.",
+      "coverageNote": "Le rapport ne couvre que les connexions interactives et indique la fenêtre qu’il couvre réellement. Microsoft conserve les journaux de connexion environ 30 jours et exige une licence Entra ID P1 ou P2 pour les fournir : le premier rapport après activation de la collecte est donc partiel et le signale."
     }
   }
 }

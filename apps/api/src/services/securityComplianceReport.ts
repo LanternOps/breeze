@@ -24,7 +24,10 @@ import {
 } from '../db/schema';
 import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
 import type { PostureSummary } from '@breeze/shared';
-import type { ReportResult } from './reportGenerationService';
+import {
+  assertReportExecutionPreflight,
+  type ReportResult,
+} from './reportGenerationService';
 import type { ReportExecutionAuthority } from './siteScope';
 import {
   buildSecurityProductInventory,
@@ -33,6 +36,7 @@ import {
   type SecurityProductEvidence
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
+import { classifyDeviceProtection } from './portal/protection';
 
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
@@ -160,19 +164,15 @@ export async function generateSecurityCompliancePostureReport(
   const cfg = securityCompliancePostureConfigSchema.parse(rawConfig ?? {});
   const generatedAt = new Date().toISOString();
 
-  if (!authority || authority.scope.orgId !== orgId) {
-    throw new Error('Report execution authority organization mismatch');
-  }
-  if (authority.scope.kind === 'legacy_unscoped') {
-    throw new Error('Legacy report scope cannot execute');
-  }
+  assertReportExecutionPreflight(
+    orgId,
+    cfg,
+    authority,
+    'security_compliance_posture',
+  );
   const restrictedScope = authority.scope.kind === 'restricted'
     ? authority.scope
     : null;
-  if (restrictedScope && cfg.sites.some((siteId) => !restrictedScope.siteIds.includes(siteId))) {
-    throw new Error('Requested site is outside the caller scope');
-  }
-
   if (restrictedScope && restrictedScope.siteIds.length === 0) {
     return {
       rows: [],
@@ -432,12 +432,24 @@ export async function generateSecurityCompliancePostureReport(
     const isManaged = managed.length > 0;
     const rtp = ss?.realTimeProtection ?? null;
     const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && rtp === true);
-    const protectedDevice = isManaged || hasNativeAv;
+
+    const protection = classifyDeviceProtection({
+      securityStatus: ss
+        ? {
+            provider: ss.provider,
+            realTimeProtection: ss.realTimeProtection,
+          }
+        : null,
+      hasS1Agent: s1Devices.has(d.id),
+      hasHuntressAgent: huntressDevices.has(d.id),
+    });
 
     if (ss) reporting += 1;
     if (isManaged) managedEdr += 1;
-    if (isManaged || hasNativeAv) anyAv += 1;
-    if (!protectedDevice) unprotected += 1;
+    if (protection === 'protected') anyAv += 1;
+    // The report has no unknown protection bucket. An absent status row has
+    // always counted as unprotected here, so preserve that public contract.
+    if (protection !== 'protected') unprotected += 1;
 
     // Firewall/encryption are live device states that stop updating when a device
     // goes offline, so a row older than the cutoff is treated as unknown rather

@@ -30,11 +30,20 @@
     "contentChanged": "Les détails de cette demande ont changé depuis sa création ; elle ne peut plus être approuvée.",
     "expired": "Cette demande a expiré avant qu'une décision soit prise.",
     "notSoleApprover": "Un autre approbateur est désormais requis — vous ne pouvez plus approuver votre propre demande.",
+    "siteCeiling": "Cette approbation accorde une autorité à l'échelle de l'organisation. Votre accès est limité à des sites spécifiques, donc un autre approbateur doit décider de cette demande.",
     "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
     "registerDevice": "Enregistrer cet appareil",
     "decideFailed": "Impossible d'envoyer la décision",
     "approvedToast": "Action approuvée",
-    "deniedToast": "Action refusée"
+    "approvedToast_one": "{{count}} action approuvée",
+    "approvedToast_other": "{{count}} actions approuvées",
+    "deniedToast": "Action refusée",
+    "deniedToast_one": "{{count}} action refusée",
+    "deniedToast_other": "{{count}} actions refusées",
+    "runContextLabel": "Contexte d’exécution :",
+    "runContextChosenByAssistant": "choisi par l’assistant",
+    "runContextScriptDefault": "la valeur par défaut enregistrée du script",
+    "runContextOverrides": "choisi par l’assistant, remplaçant la valeur par défaut enregistrée du script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "En attente de réponse...",
@@ -74,7 +83,8 @@
         "label": "Activité récente",
         "prompt": "Montrez-moi les dernières entrées du journal d’audit — quelles actions ont été entreprises ces dernières heures ?"
       }
-    }
+    },
+    "unattendedRelease": "Vérifié par le réviseur de scripts de l'IA et publié sans carte d'approbation."
   },
   "aiChatSidebar": {
     "history": "Histoire",
@@ -118,6 +128,9 @@
   },
   "aiToolCallCard": {
     "running": "En cours…",
+    "approvedRunning": "Approuvé · en cours",
+    "approvedFailed": "Approuvé · échec",
+    "approvedCompleted": "Approuvé · terminé",
     "input": "Entrée :",
     "error": "Erreur :",
     "output": "Sortie :"
@@ -128,7 +141,7 @@
     "tabs": {
       "orgs": "Organisations",
       "sessions": "Sessions",
-      "usage": "Utilisation",
+      "usage": "Utilisation du complément Office",
       "templates": "Modèles"
     }
   },
@@ -424,7 +437,9 @@
     "limit": "Jusqu’à 5 conversations simultanées"
   },
   "workspaceTab": {
-    "approvalPending": "Approbation en attente"
+    "approvalPending": "Approbation en attente",
+    "renameLabel": "Renommer la conversation",
+    "renameHint": "Double-cliquez pour renommer"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Nouvel onglet (Cmd+Shift+N)",
@@ -442,5 +457,52 @@
     "timeMinutesAria": "Temps (minutes)",
     "billable": "Facturable",
     "createTicket": "Créer un ticket"
+  },
+  "scriptProposal": {
+    "title": "Script rédigé par l'IA",
+    "goal": "Objectif",
+    "expectedEffect": "Effet attendu",
+    "verificationClaim": "Comment ce sera vérifié",
+    "rollback": "Annulation",
+    "findings": "Constats du réviseur",
+    "blastRadius": "Portée de l'impact (à titre indicatif)",
+    "touches": "Touche",
+    "devices": "Appareils visés",
+    "showCode": "Afficher le script",
+    "hideCode": "Masquer le script",
+    "acknowledgeTitle": "Reconnaître les motifs dangereux",
+    "acknowledgeRequirement": "La reconnaissance exige le droit d'écriture sur les scripts et une connexion MFA récente.",
+    "acknowledgeIncomplete": "Reconnaissez chaque motif pour approuver.",
+    "expiresIn": "Expire dans {{duration}}",
+    "requestChanges": "Demander des modifications",
+    "notePlaceholder": "Que doit changer l'auteur?",
+    "noteRequired": "Une note est requise.",
+    "sendBack": "Renvoyer à l'auteur",
+    "severityInfo": "Information",
+    "severityWarning": "Avertissement",
+    "severityBlocking": "Bloquant",
+    "saveToLibrary": "Enregistrer dans la bibliothèque",
+    "verificationPending": "Vérification en attente",
+    "verified": "Vérifié",
+    "verificationFailed": "Échec de la vérification",
+    "verificationUnknown": "Vérification impossible",
+    "promoteDescription": "Description (facultative)",
+    "ownerScopeOrganization": "Cette organisation seulement",
+    "ownerScopePartner": "Toutes les organisations de ce partenaire",
+    "nameRequired": "Un nom est requis."
+  },
+  "aiRunCard": {
+    "title": "Exécution d’analyse",
+    "openRun": "Ouvrir l’exécution complète",
+    "resultOnRunPage": "Ceci s’est terminé après que la conversation ait avancé — le résultat complet est conservé sur la page de l’exécution.",
+    "status": {
+      "queued": "en attente",
+      "running": "en cours",
+      "completed": "terminé",
+      "failed": "échoué",
+      "cancelled": "annulé",
+      "expired": "expiré",
+      "skipped": "ignoré"
+    }
   }
 }

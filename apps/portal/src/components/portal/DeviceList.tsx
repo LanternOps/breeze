@@ -1,19 +1,33 @@
-import React from 'react';
-import { Monitor } from 'lucide-react';
-import { type Device } from '@/lib/api';
-import { cn } from '@/lib/utils';
-import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice, type MarkTone } from './ui';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ChevronDown, Download, Monitor } from 'lucide-react';
+import { publicApiPath, type Device } from '@/lib/api';
+import { cn, formatDate, formatRelativeTime } from '@/lib/utils';
+import {
+  BTN_SECONDARY,
+  ROW,
+  CELL,
+  TH,
+  PageHeader,
+  StatusMark,
+  EmptyState,
+  ErrorNotice,
+  type MarkTone,
+} from './ui';
 
 interface DeviceListProps {
   devices: Device[];
   error?: string | null;
+  /** Rendered as a tab panel under DevicesPage's own header: no H1 and no
+   *  Export action of its own — DevicesPage puts Export on the tab row. */
+  embedded?: boolean;
 }
 
-// Local OS label + last-seen phrasing for the customer's office manager, kept
-// private rather than widening `@/lib/utils`, which the rest of the app shares.
+// Local labels for the customer's office manager, kept private rather than
+// widening `@/lib/utils`, which the rest of the app shares.
 const OS_LABELS: Record<string, string> = {
   windows: 'Windows',
   macos: 'Mac',
+  darwin: 'Mac',
   linux: 'Linux',
 };
 
@@ -22,23 +36,75 @@ function osLabel(osType: string | null): string {
   return OS_LABELS[osType.toLowerCase()] ?? osType;
 }
 
-function lastSeenLabel(value: string | null): string {
-  if (!value) return 'Not known';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Not known';
+/**
+ * The phone card's column label. Inline and muted, "Last online" ran straight
+ * into "5 minutes ago" as one undifferentiated grey sentence; the Label style
+ * on its own line makes each card read label / value the way the dashboard
+ * ledger does (apps/portal/DESIGN.md, Typography). Desktop keeps the real <th>
+ * and never shows these.
+ */
+const PHONE_LABEL =
+  'mb-0.5 block text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:hidden';
 
-  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (diffMin < 2) return 'Just now';
-  if (diffMin < 60) return `${diffMin} minutes ago`;
+const PROTECTION_LABELS: Record<Device['protection'], string> = {
+  protected: 'Protected',
+  unprotected: 'Not protected',
+  unknown: 'Not known',
+};
 
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return diffHour === 1 ? 'About an hour ago' : `About ${diffHour} hours ago`;
+/**
+ * The API hands the portal a formatted stamp in the org's timezone
+ * ("Sep 3, 2026, 5:12 PM UTC" — services/portal/deviceReadModel.ts), but the
+ * register speaks in words: "5 minutes ago", "Yesterday", "Last Tuesday". The
+ * exact stamp stays one hover (and one accessible name) away rather than being
+ * thrown out. A stamp this browser cannot parse renders verbatim — never blank.
+ */
+function whenLabel(
+  value: string | null,
+  missing: string,
+): { text: string; title?: string } {
+  if (!value) return { text: missing };
+  // Safari and Firefox reject the comma between the date and the time that
+  // Intl puts there; dropping it costs nothing and parses everywhere.
+  const relative = formatRelativeTime(value.replace(/,\s(?=\d{1,2}:)/, ' '));
+  return relative ? { text: relative, title: value } : { text: value };
+}
 
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay === 1) return 'Yesterday';
-  if (diffDay < 7) return `${diffDay} days ago`;
+/**
+ * Pre-hydration fallback for `whenLabel` (#5881). `formatRelativeTime` calls
+ * `new Date()` during render, once on the server (SSR) and again on the
+ * client's first render pass (before hydration commits) — two independent
+ * clock reads that can land on different calendar days (server/client
+ * timezone differ, or the SSR-to-hydration gap simply crosses local
+ * midnight), producing a React hydration mismatch that discards and
+ * re-renders the whole tree. This fallback never reads the clock: it is the
+ * raw, already-formatted stamp the API sent (deterministic — same string on
+ * server and client), so the first paint on both sides is byte-identical.
+ * `DeviceList` swaps to the real `whenLabel` only after mount (see
+ * `mounted` state below), once there is no more SSR output to disagree with.
+ */
+function staticWhenLabel(value: string | null, missing: string): { text: string; title?: string } {
+  return value ? { text: value } : { text: missing };
+}
 
-  return `On ${d.toLocaleDateString()}`;
+/** Warranty ends in the future, so relative time is meaningless for it — a
+ *  calendar date, read on its own calendar day (no timezone shift). */
+function warrantyLabel(value: string | null): string {
+  if (!value) return 'Not available';
+  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
+  return Number.isNaN(date.getTime()) ? value : formatDate(date);
+}
+
+function encryptionLabel(value: string | null): string {
+  if (!value) return 'Not available';
+  const v = value.toLowerCase();
+  // 'encrypted' is a substring of 'unencrypted', so the negative is tested
+  // first — the other order once reported every unencrypted disk as safe (#1831).
+  if (v.includes('partial')) return 'Partly encrypted';
+  if (v.includes('unencrypted') || v.includes('not_encrypted')) return 'Not encrypted';
+  if (v.includes('encrypted')) return 'Encrypted';
+  if (v === 'unknown') return 'Not known';
+  return value;
 }
 
 function statusMark(status: Device['status']): { tone: MarkTone; label: string } {
@@ -49,12 +115,83 @@ function statusMark(status: Device['status']): { tone: MarkTone; label: string }
       return { tone: 'neutral', label: 'Offline' };
     case 'warning':
       return { tone: 'warning', label: 'Warning' };
+    default:
+      return { tone: 'neutral', label: status || 'Unknown' };
   }
 }
 
-export function DeviceList({ devices, error }: DeviceListProps) {
+/** One line of the disclosure. Deliberately the same shape the security ledger
+ *  keeps for its own "More about this device" panel — two device tables in one
+ *  portal must read as one hand. */
+function DeviceFact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2">
+      <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="text-xs text-foreground">{children}</dd>
+    </div>
+  );
+}
+
+/** The four facts a customer wants only once they're asking about one machine.
+ *  `mounted` gates the relative-time facts to the hydration-stable fallback
+ *  (see `staticWhenLabel`) until after the client has mounted. */
+function moreFacts(
+  device: Device,
+  mounted: boolean,
+): { label: string; text: string; title?: string }[] {
+  const when = mounted ? whenLabel : staticWhenLabel;
+  return [
+    { label: 'Last patch', ...when(device.lastPatchAt, 'Not available') },
+    { label: 'Encryption', text: encryptionLabel(device.encryption) },
+    { label: 'Last backup', ...when(device.lastBackupAt, 'Not available') },
+    { label: 'Warranty ends', text: warrantyLabel(device.warrantyEndsAt) },
+  ];
+}
+
+/** How long a device row linked to from the lifecycle plan table stays
+ *  highlighted after landing, in milliseconds. */
+const HIGHLIGHT_DURATION_MS = 3000;
+
+export function DeviceList({ devices, error, embedded = false }: DeviceListProps) {
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+
+  // Flips true in the passive-effects flush right after the initial commit
+  // (#5881) — the SSR pass and the client's pre-hydration render both see
+  // `false` and render the clock-free `staticWhenLabel` fallback, so they
+  // always agree and hydration never discards the tree. Only once mounted do
+  // the relative-time cells ("5 minutes ago", "Yesterday") take over. A
+  // separate effect (rather than folding into the one below) so the
+  // scroll-and-highlight effect's own scheduling is untouched.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Runs once on mount: a link from the lifecycle plan table lands here as
+  // `/devices#<deviceId>` (hash-based UI state per CLAUDE.md, not a query
+  // param). Scroll the matching row into view and ring-highlight it briefly.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = window.location.hash.slice(1);
+    if (!id || !devices.some((d) => d.id === id)) return;
+
+    setHighlightedId(id);
+    rowRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const timer = setTimeout(() => setHighlightedId(null), HIGHLIGHT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   if (error) {
-    return <ErrorNotice>{error}</ErrorNotice>;
+    // The transport error is ours to read, not the customer's: they can act on
+    // "ask your IT team", never on a connection string.
+    return (
+      <ErrorNotice>
+        We couldn&apos;t load your devices just now. Your IT team can help.
+      </ErrorNotice>
+    );
   }
 
   // The register's foot: what a glancing reader wants is one health sentence.
@@ -68,9 +205,26 @@ export function DeviceList({ devices, error }: DeviceListProps) {
           : `All ${devices.length} devices online`
         : `${online} of ${devices.length} online`;
 
+  const exportAction = (
+    <a
+      href={publicApiPath('/portal/devices/export.csv')}
+      data-testid="portal-devices-export"
+      className={BTN_SECONDARY}
+    >
+      <Download className="h-4 w-4" aria-hidden="true" />
+      Export CSV
+    </a>
+  );
+
   return (
     <div>
-      <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
+      {!embedded && (
+        <PageHeader
+          title="Devices"
+          lede="The machines your IT team looks after for you."
+          action={exportAction}
+        />
+      )}
 
       {devices.length === 0 ? (
         <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">
@@ -82,8 +236,12 @@ export function DeviceList({ devices, error }: DeviceListProps) {
         <div className="overflow-x-auto">
           {/* One inventory, one treatment: the same hairline-ruled ledger the
               rest of the portal keeps (Equipment reads these machines the same
-              way) — not a card grid holding a second belief about this data. */}
-          <table className="block w-full sm:table sm:min-w-[36rem]">
+              way) — not a card grid holding a second belief about this data.
+              Five columns and no min-width: nine technician columns forced a
+              horizontal scroll that hid the last of them inside the content
+              column, with no affordance saying so. The rest of each machine's
+              file lives one disclosure down. */}
+          <table className="block w-full sm:table" data-testid="portal-device-table">
             <thead className="hidden border-b border-border sm:table-header-group">
               <tr>
                 <th scope="col" className={cn(TH, 'text-left')}>
@@ -98,34 +256,85 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                 <th scope="col" className={cn(TH, 'text-left')}>
                   Last online
                 </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Protection
+                </th>
               </tr>
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {devices.map((device) => {
                 const mark = statusMark(device.status);
+                const lastOnline = mounted
+                  ? whenLabel(device.lastSeenAt, 'Not known')
+                  : staticWhenLabel(device.lastSeenAt, 'Not known');
+                const trailing =
+                  'basis-full text-xs text-foreground sm:text-sm sm:text-muted-foreground';
                 return (
-                  <tr key={device.id} className={ROW}>
+                  <tr
+                    key={device.id}
+                    ref={(el) => {
+                      rowRefs.current[device.id] = el;
+                    }}
+                    className={cn(
+                      ROW,
+                      highlightedId === device.id && 'ring-2 ring-primary ring-inset',
+                    )}
+                    data-testid={`portal-device-${device.id}`}
+                  >
                     {/* order-* reorders the phone card: name and status share
-                        the first line, platform and last-seen trail muted. The
-                        friendly name only — the raw hostname is a technician's
-                        handle and stays the fallback, not a subtitle. */}
-                    <td className={cn(CELL, 'order-1 grow')}>
-                      <span className="font-semibold text-foreground">
+                        the first line, then one fact per line so every card in
+                        the ledger reflows identically. The friendly name only —
+                        the raw hostname is a technician's handle and stays the
+                        fallback, not a subtitle. */}
+                    <td className={cn(CELL, 'order-1 min-w-0 grow')}>
+                      <span className="block break-words font-semibold text-foreground">
                         {device.displayName || device.hostname}
                       </span>
+                      {/* The technician's half of the file — patch, encryption,
+                          backup, warranty — waits here instead of pushing the
+                          ledger past the content column into a hidden scroll. */}
+                      <details
+                        className="group mt-1.5"
+                        data-testid={`portal-device-${device.id}-more`}
+                      >
+                        {/* inline-flex drops the UA disclosure triangle (which
+                            is not our icon system); the chevron is the drawn
+                            affordance and flips when the row is open. */}
+                        <summary className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-primary-on-tint underline-offset-4 hover:underline [&::-webkit-details-marker]:hidden">
+                          <ChevronDown
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 group-open:rotate-180"
+                            strokeWidth={2}
+                          />
+                          More about this device
+                        </summary>
+                        <dl className="mt-2 space-y-1.5">
+                          {moreFacts(device, mounted).map((fact) => (
+                            <DeviceFact key={fact.label} label={fact.label}>
+                              <span title={fact.title}>{fact.text}</span>
+                            </DeviceFact>
+                          ))}
+                        </dl>
+                      </details>
                     </td>
-                    <td className={cn(CELL, 'order-3 text-xs text-muted-foreground sm:text-sm')}>
-                      <span className="sm:hidden">Type </span>
+                    <td className={cn(CELL, 'order-3', trailing)}>
+                      <span className={PHONE_LABEL}>Type</span>
                       {osLabel(device.osType)}
                     </td>
                     <td className={cn(CELL, 'order-2 shrink-0')}>
-                      <StatusMark tone={mark.tone}>
-                        {mark.label}
-                      </StatusMark>
+                      <StatusMark tone={mark.tone}>{mark.label}</StatusMark>
                     </td>
-                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
-                      <span className="sm:hidden">Last online </span>
-                      {lastSeenLabel(device.lastSeenAt)}
+                    <td
+                      className={cn(CELL, 'order-4', trailing)}
+                      data-testid={`portal-device-${device.id}-last-online`}
+                      title={lastOnline.title}
+                    >
+                      <span className={PHONE_LABEL}>Last online</span>
+                      {lastOnline.text}
+                    </td>
+                    <td className={cn(CELL, 'order-5', trailing)}>
+                      <span className={PHONE_LABEL}>Protection</span>
+                      {PROTECTION_LABELS[device.protection]}
                     </td>
                   </tr>
                 );

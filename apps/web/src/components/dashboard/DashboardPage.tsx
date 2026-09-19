@@ -118,11 +118,10 @@ export default function DashboardPage() {
 
   // Keep the AI sidebar's page context current.
   useEffect(() => {
-    if (!devices.data || !alertsSummary.data) return;
     useAiStore.getState().setPageContext({
       type: 'dashboard',
-      deviceCount: devices.data.total,
-      alertCount: alertsSummary.data.byStatus.active,
+      ...(devices.data ? { deviceCount: devices.data.total } : {}),
+      ...(alertsSummary.data ? { alertCount: alertsSummary.data.byStatus.active } : {}),
     });
   }, [devices.data, alertsSummary.data]);
 

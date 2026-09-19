@@ -36,6 +36,7 @@ import {
   getDeviceRoleSourceLabel,
   getDeviceRoleSourceColor,
 } from "@/lib/deviceRoles";
+import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
 import { formatNumber } from "@/lib/i18n/format";
@@ -79,6 +80,9 @@ type DeviceInfo = {
   uptimeSeconds?: number | null;
   deviceRole?: string | null;
   deviceRoleSource?: string | null;
+  /** Fleet Designer W02 (#5652): projection of the active function assessment. */
+  deviceFunction?: string | null;
+  deviceFunctionSource?: string | null;
   tags?: string[];
   customFields?: Record<string, unknown>;
   tccPermissions?: TCCPermissions | null;
@@ -841,6 +845,19 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
               </span>
             </dd>
           </div>
+          {/* Fleet Designer W02 (#5652): what the device is FOR, beside the billable role. */}
+          <DeviceFunctionField
+            deviceId={deviceId}
+            functionKey={info?.deviceFunction}
+            functionSource={info?.deviceFunctionSource}
+            onChanged={(next) =>
+              setInfo((prev) =>
+                prev
+                  ? { ...prev, deviceFunction: next.functionKey, deviceFunctionSource: next.source }
+                  : prev,
+              )
+            }
+          />
         </dl>
       </div>
 
@@ -1224,7 +1241,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                       </>
                     ) : (
                       <>
-                        <span>{renderFieldValue(def, currentValue)}</span>
+                        <span data-testid={`device-custom-field-value-${def.fieldKey}`}>
+                          {renderFieldValue(def, currentValue)}
+                        </span>
                         <button
                           type="button"
                           onClick={() => {

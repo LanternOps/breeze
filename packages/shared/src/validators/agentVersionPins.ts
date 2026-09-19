@@ -93,3 +93,50 @@ export function extractAgentVersionPins(defaults: unknown): {
     watchdog: normalizeVersionPin(pins.watchdog),
   };
 }
+
+/** The raw (un-normalized) `agentVersionPins` sub-object of a `settings.defaults` blob. */
+function extractRawAgentVersionPins(defaults: unknown): Record<string, unknown> {
+  const root =
+    defaults && typeof defaults === 'object' && !Array.isArray(defaults)
+      ? (defaults as Record<string, unknown>)
+      : {};
+  return root.agentVersionPins &&
+    typeof root.agentVersionPins === 'object' &&
+    !Array.isArray(root.agentVersionPins)
+    ? (root.agentVersionPins as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Resolve BOTH components' EFFECTIVE pins for an org from its own
+ * `settings.defaults` and its partner's, using INHERIT-WITH-OVERRIDE
+ * precedence (issue #2124, per maintainer): an org-set component wins for
+ * that org; where the org has NOT set a component, the partner default is
+ * inherited; unset at both levels resolves to `null` (track global latest).
+ * Presence-keyed (`component in orgPins`), NOT truthiness, so an org may
+ * explicitly store `'latest'` to override a partner pin back to global
+ * latest. `orgDefaults`/`partnerDefaults` are `settings.defaults` objects (or
+ * anything shaped like one) — safe for any input, never throws.
+ *
+ * THE SINGLE SOURCE for this precedence. Two callers in the API resolve it
+ * against the SAME org⋈partner shape for different read patterns —
+ * `getOrgAgentUpdateConfig` (apps/api/src/routes/agents/helpers.ts, the
+ * heartbeat's per-org resolver) and `getOrgAgentVersionPinsBatch`
+ * (apps/api/src/services/orgAgentVersionPins.ts, the Devices list's
+ * many-orgs-at-once resolver, issue #5285) — and BOTH call this function
+ * rather than re-deriving the ternary, so the two can never silently drift.
+ * This codebase has repeatedly shipped exactly that failure shape elsewhere
+ * (duplicated cascade/allowlist logic drifting apart, caught only by
+ * dedicated contract tests — see CLAUDE.md's tenancy-cascade history).
+ */
+export function resolveInheritedAgentVersionPins(
+  orgDefaults: unknown,
+  partnerDefaults: unknown,
+): { agent: string | null; watchdog: string | null } {
+  const orgPins = extractRawAgentVersionPins(orgDefaults);
+  const partnerPins = extractRawAgentVersionPins(partnerDefaults);
+  return {
+    agent: normalizeVersionPin('agent' in orgPins ? orgPins.agent : partnerPins.agent),
+    watchdog: normalizeVersionPin('watchdog' in orgPins ? orgPins.watchdog : partnerPins.watchdog),
+  };
+}

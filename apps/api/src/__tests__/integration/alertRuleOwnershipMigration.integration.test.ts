@@ -6,11 +6,13 @@
  *
  * CI databases are migrated schema-fresh in globalSetup, so the migration's
  * data-moving DO-block would otherwise only ever run against zero rows. This
- * suite seeds the real pre-migration shape, re-runs the migration file from
- * disk, and asserts the six behaviours the consolidation contract depends on:
- * ids preserved, missing alert_rule links created, exact duplicates deduped
- * with alert provenance repointed, both JSONB mirrors rebuilt, and replay
- * being a true no-op.
+ * suite seeds the real pre-migration shape, re-runs the migration's DML data
+ * section from disk (see `dataSection()` — deliberately not the full file, to
+ * avoid downgrading a function a later migration owns; #3818), and asserts
+ * the six behaviours the consolidation contract depends on: ids preserved,
+ * missing alert_rule links created, exact duplicates deduped with alert
+ * provenance repointed, both JSONB mirrors rebuilt, and replay being a true
+ * no-op.
  *
  * Prerequisites:
  *   docker compose -f docker-compose.test.yml up -d
@@ -45,10 +47,6 @@ function migrationText(): string {
   return readFileSync(MIGRATION_FILE, 'utf8');
 }
 
-async function runMigration() {
-  await getTestDb().execute(sql.raw(migrationText()));
-}
-
 /**
  * The RLS-sensitive DML half of the migration — everything above the
  * `-- @data-section-end` sentinel. The half below it is function DDL that only
@@ -61,6 +59,22 @@ function dataSection(): string {
     throw new Error('migration lost its `-- @data-section-end` sentinel — see the note in the .sql file');
   }
   return dml!;
+}
+
+/**
+ * Replays only the DML data section this suite actually exercises (rule
+ * moves, dedupe, mirror rebuilds). Deliberately NOT the full migration file:
+ * the integration DB is shared and long-lived across suites, and the file's
+ * tail redefines `breeze_partner_export_policy_settings_pre_patch()` with
+ * whatever shape that function had on 2026-07-30. Later migrations
+ * (2026-08-21-patch-reboot-delay-minutes.sql) `CREATE OR REPLACE` a newer
+ * version of that same function; a full-file replay here would silently
+ * downgrade it back out from under any test that runs afterward (issue
+ * #3818). The tests in this file never call that function, so scoping the
+ * replay to the data section removes the hazard without weakening coverage.
+ */
+async function runMigration() {
+  await getTestDb().execute(sql.raw(dataSection()));
 }
 
 /**

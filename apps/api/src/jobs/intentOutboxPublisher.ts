@@ -6,6 +6,7 @@ import { intentOutbox } from '../db/schema/actionIntents';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
@@ -52,11 +53,14 @@ import { captureException } from '../services/sentry';
 
 const REAPER_QUEUE_NAME = 'intent-outbox-publisher';
 const ACTION_INTENTS_QUEUE_NAME = 'action-intents';
+const PAM_ACTUATION_QUEUE_NAME = 'pam-actuation';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with publish_attempts > this are considered stuck: logged as an alarm
-// and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// and left alone rather than retried forever. Exported so
+// intentOutboxRetention.ts's prune cutoff stays in sync with this threshold
+// instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 type PublisherJobData = { type: 'publish-intent-outbox'; queuedAt: string };
 
@@ -85,6 +89,7 @@ const runOutsideDbContext = <T>(fn: () => Promise<T>): Promise<T> => {
 let reaperQueue: Queue<PublisherJobData> | null = null;
 let reaperWorker: Worker<PublisherJobData> | null = null;
 let actionIntentsQueue: Queue | null = null;
+let pamActuationQueue: Queue | null = null;
 
 function getQueue(): Queue<PublisherJobData> {
   if (!reaperQueue) {
@@ -102,6 +107,13 @@ function getActionIntentsQueue(): Queue {
   return actionIntentsQueue;
 }
 
+function getPamActuationQueue(): Queue {
+  if (!pamActuationQueue) {
+    pamActuationQueue = createInstrumentedQueue(PAM_ACTUATION_QUEUE_NAME);
+  }
+  return pamActuationQueue;
+}
+
 // `type` (not `interface`) so TS's implicit index signature for object type
 // literals applies — `db.execute<T>`'s constraint is `Record<string,
 // unknown>`, which a plain `interface` declaration does not structurally
@@ -115,8 +127,10 @@ type StuckOutboxRow = {
 
 type ClaimedOutboxRow = {
   id: number;
-  intent_id: string;
+  intent_id: string | null;
+  pam_actuation_id: string | null;
   event_type: string;
+  payload: Record<string, unknown>;
   publish_attempts: number;
 };
 
@@ -174,7 +188,8 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
     SET publish_attempts = o.publish_attempts + 1
     FROM due
     WHERE o.id = due.id
-    RETURNING o.id, o.intent_id, o.event_type, o.publish_attempts;
+    RETURNING o.id, o.intent_id, o.pam_actuation_id, o.event_type,
+      o.payload, o.publish_attempts;
   `);
   const claimedRows = extractRows<ClaimedOutboxRow>(claimed);
 
@@ -188,19 +203,36 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
  * idle-in-transaction (#1105).
  */
 async function enqueueClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
-  const queue = getActionIntentsQueue();
   const publishedIds: number[] = [];
   for (const row of rows) {
     try {
-      await queue.add(
-        row.event_type,
-        { intentId: row.intent_id, eventType: row.event_type },
-        {
-          jobId: `intent-${row.event_type}-${row.intent_id}`,
-          removeOnComplete: { count: 500 },
-          removeOnFail: { count: 500 },
-        },
-      );
+      if (row.pam_actuation_id) {
+        const generation = row.payload?.generation;
+        if (!Number.isInteger(generation) || Number(generation) < 1) {
+          throw new Error(`PAM outbox row ${row.id} has invalid generation`);
+        }
+        await getPamActuationQueue().add(
+          row.event_type,
+          { actuationId: row.pam_actuation_id, generation },
+          {
+            jobId: `pam-${row.pam_actuation_id}-${generation}`,
+            removeOnComplete: { count: 500 },
+            removeOnFail: { count: 500 },
+          },
+        );
+      } else if (row.intent_id) {
+        await getActionIntentsQueue().add(
+          row.event_type,
+          { intentId: row.intent_id, eventType: row.event_type },
+          {
+            jobId: `intent-${row.event_type}-${row.intent_id}`,
+            removeOnComplete: { count: 500 },
+            removeOnFail: { count: 500 },
+          },
+        );
+      } else {
+        throw new Error(`Outbox row ${row.id} has no parent`);
+      }
       publishedIds.push(row.id);
     } catch (err) {
       console.error(`[IntentOutboxPublisher] Failed to enqueue outbox row ${row.id}:`, err);
@@ -316,6 +348,7 @@ export async function initializeIntentOutboxPublisher(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'intentOutboxPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[IntentOutboxPublisher] Worker error:', error);
     captureException(error);
@@ -340,9 +373,11 @@ export async function shutdownIntentOutboxPublisher(): Promise<void> {
   const worker = reaperWorker;
   const queue = reaperQueue;
   const targetQueue = actionIntentsQueue;
+  const pamQueue = pamActuationQueue;
   reaperWorker = null;
   reaperQueue = null;
   actionIntentsQueue = null;
+  pamActuationQueue = null;
 
   if (worker) {
     try {
@@ -363,6 +398,13 @@ export async function shutdownIntentOutboxPublisher(): Promise<void> {
       await targetQueue.close();
     } catch (err) {
       console.error('[IntentOutboxPublisher] Error closing action-intents queue:', err);
+    }
+  }
+  if (pamQueue) {
+    try {
+      await pamQueue.close();
+    } catch (err) {
+      console.error('[IntentOutboxPublisher] Error closing pam-actuation queue:', err);
     }
   }
 }

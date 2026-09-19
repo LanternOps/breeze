@@ -3,6 +3,7 @@ import { ClipboardCheck, RefreshCw } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 type ComplianceRow = {
   id: string;
   configItemName: string | null;
@@ -45,9 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 function formatTimestamp(value: string | null, timezone?: string): string {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatDateTime(value, { timeZone: timezone });
 }
 export default function ComplianceStatusTab({
   policyId,

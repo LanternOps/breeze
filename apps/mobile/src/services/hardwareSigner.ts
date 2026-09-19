@@ -8,9 +8,16 @@
  * crash. Instead we optional-require `react-native-biometrics` at runtime and
  * fall back to {@link nullSigner} when it's absent.
  *
- * On a real dev-client build the adapter wraps the platform Secure Enclave
- * (iOS) / StrongBox-or-TEE (Android) keystore: keys are non-exportable,
- * device-bound, and every `sign()` is biometric-gated by the OS.
+ * What this actually wraps, on a real dev-client build, is a biometric-gated
+ * **Keychain RSA** key — NOT the Secure Enclave. The SE holds P-256 keys only,
+ * so an RSA key cannot live there whatever the enclosing API suggests. The key
+ * is non-exportable and every `sign()` is biometric-gated by the OS, but
+ * nothing vouches for where it lives, which is why the server registers it
+ * `unattested` and it can never reach L4 (#1374).
+ *
+ * The L4 path is `attestingSigner.ts`: a real Secure Enclave / StrongBox P-256
+ * key plus a platform attestation. This signer remains the fallback for devices
+ * and builds that have no attested path.
  */
 
 export interface HardwareSigner {
@@ -95,8 +102,8 @@ function loadNativeBiometrics(): RNBiometricsInstance | null {
 /**
  * Adapter wrapping the classic `react-native-biometrics` class-based API into
  * the {@link HardwareSigner} interface. NOT unit-tested — exercised only on a
- * physical dev-client build (Secure Enclave / StrongBox), flagged for on-device
- * verification.
+ * physical dev-client build (biometric-gated Keychain RSA key), flagged for
+ * on-device verification.
  */
 export function reactNativeBiometricsSigner(rnBiometrics: RNBiometricsInstance): HardwareSigner {
   return {

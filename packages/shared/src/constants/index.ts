@@ -1,3 +1,4 @@
+export * from './errorCodes';
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 
@@ -11,12 +12,15 @@ export * from './notificationTypes';
 // Agent file-transfer caps mirrored from the Go agent, so the web layer can
 // pre-flight a transfer instead of learning the limit from a failed round trip.
 export * from './agentFileTransfer';
+// HP CMSL licence identifier — the thing a warranty feature link's recorded
+// consent is compared against (#5511 D2). Leaf module, no imports.
+export * from './hpCmsl';
 
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
 // Device Status
-export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined'] as const;
+export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] as const;
 
 // Alert Severities
 export const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
@@ -30,8 +34,10 @@ export const SCRIPT_LANGUAGES = ['powershell', 'bash', 'python', 'cmd'] as const
 // Script Run As
 export const SCRIPT_RUN_AS = ['system', 'user', 'elevated'] as const;
 
-// Execution Statuses
-export const EXECUTION_STATUSES = ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] as const;
+// Execution Statuses — canonical source is ../types (EXECUTION_STATUSES), which
+// also carries the transient 'cancelling' state (#3525). Re-exported here so
+// existing `from '../constants'` imports keep working.
+export { EXECUTION_STATUSES } from '../types';
 
 // Role Scopes
 export const ROLE_SCOPES = ['system', 'partner', 'organization'] as const;
@@ -55,8 +61,11 @@ export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook',
 export const ACTOR_TYPES = ['user', 'api_key', 'agent', 'system', 'ai_agent'] as const;
 
 // Audit Results — same contract as ACTOR_TYPES above, for the `audit_result`
-// Postgres enum.
-export const AUDIT_RESULTS = ['success', 'failure', 'denied'] as const;
+// Postgres enum. 'dispatched' is the neutral outcome for commands audited at
+// enqueue time, before the agent has reported back — see commandQueue.ts and
+// issue #4225. It must never be conflated with 'success': the dispatch-time
+// audit row cannot yet know whether the command actually succeeded.
+export const AUDIT_RESULTS = ['success', 'failure', 'denied', 'dispatched'] as const;
 
 // Remote Session Types
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;
@@ -139,7 +148,19 @@ export const MAX_PAGE_SIZE = 100;
 // friendly message) so the two can never drift.
 export const BULK_ID_LIMIT = 50;
 
+// Hard cap on one AI-agent approvals batch decide (services/approvals/
+// batchDecide.ts's `BATCH_MAX`, which re-exports this). Matches the inbox
+// page size, so "select everything on this page" is always expressible in
+// one call. Shared by the server's enforcement (`loadHomogeneousBatch`
+// 422s `batch_too_large` past it) and the web inbox's client-side guard
+// (#4460) so the two can never drift — the group tap is refused inline
+// instead of round-tripping to learn the cap the hard way.
+export const APPROVAL_BATCH_MAX = 50;
+
 // Session timeouts
 export const ACCESS_TOKEN_EXPIRY = '15m';
 export const REFRESH_TOKEN_EXPIRY = '7d';
 export const SESSION_EXPIRY_HOURS = 24;
+
+// Ticket comment attachments (W08 #3902)
+export * from './ticketAttachments';

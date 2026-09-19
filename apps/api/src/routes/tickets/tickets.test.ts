@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock } = vi.hoisted(() => {
+const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock, lastSelectColumns } = vi.hoisted(() => {
+  const lastSelectColumns: unknown[] = [];
   const lastWhereArgs: { conditions: unknown[] }[] = [];
   const lastOrderByArgs: unknown[][] = [];
   return {
@@ -29,6 +30,7 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
     writeRouteAuditMock: vi.fn(),
     lastWhereArgs,
     lastOrderByArgs,
+    lastSelectColumns,
     /** Mutable ref so individual tests can override the injected auth context. */
     authRef: {
       current: {
@@ -54,6 +56,17 @@ vi.mock('../../services/ticketService', async () => {
 });
 
 vi.mock('../../services/ticketTriage', () => ticketTriageMocks);
+
+// #4211 (W01) — aiDrafts.ts (mounted under ticketsRoutes) now imports
+// getLatestTicketProposal, which pulls in runTrace.ts's real dependency
+// chain (alertVerdicts/sweepFindings -> actionIntents/intentService ->
+// aiTools.ts) — a much heavier module graph than this file's own minimal
+// `../../db/schema` mock below supports. This suite never exercises the
+// ai-proposal routes (that's aiDrafts.test.ts), so stub the module out
+// entirely rather than widen the schema mock for an unrelated endpoint.
+vi.mock('../../services/aiTicketProposal', () => ({
+  getLatestTicketProposal: vi.fn(),
+}));
 
 vi.mock('../../services/mlFeedbackEmitters', () => ({
   emitTicketTriageFeedback: vi.fn(),
@@ -95,7 +108,10 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((cols?: unknown) => ({
+      // Recorded so a test can prove the attachment feed query never selects
+      // the bytea `data` column (spec D10).
+      ...(lastSelectColumns.push(cols) ? {} : {}),
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
           leftJoin: vi.fn(() => ({
@@ -186,6 +202,14 @@ vi.mock('../../db/schema', () => ({
     description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
     hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy', runningTimerId: 'runningTimerId'
   },
+  // #5783 W01: ticketChecklistService is reachable from routes/tickets/index.ts,
+  // and its module-scope CHECKLIST_ORDER reads these columns at import time.
+  ticketChecklistItems: {
+    id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
+    position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
+    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
+  },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',
     description: 'description', quantity: 'quantity', unitPrice: 'unitPrice',
@@ -205,6 +229,7 @@ import { emitTicketTriageFeedback } from '../../services/mlFeedbackEmitters';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_ID    = '3f2f1d8e-1111-4222-8333-444455556666';
+const CONTACT_ID = '9c8d7e6f-2222-4333-8444-555566667777';
 const STUB_TICKET = { id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1', subject: 'Printer' };
 
 const DEFAULT_AUTH = {
@@ -467,6 +492,50 @@ describe('POST /tickets', () => {
     expect(res.status).toBe(400);
   });
 
+  // #5367: the mobile New-ticket form names the requester CONTACT. The route
+  // spreads the parsed body, so this asserts the SCHEMA carries the field —
+  // an omitted key is stripped silently and the ticket lands with no requester.
+  it('passes requesterContactId through to createTicket', async () => {
+    serviceMocks.createTicket.mockResolvedValue({ id: 't-5', internalNumber: 'T-2026-0005' });
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'Printer offline', requesterContactId: CONTACT_ID })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ requesterContactId: CONTACT_ID, source: 'manual' }),
+      expect.anything()
+    );
+  });
+
+  it('400s on a non-uuid requesterContactId before reaching the service', async () => {
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x', requesterContactId: 'not-a-uuid' })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  // The same-org rule stays where it already is — `assertRequesterContactInOrg`
+  // in the service, which runs before the ticket number is allocated. The route
+  // only has to surface it; this pins the status/code the client sees.
+  it('surfaces the service cross-org contact rejection as 400 with its code', async () => {
+    const { TicketServiceError } = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
+    serviceMocks.createTicket.mockRejectedValue(
+      new TicketServiceError('Requester contact must belong to the ticket organization', 400, 'REQUESTER_CONTACT_WRONG_ORG')
+    );
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x', requesterContactId: CONTACT_ID })
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'REQUESTER_CONTACT_WRONG_ORG' });
+  });
+
   it('maps TicketServiceError status through (404 org)', async () => {
     const { TicketServiceError } = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
     serviceMocks.createTicket.mockRejectedValue(new TicketServiceError('Organization not found', 404));
@@ -574,6 +643,41 @@ describe('GET /tickets/stats', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Partner context required');
+  });
+
+  it('narrows counts to the requested orgId, matching GET /tickets', async () => {
+    // A partner-scoped caller viewing one org's ticket queue must get that
+    // org's counts, not partner-wide counts — same bug shape as the /tickets
+    // list, which already applies q.orgId (line ~302 above). accessibleOrgIds
+    // deliberately does NOT include ORG_ID, so a pass here can only come from
+    // an explicit orgId condition the handler adds — not from the ambient
+    // partner-wide inArray(accessibleOrgIds) scope condition.
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'partner',
+      partnerId: 'p-1',
+      accessibleOrgIds: ['some-other-org'],
+      canAccessOrg: () => true,
+    };
+    dbGroupByMock.mockResolvedValue([]);
+    dbSelectMock.mockResolvedValue([{ atRisk: 0 }]);
+
+    const res = await makeApp().request(`/tickets/stats?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain(ORG_ID);
+  });
+
+  it('403s when the requested orgId is outside the caller access', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'partner', partnerId: 'p-1', canAccessOrg: () => false };
+
+    const res = await makeApp().request(`/tickets/stats?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(dbGroupByMock).not.toHaveBeenCalled();
+    expect(dbSelectMock).not.toHaveBeenCalled();
   });
 });
 
@@ -736,6 +840,45 @@ describe('ticket triage suggestion routes', () => {
     expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
       orgIds: [ORG_ID],
       labelWindowDays: 30,
+    });
+  });
+
+  it('GET /tickets/triage-evaluation propagates the caller site ceiling', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      allowedSiteIds: ['site-visible'],
+    } as typeof authRef.current;
+    vi.mocked(evaluateTicketTriage).mockResolvedValue({
+      labelWindowDays: 90,
+      totalLabels: 0,
+      acceptedSuggestionLabels: 0,
+      manualOverrideLabels: 0,
+      rejectedSuggestionLabels: 0,
+      categoryLabels: 0,
+      priorityLabels: 0,
+      assigneeLabels: 0,
+      overrideRate: null,
+    });
+
+    const res = await makeApp().request('/tickets/triage-evaluation');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: ['site-visible'],
+    });
+
+    authRef.current = { ...authRef.current, allowedSiteIds: [] } as typeof authRef.current;
+    const zeroSiteRes = await makeApp().request('/tickets/triage-evaluation');
+    expect(zeroSiteRes.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenLastCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: [],
     });
   });
 
@@ -1948,5 +2091,101 @@ describe('DELETE /tickets/:id/comments/:commentId', () => {
       headers: jsonHeaders
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('POST /tickets/:id/comments attachmentIds (W08 #3902)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('accepts an empty body when attachmentIds are present and passes them to the service', async () => {
+    const attId = 'aaaaaaaa-1111-4222-8333-444455556666';
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-1' }, firstResponseStamped: false, attachments: [] });
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '', attachmentIds: [attId] }),
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.addTicketComment).toHaveBeenCalledWith(
+      '3f2f1d8e-1111-4222-8333-444455556666',
+      expect.objectContaining({ attachmentIds: [attId] }),
+      expect.anything(),
+    );
+  });
+
+  it('still 400s an empty comment with no attachments', async () => {
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '' }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /tickets/:id comment attachments (W08 #3902)', () => {
+  const T = '3f2f1d8e-1111-4222-8333-444455556666';
+  const meta = (over: Record<string, unknown> = {}) => ({
+    id: 'att-1', commentId: 'c-1', contentType: 'image/png',
+    byteSize: 12, originalFilename: 'a.png', createdAt: new Date('2026-08-30T00:00:00Z'), ...over,
+  });
+
+  function rigDetail(commentRows: unknown[], attachmentRows: unknown[]) {
+    dbSelectMock
+      .mockReturnValueOnce([{ id: T, orgId: 'org-1', deviceId: null, deletedAt: null }]) // scoped ticket
+      .mockReturnValueOnce([{ orgName: 'O', deviceHostname: null, assigneeName: null, statusName: null, statusColor: null }])
+      .mockReturnValueOnce(commentRows)
+      .mockReturnValueOnce(attachmentRows)
+      .mockReturnValueOnce([]); // alert links
+  }
+
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); lastSelectColumns.length = 0; });
+
+  it('groups attachments onto their parent comment', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'see photo', deletedAt: null, createdAt: new Date() },
+       { id: 'c-2', ticketId: T, content: 'no photo', deletedAt: null, createdAt: new Date() }],
+      [meta(), meta({ id: 'att-2' })],
+    );
+    const res = await makeApp().request(`/tickets/${T}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.comments[0].attachments).toHaveLength(2);
+    expect(body.data.comments[1].attachments).toEqual([]);
+  });
+
+  it('blanks attachments on a soft-deleted comment (or a deleted comment still leaks its photos)', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'secret', deletedAt: new Date(), createdAt: new Date() }],
+      [meta()],
+    );
+    const body = await (await makeApp().request(`/tickets/${T}`)).json();
+    expect(body.data.comments[0].deleted).toBe(true);
+    expect(body.data.comments[0].content).toBe('');
+    expect(body.data.comments[0].attachments).toEqual([]);
+  });
+
+  it('never surfaces a pending (comment_id NULL) row in the feed', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'hi', deletedAt: null, createdAt: new Date() }],
+      [meta({ id: 'pending-1', commentId: null })],
+    );
+    const body = await (await makeApp().request(`/tickets/${T}`)).json();
+    expect(body.data.comments[0].attachments).toEqual([]);
+  });
+
+  it('selects the META columns only — `data` must never reach a ticket-detail response (D10)', async () => {
+    rigDetail([{ id: 'c-1', ticketId: T, content: 'hi', deletedAt: null, createdAt: new Date() }], [meta()]);
+    await makeApp().request(`/tickets/${T}`);
+    const withCols = lastSelectColumns.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object');
+    const attachmentSelect = withCols.find((c) => 'originalFilename' in c && 'byteSize' in c);
+    expect(attachmentSelect, 'the attachment feed query must pass an explicit column map').toBeDefined();
+    expect(Object.keys(attachmentSelect!).sort()).toEqual(
+      ['byteSize', 'commentId', 'contentType', 'createdAt', 'id', 'originalFilename'],
+    );
+    expect(Object.keys(attachmentSelect!)).not.toContain('data');
+    expect(Object.keys(attachmentSelect!)).not.toContain('storageKey');
   });
 });

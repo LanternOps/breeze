@@ -150,6 +150,81 @@ export const SIGNAL_DEFAULTS = {
   'rmm.recidivist_endpoint.hostname_ip_score': 90,
   'rmm.recidivist_endpoint.hostname_score': 60,
   'rmm.recidivist_endpoint.ip_score': 40,
+  // Origin-IP recidivism (originIp.ts). NOT age-decayed — an address shared
+  // with a suspended operator is evidence about infrastructure, and
+  // pre-positioned accounts sit dormant for weeks precisely to age out of
+  // young-account weighting.
+  //
+  // base_score is set to meet severity.alert_score exactly, so ONE exact
+  // address shared with a suspended partner pages. That equality is an intent,
+  // not an invariant — both numbers are independently overridable — and it
+  // mirrors the confidence the signup gate already assigns to an exact
+  // signup-IP match, whose every production hold has been a true positive.
+  // There is deliberately no cap on how many suspended partners may share an
+  // address; see the note in originIp.ts on why that guard was removed.
+  'fraud.suspended_console_ip.base_score': 70,
+  'fraud.suspended_console_ip.per_extra_ip': 10,
+  // The /24 (IPv6 /64) sibling. A network is a weaker tie than an address, so
+  // this caps BELOW severity.alert_score and corroborates instead — same rule
+  // as session_intensity and cardholder_name_mismatch. Its looseness is
+  // bounded on two sides: the counterparty must be a failed login against an
+  // ALREADY-SUSPENDED account, and it must fall inside window_hours. Do not
+  // raise it past the alert threshold; widen the evidence instead.
+  'fraud.dead_account_probe_origin.window_hours': 24,
+  'fraud.dead_account_probe_origin.score': 55,
+  // Cross-signal corroboration (corroboration.ts). This is the "second signal"
+  // that the capped scores above (session_intensity, cardholder_name_mismatch,
+  // provider_default_hostname generic) have always referred to — it did not
+  // exist until 2026-08-16, which is why a partner could fire several capped
+  // watch signals and never notify anyone.
+  //
+  // min_axes counts DISTINCT EVIDENCE AXES, not signals: two detectors that
+  // restate one observation (the two IP-scatter signals) share an axis and
+  // cannot corroborate each other. 2 is the meaningful floor — one axis is a
+  // single detector, which is what the caps already decided is not enough.
+  //
+  // per_extra_axis is deliberately large enough that two watch-tier axes clear
+  // severity.alert_score at defaults (55 + 15 = 70), because the whole point is
+  // to make a corroborated pair reach an operator in real time.
+  //
+  // Reaching min_axes is necessary but NOT sufficient: the aggregate must also
+  // cross severity.alert_score or nothing is emitted at all. Two weak axes can
+  // sum below it (45 + 15 = 60), and a synthetic *watch* row would notify
+  // nobody while crowding out the weekly digest's 20-row watch list. Lowering
+  // this value therefore silences the signal rather than demoting it.
+  'fraud.corroborated_watch.min_axes': 2,
+  'fraud.corroborated_watch.per_extra_axis': 15,
+
+  // --- Partner sending domains (spec §9.2, W06) ------------------------------
+  // Four detectors over the outbound mail a partner sends from its OWN domain.
+  // None of them is age-decayed: a lookalike domain and a bounce storm are
+  // evidence about what the account is DOING, not about how old it is.
+  //
+  // `added` is deliberately INFO: a partner adding a sending domain is the
+  // feature working. The signal exists so a human reads the NAME — a lookalike
+  // of a bank or a well-known brand is the thing worth catching, and no
+  // automatic rule can judge that. At info it also cannot corroborate, so it can
+  // never contribute to a page on its own.
+  'email.sending_domain_added.window_days': 7,
+  'email.sending_domain_added.score': 25,
+  // Repeated failed verifications is what adding names you do not control looks
+  // like (spec §4.3). Watch, not alert: a partner whose DNS provider is slow
+  // produces the same shape.
+  'email.sending_domain_verify_failures.min_domains': 3,
+  'email.sending_domain_verify_failures.score': 45,
+  // Blasting past the daily partner-lane cap. Counted from the Redis day-hash
+  // recordPartnerLaneCapHit writes, which is only ever written on a GENUINE
+  // over-cap count — a Redis outage records nothing rather than accusing.
+  'email.partner_lane_cap_hit.min_hits': 2,
+  'email.partner_lane_cap_hit.score': 45,
+  // Deliverability. Capped BELOW severity.alert_score on purpose: automatic
+  // suspension (spec §9.3) already raised an ops alert for the same facts and
+  // already stopped the sending, so a second page would be pure noise. Left at
+  // watch so it can still corroborate a second, independent axis.
+  'email.sending_bounce_complaint.min_messages': 50,
+  'email.sending_bounce_complaint.bounce_rate': 0.08,
+  'email.sending_bounce_complaint.min_complaints': 3,
+  'email.sending_bounce_complaint.score': 65,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;

@@ -39,6 +39,14 @@ vi.mock('../db/schema', () => ({
     orgId: 'metricAnomalies.orgId',
     deviceId: 'metricAnomalies.deviceId',
   },
+  metricAnomalyIncidents: {
+    orgId: 'metricAnomalyIncidents.orgId',
+    deviceId: 'metricAnomalyIncidents.deviceId',
+    anomalyType: 'metricAnomalyIncidents.anomalyType',
+    bucketSeconds: 'metricAnomalyIncidents.bucketSeconds',
+    windowStart: 'metricAnomalyIncidents.windowStart',
+    agentRunId: 'metricAnomalyIncidents.agentRunId',
+  },
 }));
 
 vi.mock('./eventBus', () => ({
@@ -105,6 +113,7 @@ describe('metric anomaly promotion service', () => {
   it('creates an alert, links the anomaly, and publishes alert.triggered', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
+    selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup — no incident row yet
     insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
@@ -135,6 +144,55 @@ describe('metric anomaly promotion service', () => {
       }),
       'metric-anomaly-promotion',
       expect.objectContaining({ userId: 'user-1', siteId: 'site-1' }),
+    );
+  });
+
+  // Wave 6 PR 4 (#3828 Task 3) — promotion linkage read: when the canonical
+  // incident already carries an agent_run_id (an anomaly-triggered run was
+  // dispatched before a human promoted it), the new alert's context surfaces
+  // that run id. Informational only — see findIncidentAgentRunId's docstring.
+  it('includes the incident agent_run_id in the new alert context when one exists', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
+    selectMock.mockReturnValueOnce(chain([{ agentRunId: 'run-from-anomaly-trigger' }])); // incident lookup
+    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
+
+    await promoteMetricAnomalyToAlert({
+      orgId: anomaly.orgId,
+      deviceId: anomaly.deviceId,
+      anomalyId: anomaly.id,
+      actorUserId: 'user-1',
+    });
+
+    expect(insertMock).toHaveBeenCalledWith(expect.anything());
+    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
+    expect(insertedChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ agentRunId: 'run-from-anomaly-trigger' }),
+      }),
+    );
+  });
+
+  it('sets the alert context agentRunId to null when no incident row exists yet', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
+    selectMock.mockReturnValueOnce(chain([])); // incident lookup — no row
+    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
+
+    await promoteMetricAnomalyToAlert({
+      orgId: anomaly.orgId,
+      deviceId: anomaly.deviceId,
+      anomalyId: anomaly.id,
+      actorUserId: 'user-1',
+    });
+
+    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
+    expect(insertedChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ agentRunId: null }),
+      }),
     );
   });
 
@@ -223,6 +281,7 @@ describe('metric anomaly promotion service', () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     shouldProduceMlOutputMock.mockResolvedValue(false);
+    selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup — no incident row yet
     insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 

@@ -7,13 +7,14 @@ import {
   type DeviceClassFilter,
 } from './deviceClassFilter';
 
-type Row = { id: string; deviceClass?: 'agent' | 'network' };
+type Row = { id: string; deviceClass?: 'agent' | 'network' | 'manual' };
 
 const rows: Row[] = [
   { id: 'a1', deviceClass: 'agent' },
   { id: 'a2' }, // missing deviceClass → treated as agent
   { id: 'n1', deviceClass: 'network' },
   { id: 'n2', deviceClass: 'network' },
+  { id: 'm1', deviceClass: 'manual' },
 ];
 
 describe('filterDevicesByClass', () => {
@@ -28,15 +29,19 @@ describe('filterDevicesByClass', () => {
   it('returns only network rows for "network"', () => {
     expect(filterDevicesByClass(rows, 'network').map(r => r.id)).toEqual(['n1', 'n2']);
   });
+
+  it('returns only manual rows for "manual"', () => {
+    expect(filterDevicesByClass(rows, 'manual').map(r => r.id)).toEqual(['m1']);
+  });
 });
 
 describe('countDevicesByClass', () => {
   it('counts each class with missing deviceClass folded into agent', () => {
-    expect(countDevicesByClass(rows)).toEqual({ all: 4, agent: 2, network: 2 });
+    expect(countDevicesByClass(rows)).toEqual({ all: 5, agent: 2, network: 2, manual: 1 });
   });
 
   it('returns zeroes for an empty list', () => {
-    expect(countDevicesByClass([])).toEqual({ all: 0, agent: 0, network: 0 });
+    expect(countDevicesByClass([])).toEqual({ all: 0, agent: 0, network: 0, manual: 0 });
   });
 });
 
@@ -45,6 +50,7 @@ describe('readDeviceClassFromHash', () => {
     expect(readDeviceClassFromHash('#deviceClass=network')).toBe('network');
     expect(readDeviceClassFromHash('#deviceClass=agent')).toBe('agent');
     expect(readDeviceClassFromHash('#deviceClass=all')).toBe('all');
+    expect(readDeviceClassFromHash('#deviceClass=manual')).toBe('manual');
   });
 
   it('defaults to "all" when absent or invalid', () => {
@@ -91,6 +97,6 @@ describe('writeDeviceClassToHash', () => {
   });
 });
 
-// Type-only sanity: the filter union is exactly these three.
-const _exhaustive: DeviceClassFilter[] = ['all', 'agent', 'network'];
+// Type-only sanity: the filter union is exactly these four.
+const _exhaustive: DeviceClassFilter[] = ['all', 'agent', 'network', 'manual'];
 void _exhaustive;

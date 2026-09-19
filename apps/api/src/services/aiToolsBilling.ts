@@ -35,7 +35,6 @@ import {
   addManualLine,
   addCatalogLine,
   addBundleLine,
-  addContractLine,
   updateLine,
   removeLine,
   updateInvoice,
@@ -49,7 +48,9 @@ import {
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
-import { computeContractEstimate, getContract } from './contractService';
+import { db } from '../db';
+import type { DeviceSnapshotRow } from './contractQuantities';
+import { computeContractEstimate, getContract, lockContractRow, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
@@ -125,6 +126,31 @@ const MANAGE_INVOICES_REQUIRED: Record<string, readonly string[]> = {
   create_pay_link: ['invoiceId'],
 };
 
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/invoices/` is
+ * `requireScope('partner','system')` (invoices.ts:20, lifecycle.ts:24,
+ * assembly.ts:17, payments.ts:12, pdf.ts:12, stripe.ts:18, evidence.ts:14,
+ * bulk.ts:11, settings.ts:23).
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Invoice access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
+
 export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_invoices', {
     tier: 2 as AiToolTier,
@@ -150,6 +176,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
         const rows = await listInvoices(
@@ -187,6 +215,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       try {
         const result = await getInvoice(String(input.invoiceId), actorFromAuth(auth));
         return JSON.stringify({ ...result, invoice: withDepositPaid(result.invoice) });
@@ -215,8 +245,9 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
         'NO_PRICE_FOR_CURRENCY (bundle headline missing) or PRICE_BOOK_INCOMPLETE (409, a component is ' +
         'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
-        '{ line, pricedFrom }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
-        'gap and the contract line\'s stamped price was billed.',
+        '{ line, pricedFrom, overages }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
+        'gap and the contract line\'s stamped price was billed. overages reports bill/flag allowance overages and ' +
+        'the bill-mode sibling invoiceLineId.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -255,6 +286,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
 
@@ -265,6 +298,30 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       }
       const missing = missingParamsJson(input, action, required);
       if (missing) return missing;
+
+      // PARTNER SCOPE FOR THE PAYMENT ACTIONS (review wave 2, finding 5).
+      // NOW SUBSUMED by the family-wide `partnerScopeRefusal` at the top of this
+      // handler (#6110 finding 1) — kept deliberately as the narrowest statement
+      // of WHY these two actions in particular can never run at org scope, so
+      // that relaxing the family gate cannot silently relax these.
+
+      // `recordPayment`/`voidPayment` reach `accounting_entity_mappings` and
+      // `accounting_connections`, both PARTNER-axis under RLS: an org-scoped
+      // principal sees ZERO rows there, so `requestPaymentPush` /
+      // `requestPaymentDelete` and the QuickBooks-origin void guard all read
+      // empty and FAIL OPEN — the payment silently never reaches QuickBooks, and
+      // a QuickBooks-owned payment is voidable. The HTTP routes gate this with
+      // `requireScope`; this tool is a second door onto the same services and
+      // there is no route scanner covering it (the known aiTools scope gap noted
+      // at the top of this file). Refused with a code the model can act on.
+      if ((action === 'record_payment' || action === 'void_payment')
+        && auth.scope !== 'partner' && auth.scope !== 'system') {
+        return JSON.stringify({
+          error: 'Recording or voiding a payment requires a partner-scoped session; QuickBooks sync state '
+            + 'is partner-owned and is not visible to an organization-scoped caller',
+          code: 'PARTNER_SCOPE_REQUIRED',
+        });
+      }
 
       try {
         switch (action) {
@@ -293,27 +350,44 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               userId: auth.user.id,
               partnerId: actor.partnerId,
               accessibleOrgIds: actor.accessibleOrgIds,
+              // The read leg of add_contract_line went through an ungated actor,
+              // bolting an org-wide contract/line read onto a site-checked write.
+              allowedSiteIds: actor.allowedSiteIds,
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
-            const { lines } = await getContract(contractId, contractActor);
+            // The tool executes inside the request's ambient DB transaction.
+            // Hold the producer lock before re-reading both the line and its
+            // resolved quantity so an allowance edit cannot race materialization.
+            await lockContractRow(db, contractId);
+            const { contract, lines } = await getContract(contractId, contractActor);
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
 
-            const estimate = await computeContractEstimate(contractId, contractActor);
+            const deviceEvidence = new Map<string, readonly DeviceSnapshotRow[]>();
+            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence);
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
 
-            return JSON.stringify(await addContractLine(String(input.invoiceId), {
-              description: line.description,
-              quantity: String(est.quantity),
-              unitPrice: line.unitPrice,
-              taxable: line.taxable,
-              catalogItemId: line.catalogItemId,
-              sourceId: line.id,
-              // Durable contract lineage (#3778).
-              contractId,
-            }, actor));
+            const materialized = await materializeContractLineOntoInvoice(actor, {
+              invoiceId: String(input.invoiceId),
+              contract,
+              line,
+              resolved: {
+                counted: est.counted,
+                billed: est.quantity,
+                included: est.included,
+                overage: est.overage,
+                overageMode: est.overageMode,
+              },
+              deviceEvidence: deviceEvidence.get(line.id),
+              currencyCode: estimate.currencyCode,
+            });
+            return JSON.stringify({
+              line: materialized.baseLine,
+              pricedFrom: materialized.pricedFrom,
+              overages: materialized.overage ? [materialized.overage] : [],
+            });
           }
           case 'update_line':
             return JSON.stringify(await updateLine(

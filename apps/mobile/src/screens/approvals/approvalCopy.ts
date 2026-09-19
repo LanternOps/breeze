@@ -72,6 +72,42 @@ export interface ApprovalCopyInput extends FlowTypeInput {
   actionArguments: Record<string, unknown>;
 }
 
+/** `tool_name(key=value, …)` — the audit signature older servers used as the label. */
+const RAW_SIGNATURE = /^([a-z][a-z0-9_]*)\((.*)\)$/s;
+
+function titleCaseWords(snake: string): string {
+  return snake
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase()))
+    .join(' ');
+}
+
+/**
+ * Unpack a raw call-signature label into something a technician can read.
+ *
+ * Servers before the actionLabel humanising change wrote the audit signature
+ * straight onto `approval_requests.action_label`; those rows still arrive by
+ * push for as long as they are pending. The typed `actionArguments` are the
+ * reliable source for the detail — the signature string is only used to
+ * recognise the shape. Returns null for anything that is not a signature.
+ */
+export function humanizeRawActionLabel(
+  label: string,
+  toolName: string,
+  args: Record<string, unknown> | null | undefined,
+): string | null {
+  const match = RAW_SIGNATURE.exec(label.trim());
+  if (!match) return null;
+  const head = titleCaseWords(match[1]! || toolName);
+  const a = args ?? {};
+  const detail = [
+    firstStr(a.action, a.commandType),
+    firstStr(a.serviceName, a.processName, a.scriptName, a.name),
+  ].filter((v): v is string => v !== null);
+  return detail.length > 0 ? `${head}: ${detail.join(' ')}` : head;
+}
+
 export function getApprovalCopy(approval: ApprovalCopyInput): ApprovalCopy {
   if (resolveApprovalFlowType(approval) === 'uac_intercept') {
     const name = executableName(extractUacDetails(approval.actionArguments).exePath);
@@ -82,7 +118,9 @@ export function getApprovalCopy(approval: ApprovalCopyInput): ApprovalCopy {
     };
   }
   return {
-    headline: approval.actionLabel,
+    headline:
+      humanizeRawActionLabel(approval.actionLabel, approval.actionToolName, approval.actionArguments)
+      ?? approval.actionLabel,
     approveLabel: 'Approve',
     holdLabel: 'Hold to approve',
   };

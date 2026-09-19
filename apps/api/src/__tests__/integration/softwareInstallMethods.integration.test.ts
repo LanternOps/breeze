@@ -51,6 +51,12 @@ type ActiveAuth = {
 };
 let activeAuth: ActiveAuth | null = null;
 
+const { deleteObjectsMock } = vi.hoisted(() => ({ deleteObjectsMock: vi.fn(async () => undefined) }));
+vi.mock('../../services/s3Storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/s3Storage')>()),
+  deleteObjects: deleteObjectsMock,
+}));
+
 vi.mock('../../middleware/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../middleware/auth')>();
   const { withDbAccessContext } = await import('../../db');
@@ -91,7 +97,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import { getTestDb } from './setup';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { ensureAppRole } from '../../db/ensureAppRole';
 import {
   deploymentResults,
@@ -99,8 +105,15 @@ import {
   softwareCatalog,
   softwareDeployments,
   softwareInstallMethods,
+  softwarePolicies,
   softwareVersions,
 } from '../../db/schema';
+import {
+  hasUnfinishedPolicyOwnedInstall,
+  POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES,
+  readLatestPolicyOwnedInstallByDevice,
+  resolvePolicyInstallTarget,
+} from '../../services/softwarePolicyInstallRemediation';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { cascadeDeleteOrg, cascadeDeletePartner } from '../../services/tenantCascade';
 
@@ -162,6 +175,8 @@ async function seedMethod(
 
 beforeEach(() => {
   activeAuth = null;
+  deleteObjectsMock.mockReset();
+  deleteObjectsMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -484,7 +499,7 @@ describe('org erasure removes the whole software chain', () => {
     const catalog = await seedCatalog(orgId, `Chrome ${orgId.slice(0, 8)}`);
     const [version] = await getTestDb()
       .insert(softwareVersions)
-      .values({ catalogId: catalog.id, version: '1.0.0', fileType: 'exe', isLatest: true })
+      .values({ catalogId: catalog.id, version: '1.0.0', fileType: 'exe', isLatest: true, s3Key: `software/${orgId}/package.exe` })
       .returning();
     const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
     const [device] = await getTestDb()
@@ -562,6 +577,7 @@ describe('org erasure removes the whole software chain', () => {
     expect(stats.tablesDeleted['deployment_results']).toBe(2);
     expect(stats.tablesDeleted['software_deployments']).toBe(2);
     expect(stats.tablesDeleted['software_catalog']).toBe(1);
+    expect(deleteObjectsMock).toHaveBeenCalledWith([`software/${orgA.id}/package.exe`]);
 
     // Org B untouched — including the org_id-less children.
     expect(await countWhere('software_catalog', 'org_id', orgB.id)).toBe(1);
@@ -604,7 +620,7 @@ describe('partner erasure removes the partner-owned software chain (#3600)', () 
     if (!catalog) throw new Error('failed to seed partner catalog item');
     const [version] = await getTestDb()
       .insert(softwareVersions)
-      .values({ catalogId: catalog.id, version: '2.0.0', fileType: 'exe', isLatest: true })
+      .values({ catalogId: catalog.id, version: '2.0.0', fileType: 'exe', isLatest: true, s3Key: `software/partner/${partnerId}/package.exe` })
       .returning();
     const method = await seedMethod(catalog.id, 'windows', 'winget', 'Huntress.Agent');
     return { catalog, version: version!, method };
@@ -661,10 +677,379 @@ describe('partner erasure removes the partner-owned software chain (#3600)', () 
 
     // The partner-axis pre-clear genuinely ran rather than matching zero rows.
     expect(stats.tablesDeleted['software_versions']).toBeGreaterThanOrEqual(1);
+    expect(deleteObjectsMock).toHaveBeenCalledWith([`software/partner/${partnerA.id}/package.exe`]);
 
     // Partner B is untouched — including its org_id-less children.
     expect(await countWhere('software_catalog', 'partner_id', partnerB.id)).toBe(1);
     expect(await countWhere('software_versions', 'catalog_id', chainB.catalog.id)).toBe(1);
     expect(await countWhere('software_install_methods', 'catalog_id', chainB.catalog.id)).toBe(1);
   }, 120_000);
+});
+
+/**
+ * Feature #5505 W03 (#5508): `software_deployments.software_policy_id`.
+ *
+ * Four things here are provable ONLY against real Postgres:
+ *
+ *  1. `ON DELETE SET NULL` actually fires on a FORCE-RLS table. PostgreSQL runs
+ *     referential actions in internal RI triggers as the referencing table's
+ *     owner and bypasses row security for them — a doc claim this fixture turns
+ *     into evidence. It is load-bearing: a PARTNER-WIDE policy is referenced by
+ *     policy-owned deployments in EVERY child org, so with the NO ACTION default
+ *     that the two sibling FKs use, deleting it would abort an erasure on 23503.
+ *  2. Org erasure still completes with a policy-owned deployment present. The
+ *     cascade-list contract has caught this class of mistake 5/5 times while
+ *     code review caught it 0/5.
+ *  3. The catalog reachability predicate. The remediation worker runs in a
+ *     SYSTEM db context where `breeze_has_org_access` short-circuits true and
+ *     RLS scopes nothing, and a rule's `catalogId` is operator-authored jsonb —
+ *     so that WHERE clause is the ENTIRE guard between a forged catalogId and
+ *     another tenant's package landing on these machines. A mocked suite that
+ *     ignores WHERE clauses cannot prove it.
+ *  4. The dedup join, against the real deployment_status enum.
+ */
+describe('software_deployments.software_policy_id — policy origin (#5505 W03)', () => {
+  /**
+   * Everything in services/softwarePolicyInstallRemediation.ts runs inside the
+   * remediation worker's SYSTEM db context, and the app pool connects as the
+   * unprivileged `breeze_app`. A CONTEXTLESS connection is DENY-ALL under RLS,
+   * not a bypass — so calling these helpers bare makes every negative assertion
+   * pass for the wrong reason and every positive one fail. The control test
+   * below pins that down so a future edit cannot quietly drop the wrapper and
+   * leave a green-but-vacuous suite.
+   */
+  const resolveInWorkerContext = (input: {
+    catalogId: string | null | undefined;
+    deviceOrgId: string;
+    deviceOsType: string;
+  }) => withSystemDbAccessContext(() => resolvePolicyInstallTarget(input));
+
+  async function seedDevice(orgId: string, siteId: string, osType: 'windows' | 'macos' = 'windows') {
+    const [device] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId,
+        siteId,
+        agentId: `w03-agent-${crypto.randomUUID()}`,
+        hostname: 'w03-host',
+        osType,
+        osVersion: '11',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+      })
+      .returning();
+    if (!device) throw new Error('failed to seed device');
+    return device;
+  }
+
+  async function seedPolicy(owner: { orgId?: string; partnerId?: string }, catalogId: string) {
+    const [policy] = await getTestDb()
+      .insert(softwarePolicies)
+      .values({
+        orgId: owner.orgId ?? null,
+        partnerId: owner.partnerId ?? null,
+        name: 'Standard workstation build',
+        mode: 'allowlist',
+        rules: { software: [{ name: 'Chrome', catalogId }] },
+        enforceMode: true,
+        remediationOptions: { autoInstall: true },
+      })
+      .returning();
+    if (!policy) throw new Error('failed to seed policy');
+    return policy;
+  }
+
+  async function seedPolicyOwnedDeployment(orgId: string, installMethodId: string, policyId: string) {
+    const [deployment] = await getTestDb()
+      .insert(softwareDeployments)
+      .values({
+        orgId,
+        name: 'Policy: Standard workstation build',
+        installMethodId,
+        deploymentType: 'install',
+        targetType: 'devices',
+        scheduleType: 'immediate',
+        softwarePolicyId: policyId,
+      })
+      .returning();
+    if (!deployment) throw new Error('failed to seed policy-owned deployment');
+    return deployment;
+  }
+
+  it('the FK is ON DELETE SET NULL: deleting the policy nulls the column and keeps the deployment', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    // A PARTNER-WIDE policy: the case array ordering does not cover, because
+    // such a policy is referenced from every child org.
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+
+    const deployment = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    expect(deployment.softwarePolicyId).toBe(policy.id);
+
+    await getTestDb().delete(softwarePolicies).where(eq(softwarePolicies.id, policy.id));
+
+    const [after] = await getTestDb()
+      .select()
+      .from(softwareDeployments)
+      .where(eq(softwareDeployments.id, deployment.id));
+    // Survived, with the label degraded rather than the delete aborting.
+    expect(after).toBeDefined();
+    expect(after!.softwarePolicyId).toBeNull();
+  }, 60_000);
+
+  it('org erasure still completes with a policy-owned deployment present', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+    const device = await seedDevice(org.id, site.id);
+
+    const deployment = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    await getTestDb()
+      .insert(deploymentResults)
+      .values({ deploymentId: deployment.id, deviceId: device.id, status: 'pending' });
+
+    // Must not raise 23503.
+    await expect(cascadeDeleteOrg(org.id, PERFORMED_BY, PERFORMED_EMAIL)).resolves.toBeDefined();
+
+    const remaining = await getTestDb()
+      .select()
+      .from(softwareDeployments)
+      .where(eq(softwareDeployments.id, deployment.id));
+    expect(remaining).toHaveLength(0);
+
+    // The partner-wide policy outlived the org erasure, which is the whole
+    // point: it still serves the partner's other orgs.
+    const survivingPolicy = await getTestDb()
+      .select()
+      .from(softwarePolicies)
+      .where(eq(softwarePolicies.id, policy.id));
+    expect(survivingPolicy).toHaveLength(1);
+  }, 120_000);
+
+
+  it('CONTROL: without the system context the resolver refuses everything — a bare call is a vacuous pass', async () => {
+    // Discriminates the two "not reachable" answers above. Those assertions are
+    // only meaningful if the SAME reachable item resolves OK under the worker's
+    // real context and is refused without it — otherwise RLS denying the whole
+    // table would satisfy them just as well.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const catalog = await seedCatalog(org.id);
+    await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+
+    await expect(
+      resolveInWorkerContext({
+        catalogId: catalog.id,
+        deviceOrgId: org.id,
+        deviceOsType: 'windows',
+      })
+    ).resolves.toMatchObject({ ok: true, target: { kind: 'install_method' } });
+
+    // Same arguments, no context: DENY-ALL, not bypass.
+    await expect(
+      resolvePolicyInstallTarget({
+        catalogId: catalog.id,
+        deviceOrgId: org.id,
+        deviceOsType: 'windows',
+      })
+    ).resolves.toEqual({ ok: false, reason: 'catalog_item_not_reachable' });
+  }, 60_000);
+
+  it("a policy rule naming ANOTHER org's catalog item resolves to nothing", async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const catalogB = await seedCatalog(orgB.id, 'B Chrome');
+    await seedMethod(catalogB.id, 'windows', 'winget', 'Google.Chrome');
+
+    const resolution = await resolveInWorkerContext({
+      catalogId: catalogB.id,
+      deviceOrgId: orgA.id,
+      deviceOsType: 'windows',
+    });
+    expect(resolution).toEqual({ ok: false, reason: 'catalog_item_not_reachable' });
+  }, 60_000);
+
+  it('a partner-owned catalog item IS reachable from a child org of that partner', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [catalog] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: null, partnerId: partner.id, name: 'Partner-wide App' })
+      .returning();
+    await seedMethod(catalog!.id, 'windows', 'winget', 'Partner.App');
+
+    const resolution = await resolveInWorkerContext({
+      catalogId: catalog!.id,
+      deviceOrgId: org.id,
+      deviceOsType: 'windows',
+    });
+    expect(resolution).toMatchObject({ ok: true, target: { kind: 'install_method' } });
+  }, 60_000);
+
+  it("a DIFFERENT partner's partner-wide catalog item is NOT reachable", async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const [catalogB] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: null, partnerId: partnerB.id, name: 'Other Partner App' })
+      .returning();
+    await seedMethod(catalogB!.id, 'windows', 'winget', 'Other.App');
+
+    const resolution = await resolveInWorkerContext({
+      catalogId: catalogB!.id,
+      deviceOrgId: orgA.id,
+      deviceOsType: 'windows',
+    });
+    expect(resolution).toEqual({ ok: false, reason: 'catalog_item_not_reachable' });
+  }, 60_000);
+
+  it('does not create a second policy-owned deployment while one is unfinished', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+    const device = await seedDevice(org.id, site.id);
+
+    const first = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    await getTestDb()
+      .insert(deploymentResults)
+      .values({ deploymentId: first.id, deviceId: device.id, status: 'installing' });
+
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(true);
+
+    // Once the result reaches a terminal status the gate reopens.
+    await getTestDb()
+      .update(deploymentResults)
+      .set({ status: 'completed' })
+      .where(eq(deploymentResults.deploymentId, first.id));
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(false);
+  }, 60_000);
+
+
+  it('stops counting an unfinished result once the deployment ages past the lookback', async () => {
+    // POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES exists precisely so ONE
+    // permanently wedged deployment_results row cannot suppress every future
+    // install for a (policy, device) pair forever. Nothing proved that: the
+    // mocked unit tests discard the WHERE clause, and the live case above only
+    // covers the unexpired side. Drop the `gte(createdAt, cutoff)` term and
+    // this is the test that goes red.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+    const device = await seedDevice(org.id, site.id);
+
+    const wedged = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    await getTestDb()
+      .insert(deploymentResults)
+      .values({ deploymentId: wedged.id, deviceId: device.id, status: 'installing' });
+
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(true);
+
+    // Age the deployment past the horizon. The result row stays non-terminal.
+    await getTestDb()
+      .update(softwareDeployments)
+      .set({
+        createdAt: new Date(
+          Date.now() - (POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES + 60) * 60 * 1000
+        ),
+      })
+      .where(eq(softwareDeployments.id, wedged.id));
+
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(false);
+  }, 60_000);
+
+  it('the install-method query really filters on enabled AND platform', async () => {
+    // The mocked unit tests drive resolvePolicyInstallTarget purely off primed
+    // return values and ignore `.where()` arguments entirely, so dropping
+    // either predicate from the real query would not fail any of them. This
+    // seeds exactly the two rows those predicates must exclude and asserts the
+    // resolver falls through to the version path instead of picking either.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const catalog = await seedCatalog(org.id);
+
+    const disabledWindows = await seedMethod(catalog.id, 'windows', 'winget', 'Disabled.App');
+    await getTestDb()
+      .update(softwareInstallMethods)
+      .set({ enabled: false })
+      .where(eq(softwareInstallMethods.id, disabledWindows.id));
+    // Right catalog item, wrong platform for the device below.
+    await seedMethod(catalog.id, 'macos', 'homebrew_cask', 'Wrong.Platform');
+
+    const [version] = await getTestDb()
+      .insert(softwareVersions)
+      .values({
+        catalogId: catalog.id,
+        version: '1.0.0',
+        isLatest: true,
+        supportedOs: ['windows'],
+      })
+      .returning();
+
+    const resolution = await resolveInWorkerContext({
+      catalogId: catalog.id,
+      deviceOrgId: org.id,
+      deviceOsType: 'windows',
+    });
+
+    expect(resolution).toEqual({
+      ok: true,
+      target: { kind: 'version', catalogId: catalog.id, softwareVersionId: version!.id },
+    });
+  }, 60_000);
+
+  it('the reconcile reader reports the LATEST policy-owned deployment per device', async () => {
+    // Backs the compliance worker's orphaned-install sweep: it must be able to
+    // tell "this enqueue produced a deployment" from "an EARLIER cycle did".
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+    const device = await seedDevice(org.id, site.id);
+    const otherDevice = await seedDevice(org.id, site.id);
+
+    const older = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    const newer = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    await getTestDb()
+      .update(softwareDeployments)
+      .set({ createdAt: new Date('2026-09-01T00:00:00Z') })
+      .where(eq(softwareDeployments.id, older.id));
+    await getTestDb()
+      .update(softwareDeployments)
+      .set({ createdAt: new Date('2026-09-10T00:00:00Z') })
+      .where(eq(softwareDeployments.id, newer.id));
+    await getTestDb().insert(deploymentResults).values([
+      { deploymentId: older.id, deviceId: device.id, status: 'completed' },
+      { deploymentId: newer.id, deviceId: device.id, status: 'completed' },
+    ]);
+
+    const byDevice = await withSystemDbAccessContext(() =>
+      readLatestPolicyOwnedInstallByDevice(policy.id, [device.id, otherDevice.id])
+    );
+    expect(byDevice.get(device.id)).toEqual(new Date('2026-09-10T00:00:00Z'));
+    // A device that never had one is absent, not zero-dated.
+    expect(byDevice.has(otherDevice.id)).toBe(false);
+  }, 60_000);
 });

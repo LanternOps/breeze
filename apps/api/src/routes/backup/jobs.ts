@@ -5,7 +5,7 @@ import { db } from '../../db';
 import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
+import { createManualBackupJobIfIdle, deviceHelperQueues } from '../../services/backupJobCreation';
 import { removeQueuedBackupDispatch } from '../../jobs/backupEnqueue';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
@@ -260,12 +260,14 @@ jobsRoutes.post(
     }
   };
 
+  const helperQueues = await deviceHelperQueues(deviceId);
   for (const spec of specs) {
     const result = await createManualBackupJobIfIdle({
       orgId,
       configId,
       featureLinkId,
       deviceId,
+      helperQueues,
       ...(spec ? { backupMode: spec.backupMode, modeTargets: spec.targets } : {}),
     });
     if (!result) {
@@ -484,12 +486,14 @@ jobsRoutes.post(
     // Selections whose job creation returned null (DB error / lost idle race).
     const failedModes: string[] = [];
 
+    const helperQueues = await deviceHelperQueues(deviceId);
     for (const spec of specs) {
       const result = await createManualBackupJobIfIdle({
         orgId,
         configId,
         featureLinkId,
         deviceId,
+        helperQueues,
         ...(spec ? { backupMode: spec.backupMode, modeTargets: spec.targets } : {}),
       });
       if (!result) {
@@ -635,6 +639,7 @@ jobsRoutes.post(
     try {
       const { error } = await queueBackupStopCommand(row.deviceId, {
         userId: auth?.user?.id ?? undefined,
+        jobId: row.id,
       });
       stopQueued = !error;
       if (error) {

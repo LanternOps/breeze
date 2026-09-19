@@ -45,10 +45,18 @@ Each wave is its own spec + plan + PR set. This document fully specifies
 | 1 | **Agents, runs, event types** (this doc) | `ai_agents` dual-owner policy rows; `ai_agent_runs` ledger; `ai_agent` principal with an explicit authorization branch; effective-policy resolver (partner baseline, org may only tighten); settings API + UI; `ai.agent.*` event types | — (foundation) |
 | 2 | Notifications + web approvals inbox | `approval`/`ai` notification types, `createNotification()`, per-user real-time delivery, `/approvals` page over existing `routes/approvals.ts`, requester outcome notifications via intent outbox | "You hold the approvals" on web, not just mobile |
 | 3 | Headless triage, shadow mode | `ai-agent` BullMQ queue; headless `streamingSessionManager` path under the `ai_agent` principal; aggregation/dedupe; automations action `ai_triage` + seeded partner-wide automation (`automations.managed_by_agent_id`); read-only + Tier-2-readonly tools; **agent-originated action intents** (requester-less intent model, §3.4); remediation workers publish lifecycle events | "The operator picks it up immediately" (propose form) |
-| 3.5 | Worker role split | `BREEZE_ROLE=api\|worker\|all`; hosted gets a `worker` container; `setInterval` jobs → repeatables/locks; event bus consumer-group dispatch (§7) | — (scale + isolation) |
+| 3.5 | Worker role split | `BREEZE_ROLE=api\|worker\|all`; hosted gets a `worker` container; `setInterval` jobs → repeatables/locks; ~~event bus consumer-group dispatch (§7)~~ superseded 2026-08-26, see amendment below | — (scale + isolation) |
 | 4 | Act mode, rule-equivalent ops | Agent may execute only operations a rule-based automation could run unattended (library scripts, playbooks, service restart, disk cleanup, kill process, `remediationSuggestions` matches); revalidate → execute → verify → **always notify** | "Tier 2 low-risk fixes auto-execute and are logged" / "Runs, then notifies" |
 | 5 | Bounded unattended Tier 3 | Policy-satisfied authorization path for allowlisted `TIER3_SUPERVISED` actions (not a new `approvalScope`); blast caps enforced, overflow degrades to a human intent; kill switch | "You set where the line sits" |
 | 6 | Supervision + scale | Run transcript review, "did the fix hold" watch, ticket resolution notes, ticket-triggered helpdesk agent, anomaly sources, circuit breakers | Managed AI Ops surfaces; "resolves tickets" |
+
+> **Amendment (2026-08-26):** Wave 3.5c (LanternOps/breeze#4085) ships BullMQ
+> route/deliver dispatch with durable Postgres receipts **instead of** the
+> Redis Streams consumer-group dispatch specified in §7 for wave 3.5. The
+> consumer-group implementation was defective five ways; per-subscriber retry
+> isolation — not consumer-group semantics — is the actual requirement.
+> Decided by advisor quorum 2026-08-26. ADR:
+> `docs/superpowers/plans/ai-mcp/2026-08-26-ai-agents-wave3.5c-durable-dispatch.md`.
 
 Decisions fixed for the whole program (2026-08-22):
 
@@ -74,6 +82,20 @@ Decisions fixed for the whole program (2026-08-22):
   path; revisit after shadow data.
 - **Agents are never hard-deleted.** Attribution on runs, sessions and (from
   wave 3) intents must survive; `ai_agents` rows are disabled, not removed.
+
+> **Amendment (2026-09-13) — the execution plane.** §2's authority model said
+> an agent's only effects are Breeze tool calls under the tier gate. That still
+> holds, and one thing has been added beside it: an `analysis`-profile run may
+> also execute MODEL-WRITTEN CODE inside a per-run vendor microVM with no
+> network, no credentials and no device reach, over data the run was
+> explicitly given. The sandbox is not a path around the tier gate —
+> `execute_command` and `run_script` remain exactly as gated as they are
+> today, and the workspace tools are Tier 1 precisely because they cannot
+> touch the fleet. See
+> `docs/superpowers/specs/ai-mcp/2026-09-13-ai-agent-execution-plane-design.md`
+> §2.1 for the amendment in full, §5.3 for the capability surface and §8 for
+> the security model (hosted-only, per-org `ai_external_processing` opt-in,
+> region assertion, caps).
 
 ## 3. Identity: the `ai_agent` principal
 
@@ -390,9 +412,14 @@ read. Consequences the later waves must design around:
   fires for events the API process publishes — which today is all of them.
 - Wave 3's trigger handler must do nothing but enqueue a BullMQ job (durable,
   deduped by `jobId`); it must not run the agent inline.
-- Wave 3.5 (role split) must either keep the automations subscription in the
-  publishing role or switch wildcard handlers to consumer-group dispatch with
-  `event.id` dedupe. Decide there, not here.
+- ~~Wave 3.5 (role split) must either keep the automations subscription in
+  the publishing role or switch wildcard handlers to consumer-group dispatch
+  with `event.id` dedupe. Decide there, not here.~~ **Amendment (2026-08-26):**
+  decided in wave 3.5c (#4085) — BullMQ route/deliver dispatch with durable
+  Postgres `(event_id, subscriber_id)` receipts, not consumer-group dispatch.
+  The consumer-group implementation was defective five ways; per-subscriber
+  retry isolation is the actual requirement. Advisor quorum 2026-08-26. ADR:
+  `docs/superpowers/plans/ai-mcp/2026-08-26-ai-agents-wave3.5c-durable-dispatch.md`.
 
 Remediation-worker lifecycle publishing (`software.*`,
 `policy.remediation.completed`, `service.restart_exhausted`) moves to wave 3
@@ -466,7 +493,9 @@ LanternOps tenant.
 
 Runner, queue, headless session path, agent-originated intents,
 `automations.managed_by_agent_id`, remediation-worker event publishing
-(wave 3); notifications and inbox (2); worker role split and consumer-group
-dispatch (3.5); `act` mode (4); unattended Tier 3 (5); ticket trigger,
+(wave 3); notifications and inbox (2); worker role split (3.5d) and
+~~consumer-group dispatch~~ durable BullMQ dispatch (3.5c, amendment
+2026-08-26 — see §2/§7);
+`act` mode (4); unattended Tier 3 (5); ticket trigger,
 transcript review UI (6); any agent-platform features (§2); external/MCP
 agent policy unification.

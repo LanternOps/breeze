@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TICKET_ATTACHMENT_LIMITS } from '../constants/ticketAttachments';
 
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
@@ -30,7 +31,15 @@ export const createTicketSchema = z
     // backfills name/email from that row when they aren't supplied here.
     submittedBy: z.string().guid().optional(),
     submitterName: z.string().min(1).max(255).optional(),
-    submitterEmail: z.string().email().max(255).optional()
+    submitterEmail: z.string().email().max(255).optional(),
+    // #5367: the canonical requester PERSON (`tickets.requester_contact_id`,
+    // #3258 W03). Independent of `submittedBy`, which names the optional portal
+    // LOGIN — a contact may have no login at all. The service tenant-validates
+    // it against the ticket's org before any write and backfills the
+    // name/email snapshot from the contact when neither is supplied here.
+    // Declared on the schema because a zod object STRIPS unknown keys: without
+    // this line the route silently drops the field on its way to createTicket.
+    requesterContactId: z.string().guid().optional()
   })
   .superRefine((v, ctx) => {
     if (!v.formId && (!v.subject || v.subject.trim().length === 0)) {
@@ -75,14 +84,25 @@ export const updateTicketSchema = z.object({
   // submitterName mirrors create's min(1) (use null to clear, not an empty string).
   submittedBy: z.string().guid().nullable().optional(),
   submitterName: z.string().min(1).max(255).nullable().optional(),
-  submitterEmail: z.string().email().max(255).nullable().optional()
+  submitterEmail: z.string().email().max(255).nullable().optional(),
+  // #5367: re-point the requester CONTACT explicitly. An explicit value wins
+  // over the link the service otherwise derives from the login/address (the
+  // same precedence createTicket gives a named contact); null clears it.
+  requesterContactId: z.string().guid().nullable().optional()
 });
 
 export const changeTicketStatusSchema = z.object({
   status: ticketStatusSchema.optional(),
   statusId: z.string().guid().optional(),
   resolutionNote: z.string().min(1).max(10_000).optional(),
-  pendingReason: z.string().max(500).optional()
+  pendingReason: z.string().max(500).optional(),
+  // P2-4 (#4191), Task A10: an active `resolution_note`-kind ticket_drafts row
+  // to apply as the resolution note (the web resolve modal's AI-draft
+  // prefill, PR B) — the service reads its content and consumes it in the
+  // same transaction as the status change. Only meaningful alongside a
+  // resolve; the service rejects it otherwise. Supplying this relaxes the
+  // resolutionNote-required rule below since the draft supplies the text.
+  aiDraftId: z.string().guid().optional()
 }).superRefine((v, ctx) => {
   const hasStatus = v.status !== undefined;
   const hasStatusId = v.statusId !== undefined;
@@ -92,7 +112,7 @@ export const changeTicketStatusSchema = z.object({
   if (!hasStatus && !hasStatusId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: [] });
   }
-  if (hasStatus && v.status === 'resolved' && (!v.resolutionNote || v.resolutionNote.length === 0)) {
+  if (hasStatus && v.status === 'resolved' && !v.aiDraftId && (!v.resolutionNote || v.resolutionNote.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });
   }
 });
@@ -129,8 +149,14 @@ export const bulkTicketActionSchema = z.object({
 export const PORTAL_TICKET_COMMENT_MAX_CHARS = 5000;
 
 export const addTicketCommentSchema = z.object({
-  content: z.string().min(1).max(50_000),
-  isPublic: z.boolean().default(true)
+  // W08 #3902: content may be blank when the comment carries attachments; the
+  // refine below keeps the old "non-empty" rule for attachment-less comments.
+  content: z.string().max(50_000).default(''),
+  isPublic: z.boolean().default(true),
+  attachmentIds: z.array(z.string().guid()).max(TICKET_ATTACHMENT_LIMITS.maxPerComment).default([])
+}).refine((v) => v.content.trim().length > 0 || v.attachmentIds.length > 0, {
+  message: 'Comment needs text or at least one attachment',
+  path: ['content']
 });
 
 export const editCommentSchema = z.object({
@@ -174,6 +200,7 @@ export const ticketCategoryInputSchema = z.object({
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
   defaultBillable: z.boolean().optional(),
   defaultHourlyRate: z.number().nonnegative().nullable().optional(),
+  defaultTimeEntryMinutes: z.number().int().min(1).max(1440).nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional()
 });

@@ -475,9 +475,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {(() => {
             const commands: Record<Platform, string> = buildInstallCommands({
               apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
-              ghBase:
-                import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
-                'https://github.com/lanternops/breeze/releases/latest/download',
               token: onboardingToken || '<TOKEN>',
               enrollmentSecret: enrollmentSecret || undefined,
             });

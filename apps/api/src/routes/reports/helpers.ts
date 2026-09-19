@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { isManagedEvidenceType } from '../../services/managedEvidenceRegistry';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { portalBranding, reports, reportRuns } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   decodeSiteScope,
@@ -15,6 +16,43 @@ import {
 } from '../../services/siteScope';
 
 export { getPagination } from '../../utils/pagination';
+
+/**
+ * #4562 W10 — a 409, not a 403, for the same reason as `system_managed_report`:
+ * the caller's permissions are fine, it is the definition's OWNERSHIP that
+ * makes the mutation impossible while the customer portal exposes it.
+ */
+export const PORTAL_SELF_SERVICE_REPORT = {
+  error: 'portal_self_service_report',
+} as const;
+
+/**
+ * #4562 W10 — is this definition the org's canonical customer-portal report
+ * (`portal_self_service`) while that org currently exposes portal reports?
+ *
+ * While `portal_branding.enable_reports` is on, the portal lists EVERY
+ * completed run of the definition and downloads it as the customer's own
+ * report (`portalRunListPredicate` keys on org + marker + status only), so
+ * the MSP must not rewrite its customer-safe config (PUT), generate a run
+ * under a tech's — possibly site-restricted — authority (POST /:id/generate),
+ * or delete it (DELETE). Once the flag is off the definition is an ordinary
+ * MSP-owned report again and every mutation is allowed. Spec §8.2 / R10-3.
+ *
+ * Takes the transaction (or `db`) so the write routes evaluate it on the
+ * same connection that holds the `FOR UPDATE` lock.
+ */
+export async function isPortalSelfServiceLocked(
+  tx: Pick<typeof db, 'select'>,
+  definition: { portalSelfService: boolean; orgId: string },
+): Promise<boolean> {
+  if (!definition.portalSelfService) return false;
+  const [branding] = await tx
+    .select({ enableReports: portalBranding.enableReports })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, definition.orgId))
+    .limit(1);
+  return branding?.enableReports === true;
+}
 
 export async function ensureOrgAccess(
   orgId: string,
@@ -102,13 +140,47 @@ export async function getReportWithOrgCheck(
 export const reportDefinitionMetadataProjection = {
   id: reports.id,
   orgId: reports.orgId,
+  // P2-3 (#4190): `type` rides along so the write routes can refuse a
+  // system-managed definition from the SAME row they already read for scope
+  // metadata — no extra query, and the refusal happens before any authority
+  // resolution. See `isSystemManagedReportDefinition`.
+  type: reports.type,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
   executionScopeUserId: reports.executionScopeUserId,
   executionScopeFingerprint: reports.executionScopeFingerprint,
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
+  executionScopePrincipalKind: reports.executionScopePrincipalKind,
+  portalSelfService: reports.portalSelfService,
 };
+
+/**
+ * P2-3 (#4190) — is this definition owned by the platform rather than by a
+ * human?
+ *
+ * TWO independent signals, deliberately OR-ed. `execution_scope_principal_kind
+ * = 'system'` is the provenance the scheduled-report worker also keys on;
+ * `type = 'ai_org_narrative'` (or, since Fleet Designer W01 #5651,
+ * `'ai_fleet_design'`) is the report's identity. Either alone would leave a
+ * gap: a row whose principal was somehow rewritten to 'user' is still a
+ * narrative/design nobody can regenerate, and a future system-managed report
+ * of an ordinary type would still have no acting user to mutate on behalf of.
+ *
+ * Reads and downloads never consult this — a system-managed report exists to be
+ * read. Only the four mutation routes do.
+ */
+export function isSystemManagedReportDefinition(
+  row: { type: string | null; executionScopePrincipalKind: string | null; portalSelfService?: boolean | null },
+): boolean {
+  return row.executionScopePrincipalKind === 'system'
+    || row.type === 'ai_org_narrative'
+    || row.type === 'ai_fleet_design'
+    // #5784 W01: the org's ONE managed evidence definition — DEFINITION-based,
+    // not type-based, because a managed evidence type also has ordinary
+    // user-authored definitions a technician must keep full control of.
+    || (row.type !== null && isManagedEvidenceType(row.type) && row.portalSelfService === true);
+}
 
 export function tenantAuthorizedReportCondition(
   reportId: string,
@@ -199,6 +271,7 @@ export const reportRunMetadataProjection = {
   executionScopeUserId: reportRuns.executionScopeUserId,
   executionScopeFingerprint: reportRuns.executionScopeFingerprint,
   executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+  executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
 };
 
 export async function getOrgIdsForAuth(

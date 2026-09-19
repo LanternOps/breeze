@@ -117,6 +117,53 @@ describe('historyToMessages', () => {
     expect(out[1].id).toBe('synth-tu1');
   });
 
+  it('carries toolInput onto the tool_use event (#5170)', () => {
+    // Without this, a `manage_*` read-only call reads "Updated …" again on
+    // reload/reconcile even though the live SSE path renders it correctly,
+    // because `aiToolLabel` needs `input.action` to tell the two apart.
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({
+        id: 'tu1',
+        role: 'tool_use',
+        toolUseId: 'tu-x',
+        toolName: 'manage_automations',
+        toolInput: { action: 'list' },
+      }),
+    ]);
+    const assistant = out[0];
+    if (assistant.role === 'assistant') {
+      expect(assistant.toolEvents[0].input).toEqual({ action: 'list' });
+    }
+  });
+
+  it('carries toolInput onto a tool_result-synthesized event too', () => {
+    const out = historyToMessages([
+      row({
+        id: 'tr1',
+        role: 'tool_result',
+        toolUseId: 'tu-x',
+        toolOutput: { ok: true },
+        toolInput: { action: 'get' },
+      }),
+    ]);
+    const placeholder = out[0];
+    if (placeholder.role === 'assistant') {
+      expect(placeholder.toolEvents[0].input).toEqual({ action: 'get' });
+    }
+  });
+
+  it('leaves input undefined when toolInput is not an object', () => {
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 'tu1', role: 'tool_use', toolUseId: 'tu-x', toolName: 't', toolInput: null }),
+    ]);
+    const assistant = out[0];
+    if (assistant.role === 'assistant') {
+      expect(assistant.toolEvents[0].input).toBeUndefined();
+    }
+  });
+
   it('falls back to row.id when toolUseId is missing on a tool_use row', () => {
     const out = historyToMessages([
       row({ id: 'a1', role: 'assistant', content: '' }),

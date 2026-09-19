@@ -20,15 +20,24 @@ import {
 import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { bumpApprovalGeneration } from './approvalGeneration';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE,
+  remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -115,6 +124,12 @@ registerTool({
       conditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
     }
 
+    // Exact-device axis, applied independently of the site axis: a device-LESS
+    // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+    // branch above no-ops for it and the tool read the whole org (#6086).
+    const complianceDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+    if (complianceDeviceCondition) conditions.push(complianceDeviceCondition);
+
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
 
     const rows = await db
@@ -198,7 +213,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options' },
+        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],
@@ -206,6 +221,10 @@ registerTool({
   },
   handler: async (input, auth) => {
     const action = input.action as string;
+    // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+    if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+      return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    }
 
     if (action === 'list') {
       const conditions: SQL[] = [];
@@ -267,6 +286,11 @@ registerTool({
       });
       if (rules.software.length === 0) {
         return JSON.stringify({ error: 'At least one software rule is required' });
+      }
+
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
       }
 
       const [policy] = await db
@@ -336,7 +360,17 @@ registerTool({
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
       }
 
-      const updates: Partial<typeof softwarePolicies.$inferInsert> = { updatedAt: new Date() };
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+      }
+
+      const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
+        updatedAt: new Date(),
+        // Site-ceiling gate contract §3: this AI-tool write bypasses
+        // routes/softwarePolicies.ts, so it needs its own bump.
+        approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+      };
       if (typeof input.name === 'string') updates.name = input.name;
       if (typeof input.description === 'string') updates.description = input.description;
       if (typeof input.mode === 'string') updates.mode = input.mode as 'allowlist' | 'blocklist' | 'audit';
@@ -377,7 +411,9 @@ registerTool({
       // `updates` (not raw `input`) is the set of columns actually written —
       // `input` also carries routing keys like `action`/`policyId` that were
       // never persisted, which would make the trail overstate the change.
-      const updatedFields = Object.keys(updates).filter((field) => field !== 'updatedAt');
+      const updatedFields = Object.keys(updates).filter(
+        (field) => field !== 'updatedAt' && field !== 'approvalGeneration'
+      );
       auditSoftwarePolicyToolEvent(auth, 'manage_software_policy', {
         orgId: existing.orgId,
         partnerId: existing.partnerId,
@@ -421,7 +457,13 @@ registerTool({
       await db.transaction(async (tx) => {
         await tx
           .update(softwarePolicies)
-          .set({ isActive: false, updatedAt: new Date() })
+          .set({
+            isActive: false,
+            updatedAt: new Date(),
+            // Site-ceiling gate contract §3: a status flip (soft-delete) is
+            // exactly the kind of edit an in-flight job needs to detect.
+            approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+          })
           .where(eq(softwarePolicies.id, existing.id));
 
         await tx
@@ -487,7 +529,7 @@ registerTool({
     // not the policy's own enforcement setting, so it is not a substitute.
     // Deliberately no override parameter: re-arming is an administrator's
     // decision made on the policy, not an argument the model can supply.
-    const arming = evaluateSoftwarePolicyArming(policy);
+    const arming = evaluateSoftwarePolicyArming(policy, 'uninstall');
     if (!arming.armed) {
       auditSoftwarePolicyToolEvent(auth, 'remediate_software_violation', {
         orgId: policy.orgId,
@@ -544,6 +586,12 @@ registerTool({
         }
         complianceConditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis (#6086). This
+      // fan-out QUEUES UNINSTALLS, so a device-less analysis run reaching every
+      // violating device in the org is the worst shape of this bug.
+      const remediationDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+      if (remediationDeviceCondition) complianceConditions.push(remediationDeviceCondition);
 
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })
@@ -732,6 +780,10 @@ registerTool({
       }
       conditions.push(inArray(automationPolicyCompliance.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis (#6086).
+    const automationDeviceCondition = deviceScopeCondition(auth, automationPolicyCompliance.deviceId);
+    if (automationDeviceCondition) conditions.push(automationDeviceCondition);
 
     const records = await db
       .select({

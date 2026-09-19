@@ -246,6 +246,30 @@ describe('tenancyRegistry', () => {
     });
   });
 
+  it('exports health evidence without leaking the open components container', () => {
+    expect(CORE_TENANT_EXPORT_POLICY.agent_health_observations?.columns.components).toMatchObject({
+      decision: 'exclude',
+      openContainerReviewed: true,
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.agent_health_observations?.columns.overall).toMatchObject({
+      decision: 'include',
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.automation_action_results?.columns.terminal_source).toMatchObject({
+      decision: 'include',
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.device_agent_health_latest?.columns.observation_id).toMatchObject({
+      decision: 'include',
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.software_inventory_observations?.columns.items).toMatchObject({
+      decision: 'exclude',
+      openContainerReviewed: true,
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.software_inventory_observations?.columns.reason_code).toMatchObject({ decision: 'include' });
+    expect(CORE_TENANT_EXPORT_POLICY.device_software_inventory_state?.columns.latest_accepted_observation_id).toMatchObject({ decision: 'include' });
+    expect(CORE_TENANT_EXPORT_POLICY.software_inventory?.columns.observation_id).toMatchObject({ decision: 'include' });
+    expect(CORE_TENANT_EXPORT_POLICY.device_vulnerabilities?.columns.resolved_observation_id).toMatchObject({ decision: 'include' });
+  });
+
   it.each([
     ['c2c_consent_sessions', 'state'],
     ['device_config_state', 'config_value'],

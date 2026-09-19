@@ -50,11 +50,28 @@ vi.mock('../services/aiAgentSdk', () => ({
 vi.mock('../services/streamingSessionManager', () => ({
   streamingSessionManager: {
     getOrCreate: vi.fn(),
+    get: vi.fn(() => undefined),
     tryTransitionToProcessing: vi.fn(),
     remove: vi.fn(),
     interrupt: vi.fn(),
     startTurnTimeout: vi.fn(),
   },
+}));
+
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: vi.fn(async () => ({
+    kind: 'unlimited',
+    reservationId: '66666666-6666-4666-8666-666666666666',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(async () => ({
+    kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({
+    kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
 }));
 
 vi.mock('../services/aiAgent', () => ({
@@ -92,6 +109,7 @@ import {
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { handleApproval } from '../services/aiAgent';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -213,11 +231,49 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         expect.anything(),
         expect.anything(),
         'System prompt',
-        1,
+        undefined,
         resolved,
         expect.anything(),
         expect.anything(),
+        expect.objectContaining({ budgetReservationId: expect.any(String) }),
       );
+    });
+
+    it('maps a wire-model fail-close from the SDK manager to 503 ai_unavailable', async () => {
+      const resolved = { source: 'platform', apiKey: 'k', model: 'claude-sonnet-4-6' };
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID,
+          orgId: ORG_ID,
+          type: 'script_builder',
+          sdkSessionId: null,
+          model: resolved.model,
+          maxTurns: 50,
+          turnCount: 0,
+          systemPrompt: 'System prompt',
+        },
+        sanitizedContent: 'Hello',
+        systemPrompt: 'System prompt',
+        maxBudgetUsd: 1,
+        resolved,
+      } as any);
+      // `getOrCreate` resolves the wire model INSIDE the manager, so a pinned
+      // revision with no verified mapping for this session's model throws from
+      // here — the resolver-level 503 the caller already handles elsewhere has
+      // no visibility into it (#3922 W3 review round 2).
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new LlmUnavailableError());
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      // A 500 tells the UI "we broke"; a 503 ai_unavailable is the documented
+      // "reconnect your AI provider" signal every other AI route already sends.
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     });
 
     it('returns 404 when pre-flight says session not found', async () => {

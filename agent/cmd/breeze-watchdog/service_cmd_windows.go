@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/serviceinstall"
+	"github.com/breeze-rmm/agent/internal/winsvcinstall"
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -34,43 +35,45 @@ func serviceInstallCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to determine executable path: %w", err)
 			}
-			serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-watchdog.exe")
-			if err != nil {
-				return fmt.Errorf("failed to install service binary in protected Program Files location: %w", err)
-			}
-			if copied {
-				fmt.Printf("Copied service binary to protected location: %s\n", serviceExePath)
-			}
 
-			m, err := mgr.Connect()
+			m, err := winsvcinstall.Connect()
 			if err != nil {
-				return fmt.Errorf("failed to connect to SCM (run as Administrator): %w", err)
+				return err
 			}
-			defer m.Disconnect()
+			defer m.Close()
 
-			s, err := m.CreateService(windowsWatchdogServiceName, serviceExePath, mgr.Config{
-				DisplayName:  "Breeze RMM Watchdog",
-				Description:  "Breeze Agent Watchdog - monitors and recovers the agent process",
-				StartType:    mgr.StartAutomatic,
-				ErrorControl: mgr.ErrorNormal,
-			}, "run")
-			if err != nil {
-				return fmt.Errorf("failed to create service: %w", err)
+			// AlwaysStart, unconditionally: unlike the agent the watchdog has no
+			// enrollment to wait for, and an installed-but-not-started watchdog
+			// is exactly the failure it exists to prevent. Before #5299 this
+			// command created the service StartAutomatic and returned — so a
+			// freshly bootstrapped watchdog did not actually supervise anything
+			// until the host next rebooted, and re-running it on a host that
+			// already had the service failed outright on CreateService.
+			outcome, installErr := winsvcinstall.Install(m, winsvcinstall.Request{
+				Spec: winsvcinstall.Spec{
+					Name:        windowsWatchdogServiceName,
+					DisplayName: "Breeze RMM Watchdog",
+					Description: "Breeze Agent Watchdog - monitors and recovers the agent process",
+					Args:        []string{"run"},
+				},
+				Stage: func() (string, error) {
+					path, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-watchdog.exe")
+					if err != nil {
+						return "", fmt.Errorf(
+							"failed to install service binary in protected Program Files location: %w", err)
+					}
+					if copied {
+						fmt.Printf("Copied service binary to protected location: %s\n", path)
+					}
+					return path, nil
+				},
+				Decide: winsvcinstall.AlwaysStart(),
+				Warn:   os.Stderr,
+			})
+			if outcome.Installed {
+				fmt.Println(outcome.Summary(windowsWatchdogServiceName))
 			}
-			defer s.Close()
-
-			// Set recovery actions: restart on first three failures.
-			err = s.SetRecoveryActions([]mgr.RecoveryAction{
-				{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-				{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-				{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-			}, 86400) // reset failure count after 24 h
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to set recovery actions: %v\n", err)
-			}
-
-			fmt.Printf("Service %q installed successfully.\n", windowsWatchdogServiceName)
-			return nil
+			return installErr
 		},
 	}
 }

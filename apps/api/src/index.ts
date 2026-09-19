@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 // Canonicalize NODE_ENV before any module reads it (some routes/services gate
 // on `NODE_ENV === 'production'` at import time). Must stay directly after
 // dotenv so .env is loaded first. See #917 (L-6).
@@ -26,6 +27,7 @@ import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
+import { monitorDefinitionRoutes } from './routes/monitorDefinitions';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
@@ -38,6 +40,8 @@ import { quotesPublicRoutes } from './routes/quotesPublic';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
+import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -48,6 +52,15 @@ import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTem
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
+import { orgMergeRoutes } from './routes/orgMerge';
+import { orgArchiveRoutes } from './routes/orgArchive';
+import { orgSummaryRoutes } from './routes/orgSummary';
+import { orgAccountReadinessRoutes } from './routes/orgAccountReadiness';
+import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
+import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
+import { orgDocumentRoutes } from './routes/orgDocuments';
+import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -90,6 +103,8 @@ import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked'
 import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
+import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -115,9 +130,12 @@ import { metricsRoutes, metricsMiddleware } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { partnerTrustRoutes } from './routes/partnerTrust';
+import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
+import { customFieldImportRoutes } from './routes/customFieldImport';
 import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
@@ -130,8 +148,16 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
+import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
+import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
+import { aiArtifactRoutes } from './routes/aiArtifacts';
+import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { fleetDesignRoutes } from './routes/fleetDesign';
+import { patchPlanRoutes } from './routes/patchPlan';
+import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -140,6 +166,8 @@ import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
+import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
+import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -165,7 +193,9 @@ import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
+import { toolSourcesRoutes } from './routes/toolSources';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
+import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
   captureException,
   captureMessage,
@@ -187,180 +217,66 @@ import {
   getDbPoolHealthMinTimeouts,
   getDbPoolHealthWindowMs,
   startDbPoolHealthMonitor,
+  startWedgedBackendMonitor,
+  stopWedgedBackendMonitor,
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
+import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
+import {
+  setWorkerReadinessTransitionHandler,
+  workerReadinessRegistry,
+} from './services/workerReadinessRegistry';
+import {
+  consumersForInitializer,
+  declareExpectedConsumers,
+} from './jobs/workerReadinessManifest';
 
 // Workers
-import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
-import { initializeInvoiceWorkers, shutdownInvoiceWorkers } from './jobs/invoiceWorker';
-import { initializeContractWorkers, shutdownContractWorkers } from './jobs/contractWorker';
-import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
-import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
-import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
-import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
-import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
-import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
-import { initializeMetricRollupsWorker, shutdownMetricRollupsWorker } from './jobs/metricRollups';
-import {
-  initializeMetricRollupMaintenanceWorker,
-  shutdownMetricRollupMaintenanceWorker,
-} from './jobs/metricRollupMaintenance';
-import { initializeMetricAnomaliesWorker, shutdownMetricAnomaliesWorker } from './jobs/metricAnomalies';
-import { scheduleFleetFindingsJobs, shutdownFleetFindingsJobs } from './jobs/fleetFindings';
-import {
-  scheduleFleetRemediationDispatchJobs,
-  shutdownFleetRemediationDispatchJobs,
-} from './jobs/fleetRemediationDispatch';
-import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/mlOutputRetention';
-import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
-import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
-import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
-import {
-  initializeStripeAccountCacheRefreshWorker,
-  shutdownStripeAccountCacheRefreshWorker,
-} from './jobs/stripeAccountCacheRefresh';
-import {
-  initializeExchangeRateSyncWorker,
-  shutdownExchangeRateSyncWorker,
-} from './jobs/exchangeRateSync';
-import {
-  initializeOAuthRevocationRetryWorker,
-  shutdownOAuthRevocationRetryWorker,
-} from './jobs/oauthRevocationRetryWorker';
-import {
-  initializeMtlsCertificateRevocationWorker,
-  shutdownMtlsCertificateRevocationWorker,
-} from './jobs/mtlsCertificateRevocation';
-import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
-import { initializeQuoteSendWorker, shutdownQuoteSendWorker } from './jobs/quoteSendQueue';
-import {
-  initializeEnrollmentKeyCleanupWorker,
-  shutdownEnrollmentKeyCleanupWorker,
-} from './jobs/enrollmentKeyCleanup';
-import {
-  initializeQuickSupportReaper,
-  shutdownQuickSupportReaper,
-} from './jobs/quickSupportReaper';
-import {
-  initializeSoftwareUploadSessionCleanupWorker,
-  shutdownSoftwareUploadSessionCleanupWorker,
-} from './jobs/softwareUploadSessionCleanup';
-import {
-  initializeSoftwareRemediationRequestCleanupWorker,
-  shutdownSoftwareRemediationRequestCleanupWorker,
-} from './jobs/softwareRemediationRequestCleanup';
-import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
-import {
-  initializeAuditChainVerifyWorker,
-  shutdownAuditChainVerifyWorker,
-} from './jobs/auditChainVerify';
-import {
-  initializeAuditChainAnchorWorker,
-  shutdownAuditChainAnchorWorker,
-} from './jobs/auditChainAnchor';
-import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
-import {
-  initializeDesktopSessionFinalizationWorker,
-  shutdownDesktopSessionFinalizationWorker,
-} from './jobs/desktopSessionFinalizationWorker';
-import {
-  initializeDesktopSessionOrphanRecovery,
-  shutdownDesktopSessionOrphanRecovery,
-} from './services/desktopSessionOrphanRecovery';
-import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
-import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
-import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
-import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
-import { initializeUnifiWorker } from './jobs/unifiWorker';
-import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
-import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
-import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
-import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
-import { initializeDeviceMetricsRetention, shutdownDeviceMetricsRetention } from './jobs/deviceMetricsRetention';
-import { initializeServiceProcessCheckRetention, shutdownServiceProcessCheckRetention } from './jobs/serviceProcessCheckRetention';
-import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
-import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
-import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
-import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
-import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
-import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
-import { initializeAbuseSignalsWorker, shutdownAbuseSignalsWorker } from './jobs/abuseSignalsSweep';
-import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
-import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
-import { initializeReportScheduleWorker, shutdownReportScheduleWorker } from './jobs/reportScheduleWorker';
-import { initializeCveEnrichmentWorker, shutdownCveEnrichmentWorker } from './jobs/cveEnrichmentWorker';
-import { initializeWingetIndexSyncWorker, shutdownWingetIndexSyncWorker } from './jobs/wingetIndexSyncWorker';
-import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
-import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
-import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
-// AI agents wave 3c: importing this module also REGISTERS the run enqueuer with
-// services/aiAgents/runService at module scope, so the manual-trigger route can
-// enqueue even in a process whose background workers never booted.
-import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRunner';
-
-import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
-import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
-import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
-import { registerDnsThreatAlertSubscriber } from './services/dnsThreatAlerts';
-import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
-import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
-import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
-import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
-import { initializeMaintenanceRebootWorker, shutdownMaintenanceRebootWorker } from './jobs/maintenanceRebootWorker';
-import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
-import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
-import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
-import { initializePax8SyncWorkers, shutdownPax8SyncWorkers } from './jobs/pax8SyncWorker';
-import { initializeTdSynnexSftpWorkers, shutdownTdSynnexSftpWorkers } from './jobs/tdSynnexSftpSyncWorker';
-import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
-import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
-import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
-import { initializeC2cBackupWorker, shutdownC2cBackupWorker } from './jobs/c2cBackupWorker';
-import { initializeBackupSlaWorker, shutdownBackupSlaWorker } from './jobs/backupSlaWorker';
-import { initializeDrExecutionWorker, shutdownDrExecutionWorker } from './jobs/drExecutionWorker';
-import { initializeRecoveryMediaWorker, shutdownRecoveryMediaWorker } from './jobs/recoveryMediaWorker';
-import { initializeRecoveryBootMediaWorker, shutdownRecoveryBootMediaWorker } from './jobs/recoveryBootMediaWorker';
-import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
-import { initializeSsoDomainRecheckWorker, shutdownSsoDomainRecheckWorker } from './services/ssoDomainRecheckWorker';
+//
+// wave 3.5d-b (#4086): the 104 static `initialize*`/`shutdown*` imports that
+// used to live here are gone — `services/workerRegistry.ts` lazy-loads each
+// one's module only when its entry is actually selected for the running
+// role, so this file's own import closure no longer has to pull in the
+// entire worker-module graph. The handful of imports below are the
+// "phase 2 specials" that stay directly in index.ts (not registry entries):
+// the webhook-delivery singleton (`shutdownRuntime`'s preamble calls
+// `getWebhookWorker().stop()` before any other shutdown phase runs), and the
+// event-dispatch/relay consumers, which have their own role gating distinct
+// from the registry's placement filter.
+import { getWebhookWorker } from './workers/webhookDelivery';
+import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
+import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
-import {
-  initializeIncidentCorrelationWorker,
-  shutdownIncidentCorrelationWorker,
-  initializeIncidentTimelineEnricher,
-  shutdownIncidentTimelineEnricher,
-  initializeIncidentSlaMonitor,
-  shutdownIncidentSlaMonitor,
-} from './jobs/incidentJobs';
-import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
-import { initializeSoftwareDeploymentScheduler, shutdownSoftwareDeploymentScheduler } from './jobs/softwareDeploymentScheduler';
-import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
-import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
-import { initializeOffboardingDrainReaper, shutdownOffboardingDrainReaper } from './jobs/offboardingDrainReaper';
-import { initializeIntentOutboxPublisher, shutdownIntentOutboxPublisher } from './jobs/intentOutboxPublisher';
-import { initializeIntentExpiryReaper, shutdownIntentExpiryReaper } from './jobs/intentExpiryReaper';
-import { initializeIntentReleaseWorker, shutdownIntentReleaseWorker } from './jobs/intentReleaseWorker';
-import { initializeStripeReconcileSweep, shutdownStripeReconcileSweep } from './jobs/stripeReconcileSweep';
-import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/quoteExpiryReaper';
-import { initializeSuppressionExpiryReaper, shutdownSuppressionExpiryReaper } from './jobs/suppressionExpiryReaper';
-import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
-import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
-import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
-import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
-import { initializePolicyAlertBridge } from './services/policyAlertBridge';
-import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
-import { decryptForColumn } from './services/secretCrypto';
-import { decryptWebhookHeaders } from './services/notificationChannelSecrets';
+import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
+import { registerAllEventSubscribers } from './services/eventSubscribers';
+import { initializeDeviceEventHandlers } from './events/deviceEvents';
+import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
+import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
+import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
+import {
+  initializeAgentCommandRelayWorker,
+  shutdownAgentCommandRelayWorker,
+} from './jobs/agentCommandRelayWorker';
+import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
+import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
+import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
-import { drainAuditRetryQueue } from './services/auditService';
+import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/auditService';
+import { runShutdownPhases } from './services/shutdownPhases';
+import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
@@ -372,15 +288,15 @@ import {
 } from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
-import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/schema';
+import { eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
-  computeWorkersHealthy,
   createReadinessEvaluator,
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -434,23 +350,12 @@ let workerInitPhase: WorkerInitPhase = 'pending';
  * amplification defence, and an over-large one would re-create #2974 in slow
  * motion by latching the answer for minutes.
  */
-const READINESS_CACHE_TTL_MAX_MS = 30_000;
-const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
-const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
-if (READINESS_CACHE_TTL_MS !== readinessTtlRaw) {
-  console.warn(
-    `[ready] READINESS_CACHE_TTL_MS=${readinessTtlRaw} out of range, clamped to ${READINESS_CACHE_TTL_MS}ms`
-  );
-}
-
-/**
- * Per-probe deadline. postgres.js has a connect timeout but no pool-acquire
- * timeout, so a saturated pool can leave `select 1` queued indefinitely.
- * Without a deadline that evaluation would never settle and the evaluator's
- * single-flight slot would never clear, silencing `/ready` for the rest of the
- * process. Kept well under a typical load-balancer probe timeout.
- */
-const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+const readinessTiming = resolveReadinessTiming(
+  process.env,
+  (name, requested, effective) => {
+    console.warn(`[ready] ${name}=${requested} clamped to ${effective}ms`);
+  },
+);
 
 /**
  * One-shot guard for the "Redis came back but boot never started the workers"
@@ -463,8 +368,9 @@ let warnedWorkersNeverStarted = false;
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
   checkRedis: () => checkRedisConnectivity(),
-  workersHealthy: (redisOk) => {
-    if (redisOk && workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
+  workerRegistry: workerReadinessRegistry,
+  workersInitialized: () => {
+    if (workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
       warnedWorkersNeverStarted = true;
       const message =
         'Redis is reachable again, but this process skipped worker startup because Redis was down at boot. ' +
@@ -473,22 +379,18 @@ const readiness = createReadinessEvaluator({
       captureException(new Error(`[ready] ${message}`));
     }
 
-    return computeWorkersHealthy({
-      phase: workerInitPhase,
-      workerStatus,
-      redisOk,
-      shuttingDown: shutdownInProgress
-    });
+    return workerInitPhase === 'started';
   },
   isShuttingDown: () => shutdownInProgress,
   requireRedis: REQUIRE_REDIS_ON_STARTUP,
-  ttlMs: READINESS_CACHE_TTL_MS,
-  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  ttlMs: readinessTiming.ttlMs,
+  probeTimeoutMs: readinessTiming.probeTimeoutMs,
   onProbeFailure: (probeName, error) => {
     console.error(`[ready] ${probeName} probe failed:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
 });
+setWorkerReadinessTransitionHandler(() => readiness.invalidate());
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -561,75 +463,17 @@ app.get('/health/live', (c) => {
   return c.json({ status: 'ok' });
 });
 
-// Full readiness check — live DB + Redis connectivity
-app.get('/health/ready', async (c) => {
-  const checks: Record<string, string> = {};
-  const isProd = process.env.NODE_ENV === 'production';
-
-  // Check database connectivity
-  try {
-    await runWithSystemDbAccess(async () => {
-      await db.execute(sql`select 1`);
-    });
-    checks.database = 'ok';
-  } catch (error) {
-    checks.database = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  // Check Redis connectivity
-  try {
-    const redis = getRedis();
-    if (!redis) {
-      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
-    } else {
-      await redis.ping();
-      checks.redis = 'ok';
-    }
-  } catch (error) {
-    checks.redis = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  const allOk = Object.values(checks).every((v) => v === 'ok');
-
-  // #3022 — event-loop lag is deliberately NOT reported here. This endpoint is
-  // unauthenticated (see HEALTH_CHECK_PATHS in middleware/security.ts), and the
-  // lag stats are a live load gradient plus the starvation threshold itself,
-  // which would let an unauthenticated prober measure whether its own load is
-  // starving the instance. What this endpoint already exposes is binary
-  // availability; a tunable pressure readout is a different thing.
-  //
-  // Nothing is lost by the omission: the same numbers are on the auth-gated
-  // /metrics as Prometheus gauges, and the starvation reporter logs to the
-  // console unconditionally. Load balancers — the actual consumers here — read
-  // the status code, not the body.
-  return c.json(
-    {
-      status: allOk ? 'ready' : 'not_ready',
-      checks
-    },
-    allOk ? 200 : 503
-  );
+// Both readiness paths are aliases of the same bounded, cached evaluator.
+// `/health` and `/health/live` above remain process-liveness probes.
+const readinessHandler = createReadinessHandler({
+  evaluator: readiness,
+  onEvaluationError: (error, c) => {
+    console.error('[ready] Readiness evaluation failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)), c);
+  },
 });
-
-// Legacy /ready alias (backward compatibility).
-//
-// Evaluated live on each request, TTL-cached and single-flighted — see
-// `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
-// actually moves; before #2974 it was frozen at the boot-time snapshot.
-app.get(
-  '/ready',
-  createReadinessHandler({
-    evaluator: readiness,
-    onEvaluationError: (error, c) => {
-      console.error('[ready] Readiness evaluation failed:', error);
-      captureException(error instanceof Error ? error : new Error(String(error)), c);
-    }
-  })
-);
+app.get('/ready', readinessHandler);
+app.get('/health/ready', readinessHandler);
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
@@ -672,6 +516,10 @@ const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
+  // Transport-layer ticket mint for the event-stream WebSocket, polled routinely
+  // by the web app. Not a user action — nobody is accountable for it, and it
+  // does not belong in a compliance trail. See issue #3991.
+  /^\/api\/v1\/events\/ws-ticket$/,
   // Agent telemetry endpoints are high-volume and many already emit explicit audit events.
   /^\/api\/v1\/agents\/[^/]+\/heartbeat$/,
   /^\/api\/v1\/agents\/[^/]+\/security\/status$/,
@@ -908,7 +756,8 @@ api.use('*', async (c, next) => {
 });
 
 api.use('*', async (c, next) => {
-  await next();
+  const auditWritten = await runWithAuditRequestTracking(next);
+  if (auditWritten) return;
 
   const method = c.req.method.toUpperCase();
   if (!isMutatingMethod(method)) {
@@ -973,6 +822,10 @@ api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
+// #5289 — monitor DEFINITIONS (the authored object the alert rules above get
+// compiled from). Deliberately NOT '/monitors': that path is already the
+// network-monitor API (routes/monitors.ts).
+api.route('/monitor-definitions', monitorDefinitionRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 // M365 mailbox OAuth + connection routes. Mounted as its OWN top-level router
 // (NOT under ticketsRoutes) and BEFORE /tickets so its literal /tickets/mailbox/*
@@ -1012,6 +865,15 @@ api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
 api.route('/orgs', orgRoutes);
+api.route('/orgs', orgMergeRoutes);
+api.route('/orgs', orgArchiveRoutes);
+api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', orgAccountReadinessRoutes); // GET /orgs/account-readiness — Organizations board bulk read (#5721 W01)
+api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
+api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
+api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -1056,6 +918,19 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // passes through (no Authorization header); the route reads the raw body itself
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
+// Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
+// verifier token. partnerGuard passes through (no Authorization header); the
+// route reads the raw body itself via c.req.text(), so no body-consuming
+// middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// there is no ambient auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', quickbooksWebhookRoutes);
+// Resend delivery webhook for partner sending domains (W06) — no session auth,
+// Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
+// is unset. partnerGuard passes through (no Authorization header); the route
+// reads the raw body itself via c.req.text(), so no body-consuming middleware may
+// sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
+// auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', resendWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1101,6 +976,10 @@ api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
+// Second sub-router at the same prefix (ten prefixes here already are). The
+// probe lives in its own module so routes/discovery.ts does not grow past 2,247
+// lines; no path overlaps, so mount order is immaterial.
+api.route('/discovery', discoveryAssetProbeRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -1115,6 +994,9 @@ api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+// Metric history in its own module (routes/monitoring.ts is already 1,071
+// lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
+api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
@@ -1128,10 +1010,22 @@ api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
+api.route('/partner/trust', partnerTrustRoutes);
+// W04 (#5612): the partner CEILING for the unattended script lane.
+api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+// W03 (partner sending domains). MUST stay above the catch-all `/partner`
+// mount below, the same ordering `/partner/trust` relies on — Hono matches in
+// registration order, so a later specific mount is never reached.
+api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
+// Mounted BEFORE customFieldRoutes so `/custom-fields/import*` is matched by
+// the importer rather than falling through to the CRUD app's `/:id` handlers
+// (#3257 W07). The two apps carry disjoint methods+paths today, so the order is
+// belt-and-braces rather than load-bearing.
+api.route('/custom-fields', customFieldImportRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
 api.route('/deployments', deploymentRoutes);
@@ -1141,7 +1035,33 @@ api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
 api.route('/ai/provider', aiProviderRoutes);
+// BEFORE /ai/agents: aiAgentsRoutes owns /:id, which would otherwise capture
+// '/schedules' as an agent id (#4189).
+api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Fleet Designer (W01, #5651) — trigger/list/detail for `designer`-kind runs.
+// Distinct path prefix from '/ai/agents', so registration order relative to
+// it doesn't matter the way '/ai/agents/schedules' does.
+api.route('/ai/fleet-design', fleetDesignRoutes);
+// AI patch agent W01 (#5747): "Run now" for a patch plan. Same reasoning as
+// the line above — its own prefix, so registration order is irrelevant.
+api.route('/ai/patch-plan', patchPlanRoutes);
+// Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
+// module from the already-large aiAgentsRoutes per spec §12.
+api.route('/ai/operator', aiOperatorTasksRoutes);
+// W03 (#5612): more specific than '/ai', so it must be registered first — same
+// reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
+// registration order.
+api.route('/ai/script-proposals', aiScriptProposalRoutes);
+// W04 (#5612): GET/PUT /ai/script-policy + POST /ai/script-lane/reset —
+// registered ahead of '/ai' so the literal paths never fall into a sibling
+// param route.
+api.route('/ai', aiScriptPolicyRoutes);
+// BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
+// the per-run artifact LIST lives inside aiAgentsRoutes itself (see
+// routes/aiAgents.ts, above its /runs/:runId), so no second router shares
+// that prefix.
+api.route('/ai/artifacts', aiArtifactRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1182,6 +1102,9 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
+// when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
+api.route('/tool-sources', toolSourcesRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
@@ -1205,10 +1128,16 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
+    // A typed HTTPException may carry a machine-readable `code` (e.g.
+    // `lease_unavailable`) that callers switch on. This handler builds the body
+    // itself instead of delegating to `err.getResponse()`, so the code has to
+    // be copied across explicitly or it is silently dropped.
+    const typedCode = (err as { code?: unknown }).code;
     return c.json(
       {
         error: err.message || 'Request failed',
-        message: err.message
+        message: err.message,
+        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
       },
       err.status
     );
@@ -1248,298 +1177,49 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
-// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
-// and, now that readiness is evaluated live, a second copy of the worker-health
-// rule could only drift from what `/ready` reports. Use `readiness.get()`.
-export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
-
 let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
-function headersToRecord(headers: unknown): Record<string, string> {
-  if (!headers) return {};
-
-  if (Array.isArray(headers)) {
-    return headers.reduce<Record<string, string>>((acc, header) => {
-      if (
-        header
-        && typeof header === 'object'
-        && typeof (header as { key?: unknown }).key === 'string'
-        && typeof (header as { value?: unknown }).value === 'string'
-      ) {
-        acc[(header as { key: string }).key] = (header as { value: string }).value;
-      }
-      return acc;
-    }, {});
-  }
-
-  if (typeof headers === 'object') {
-    return Object.entries(headers as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, value]) => {
-      if (typeof value === 'string') {
-        acc[key] = value;
-      }
-      return acc;
-    }, {});
-  }
-
-  return {};
-}
-
-async function initializeWebhookDeliveryWorker(): Promise<void> {
-  const webhookWorker = getWebhookWorker();
-
-  webhookWorker.setDeliveryCallback(async (result) => {
-    await runWithSystemDbAccess(async () => {
-      const deliveryStatus = result.success ? 'delivered' : 'failed';
-      const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
-      const responseTimeMs = typeof result.responseTimeMs === 'number'
-        ? Math.max(0, Math.round(result.responseTimeMs))
-        : null;
-
-      await db
-        .update(webhookDeliveries)
-        .set({
-          status: deliveryStatus,
-          attempts: result.attempts,
-          responseStatus: result.responseStatus ?? null,
-          responseBody: result.responseBody ?? null,
-          responseTimeMs,
-          errorMessage: result.errorMessage ?? null,
-          deliveredAt
-        })
-        .where(eq(webhookDeliveries.id, result.deliveryId));
-
-      const aggregateUpdate = result.success
-        ? {
-          successCount: sql`${webhooksTable.successCount} + 1`,
-          lastSuccessAt: new Date(),
-          lastDeliveryAt: new Date()
-        }
-        : {
-          failureCount: sql`${webhooksTable.failureCount} + 1`,
-          lastDeliveryAt: new Date()
-        };
-
-      await db
-        .update(webhooksTable)
-        .set(aggregateUpdate)
-        .where(eq(webhooksTable.id, result.webhookId));
-    });
+async function initializeWorkers(): Promise<void> {
+  const redisAvailable = startupChecks.redisOk && isRedisAvailable();
+  declareExpectedConsumers({
+    role: breezeRole(),
+    redisAvailable,
+    abuseSignalsEnabled: abuseSignalsEnabled(),
+    partnerTrustEnabled: partnerTrustMode() !== 'off',
+    auditChainVerifyEnabled: auditChainVerifyEnabled(),
+    eventDispatchEnabled: eventDispatchMode() !== 'off',
+    aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
+    registry: workerReadinessRegistry,
   });
 
-  await initializeWebhookDelivery(
-    async (orgId, eventType) => {
-      return runWithSystemDbAccess(async () => {
-        const rows = await db
-          .select()
-          .from(webhooksTable)
-          .where(
-            and(
-              eq(webhooksTable.orgId, orgId),
-              eq(webhooksTable.status, 'active')
-            )
-          );
+  // #5381: the runner and the sweep scheduler log "initialized" whether or
+  // not the kill switch is set, which reads as "the subsystem is up" when it
+  // is in fact inert. One unambiguous line per process, next to the readiness
+  // declaration that already knows the flag. Imported from `subsystemState`
+  // (env-only) rather than `skipVisibility` (which pulls in Redis) — see that
+  // module's header for why a boot module's import graph has to stay thin.
+  logAiAgentsSubsystemState('api', AI_AGENTS_ENABLED);
 
-        return rows
-          .filter((webhook) => {
-            const events = webhook.events ?? [];
-            return events.includes(eventType) || events.includes('*');
-          })
-          // Decrypt PER ROW inside a try/catch. url/secret/headers are encrypted
-          // at rest (encryptedColumnRegistry); decryptForColumn THROWS on a row
-          // that looks encrypted but can't be decrypted (key/AAD mismatch,
-          // partial migration, corruption). Without per-row isolation a single
-          // bad row would abort the whole .map and silently drop delivery for
-          // EVERY webhook in the org. Skip only the offending webhook (delivering
-          // with unusable credentials is worse) and surface it to Sentry. Legacy
-          // plaintext rows pass through decryptForColumn unchanged.
-          .flatMap((webhook) => {
-            try {
-              return [{
-                id: webhook.id,
-                orgId: webhook.orgId,
-                name: webhook.name,
-                url: decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url,
-                secret: webhook.secret
-                  ? decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined
-                  : undefined,
-                events: webhook.events ?? [],
-                headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
-                retryPolicy: (webhook.retryPolicy ?? undefined) as {
-                  maxRetries: number;
-                  backoffMultiplier: number;
-                  initialDelayMs: number;
-                  maxDelayMs: number;
-                } | undefined
-              }];
-            } catch (err) {
-              console.error(
-                `[webhookDelivery] failed to decrypt webhook ${webhook.id} (org ${webhook.orgId}); skipping delivery for this webhook only`,
-                err
-              );
-              captureException(err instanceof Error ? err : new Error(String(err)));
-              return [];
-            }
-          });
-      });
-    },
-    async (webhook, event) => {
-      return runWithSystemDbAccess(async () => {
-        const [delivery] = await db
-          .insert(webhookDeliveries)
-          .values({
-            webhookId: webhook.id,
-            eventType: event.type,
-            eventId: event.id,
-            payload: event.payload,
-            status: 'pending',
-            attempts: 0
-          })
-          .returning({ id: webhookDeliveries.id });
-
-        return delivery?.id ?? null;
-      });
-    }
-  );
-}
-
-async function initializeWorkers(): Promise<void> {
-  if (!startupChecks.redisOk || !isRedisAvailable()) {
+  if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
     return;
   }
 
-  const workers: Array<[string, () => Promise<void>]> = [
-    ['alertWorkers', initializeAlertWorkers],
-    ['alertCorrelationWorker', initializeAlertCorrelationWorker],
-    ['metricRollupsWorker', initializeMetricRollupsWorker],
-    ['metricRollupMaintenance', initializeMetricRollupMaintenanceWorker],
-    ['metricAnomaliesWorker', initializeMetricAnomaliesWorker],
-    ['fleetFindingsWorker', scheduleFleetFindingsJobs],
-    ['fleetRemediationDispatchWorker', scheduleFleetRemediationDispatchJobs],
-    ['mlOutputRetention', initializeMlOutputRetention],
-    ['offlineDetector', initializeOfflineDetector],
-    ['notificationDispatcher', initializeNotificationDispatcher],
-    ['webhookDelivery', initializeWebhookDeliveryWorker],
-    ['policyEvaluationWorker', initializePolicyEvaluationWorker],
-    ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
-    ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
-    // initializeAiAgentRunner is synchronous (returns void), so wrap it.
-    ['aiAgentRunner', async () => { initializeAiAgentRunner(); }],
-    ['auditBaselineJobs', initializeAuditBaselineJobs],
-    ['cisJobs', initializeCisJobs],
-    ['automationWorker', initializeAutomationWorker],
-    ['securityPostureWorker', initializeSecurityPostureWorker],
-    ['reliabilityWorker', initializeReliabilityWorker],
-    ['userRiskWorker', initializeUserRiskJobs],
-    ['abuseSignalsWorker', initializeAbuseSignalsWorker],
-    ['userRiskRetention', initializeUserRiskRetention],
-    ['backupVerificationJobs', initializeBackupVerificationJobs],
-    ['policyAlertBridge', initializePolicyAlertBridge],
-    ['eventLogRetention', initializeEventLogRetention],
-    ['logCorrelationWorker', initializeLogCorrelationWorker],
-    ['agentLogRetention', initializeAgentLogRetention],
-    ['ipHistoryRetention', initializeIPHistoryRetention],
-    ['reliabilityRetention', initializeReliabilityRetention],
-    ['processSampleRetention', initializeProcessSampleRetention],
-    ['deviceMetricsRetention', initializeDeviceMetricsRetention],
-    ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
-    ['changeLogRetention', initializeChangeLogRetention],
-    ['oauthCleanup', initializeOauthCleanupWorker],
-    // #3777 review F6: bootstrap/refresh the Stripe account currency cache for
-    // connections that predate it (boot one-shot + daily sweep).
-    ['stripeAccountCacheRefresh', initializeStripeAccountCacheRefreshWorker],
-    // Wave 7 (#3779): daily ECB reference-rate feed for reporting-only FX
-    // (boot one-shot + 17:15 UTC cron, after the ECB's ~16:00 CET publication).
-    ['exchangeRateSync', initializeExchangeRateSyncWorker],
-    ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
-    // Wave 5 Task 3: durable/idempotent provider certificate revocation
-    // (worker + 5-minute sweep for due retries and expired pending-activation
-    // rows). initializeMtlsCertificateRevocationWorker is synchronous.
-    ['mtlsCertificateRevocationWorker', async () => { initializeMtlsCertificateRevocationWorker(); }],
-    // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
-    // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
-    ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
-    // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
-    ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
-    ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
-    // Quick Support safety net: expires stale codes/sessions, enforces the 8h
-    // hard cap, detects end-user disconnects, and purges ephemeral devices.
-    ['quickSupportReaper', initializeQuickSupportReaper],
-    ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
-    ['softwareRemediationRequestCleanup', initializeSoftwareRemediationRequestCleanupWorker],
-    ['auditRetention', initializeAuditRetentionWorker],
-    ['auditChainVerify', initializeAuditChainVerifyWorker],
-    ['auditChainAnchor', initializeAuditChainAnchorWorker],
-    ['tenantErasure', initializeTenantErasureWorker],
-    ['desktopSessionFinalization', initializeDesktopSessionFinalizationWorker],
-    ['desktopSessionOrphanRecovery', initializeDesktopSessionOrphanRecovery],
-    ['playbookRetention', initializePlaybookRetention],
-    ['discoveryWorker', initializeDiscoveryWorker],
-    ['networkBaselineWorker', initializeNetworkBaselineWorker],
-    ['snmpWorker', initializeSnmpWorker],
-    ['monitorWorker', initializeMonitorWorker],
-    ['unifiWorker', initializeUnifiWorker],
-    ['unifiTelemetryWorker', initializeUnifiTelemetryWorker],
-    ['snmpRetention', initializeSnmpRetention],
-    ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
-    ['reportScheduleWorker', initializeReportScheduleWorker],
-    ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
-    ['wingetIndexSyncWorker', initializeWingetIndexSyncWorker],
-    ['vulnerabilityJobs', initializeVulnerabilityJobs],
-    ['dnsSyncWorker', initializeDnsSyncJob],
-    ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
-    ['s1SyncWorker', initializeS1SyncJob],
-    ['huntressSyncWorker', initializeHuntressSyncJob],
-    ['pax8SyncWorker', initializePax8SyncWorkers],
-    ['tdSynnexSftpSyncWorker', initializeTdSynnexSftpWorkers],
-    ['logForwardingWorker', initializeLogForwardingWorker],
-    ['patchJobWorker', initializePatchJobWorkers],
-    ['patchSchedulerWorker', initializePatchSchedulerWorker],
-    ['maintenanceRebootWorker', initializeMaintenanceRebootWorker],
-    ['backupWorker', initializeBackupWorker],
-    ['sensitiveDataWorker', initializeSensitiveDataWorkers],
-    ['peripheralJobs', initializePeripheralJobs],
-    ['browserSecurityWorker', initializeBrowserSecurityJobs],
-    ['c2cBackupWorker', initializeC2cBackupWorker],
-    ['backupSlaWorker', initializeBackupSlaWorker],
-    ['drExecutionWorker', initializeDrExecutionWorker],
-    ['recoveryMediaWorker', initializeRecoveryMediaWorker],
-    ['recoveryBootMediaWorker', initializeRecoveryBootMediaWorker],
-    ['warrantyWorker', initializeWarrantyWorker],
-    ['ssoDomainRecheckWorker', initializeSsoDomainRecheckWorker],
-    ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
-    ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
-    ['incidentSlaMonitor', initializeIncidentSlaMonitor],
-    ['staleCommandReaper', initializeStaleCommandReaper],
-    ['softwareDeploymentScheduler', initializeSoftwareDeploymentScheduler],
-    ['pamJobs', initializePamJobs],
-    ['approvalExpiryReaper', initializeApprovalExpiryReaper],
-    ['offboardingDrainReaper', initializeOffboardingDrainReaper],
-    ['intentOutboxPublisher', initializeIntentOutboxPublisher],
-    ['intentExpiryReaper', initializeIntentExpiryReaper],
-    ['intentReleaseWorker', initializeIntentReleaseWorker],
-    ['stripeReconcileSweep', initializeStripeReconcileSweep],
-    ['quoteExpiryReaper', initializeQuoteExpiryReaper],
-    ['suppressionExpiryReaper', initializeSuppressionExpiryReaper],
-    ['ticketNotifyWorker', initializeTicketNotifyWorker],
-    ['ticketSlaWorker', initializeTicketSlaWorker],
-    ['inboundEmailWorker', initializeInboundEmailWorker],
-    ['ticketMailboxPollWorker', initializeTicketMailboxPollWorker],
-    ['invoiceWorker', initializeInvoiceWorkers],
-    ['contractWorker', initializeContractWorkers],
-  ];
-
-  await Promise.allSettled(
-    workers.map(async ([name, init]) => {
-      try {
-        await init();
-        workerStatus[name] = true;
-      } catch (error) {
-        workerStatus[name] = false;
+  // wave 3.5d-b (#4086): the 104-entry static array used to live here. It is
+  // now the declarative, lazily-loaded `WORKER_REGISTRY` (services/workerRegistry.ts),
+  // filtered by role. `startRegisteredWorkers` preserves today's
+  // `Promise.allSettled` semantics — one entry's failure never blocks
+  // another's, and every outcome (success or failure) is reported here via
+  // `onResult`, exactly like the old inline try/catch per entry.
+  await startRegisteredWorkers(breezeRole(), {
+    onResult: (name, ok, error) => {
+      workerStatus[name] = ok;
+      if (!ok) {
         console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
         // A failed worker now pins /ready to not-ready for the process
         // lifetime (previously the boot race often hid it), so the reason has
@@ -1547,14 +1227,68 @@ async function initializeWorkers(): Promise<void> {
         captureException(
           error instanceof Error ? error : new Error(String(error))
         );
+        // Track C: every queue consumer this entry owns is now permanently
+        // failed for readiness (what the deleted declared-worker-group helper did before
+        // the registry became the initializer seam). AFTER captureException:
+        // this loop throws on an undeclared name and allSettled would swallow it.
+        for (const consumer of consumersForInitializer(name)) {
+          workerReadinessRegistry.recordInitializationFailure(consumer, error);
+        }
       }
-    })
-  );
+    },
+  });
 
   const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
   workerInitPhase = 'started';
   // Drop any snapshot taken during the boot race so the next probe sees the
   // real outcome immediately instead of waiting out the TTL.
+  readiness.invalidate();
+
+  // Phase 2 (#4085): the event-dispatch worker (router + delivery) starts
+  // only AFTER every worker above has settled. registerAllEventSubscribers()
+  // already ran synchronously in bootstrap() before initializeWorkers() was
+  // even called — this ordering (sync registry -> allSettled inits -> dispatch
+  // worker) is what guarantees the dispatch worker never sees a
+  // partially-installed subscriber registry (codex Q3 hole #2). Still inside
+  // this function, so it inherits the same redis-availability guard at the
+  // top that gates the worker array above.
+  //
+  // wave 3.5d-b (#4086): under an `api`-role process the event-dispatch
+  // CONSUMER moves to the worker container (it's a `global`-placement family
+  // that `src/worker.ts` starts instead) — gated here so `api` never runs it
+  // twice. Under `all` this runs exactly as today (zero behavior change).
+  if (breezeRole() !== 'api') {
+    try {
+      await initializeEventDispatchWorker();
+      workerStatus['eventDispatch'] = true;
+    } catch (error) {
+      workerStatus['eventDispatch'] = false;
+      console.error('[CRITICAL] Failed to initialize eventDispatch:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('eventDispatch')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
+    }
+  }
+
+  // Wave 3.5b (#4084): the relay CONSUMER only runs on a process that may own
+  // agent sockets. In today's BREEZE_ROLE=all topology this is every process
+  // (zero behavior change — dispatchCommandToAgent's local-first branch means
+  // the relay path is unreachable for an online agent); the 3.5d split
+  // (#4086) is what makes a worker-role process actually skip this.
+  if (breezeRole() !== 'worker') {
+    try {
+      await initializeAgentCommandRelayWorker();
+      workerStatus['agentCommandRelay'] = true;
+    } catch (error) {
+      workerStatus['agentCommandRelay'] = false;
+      console.error('[CRITICAL] Failed to initialize agentCommandRelay:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('agentCommandRelay')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
+    }
+  }
   readiness.invalidate();
 
   if (failed.length === 0) {
@@ -1631,132 +1365,55 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // which would report `database-unreachable` about a process that is simply
   // shutting down.
   stopDbPoolHealthMonitor();
+  stopWedgedBackendMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
   }
 
-  const shutdownTasks: Array<() => Promise<void>> = [
-    // Best-effort final drain of pending audit retries. Bounded by a hard
-    // 5s timeout so a stuck DB doesn't block the rest of shutdown.
-    async () => {
-      await Promise.race([
-        drainAuditRetryQueue().then(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-    },
-    shutdownLogForwardingWorker,
-    shutdownPatchJobWorkers,
-    shutdownBackupWorker,
-    shutdownC2cBackupWorker,
-    shutdownBackupSlaWorker,
-    shutdownDrExecutionWorker,
-    shutdownRecoveryMediaWorker,
-    shutdownRecoveryBootMediaWorker,
-    shutdownPatchSchedulerWorker,
-    shutdownMaintenanceRebootWorker,
-    shutdownSensitiveDataWorkers,
-    shutdownPeripheralJobs,
-    shutdownWarrantyWorker,
-    shutdownSsoDomainRecheckWorker,
-    shutdownBrowserSecurityJobs,
-    shutdownIncidentSlaMonitor,
-    shutdownIncidentTimelineEnricher,
-    shutdownIncidentCorrelationWorker,
-    shutdownPatchComplianceReportWorker,
-    shutdownReportScheduleWorker,
-    shutdownCveEnrichmentWorker,
-    shutdownWingetIndexSyncWorker,
-    shutdownVulnerabilityJobs,
-    shutdownDnsSyncJob,
-    shutdownS1SyncJob,
-    shutdownHuntressSyncJob,
-    shutdownPax8SyncWorkers,
-    shutdownTdSynnexSftpWorkers,
-    shutdownBackupVerificationJobs,
-    shutdownSnmpRetention,
-    shutdownMonitorWorker,
-    shutdownSnmpWorker,
-    shutdownNetworkBaselineWorker,
-    shutdownDiscoveryWorker,
-    shutdownEventLogRetention,
-    shutdownLogCorrelationWorker,
-    shutdownAgentLogRetention,
-    shutdownIPHistoryRetention,
-    shutdownMlOutputRetention,
-    shutdownReliabilityRetention,
-    shutdownProcessSampleRetention,
-    shutdownDeviceMetricsRetention,
-    shutdownServiceProcessCheckRetention,
-    shutdownChangeLogRetention,
-    shutdownOauthCleanupWorker,
-    shutdownStripeAccountCacheRefreshWorker,
-    shutdownExchangeRateSyncWorker,
-    shutdownOAuthRevocationRetryWorker,
-    shutdownMtlsCertificateRevocationWorker,
-    shutdownAuthEmailWorker,
-    shutdownQuoteSendWorker,
-    shutdownEnrollmentKeyCleanupWorker,
-    shutdownQuickSupportReaper,
-    shutdownSoftwareUploadSessionCleanupWorker,
-    shutdownSoftwareRemediationRequestCleanupWorker,
-    shutdownAuditRetentionWorker,
-    shutdownAuditChainVerifyWorker,
-    shutdownAuditChainAnchorWorker,
-    shutdownTenantErasureWorker,
-    shutdownDesktopSessionOrphanRecovery,
-    shutdownDesktopSessionFinalizationWorker,
-    shutdownPlaybookRetention,
-    shutdownSecurityPostureWorker,
-    shutdownReliabilityWorker,
-    shutdownUserRiskJobs,
-    shutdownAbuseSignalsWorker,
-    shutdownUserRiskRetention,
-    shutdownAutomationWorker,
-    shutdownAiAgentRunner,
-    shutdownSoftwareRemediationWorker,
-    shutdownSoftwareComplianceWorker,
-    shutdownAuditBaselineJobs,
-    shutdownCisJobs,
-    shutdownPolicyEvaluationWorker,
-    shutdownNotificationDispatcher,
-    shutdownOfflineDetector,
-    shutdownMetricAnomaliesWorker,
-    shutdownFleetFindingsJobs,
-    shutdownFleetRemediationDispatchJobs,
-    shutdownMetricRollupMaintenanceWorker,
-    shutdownMetricRollupsWorker,
-    shutdownAlertCorrelationWorker,
-    shutdownAlertWorkers,
-    shutdownStaleCommandReaper,
-    shutdownSoftwareDeploymentScheduler,
-    shutdownPamJobs,
-    shutdownApprovalExpiryReaper,
-    shutdownOffboardingDrainReaper,
-    shutdownIntentOutboxPublisher,
-    shutdownIntentExpiryReaper,
-    shutdownIntentReleaseWorker,
-    shutdownStripeReconcileSweep,
-    shutdownQuoteExpiryReaper,
-    shutdownSuppressionExpiryReaper,
-    shutdownTicketNotifyWorker,
-    shutdownTicketSlaWorker,
-    shutdownInboundEmailWorker,
-    shutdownInvoiceWorkers,
-    shutdownContractWorkers,
-    shutdownEventDispatcher,
-    async () => getEventBus().close(),
-    closeRedis,
-    async () => {
-      const closeDb = dbModule.closeDb;
-      if (typeof closeDb === 'function') {
-        await closeDb();
-      }
-    },
-    // Drain any buffered Sentry events before the process exits (no-op if
-    // Sentry is disabled). Bounded internally by a 2s flush timeout.
-    () => flushSentry(),
-  ];
+  // Best-effort final drain of pending audit retries. Bounded by a hard
+  // 5s timeout so a stuck DB doesn't block the rest of shutdown.
+  const boundedAuditDrainTask = async () => {
+    await Promise.race([
+      drainAuditRetryQueue().then(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+
+  // #3922: the LLM egress audit queue is in-process and fire-and-forget, so
+  // anything still pending at SIGTERM is simply lost unless we wait for it.
+  // Same 5s ceiling as the audit retry drain above — an unreachable database
+  // must not turn a rolling restart into a hang. Runs in the `drain` phase,
+  // which fully settles before the `db` phase closes the pool, so a pending
+  // write no longer races the teardown; anything still outstanding at the 5s
+  // ceiling is swallowed and reported by the recorder rather than failing
+  // shutdown.
+  const boundedLlmEgressDrainTask = async () => {
+    await Promise.race([
+      drainLlmEgressQueue(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+
+  const dbCloseTask = async () => {
+    const closeDb = dbModule.closeDb;
+    if (typeof closeDb === 'function') {
+      await closeDb();
+    }
+  };
+
+  // wave 3.5d-b (#4086): the manually-curated shutdown list used to live
+  // here. It is now sourced from the registry — an entry contributes a
+  // shutdown task as soon as its module has been LOADED (registered before
+  // its init() runs; see workerRegistry.ts's `runEntries`), so a worker whose
+  // init() throws partway still gets torn down here. That matches the
+  // pre-refactor static list, which called every one of its ~103 shutdown
+  // fns unconditionally regardless of whether that worker's init had
+  // succeeded. Only an entry that was never selected for this role (and so
+  // never loaded at all) contributes nothing. Tasks still run concurrently
+  // via `Promise.allSettled` inside the 'workers' phase below, so relative
+  // order within the list carries no runtime significance.
+  const workerShutdownTasks = await buildWorkerShutdownTasks(breezeRole());
 
   // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
   // heartbeat that arrives mid-shutdown hits an already-closed Postgres pool,
@@ -1782,27 +1439,60 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     }
   }
 
-  const shutdownResults = await Promise.allSettled(shutdownTasks.map((task) => task()));
-  const shutdownFailures = shutdownResults.filter((result) => result.status === 'rejected');
-
-  if (shutdownFailures.length > 0) {
-    console.error(`[shutdown] Completed with ${shutdownFailures.length} failure(s)`);
-    process.exit(1);
-    return;
+  const report = await runShutdownPhases([
+    // 1. Final local drains that need DB/Redis still up.
+    { name: 'drain', tasks: [boundedAuditDrainTask, boundedLlmEgressDrainTask] },
+    // 2. Every worker/consumer close — concurrent, as today, but now
+    //    guaranteed to fully settle before shared infrastructure goes away.
+    { name: 'workers', tasks: workerShutdownTasks },
+    // 3. Producer queues + dispatchers (they enqueue INTO Redis; workers are gone).
+    {
+      name: 'queues',
+      tasks: [
+        shutdownEventDispatcher,
+        // Execution plane W05: the chat run bridge owns its own per-org ioredis
+        // subscribers. A leaked one keeps the process alive past SIGTERM, which
+        // is how a rolling deploy turns into a stuck pod.
+        shutdownChatRunBridge,
+        shutdownEventDispatchWorker,
+        shutdownEventDispatchQueue,
+        shutdownAgentCommandRelayWorker,
+      ],
+    },
+    // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
+    { name: 'eventbus', tasks: [async () => getEventBus().close()] },
+    // 5. The ONLY owner of the Redis quits.
+    { name: 'redis', tasks: [closeRedis] },
+    // 6. DB pool.
+    { name: 'db', tasks: [dbCloseTask] },
+    // 7. Sentry flush (bounded internally at 2s).
+    { name: 'sentry', tasks: [() => flushSentry()], timeoutMs: 5_000 },
+  ]);
+  const failed = report.failures.length > 0;
+  const timedOutSuffix = report.timedOutPhases.length > 0
+    ? ` (timed-out phase(s): ${report.timedOutPhases.join(', ')})`
+    : '';
+  if (failed) {
+    console.error(`[shutdown] Completed with ${report.failures.length} failure(s)${timedOutSuffix}`);
+  } else {
+    console.log(`[shutdown] Complete${timedOutSuffix}`);
   }
-
-  console.log('[shutdown] Complete');
-  process.exit(0);
+  process.exit(failed ? 1 : 0);
 }
 
 function installSignalHandlers(): void {
-  process.once('SIGINT', () => {
-    void shutdownRuntime('SIGINT');
-  });
-
-  process.once('SIGTERM', () => {
-    void shutdownRuntime('SIGTERM');
-  });
+  const onSignal = (signal: NodeJS.Signals) => {
+    // Second signal while a graceful shutdown is running: operator (or
+    // orchestrator) wants out NOW. Deterministic force-exit beats Node's
+    // default handler ambiguity.
+    process.once(signal, () => {
+      console.error(`[shutdown] Second ${signal} — forcing exit`);
+      process.exit(130);
+    });
+    void shutdownRuntime(signal);
+  };
+  process.once('SIGINT', () => onSignal('SIGINT'));
+  process.once('SIGTERM', () => onSignal('SIGTERM'));
 
   // Guard against unhandled rejections from the Claude Agent SDK's
   // fire-and-forget handleControlRequest. When a session is closed while
@@ -1870,6 +1560,15 @@ function installSignalHandlers(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // Fail closed BEFORE any side-effectful step (wave 3.5d-b, #4086): this
+  // binary (`dist/index.cjs`) is the api/all entrypoint. A worker-role
+  // process must boot via `dist/worker.cjs` instead, which never imports the
+  // route graph or agent-socket modules this file pulls in at the top.
+  if (breezeRole() === 'worker') {
+    console.error('[boot] BREEZE_ROLE=worker cannot run the API entrypoint (dist/index.cjs) — use dist/worker.cjs');
+    process.exit(78); // EX_CONFIG
+  }
+
   console.log(`Breeze API starting on port ${port}...`);
 
   // Initialize error reporting first so failures during the rest of startup
@@ -1960,10 +1659,36 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
+    );
+  }
+
   await initializeDatabaseForStartup({
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
   });
+  // Migrations may have changed role_permissions (W02 seeded agreements:* and
+  // back-filled it onto every role holding the equivalent contracts grant), and
+  // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
+  // (services/permissions.ts:36-37). A warm replica in a rolling deploy would
+  // otherwise serve pre-migration grants — a 403 on a surface the operator can
+  // see they have access to — until the TTL expired. Calling this with no
+  // userId bumps the shared Redis version key, so every replica invalidates at
+  // once rather than each aging out independently.
+  await clearPermissionCache();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
@@ -1997,6 +1722,12 @@ async function bootstrap(): Promise<void> {
 
   await runStartupChecks();
 
+  // #3128: advisory scan for PAM rules pinned to a risk tier no tool resolves
+  // to any more. Tool tiers are static code, so a deploy is the only moment a
+  // stored rule can go stale — boot is exactly when to look. Never throws;
+  // runs after loadBuiltinExtensions so extension tool tiers are resolvable.
+  await reportStalePamRuleTiers();
+
   // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
   // configure_defaults) so they are ready before the first request. The unauth
   // tools (create_tenant, verify_tenant, attach_payment_method) were deleted in
@@ -2015,6 +1746,20 @@ async function bootstrap(): Promise<void> {
       console.error('[startup] Failed to seed built-in playbooks:', err);
     }
   }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const ensured = await ensureSystemLibraryScripts();
+      if (ensured.created > 0 || ensured.updated > 0) {
+        console.log(
+          `[startup] System script library ensured: ${ensured.created} created, ${ensured.updated} updated`
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to ensure system script library:', err);
+  }
+
 
   try {
     await runWithSystemDbAccess(async () => {
@@ -2038,12 +1783,29 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to backfill C2C connection secrets:', err);
   }
 
+  // AI patch agent W01 (#5747, #5382): partner-wide patch agents enabled
+  // before the default-cadence hook shipped have no schedule and never run.
+  // Idempotent (per-agent advisory lock + existing-row check) and manages its
+  // own system DB context, so it is safe on every boot and every replica.
+  try {
+    await backfillDefaultPatchSchedules();
+  } catch (err) {
+    console.error('[startup] Failed to backfill default patch schedules:', err);
+  }
+
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  //
+  // #6098: deliberately NOT wrapped in runWithSystemDbAccess. syncBinaries()
+  // does GitHub release/manifest fetches (BINARY_SOURCE=github, and as a
+  // local-mode fallback) — wrapping the whole call in a system DB context
+  // held a pooled connection idle-in-transaction across that network phase
+  // for the entire boot (verified: 2.7s hold, the #1105 safeFetch tripwire
+  // fired x10). syncBinaries() and everything it calls now open their own
+  // short withSystemDbAccessContext around only their DB reads/writes, so no
+  // ambient context is needed — or wanted — here.
   const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
-    await runWithSystemDbAccess(async () => {
-      await syncBinaries();
-    });
+    await syncBinaries();
   } catch (err) {
     if (binarySource === 'local') {
       console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);
@@ -2089,6 +1851,42 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Built-in CPU / memory / disk monitors for partners created before the
+  // feature shipped. Detached and AFTER the listener is up: hundreds of
+  // partners × ~40 queries each must never delay /health. One-time per partner
+  // (partners.settings marker), each partner its own transaction; opt out with
+  // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
+  void ensureBuiltInMonitorsForAllPartners()
+    .then((result) => {
+      if (result.provisioned > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
+  // loads `jobs/aiAgentRunner` for a process that runs global workers, so an
+  // `api`-role process would never trigger the old module-scope side effect.
+  // Must run before routes serve so the manual-trigger route always finds an
+  // enqueuer registered, in every role.
+  registerAiAgentEnqueuer();
+
+  // Synchronous and MUST run before initializeWorkers(): the durable
+  // subscriber registry (webhook fan-out, automation dispatch, notification
+  // dispatch, policy alert bridge, DNS threat alerts) has to be fully
+  // installed before the queue-mode dispatch worker — or any event published
+  // during worker boot — can reach it (codex Q3 hole #2, #4085).
+  registerAllEventSubscribers(buildWebhookFanoutDeps());
+
+  // #4630 — dynamic device group membership re-evaluation. Purely in-process
+  // handler registration (no Redis/queue), so it runs unconditionally in
+  // every role, same as registerAllEventSubscribers above.
+  initializeDeviceEventHandlers();
 
   await initializeWorkers();
 

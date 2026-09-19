@@ -5,6 +5,20 @@ import { cn } from '@/lib/utils';
 
 export type UserStatus = 'active' | 'invited' | 'suspended' | 'pending';
 
+/**
+ * #5690 — Admin → Users list MFA status column. Derived server-side
+ * (`routes/users.ts`'s `annotateMfaStatus`) from `mfaProtected` plus the
+ * account's role-force and enrolment-grace-window state:
+ *   - `enrolled`: the account holds a factor (mfa_enabled OR a live passkey).
+ *   - `pending`: MFA is role-forced and the account is inside its (nonrenewable,
+ *     per-user) enrolment grace window — `mfaEnrollmentDeadline` is set.
+ *   - `overdue`: MFA is required and the grace window has lapsed (or never
+ *     applied) — the live login gate is now blocking this account.
+ *   - `not_required`: no role force and no org/partner setting requires MFA.
+ * Optional so a payload from an older API still renders (no column shown).
+ */
+export type MfaStatus = 'enrolled' | 'pending' | 'overdue' | 'not_required';
+
 export type User = {
   id: string;
   name: string;
@@ -13,6 +27,17 @@ export type User = {
   status: UserStatus | string;
   lastLogin: string;
   mfaEnabled?: boolean;
+  /**
+   * RMM-QA-166: true when the account holds ANY second factor (mfa_enabled OR a
+   * live passkey). Drives the Reset MFA action; `mfaEnabled` alone hides the
+   * button for a passkey-only leftover the admin must be able to reset.
+   * Optional so a payload from an older API still renders (falls back to mfaEnabled).
+   */
+  mfaProtected?: boolean;
+  /** #5690 — see `MfaStatus` above. Omitted (no column) on a legacy payload. */
+  mfaStatus?: MfaStatus;
+  /** #5690 — ISO deadline, set only when `mfaStatus === 'pending'`. */
+  mfaEnrollmentDeadline?: string | null;
 };
 
 type UserListProps = {
@@ -36,6 +61,19 @@ const statusLabelKeys: Record<UserStatus, string> = {
   invited: 'userList.status.invited',
   suspended: 'userList.status.suspended',
   pending: 'userList.status.pending',
+};
+
+const mfaStatusStyles: Record<MfaStatus, string> = {
+  enrolled: 'bg-emerald-500/10 text-emerald-700',
+  pending: 'bg-amber-500/10 text-amber-700',
+  overdue: 'bg-destructive/10 text-destructive',
+  not_required: 'bg-muted text-muted-foreground',
+};
+const mfaStatusLabelKeys: Record<MfaStatus, string> = {
+  enrolled: 'userList.mfaStatus.enrolled',
+  pending: 'userList.mfaStatus.pending',
+  overdue: 'userList.mfaStatus.overdue',
+  not_required: 'userList.mfaStatus.notRequired',
 };
 
 export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite, onResetMfa }: UserListProps) {
@@ -100,6 +138,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
               <th className="px-4 py-3">{t('userList.columns.email')}</th>
               <th className="px-4 py-3">{t('userList.columns.role')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('userList.columns.mfaStatus')}</th>
               <th className="px-4 py-3">{t('userList.columns.lastLogin')}</th>
               <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
@@ -119,6 +158,22 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                   >
                     {statusLabelKeys[user.status as UserStatus] ? t(/* i18n-dynamic */ statusLabelKeys[user.status as UserStatus]) : user.status}
                   </span>
+                </td>
+                <td className="px-4 py-3">
+                  {user.mfaStatus && (
+                    <span
+                      className={cn(
+                        'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium',
+                        mfaStatusStyles[user.mfaStatus]
+                      )}
+                    >
+                      {user.mfaStatus === 'pending' && user.mfaEnrollmentDeadline
+                        ? t('userList.mfaStatus.pendingByDate', {
+                            date: new Date(user.mfaEnrollmentDeadline).toLocaleDateString(),
+                          })
+                        : t(/* i18n-dynamic */ mfaStatusLabelKeys[user.mfaStatus])}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">{user.lastLogin}</td>
                 <td className="px-4 py-3 text-right">
@@ -152,7 +207,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                         >
                           {t('userList.actions.devices')}
                         </a>
-                        {user.mfaEnabled && (
+                        {(user.mfaProtected ?? user.mfaEnabled) && (
                           <>
                             <span className="text-muted-foreground">|</span>
                             <button
@@ -180,7 +235,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
             ))}
             {filteredUsers.length === 0 && (
               <tr className="border-t">
-                <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={6}>
+                <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={7}>
                   {t('userList.empty')}
                 </td>
               </tr>

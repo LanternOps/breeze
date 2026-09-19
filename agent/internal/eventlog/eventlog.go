@@ -19,3 +19,18 @@ func Error(source, message string) {}
 
 // WriteError is a no-op on non-Windows platforms.
 func WriteError(source, message string) error { return nil }
+
+// Level selects the Windows Application log severity for Event. Kept
+// cross-platform (rather than gated behind eventlog_windows.go) so PAM call
+// sites in cross-platform packages like heartbeat can call Event
+// unconditionally.
+type Level int
+
+const (
+	LevelInfo Level = iota
+	LevelWarning
+	LevelError
+)
+
+// Event is a no-op on non-Windows platforms.
+func Event(source string, eventID uint32, level Level, message string) {}

@@ -5,6 +5,7 @@ import {
   X,
   ChevronUp,
   ChevronDown,
+  AlertCircle,
   AlertTriangle,
   Cpu,
   HardDrive,
@@ -38,6 +39,13 @@ export type ProcessManagerProps = {
   deviceName?: string;
   processes?: Process[];
   loading?: boolean;
+  /**
+   * Why the last fetch failed, or null/undefined when it succeeded. Set this
+   * whenever `processes` is empty because of a failure rather than because the
+   * device reported none — otherwise the two render identically as "No Data"
+   * (#4935: an offline device's 503 looked like an idle box).
+   */
+  loadError?: string | null;
   onRefresh?: () => void;
   onKillProcess?: (pid: number) => Promise<void>;
   onGetProcess?: (pid: number) => Promise<Process>;
@@ -86,6 +94,7 @@ export default function ProcessManager({
   deviceName = 'Device',
   processes: externalProcesses,
   loading: externalLoading,
+  loadError,
   onRefresh,
   onKillProcess,
   onGetProcess
@@ -291,7 +300,9 @@ export default function ProcessManager({
         </div>
       </div>
 
-      {/* Resource Summary */}
+      {/* Resource Summary — a failed fetch yields no counts, so the tiles must
+          not print the zeroes they are initialised with: "Processes 0" next to
+          an offline device is the exact misread #4935 is about. */}
       <div className="grid grid-cols-3 gap-4 border-b px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
@@ -299,7 +310,9 @@ export default function ProcessManager({
           </div>
           <div>
             <p className="text-sm text-muted-foreground">{t('processManager.processes')}</p>
-            <p className="text-lg font-semibold">{resourceSummary.totalProcesses}</p>
+            <p className="text-lg font-semibold">
+              {loadError ? '-' : resourceSummary.totalProcesses}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -308,7 +321,9 @@ export default function ProcessManager({
           </div>
           <div>
             <p className="text-sm text-muted-foreground">{t('processManager.totalCpu')}</p>
-            <p className="text-lg font-semibold">{resourceSummary.totalCpu}%</p>
+            <p className="text-lg font-semibold">
+              {loadError ? '-' : `${resourceSummary.totalCpu}%`}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -317,7 +332,9 @@ export default function ProcessManager({
           </div>
           <div>
             <p className="text-sm text-muted-foreground">{t('processManager.processMemory')}</p>
-            <p className="text-lg font-semibold">{resourceSummary.totalMemory}</p>
+            <p className="text-lg font-semibold">
+              {loadError ? '-' : resourceSummary.totalMemory}
+            </p>
           </div>
         </div>
       </div>
@@ -379,6 +396,26 @@ export default function ProcessManager({
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center">
                     <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+                  </td>
+                </tr>
+              ) : loadError ? (
+                // Same shape and ordering as the File Browser tab's failure
+                // pane (loading → error → empty → rows). Checked BEFORE the
+                // empty state so a failed fetch can never fall through to
+                // "No Data" (#4935).
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <AlertCircle className="h-6 w-6 text-red-500" />
+                      <p className="text-sm text-red-500">{loadError}</p>
+                      <button
+                        type="button"
+                        onClick={handleRefresh}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        {t('common:actions.retry')}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : processes.length === 0 ? (
@@ -516,12 +553,15 @@ export default function ProcessManager({
         </div>
       </div>
 
-      {/* Results count */}
-      <div className="border-t px-4 py-3">
-        <p className="text-sm text-muted-foreground">
-          {t('processManager.showing', { shown: filteredProcesses.length, total: processes.length })}
-        </p>
-      </div>
+      {/* Results count — suppressed on a failed fetch, where "Showing 0 of 0"
+          would restate the zero the error pane above is contradicting. */}
+      {!loadError && (
+        <div className="border-t px-4 py-3">
+          <p className="text-sm text-muted-foreground">
+            {t('processManager.showing', { shown: filteredProcesses.length, total: processes.length })}
+          </p>
+        </div>
+      )}
 
       {/* Kill Confirmation Modal */}
       {showKillModal && processToKill && (

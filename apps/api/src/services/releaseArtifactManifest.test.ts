@@ -1,5 +1,14 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+const { safeFetchFollowingRedirectsMock } = vi.hoisted(() => ({
+  safeFetchFollowingRedirectsMock: vi.fn(),
+}));
+
+vi.mock("./urlSafety", () => ({
+  safeFetchFollowingRedirects: safeFetchFollowingRedirectsMock,
+}));
+
 import {
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
@@ -15,6 +24,7 @@ function makeSignedManifest(args: {
   release?: string;
   repository?: string;
   assetOverrides?: Record<string, unknown>;
+  duplicate?: boolean;
 }) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -36,6 +46,13 @@ function makeSignedManifest(args: {
             "release-workflow-produced",
           ...(args.assetOverrides ?? {}),
         },
+        ...(args.duplicate ? [{
+          name: args.assetName,
+          sha256: createSha256(args.assetBuffer),
+          size: args.assetBuffer.length,
+          platformTrust: requiredPlatformTrustFor(args.assetName) ?? "release-workflow-produced",
+          ...(args.assetOverrides ?? {}),
+        }] : []),
       ],
     }).replace("placeholder", createSha256(args.assetBuffer)),
   );
@@ -56,6 +73,7 @@ describe("releaseArtifactManifest", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    safeFetchFollowingRedirectsMock.mockReset();
   });
 
   afterEach(() => {
@@ -267,8 +285,6 @@ describe("releaseArtifactManifest", () => {
   });
 
   it("skips GitHub manifest fetches when no API trust root is configured", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "test";
 
     await expect(
@@ -280,12 +296,10 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).resolves.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fails closed for GitHub fallback verification in production without a trust root", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "production";
 
     await expect(
@@ -297,7 +311,7 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).rejects.toThrow("public key is required");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fetches and verifies GitHub manifest assets when a trust root is configured", async () => {
@@ -307,21 +321,22 @@ describe("releaseArtifactManifest", () => {
       assetBuffer: asset,
     });
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (url.endsWith(".ed25519")) return new Response(signed.signature);
-        return new Response(signed.manifest);
-      }),
-    );
+    safeFetchFollowingRedirectsMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".ed25519")) return new Response(signed.signature);
+      return new Response(signed.manifest);
+    });
+
+    const manifestUrl =
+      "https://example.com/release-artifact-manifest.json";
+    const signatureUrl =
+      "https://example.com/release-artifact-manifest.json.ed25519";
 
     await expect(
       verifyGithubReleaseArtifactBuffer({
         assetName: "breeze-agent.msi",
         assetBuffer: asset,
-        manifestUrl: "https://example.com/release-artifact-manifest.json",
-        signatureUrl:
-          "https://example.com/release-artifact-manifest.json.ed25519",
+        manifestUrl,
+        signatureUrl,
         expectedRepository: "lanternops/breeze",
         expectedRelease: "v1.2.3",
       }),
@@ -329,6 +344,16 @@ describe("releaseArtifactManifest", () => {
       expect.objectContaining({
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      1,
+      manifestUrl,
+      { maxBytes: 1024 * 1024 },
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      2,
+      signatureUrl,
+      { maxBytes: 1024 * 1024 },
     );
   });
 
@@ -638,6 +663,72 @@ describe("releaseArtifactManifest", () => {
           signatureBytes: signed.signature,
         }),
       ).rejects.toThrow(/unknown edition/);
+    });
+  });
+
+  describe("macOS installer publisher identity", () => {
+    const assetName = "breeze-agent-darwin-arm64.pkg";
+    const asset = Buffer.from("signed-pkg");
+    const identity = "Developer ID Installer: LanternOps LLC (D8W6N2JYMA)";
+
+    it("returns the signed exact identity and Team ID", async () => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        assetOverrides: {
+          edition: "self-host",
+          signingIdentity: identity,
+          signingTeamId: "D8W6N2JYMA",
+        },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactBuffer({
+        assetName,
+        assetBuffer: asset,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        expectedEdition: "self-host",
+        requireMacosPublisher: true,
+      })).resolves.toMatchObject({ signingIdentity: identity, signingTeamId: "D8W6N2JYMA" });
+    });
+
+    it.each([
+      [{ signingIdentity: identity }, "missing Team ID"],
+      [{ signingIdentity: identity, signingTeamId: "bad" }, "malformed Team ID"],
+      [{ signingIdentity: "Developer ID Installer: Other (AAAAAAAAAA)", signingTeamId: "D8W6N2JYMA" }, "identity mismatch"],
+    ])("rejects %s (%s)", async (assetOverrides, _reason) => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        assetOverrides: { edition: "self-host", ...assetOverrides },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactManifestAsset({
+        assetName,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        requireMacosPublisher: true,
+      })).rejects.toThrow(/macOS signing identity/);
+    });
+
+    it("rejects duplicate canonical asset entries", async () => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        duplicate: true,
+        assetOverrides: {
+          edition: "self-host",
+          signingIdentity: identity,
+          signingTeamId: "D8W6N2JYMA",
+        },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactManifestAsset({
+        assetName,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        requireMacosPublisher: true,
+      })).rejects.toThrow(/duplicate entries/);
     });
   });
 

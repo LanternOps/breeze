@@ -59,7 +59,13 @@ describe('manage_alerts — per-alert site scoping', () => {
 
   it('resolve unrestricted caller is unaffected', async () => {
     mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'a1', orgId: 'org-1', deviceId: 'd1', title: 'T' }]) }) }) });
-    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+    // `resolve` is a compare-and-swap since #4094 and chains `.returning({id})`;
+    // a non-empty result is the winner. This suite is about the SITE axis, so it
+    // always plays the winner — the CAS outcome itself is covered in
+    // aiToolsAlerts.resolveCas.test.ts.
+    mockDb.update.mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'a1' }]) }) }),
+    });
     const r = await handlerFor('manage_alerts')({ action: 'resolve', alertId: 'a1' }, makeAuth(undefined));
     expect(r).not.toContain('access denied');
     expect(mockDb.update).toHaveBeenCalled();
@@ -80,5 +86,48 @@ describe('manage_alerts list — site narrowing', () => {
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(0);
     expect(parsed.total).toBe(0);
+  });
+});
+
+describe('manage_notification_channels — site-ceiling gate (contract-site-ceiling-gate §2/§7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(['test', 'create', 'update', 'delete'])(
+    'action=%s: site-restricted caller is denied before any DB access',
+    async (action) => {
+      const result = JSON.parse(await handlerFor('manage_notification_channels')({
+        action,
+        channelId: 'chan-1',
+        name: 'Slack',
+        type: 'slack',
+        config: { webhookUrl: 'https://hooks.slack.com/x' },
+      }, makeAuth(['s1'])));
+
+      expect(result.error).toMatch(/site-restricted/i);
+      expect(mockDb.select).not.toHaveBeenCalled();
+    }
+  );
+
+  it('empty allowedSiteIds ([]) is also denied', async () => {
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({
+      action: 'create', name: 'Slack', type: 'slack', config: {},
+    }, makeAuth([])));
+    expect(result.error).toMatch(/site-restricted/i);
+  });
+
+  it('"list" action is a read and NOT gated for a site-restricted caller', async () => {
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) });
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({ action: 'list' }, makeAuth(['s1'])));
+    expect(result.error).toBeUndefined();
+  });
+
+  it('unrestricted caller (allowedSiteIds undefined) is unaffected', async () => {
+    (db.insert as any).mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'chan-1', orgId: 'org-1', name: 'Slack', type: 'slack' }])) })),
+    });
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({
+      action: 'create', name: 'Slack', type: 'slack', config: { webhookUrl: 'https://hooks.slack.com/x' },
+    }, makeAuth(undefined)));
+    expect(result.error).toBeUndefined();
   });
 });

@@ -4,7 +4,7 @@
  * Task 5.3 of the MCP bootstrap plan: when a device enrolls using a child
  * enrollment key that was minted by `send_deployment_invites`, flip the
  * corresponding `deployment_invites` row from `clicked`/`sent` to `enrolled`
- * so `get_fleet_status` can report accurate funnel metrics.
+ * so `get_invite_funnel` can report accurate funnel metrics.
  *
  * This is best-effort — a manual enrollment (no matching invite row) or a
  * second heartbeat from an already-enrolled device is a silent no-op. Errors

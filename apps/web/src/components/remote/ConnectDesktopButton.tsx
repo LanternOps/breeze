@@ -8,6 +8,7 @@ import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownlo
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
+import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SessionPickerModal from './SessionPickerModal';
@@ -106,8 +107,12 @@ function desktopAccessUnavailableReason(
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null }: Props) {
   const { t } = useTranslation('remote');
-  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied'>('idle');
+  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied' | 'ending' | 'revoked'>('idle');
   const [error, setError] = useState<string | null>(null);
+  // Populated when the server-side revocation lease killed the session before
+  // the viewer connected (#6120) — the raw RevocationReason parsed from the
+  // session row's `errorMessage: 'revoked:<reason>'`.
+  const [revokedReason, setRevokedReason] = useState<string | null>(null);
   // RDS hosts (helperLifecycleMode === 'on-demand') gate connect behind a
   // session picker so the tech targets a specific WTS session.
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -368,24 +373,30 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         return;
       }
 
-      // Clean up stale sessions in parallel with creating new one
-      const [, response] = await Promise.all([
-        fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
-        fetchWithAuth('/remote/sessions', {
-          method: 'POST',
-          body: JSON.stringify({
-            deviceId,
-            type: 'desktop',
+      // Do NOT sweep /remote/sessions/stale here. The unscoped sweep (no
+      // deviceId, no type) revoked every live session the caller could see,
+      // including a Terminal on the same device (close 4003 "Session revoked"),
+      // and racing it against the POST could catch the brand-new desktop row
+      // too (#4090). POST /remote/sessions already terminates stale rows
+      // scoped to this device+type server-side.
+      // runAction so the outcome always reaches the operator — and so the
+      // fail-closed revocation-lease gate has somewhere to speak: an agent that
+      // has not yet declared lease support answers 503 `agent_upgrade_required`,
+      // which is a temporary "the agent is updating", NOT "the device is
+      // offline" and NOT a generic connection failure.
+      const session = await runAction<{ id: string }>({
+        request: () =>
+          fetchWithAuth('/remote/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ deviceId, type: 'desktop' }),
           }),
-        }),
-      ]);
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || t('connectDesktopButton.errors.createDesktopSession'));
-      }
-
-      const session = await response.json();
+        errorFallback: t('connectDesktopButton.errors.createDesktopSession'),
+        friendly: (code) =>
+          code === 'agent_upgrade_required'
+            ? t('connectDesktopButton.errors.agentUpgradeRequired')
+            : undefined,
+        parseSuccess: (data) => data as { id: string },
+      });
       sessionIdRef.current = session.id;
 
       // Create one-time desktop connect code for deep-link handoff
@@ -428,9 +439,28 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           if (res.ok) {
             const data = await res.json();
             const sessionStatus = data.status ?? data.data?.status;
+            const terminationPhase = data.terminationPhase ?? data.data?.terminationPhase;
+            if (terminationPhase === 'pending') {
+              // SEC-038 W06: the server has already ended this session but the
+              // agent has not yet acknowledged the stop. This is NOT "viewer
+              // connected" — say so, and stop polling.
+              setStatus('ending');
+              return;
+            }
             if (sessionStatus === 'denied') {
               // End user denied the consent prompt — surface an explicit message
               setStatus('denied');
+              return;
+            }
+            // #6120: the revocation lease killed the session before the viewer
+            // connected (permissions changed, MFA now required, site scope
+            // lost, …). Without this check `disconnected` falls into the
+            // generic "connected" branch below and the technician gets no
+            // explanation — the viewer just silently reverts to idle.
+            const revokedMessage = typeof data.errorMessage === 'string' ? data.errorMessage : undefined;
+            if (sessionStatus === 'disconnected' && revokedMessage?.startsWith('revoked:')) {
+              setRevokedReason(revokedMessage.slice('revoked:'.length));
+              setStatus('revoked');
               return;
             }
             if (sessionStatus && sessionStatus !== 'pending') {
@@ -458,7 +488,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('connectDesktopButton.errors.connectionFailed'));
+      // A 401 is the auth redirect's business; a non-401 ActionError was
+      // already toasted by runAction, so only the inline label is set here.
+      if (err instanceof ActionError && err.status === 401) return;
+      setError(
+        err instanceof ActionError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t('connectDesktopButton.errors.connectionFailed'),
+      );
       setStatus('idle');
     }
   }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, t]);
@@ -510,6 +549,51 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setStatus('idle');
   }, []);
 
+  const handleDismissEnding = useCallback(() => {
+    setStatus('idle');
+  }, []);
+
+  const handleDismissRevoked = useCallback(() => {
+    setRevokedReason(null);
+    setStatus('idle');
+  }, []);
+
+  // SEC-038 W06: shown when the session was ended server-side before the
+  // viewer connected and the device has not yet confirmed the teardown.
+  // Deliberately not the connected/idle state and not the denied card.
+  const endingContent = status === 'ending' ? (
+    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
+      <div className="flex items-start gap-2.5">
+        <MonitorOff className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <div className="flex-1">
+          <p className="font-medium text-amber-800 dark:text-amber-300">
+            {t('connectDesktopButton.ending.title')}
+          </p>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+            {t('connectDesktopButton.ending.description')}
+          </p>
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={handleDismissEnding}
+              className="text-xs text-muted-foreground transition hover:text-foreground"
+            >
+              {t('connectDesktopButton.dismiss')}
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleDismissEnding}
+          aria-label={t('connectDesktopButton.dismiss')}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-amber-200 dark:hover:bg-amber-800"
+        >
+          <X className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   // Shown when the end user on the managed device denied the consent prompt.
   const deniedContent = status === 'denied' ? (
     <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-red-200 bg-red-50 p-3 text-sm shadow-lg dark:border-red-800 dark:bg-red-950">
@@ -535,6 +619,61 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         <button
           type="button"
           onClick={handleDismissDenied}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-red-200 dark:hover:bg-red-800"
+        >
+          <X className="h-3 w-3 text-red-600 dark:text-red-400" />
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  // Shown when the revocation lease killed the session before the viewer
+  // connected. Maps the server's `RevocationReason` (apps/api/src/services/
+  // remoteRevocationLease.ts) to plain-language copy; unrecognized reasons
+  // fall back to the generic message rather than showing nothing (#6120).
+  const knownRevokedReasons = new Set([
+    'session_ended', 'user_inactive', 'epoch_baseline_missing',
+    'permissions_changed', 'membership_removed', 'site_scope_lost',
+    'mfa_required', 'hard_deadline',
+  ]);
+  const revokedReasonKey = revokedReason && knownRevokedReasons.has(revokedReason)
+    ? revokedReason
+    : 'default';
+  const revokedContent = status === 'revoked' ? (
+    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-red-200 bg-red-50 p-3 text-sm shadow-lg dark:border-red-800 dark:bg-red-950">
+      <div className="flex items-start gap-2.5">
+        <MonitorOff className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+        <div className="flex-1">
+          <p className="font-medium text-red-800 dark:text-red-300">
+            {t('connectDesktopButton.revoked.title')}
+          </p>
+          <p className="mt-1 text-xs text-red-700 dark:text-red-400">
+            {t(/* i18n-dynamic */ `connectDesktopButton.revoked.reasons.${revokedReasonKey}`)}
+          </p>
+          {revokedReasonKey === 'mfa_required' && (
+            <div className="mt-2.5">
+              <a
+                href="/auth/mfa/setup"
+                className="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+              >
+                {t('connectDesktopButton.revoked.setUpMfa')}
+              </a>
+            </div>
+          )}
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={handleDismissRevoked}
+              className="text-xs text-muted-foreground transition hover:text-foreground"
+            >
+              {t('connectDesktopButton.dismiss')}
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleDismissRevoked}
+          aria-label={t('connectDesktopButton.dismiss')}
           className="flex h-5 w-5 items-center justify-center rounded hover:bg-red-200 dark:hover:bg-red-800"
         >
           <X className="h-3 w-3 text-red-600 dark:text-red-400" />
@@ -775,6 +914,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         </button>
         {fallbackContent}
         {deniedContent}
+      {endingContent}
+        {revokedContent}
         {pickerModal}
       </div>
     );
@@ -798,6 +939,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         </button>
         {fallbackContent}
         {deniedContent}
+      {endingContent}
+        {revokedContent}
         {pickerModal}
       </div>
     );
@@ -822,6 +965,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       {fallbackContent}
       {deniedContent}
+      {endingContent}
+      {revokedContent}
       {pickerModal}
     </div>
   );

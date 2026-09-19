@@ -26,7 +26,13 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
+import { projectPublicDevice } from '../routes/devices/helpers';
+import {
+  sanitizeUntrustedText,
+  wrapUntrustedData,
+  UNTRUSTED_FIELD_MAX_LENGTH,
+} from './aiInputSanitizer';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -35,6 +41,47 @@ import {
 } from './brainDeviceContext';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * Custom-field definitions are a DUAL-AXIS (org XOR partner) config table: a
+ * partner-wide definition has `org_id IS NULL`, and an org-owned one has
+ * `partner_id IS NULL`. An `eq(orgId, auth.orgId)` filter silently drops every
+ * partner-wide field — which for an MSP is most of them. Exported so
+ * `export_dataset`'s `custom_fields` adapter runs this exact predicate list
+ * instead of a second, narrower one.
+ */
+export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
+  const conditions: SQL[] = [];
+  if (auth.orgId) {
+    conditions.push(
+      sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
+    );
+  }
+  if (auth.partnerId) {
+    conditions.push(
+      sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+    );
+  }
+  return conditions;
+}
+
+export async function readCustomFieldDefinitions(auth: AuthContext) {
+  const conditions = customFieldDefinitionConditions(auth);
+  return db
+    .select({
+      id: customFieldDefinitions.id,
+      name: customFieldDefinitions.name,
+      fieldKey: customFieldDefinitions.fieldKey,
+      type: customFieldDefinitions.type,
+      required: customFieldDefinitions.required,
+      options: customFieldDefinitions.options,
+      deviceTypes: customFieldDefinitions.deviceTypes,
+      defaultValue: customFieldDefinitions.defaultValue,
+    })
+    .from(customFieldDefinitions)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(customFieldDefinitions.name);
+}
 
 export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -96,6 +143,11 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(devices.id, allowed));
       }
+      // W04 (#5715): a device-LESS analysis run carries no site axis, only the
+      // device set frozen at admission. Without this it enumerates the whole
+      // org — see `runFrozenDeviceIds`'s docstring.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 
@@ -179,7 +231,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({
         device: {
-          ...device,
+          ...projectPublicDevice(device),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
@@ -232,6 +284,13 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return 'No context found for this device. This is a fresh start with no previous memory.';
       }
 
+      // Device memory is free text and is replayed straight into model context.
+      // Sanitize every untrusted field, then render the whole set inside a
+      // delimited untrusted-data block so it reads as data, not instructions.
+      // Collect sanitizer detections across every entry so a neutralized
+      // instruction/fence/truncation is recorded rather than silently dropped
+      // (mirrors the page-context path in aiAgent.ts / aiAgentSdk.ts).
+      const memoryFlags: string[] = [];
       const formatted = results.map(r => {
         const status = r.resolvedAt
           ? 'RESOLVED'
@@ -239,9 +298,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           ? 'EXPIRED'
           : 'ACTIVE';
 
-        let output = `[${status}] ${r.contextType.toUpperCase()}: ${r.summary}`;
+        let output = `[${status}] ${sanitizeUntrustedText(r.contextType, 40, memoryFlags).toUpperCase()}: ${sanitizeUntrustedText(r.summary, UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         if (r.details) {
-          output += `\nDetails: ${JSON.stringify(r.details, null, 2)}`;
+          output += `\nDetails: ${sanitizeUntrustedText(JSON.stringify(r.details, null, 2), UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         }
         output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
         if (r.resolvedAt) {
@@ -250,7 +309,18 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return output;
       });
 
-      return `Found ${results.length} context entries:\n\n${formatted.join('\n\n---\n\n')}`;
+      const block = wrapUntrustedData('device_memory', formatted.join('\n\n---\n\n'), memoryFlags);
+      if (memoryFlags.length > 0) {
+        console.warn(
+          '[AI] Device-memory sanitization flags:',
+          memoryFlags,
+          'device:',
+          deviceId,
+          'entries:',
+          results.length
+        );
+      }
+      return `Found ${results.length} context entries:\n\n${block}`;
     },
   });
 
@@ -408,6 +478,12 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           }
           conditions.push(inArray(devices.id, allowed));
         }
+        // Exact-device axis, independent of the site axis: a device-LESS
+        // analysis run has `allowedDeviceIds` and no `allowedSiteIds`, so the
+        // branch above no-ops for it and the whole org's tag vocabulary leaks.
+        // Same narrowing `query_devices` above already applies (#6086).
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
         const search = input.search as string | undefined;
         const whereClause = conditions.length > 0 ? and(...conditions) : sql`true`;
@@ -490,32 +566,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'list_definitions') {
-        const conditions: SQL[] = [];
-        if (auth.orgId) {
-          conditions.push(
-            sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
-          );
-        }
-        if (auth.partnerId) {
-          conditions.push(
-            sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
-          );
-        }
-
-        const definitions = await db
-          .select({
-            id: customFieldDefinitions.id,
-            name: customFieldDefinitions.name,
-            fieldKey: customFieldDefinitions.fieldKey,
-            type: customFieldDefinitions.type,
-            required: customFieldDefinitions.required,
-            options: customFieldDefinitions.options,
-            deviceTypes: customFieldDefinitions.deviceTypes,
-            defaultValue: customFieldDefinitions.defaultValue,
-          })
-          .from(customFieldDefinitions)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(customFieldDefinitions.name);
+        const definitions = await readCustomFieldDefinitions(auth);
 
         return JSON.stringify({ definitions, total: definitions.length });
       }
@@ -528,17 +579,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         if ('error' in access) return JSON.stringify({ error: access.error });
         const { device } = access;
 
-        const conditions: SQL[] = [];
-        if (auth.orgId) {
-          conditions.push(
-            sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
-          );
-        }
-        if (auth.partnerId) {
-          conditions.push(
-            sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
-          );
-        }
+        const conditions = customFieldDefinitionConditions(auth);
 
         const definitions = await db
           .select({

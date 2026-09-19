@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Diese Richtlinie hat keine Organisation, daher können Zuweisungsziele nicht aufgelistet werden.",
       "failedToAddAssignment": "Aufgabe konnte nicht hinzugefügt werden",
       "failedToRemoveAssignment": "Die Zuweisung konnte nicht entfernt werden",
+      "assignmentAdded": "Aufgabe hinzugefügt",
+      "assignmentRemoved": "Zuweisung entfernt",
       "roleFilter": "Rollenfilter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "Keine Einschränkung – gilt für alle Geräterollen",
@@ -131,7 +133,10 @@
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
       "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben"
+      "assignments2": "Aufgaben",
+      "managedByYourMsp": "Verwaltet von Ihrem MSP",
+      "inheritedByPolicies_one": "Von {{count}} Richtlinie geerbt",
+      "inheritedByPolicies_other": "Von {{count}} Richtlinien geerbt"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -150,7 +155,8 @@
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
-      "summary": "{{filtered}} von {{total}} Richtlinien"
+      "summary": "{{filtered}} von {{total}} Richtlinien",
+      "inheritsBadge": "Erbt"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Sind Sie sicher, dass Sie löschen möchten?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Dadurch werden auch alle Funktionsverknüpfungen und Zuweisungen entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
       "delete": "löschen",
-      "deleting": "Löschen..."
+      "deleting": "Löschen...",
+      "deleteBlockedByChildren": "Löschen Sie zuerst die Richtlinien, die von dieser erben:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Zuweisungen konnten nicht geladen werden",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "keine"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Entfernte Geräte endgültig löschen",
+        "offKeepRemovedDevicesUntilDeletedManually": "Aus — entfernte Geräte bleiben erhalten, bis sie manuell gelöscht werden.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Entfernte Geräte werden {{days}} Tage nach dem Entfernen endgültig gelöscht.",
+        "permanentlyDeleteRemovedDevicesAfter": "Entfernte Geräte endgültig löschen nach",
+        "days": "Tagen",
+        "enterAWholeNumberOfDaysBetween": "Geben Sie eine ganze Anzahl von Tagen zwischen 1 und 3650 ein.",
+        "purgeIsIrreversibleAndDestroysHistory": "Das Löschen ist unwiderruflich und vernichtet den Verlauf",
+        "aDailyJobPermanentlyDeletesTheDevice": "Ein täglicher Job löscht den Gerätedatensatz und alles, was daran hängt, endgültig — Alarme, Skripte, Patches, Protokolle und Inventar. Geräte, für die noch eine Agent-Deinstallation ansteht, werden übersprungen, bis diese abgeschlossen ist. Die nächstgelegene Richtlinie gewinnt, sodass eine Organisation dies deaktivieren kann, um sich von einem organisationsweiten Zeitfenster abzumelden."
+      },
       "eventLogTab": {
         "security": "Sicherheit",
         "hardware": "Hardware",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Überschreiben",
         "revertToParent": "Zurück zum übergeordneten Element",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
+        "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
+        "removeConfirmTitle": "Diese Konfiguration entfernen?",
+        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -738,6 +759,8 @@
         "recurrence": "Wiederholung",
         "startDateTime": "Startdatum/-uhrzeit",
         "theSpecificDateAndTimeForThis": "Das spezifische Datum und die Uhrzeit für dieses einmalige Wartungsfenster.",
+        "startTime": "Startzeit",
+        "theTimeOfDayEachWindowOpensIn": "Die Uhrzeit, zu der jedes Wartungsfenster in der ausgewählten Zeitzone beginnt. Standard ist Mitternacht (00:00).",
         "durationHours": "Dauer (Stunden)",
         "timezone": "Zeitzone",
         "notifyBeforeMinutes": "Benachrichtigen vor (Minuten)",
@@ -812,6 +835,17 @@
         "openAlertsFeature": "Alarme öffnen",
         "legacyAlertRulesMovedToAlerts": "{{count}} ältere Alarmregel(n) von diesem Tab wurden in die Alarm-Funktion dieser Richtlinie verschoben. Die Überwachung speichert sie nicht mehr."
       },
+      "monitorsTab": {
+        "attachMonitor": "Überwachung hinzufügen",
+        "loadingMonitors": "Überwachungen werden geladen…",
+        "noMoreMonitorsToAttach": "Keine weiteren Überwachungen zum Hinzufügen verfügbar",
+        "selectAMonitorToAttach": "Überwachung zum Hinzufügen auswählen…",
+        "noMonitorsAttached": "Dieser Richtlinie sind noch keine Überwachungen zugeordnet.",
+        "inherited": "Geerbt",
+        "overrideValue": "Überschreibungswert",
+        "overridesLabel": "Überschreibungen:",
+        "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",
         "theAgentObservesUACConsentPromptsAnd": "Der Agent erkennt UAC-Zustimmungsaufforderungen und zeichnet sie als Rechteerhöhungsanfragen für die PAM-Prüfung auf. Die Erfassung ist standardmäßig deaktiviert; hier kann der Gerätebereich für PAM aktiviert werden.",
@@ -881,9 +915,20 @@
         "time": "Zeit",
         "dayOfWeek": "Wochentag",
         "dayOfMonth": "Tag des Monats",
+        "offlineDevices": "Offline-Geräte",
+        "offlineBehaviorQueue": "Für Offline-Geräte in die Warteschlange stellen",
+        "offlineBehaviorQueueDescription": "Wird beim nächsten Check-in ausgeführt, vor dem nächsten geplanten Lauf.",
+        "offlineBehaviorSkip": "Offline-Geräte überspringen",
+        "offlineBehaviorSkipDescription": "Geräte, die beim Ausführen des Auftrags offline sind, werden als übersprungen erfasst.",
         "rebootPolicy": "Neustartrichtlinie",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Windows Update-Quelle",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Verwalten Sie Windows Update ausschließlich über Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Unterdrückt den nativen automatischen Windows Update-Installationskanal des Endpunkts, sodass Updates nur über die Genehmigungsringe von Breeze fließen und so unerwartete Neustarts und Patches außerhalb Ihres Zeitplans verhindert werden. Nur Windows; Der eigene Scan/approve/install-Pfad von Breeze bleibt davon unberührt. Wird bei Deaktivierung sauber wiederhergestellt (eine bereits vorhandene Administrator-Gruppenrichtlinie bleibt unberührt).",
@@ -918,7 +963,8 @@
         "loadingPolicies": "Richtlinien werden geladen...",
         "noExistingPoliciesFound": "Keine vorhandenen Richtlinien gefunden.",
         "selectAPolicy": "Wählen Sie eine Richtlinie aus...",
-        "clearSelection": "Auswahl aufheben"
+        "clearSelection": "Auswahl aufheben",
+        "allOrgs": "Alle Orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1140,7 +1186,21 @@
         "generateACriticalAlertWhenWarrantyExpires": "Generieren Sie eine kritische Warnung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
         "enabled": "aktiviert",
         "warnDays": "warnDays",
-        "criticalDays": "kritischeTage"
+        "criticalDays": "kritischeTage",
+        "collectHpWarrantyFromTheDevice": "HP-Garantiedaten auf dem Gerät erfassen",
+        "hpCmslConsentExplainer": "HP-Garantiedaten werden auf dem Gerät mit der Client Management Script Library von HP gelesen. Mit diesem Kontrollkästchen akzeptieren Sie die HP-Lizenz im Namen dieses Kunden, und HP darf technische Informationen vom Gerät erfassen, einschließlich der IP-Adresse. Bleibt es leer, behalten HP-Geräte den Garantiestatus, den sie bereits haben.",
+        "hpCmslNoAcceptanceRecordedYet": "Noch keine Zustimmung erfasst. Beim Speichern mit gesetztem Kontrollkästchen werden Ihr Benutzer und die Serverzeit erfasst.",
+        "hpCmslAcceptedByOn": "Akzeptiert von {{user}} am {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP hat seine Lizenzbedingungen seit dieser Zustimmung geändert. Speichern Sie erneut, um erneut zuzustimmen.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Diese Richtlinie ersetzt die geerbten Garantieeinstellungen vollständig, ohne feldweise Zusammenführung. Wird sie mit deaktivierter Erfassung gespeichert, endet die HP-Garantieerfassung auf jedem Gerät, das diese Richtlinie erreicht."
+      },
+      "rationale": {
+        "label": "Begründung",
+        "edit": "Begründung bearbeiten",
+        "placeholder": "Warum dieses Element existiert …",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "none": "Keine Begründung hinterlegt."
       }
     }
   },
@@ -1275,6 +1335,8 @@
       "readyToDeployStandalone": "Bereit zum Einsatz."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Automatische Installation aktiviert",
+      "complianceCheckQueued": "Konformitätsprüfung eingereiht",
       "failedToLoadSoftwarePolicyData": "Das Laden der Softwarerichtliniendaten ist fehlgeschlagen",
       "couldNotLoadLatestPolicyDetailsShowing": "Die neuesten Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
       "couldNotLoadPolicyDetailsShowingCached": "Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
@@ -1314,7 +1376,19 @@
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
       "failedToCreatePolicy": "Richtlinie konnte nicht erstellt werden",
       "policyUpdated": "Richtlinie erfolgreich aktualisiert",
-      "policyCreated": "Richtlinie erfolgreich erstellt"
+      "policyCreated": "Richtlinie erfolgreich erstellt",
+      "armInstallRequiresMfa": "Die Aktivierung der automatischen Installation erfordert Multi-Faktor-Authentifizierung. Schließen Sie die MFA ab und versuchen Sie es erneut.",
+      "armInstallRequiresPermission": "Die Aktivierung der automatischen Installation erfordert die Berechtigung devices.execute. Bitten Sie einen Administrator, sie zu erteilen, und versuchen Sie es dann erneut.",
+      "installStatusPending": "Installation eingereiht",
+      "installStatusInProgress": "Wird installiert…",
+      "installStatusCompleted": "Installiert",
+      "installStatusFailed": "Installation fehlgeschlagen",
+      "installStatusGaveUp": "Nach wiederholten Fehlschlägen aufgegeben",
+      "installStatusSkipped": "Diesen Durchlauf übersprungen",
+      "installSkippedNoCatalog": "Eine erforderliche Regel hat keinen verknüpften Katalogeintrag, daher gibt es nichts zu installieren. Fügen Sie im Richtlinien-Editor eine Katalogverknüpfung hinzu, um dies zu beheben.",
+      "installSkippedCapOrPlatform": "Kein Fehler — entweder wurde die Installationsobergrenze pro Durchlauf erreicht, oder für die Plattform dieses Geräts gibt es keine Installationsmethode für die Software. Wird eventuell im nächsten Durchlauf erneut versucht.",
+      "installAttempts": "{{count}} Versuch(e)",
+      "installLastAttempt": "Letzter Installationsversuch: "
     },
     "deploymentList": {
       "running": "Wird ausgeführt",
@@ -1352,7 +1426,9 @@
       "noDeploymentsYet": "Es wurden noch keine Bereitstellungen erstellt.",
       "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
       "deploymentCancelled": "Bereitstellung abgebrochen",
-      "pageOf": "Seite {{page}} von {{pages}}"
+      "pageOf": "Seite {{page}} von {{pages}}",
+      "policyOwned": "Richtliniengesteuert",
+      "policyOwnedTooltip": "Automatisch erstellt durch die Auto-Installations-Remediation einer Softwarerichtlinie"
     },
     "deploymentProgress": {
       "queued": "In der Warteschlange",
@@ -1536,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 Geräte — meist, weil diese Richtlinie noch keinem Gerät zugewiesen ist; eine vollständig konforme Flotte oder eine leere Standort-Freigabeliste ergibt ebenfalls 0",
+      "manageAssignments": "Zuweisungen von Konfigurationsrichtlinien verwalten",
+      "gracePeriodHelp": "Wird beim nächsten Konformitätsprüflauf angewendet",
       "scope": "Umfang",
       "allOrganizations": "Alle Organisationen",
       "partnerWideTemplate": "(partnerweite Vorlage)",
@@ -1580,7 +1659,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "Gnadenfrist",
-      "saving": "Speichern..."
+      "saving": "Speichern...",
+      "catalogLink": "Verknüpfter Katalogeintrag",
+      "catalogLinkNone": "Keiner — nicht verknüpft",
+      "autoInstall": "Fehlende Software automatisch installieren",
+      "autoInstallCatalogWarning": "{{count}} von {{total}} Regel(n) haben keinen verknüpften Katalogeintrag und werden als fehlend erkannt, aber nie installiert.",
+      "dryRunLoading": "Wird geprüft, wie viele Geräte betroffen sind...",
+      "dryRunResult": "Dies installiert fehlende Software auf etwa {{count}} Gerät(en).",
+      "dryRunUnavailable": "Die Geräteanzahl-Vorschau ist noch nicht verfügbar. Die Aktivierung wirkt trotzdem beim nächsten Compliance-Durchlauf.",
+      "dryRunNewPolicy": "Dies ist eine neue Richtlinie — die Auswirkung auf Geräte ist erst nach dem ersten Compliance-Durchlauf nach dem Speichern bekannt.",
+      "catalogUnavailable": "Der Softwarekatalog konnte nicht geladen werden, daher sind die Katalogverknüpfungs-Auswahlfelder unten leer. Das ist nicht dasselbe wie „keine Katalogeinträge vorhanden“ — laden Sie die Seite neu, bevor Sie annehmen, dass eine Regel nicht verknüpft werden kann."
     },
     "softwareCatalog": {
       "ready": "Bereit",
@@ -1626,20 +1714,6 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
       "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Software-Compliance-Bericht",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analysieren Sie die Softwareversionsdrift auf verwalteten Geräten.",
-      "bulkUpdate": "Massenaktualisierung",
-      "versionDriftAnalysis": "Analyse der Versionsdrift",
-      "clickARowToSeeOutdatedDevices": "Klicken Sie auf eine Zeile, um veraltete Geräte anzuzeigen.",
-      "software": "Software",
-      "expectedVersion": "Erwartete Version",
-      "devicesOnVersion": "Geräte auf Version",
-      "devicesOutdated": "Geräte veraltet",
-      "details": "Details",
-      "outdatedDevices": "Veraltete Geräte",
-      "hide": "Verstecken"
     },
     "softwareInventory": {
       "allowed": "Erlaubt",

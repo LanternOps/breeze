@@ -30,11 +30,20 @@
     "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
+    "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, artık başka bir onaylayan bu isteğe karar vermelidir.",
     "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
     "registerDevice": "Bu cihazı kaydedin",
     "decideFailed": "Karar gönderilemedi",
     "approvedToast": "İşlem onaylandı",
-    "deniedToast": "İşlem reddedildi"
+    "approvedToast_one": "{{count}} işlem onaylandı",
+    "approvedToast_other": "{{count}} işlem onaylandı",
+    "deniedToast": "İşlem reddedildi",
+    "deniedToast_one": "{{count}} işlem reddedildi",
+    "deniedToast_other": "{{count}} işlem reddedildi",
+    "runContextLabel": "Çalıştırma bağlamı:",
+    "runContextChosenByAssistant": "asistan tarafından seçildi",
+    "runContextScriptDefault": "komut dosyasının kayıtlı varsayılanı",
+    "runContextOverrides": "asistan tarafından seçildi ve komut dosyasının kayıtlı varsayılanını geçersiz kılıyor ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Yanıt bekleniyor...",
@@ -74,7 +83,8 @@
         "label": "Son etkinlik",
         "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
       }
-    }
+    },
+    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı."
   },
   "aiChatSidebar": {
     "history": "Geçmiş",
@@ -118,6 +128,9 @@
   },
   "aiToolCallCard": {
     "running": "Koşuyor...",
+    "approvedRunning": "Onaylandı · çalışıyor",
+    "approvedFailed": "Onaylandı · başarısız",
+    "approvedCompleted": "Onaylandı · tamamlandı",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"
@@ -128,7 +141,7 @@
     "tabs": {
       "orgs": "Organizasyonlar",
       "sessions": "Oturumlar",
-      "usage": "Kullanım",
+      "usage": "Office eklentisi kullanımı",
       "templates": "Şablonlar"
     }
   },
@@ -424,7 +437,9 @@
     "limit": "5'e kadar eşzamanlı görüşme"
   },
   "workspaceTab": {
-    "approvalPending": "Onay bekleniyor"
+    "approvalPending": "Onay bekleniyor",
+    "renameLabel": "Sohbeti yeniden adlandır",
+    "renameHint": "Yeniden adlandırmak için çift tıklayın"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Yeni sekme (Cmd+Shift+N)",
@@ -442,5 +457,52 @@
     "timeMinutesAria": "Zaman (dakika)",
     "billable": "Faturalandırılabilir",
     "createTicket": "Bilet oluştur"
+  },
+  "scriptProposal": {
+    "title": "Yapay zekâ tarafından yazılan betik",
+    "goal": "Amaç",
+    "expectedEffect": "Beklenen etki",
+    "verificationClaim": "Bunun nasıl doğrulanacağı",
+    "rollback": "Geri alma",
+    "findings": "İnceleme bulguları",
+    "blastRadius": "Etki alanı (bilgilendirme)",
+    "touches": "Etkiler",
+    "devices": "Hedef cihazlar",
+    "showCode": "Betiği göster",
+    "hideCode": "Betiği gizle",
+    "acknowledgeTitle": "Tehlikeli kalıpları onayla",
+    "acknowledgeRequirement": "Onaylamak için betik yazma izni ve yakın zamanda yapılmış bir MFA girişi gerekir.",
+    "acknowledgeIncomplete": "Onaylamak için her kalıbı işaretleyin.",
+    "expiresIn": "{{duration}} içinde sona erer",
+    "requestChanges": "Değişiklik iste",
+    "notePlaceholder": "Yazar neyi değiştirmeli?",
+    "noteRequired": "Bir not zorunludur.",
+    "sendBack": "Yazara geri gönder",
+    "severityInfo": "Bilgi",
+    "severityWarning": "Uyarı",
+    "severityBlocking": "Engelleyici",
+    "saveToLibrary": "Kitaplığa kaydet",
+    "verificationPending": "Doğrulama bekliyor",
+    "verified": "Doğrulandı",
+    "verificationFailed": "Doğrulama başarısız",
+    "verificationUnknown": "Doğrulanamadı",
+    "promoteDescription": "Açıklama (isteğe bağlı)",
+    "ownerScopeOrganization": "Yalnızca bu kuruluş",
+    "ownerScopePartner": "Bu iş ortağına bağlı tüm kuruluşlar",
+    "nameRequired": "Bir ad girilmesi zorunludur."
+  },
+  "aiRunCard": {
+    "title": "Analiz çalıştırması",
+    "openRun": "Tam çalıştırmayı aç",
+    "resultOnRunPage": "Bu işlem, konuşma ilerledikten sonra tamamlandı — tam sonuç çalıştırma sayfasında saklanıyor.",
+    "status": {
+      "queued": "sırada",
+      "running": "çalışıyor",
+      "completed": "tamamlandı",
+      "failed": "başarısız",
+      "cancelled": "iptal edildi",
+      "expired": "süresi doldu",
+      "skipped": "atlandı"
+    }
   }
 }

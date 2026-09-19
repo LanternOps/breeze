@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const updateMock = vi.fn();
+const applyAutomationActionTerminalMock = vi.fn().mockResolvedValue(true);
 
 vi.mock('../db', () => ({
   db: {
@@ -18,11 +19,15 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+vi.mock('./automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
+}));
+
 import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../db/schema';
 import {
   applySoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from './softwareDeploymentResult';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -53,38 +58,10 @@ function riggedUpdateWithReturning(returningRows: unknown[]) {
   return { setMock, whereMock, returningMock };
 }
 
-describe('SW_INSTALL_COMMAND_ID_REGEX', () => {
-  it('matches sw-install-<deploymentUuid>-<deviceUuid> with no attempt suffix and captures both ids', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match).not.toBeNull();
-    expect(match![1]).toBe(DEPLOYMENT_ID);
-    expect(match![2]).toBe(DEVICE_ID);
-    expect(match![3]).toBeUndefined();
-  });
-
-  it('matches sw-install-<deploymentUuid>-<deviceUuid>-<attempt> and captures the attempt number', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}-2`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match).not.toBeNull();
-    expect(match![1]).toBe(DEPLOYMENT_ID);
-    expect(match![2]).toBe(DEVICE_ID);
-    expect(match![3]).toBe('2');
-  });
-
-  it('captures a zero attempt suffix explicitly rather than treating it as absent', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}-0`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match![3]).toBe('0');
-  });
-
-  it('rejects other command id shapes', () => {
-    expect('dev-push-abc'.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-    expect(`sw-install-${DEPLOYMENT_ID}`.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-    expect('22222222-2222-4222-8222-222222222222'.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-  });
-});
-
 describe('applySoftwareInstallResult', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    applyAutomationActionTerminalMock.mockResolvedValue(true);
   });
 
   it('maps completed + exit code 0 to completed', async () => {
@@ -194,13 +171,15 @@ describe('applySoftwareInstallResult', () => {
       // real rows (the row is actually at retryCount=2).
       const { whereMock, returningMock } = riggedUpdateWithReturning([]);
 
-      await applySoftwareInstallResult({
+      const effectiveId = await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,
         status: 'completed',
         exitCode: 0,
         attemptNumber: 1,
       });
+
+      expect(effectiveId).toBeNull();
 
       expect(whereMock).toHaveBeenCalledWith(
         and(
@@ -216,7 +195,7 @@ describe('applySoftwareInstallResult', () => {
     it('(b) applies a result whose attempt number matches the row current retryCount', async () => {
       const { setMock, whereMock } = riggedUpdateWithReturning([{ id: 'dr-row-1' }]);
 
-      await applySoftwareInstallResult({
+      const effectiveId = await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,
         status: 'completed',
@@ -224,6 +203,13 @@ describe('applySoftwareInstallResult', () => {
         stdout: 'installed ok',
         attemptNumber: 2,
       });
+
+      expect(effectiveId).toBe('dr-row-1');
+      expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+        source: 'deployment_result',
+        deploymentResultId: 'dr-row-1',
+        terminalStatus: 'succeeded',
+      }));
 
       expect(whereMock).toHaveBeenCalledWith(
         and(
@@ -238,11 +224,9 @@ describe('applySoftwareInstallResult', () => {
       expect(stored.output).toBe('installed ok');
     });
 
-    it('(c) applies a legacy command id with no attempt suffix (defaults to 0) when retryCount is still 0', async () => {
+    it('(c) defaults an omitted attempt number to the first attempt', async () => {
       const { setMock, whereMock } = riggedUpdateWithReturning([{ id: 'dr-row-1' }]);
 
-      // No attemptNumber passed — mirrors a command id parsed with the
-      // optional suffix absent (pre-fix in-flight command).
       await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,

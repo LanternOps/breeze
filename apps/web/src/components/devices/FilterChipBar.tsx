@@ -30,6 +30,7 @@ export interface FilterChipBarProps {
   // Spec 4.1 — passed through to FilterValueEditor for name lookups.
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  groups?: NamedRef[];
   // Spec 4.2 — passed through for software multi-select. Optional; if
   // undefined the editor falls back to comma-separated text input.
   softwareOptions?: string[];
@@ -55,7 +56,7 @@ export function defaultConditionForField(field: FilterFieldDefinition): FilterCo
 }
 
 export function FilterChipBar({
-  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
+  value, onChange, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterChipBarProps) {
   const { t } = useTranslation('devices');
   const group = value ?? EMPTY_GROUP;
@@ -216,6 +217,7 @@ export function FilterChipBar({
               onRemove={() => handleRemove(i)}
               orgs={orgs}
               sites={sites}
+              groups={groups}
               softwareOptions={softwareOptions}
               softwareOptionCounts={softwareOptionCounts}
               onSoftwareSearch={onSoftwareSearch}
@@ -242,6 +244,7 @@ export function FilterChipBar({
           onChange={(g) => onChange(g.conditions.length === 0 ? null : g)}
           orgs={orgs}
           sites={sites}
+          groups={groups}
           softwareOptions={softwareOptions}
           softwareOptionCounts={softwareOptionCounts}
           onSoftwareSearch={onSoftwareSearch}
@@ -260,6 +263,7 @@ interface ChipProps {
   onRemove: () => void;
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  groups?: NamedRef[];
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
   onSoftwareSearch?: (q: string) => void;
@@ -268,7 +272,7 @@ interface ChipProps {
   focused?: boolean;
 }
 
-export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
+export function Chip({ condition, onChange, onRemove, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
   const { t } = useTranslation('devices');
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -304,7 +308,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
           onClick={() => setOpen(o => !o)}
           className="hover:underline"
         >
-          {summarizeCondition(field, condition, { orgs, sites })}
+          {summarizeCondition(field, condition, { orgs, sites, groups })}
         </button>
         <button
           type="button"
@@ -326,6 +330,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
             onChange={onChange}
             orgs={orgs}
             sites={sites}
+            groups={groups}
             softwareOptions={softwareOptions}
             softwareOptionCounts={softwareOptionCounts}
             onSoftwareSearch={onSoftwareSearch}

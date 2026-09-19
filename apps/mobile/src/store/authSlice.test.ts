@@ -137,6 +137,30 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
   });
 
+  it('loginAsync stores enrollment handoff without credentials or an unlock stamp', async () => {
+    api.login.mockResolvedValue({
+      kind: 'mfaEnrollmentRequired',
+      handoff: { reason: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+    });
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(result.type).toBe('auth/login/fulfilled');
+    expect(store.getState().auth).toMatchObject({
+      token: null,
+      user: null,
+      mfaChallenge: null,
+      mfaEnrollmentRequired: {
+        reason: 'mfa_enrollment_required',
+        enrollUrl: '/auth/mfa/setup',
+      },
+    });
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+
   it('loginAsync does NOT mark unlocked when the API rejects', async () => {
     api.login.mockRejectedValue({ message: 'bad credentials' });
     const store = makeStore();
@@ -150,9 +174,10 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     api.verifyMfa.mockResolvedValue({ token: 'tok-2', user: fakeUser });
     const store = makeStore();
 
-    const result = await store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'tmp' }));
+    const result = await store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'tmp', method: 'totp' }));
 
     expect(result.type).toBe('auth/verifyMfa/fulfilled');
+    expect(api.verifyMfa).toHaveBeenCalledWith('123456', 'tmp', 'totp');
     expect(appLock.markAppLockUnlocked).toHaveBeenCalledTimes(1);
     expect(auth.storeToken).toHaveBeenCalledWith('tok-2');
   });
@@ -161,13 +186,131 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     api.verifyMfa.mockRejectedValue({ message: 'invalid code' });
     const store = makeStore();
 
-    await store.dispatch(verifyMfaAsync({ code: '000000', tempToken: 'tmp' }));
+    await store.dispatch(verifyMfaAsync({ code: '000000', tempToken: 'tmp', method: 'totp' }));
 
     expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
   });
 });
 
 describe('logoutAsync', () => {
+  it('enqueues the local secure wipe before a delayed network logout completes', async () => {
+    let releaseLogout!: () => void;
+    api.logout.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseLogout = resolve; }));
+    const store = makeStore();
+
+    const logoutRequest = store.dispatch(logoutAsync());
+    await vi.waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
+
+    expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
+    releaseLogout();
+    await logoutRequest;
+  });
+
+  it('sync logout advances generation and fences an in-flight login before persistence', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    store.dispatch(logout());
+    releaseLogin({ kind: 'success', token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleLogin;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes slow A persistence, logout wipe, then replacement B persistence', async () => {
+    const events: string[] = [];
+    let releaseAStore!: () => void;
+    let markAStoreStarted!: () => void;
+    const aStoreStarted = new Promise<void>((resolve) => { markAStoreStarted = resolve; });
+    const aStoreRelease = new Promise<void>((resolve) => { releaseAStore = resolve; });
+    auth.storeToken.mockImplementation(async (token: string) => {
+      if (token === 'token-a') {
+        events.push('a:start');
+        markAStoreStarted();
+        await aStoreRelease;
+        events.push('a:end');
+      } else {
+        events.push('b:token');
+      }
+    });
+    auth.clearAuthData.mockImplementation(async () => { events.push('wipe'); });
+    api.login.mockImplementation(async (email: string) => ({
+      kind: 'success',
+      token: email.startsWith('a@') ? 'token-a' : 'token-b',
+      user: { ...fakeUser, email },
+      registerGrant: null,
+    }));
+    const store = makeStore();
+
+    const loginA = store.dispatch(loginAsync({ email: 'a@example.test', password: 'pw' }));
+    await aStoreStarted;
+    const logoutRequest = store.dispatch(logoutAsync());
+    await vi.waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
+    const loginB = store.dispatch(loginAsync({ email: 'b@example.test', password: 'pw' }));
+    releaseAStore();
+    await Promise.all([loginA, logoutRequest, loginB]);
+
+    expect(events).toEqual(['a:start', 'a:end', 'wipe', 'b:token']);
+    expect(store.getState().auth.token).toBe('token-b');
+    expect(store.getState().auth.user?.email).toBe('b@example.test');
+  });
+
+  it('advances the session generation before network logout and fences a delayed login write', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseLogin({ kind: 'success', token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleLogin;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(store.getState().auth.token).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
+  });
+
+  it('fences delayed MFA credential persistence after logout', async () => {
+    let releaseMfa!: (value: unknown) => void;
+    api.verifyMfa.mockImplementation(() => new Promise((resolve) => { releaseMfa = resolve; }));
+    const store = makeStore();
+    const staleMfa = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp-old', method: 'totp' }));
+    await vi.waitFor(() => expect(api.verifyMfa).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseMfa({ token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleMfa;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(store.getState().auth.token).toBeNull();
+  });
+
+  it('fences a delayed enrollment handoff after logout', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseLogin({
+      kind: 'mfaEnrollmentRequired',
+      handoff: { reason: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+    });
+    await staleLogin;
+
+    expect(store.getState().auth.mfaEnrollmentRequired).toBeNull();
+    expect(store.getState().auth.token).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
+  });
+
   it('API ok + wipe ok → fulfilled, wipe runs exactly once', async () => {
     const store = makeStore();
     const result = await store.dispatch(logoutAsync());
@@ -240,18 +383,49 @@ describe('approver registration status', () => {
     expect(store.getState().auth.approverRegistrationReason).toBeNull();
   });
 
+  // #5162 (#1374 W07 Task 2): `ensureApproverDevice` can resolve `registered`
+  // with `attested: false` (server stored a non-L4-trusted basis) — RootNavigator
+  // must not collapse that into a bare 'registered' the UI reads as fully set
+  // up. Without this field the ApprovalGate banner has no way to tell a fully
+  // L4-capable device from one that is registered but capped below critical.
+  it('records attested=false on a registered-but-not-L4 outcome so the UI can warn', () => {
+    const store = makeStore();
+
+    store.dispatch(
+      setApproverRegistration({
+        status: 'registered',
+        attested: false,
+        reason: 'attestation_rejected_by_server',
+      })
+    );
+
+    expect(store.getState().auth.approverRegistration).toBe('registered');
+    expect(store.getState().auth.approverRegistrationAttested).toBe(false);
+  });
+
+  it('defaults attested to null when omitted (failed/deferred/unsupported outcomes)', () => {
+    const store = makeStore();
+
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    expect(store.getState().auth.approverRegistrationAttested).toBeNull();
+  });
+
   it('starts idle so a fresh install shows no banner', () => {
     expect(makeStore().getState().auth.approverRegistration).toBe('idle');
   });
 
   it('clears on the synchronous logout reducer', () => {
     const store = makeStore();
-    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+    store.dispatch(
+      setApproverRegistration({ status: 'registered', attested: false, reason: 'attestation_rejected_by_server' })
+    );
 
     store.dispatch(logout());
 
     expect(store.getState().auth.approverRegistration).toBe('idle');
     expect(store.getState().auth.approverRegistrationReason).toBeNull();
+    expect(store.getState().auth.approverRegistrationAttested).toBeNull();
   });
 
   // The Sign Out button and the device_blocked listener both dispatch
@@ -260,8 +434,8 @@ describe('approver registration status', () => {
   // would also blank the slice, but that safety net lives in another module:
   // asserting it here keeps the guarantee true of authSlice on its own.
   it.each([
-    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id')],
-    ['rejected', () => logoutAsync.rejected(null, 'req-id')],
+    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id', { deliberate: true })],
+    ['rejected', () => logoutAsync.rejected(null, 'req-id', { deliberate: true })],
   ])('clears on logoutAsync.%s — the next user must not inherit the banner or grant', (_name, action) => {
     const store = makeStore();
     store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
@@ -296,7 +470,7 @@ describe('authenticatorRegisterGrantId (#2707)', () => {
 
   it('verifyMfaAsync.fulfilled stores the grant; logout clears it', () => {
     let state = authReducer(undefined, verifyMfaAsync.fulfilled(
-      { token: 't', user: fakeUser, registerGrant: 'grant-2' } as any, '', { code: '123456', tempToken: 'tmp' }
+      { token: 't', user: fakeUser, registerGrant: 'grant-2' } as any, '', { code: '123456', tempToken: 'tmp', method: 'totp' }
     ));
     expect(state.authenticatorRegisterGrantId).toBe('grant-2');
     state = authReducer(state, logout());

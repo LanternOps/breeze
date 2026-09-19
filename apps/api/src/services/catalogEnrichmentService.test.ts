@@ -1,23 +1,40 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureException, captureMessage, getAnthropicClientForPartner } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
+  calculateCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
+  calculateCatalogCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   getAnthropicClientForPartner: vi.fn(),
+  resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
+  reserveAiBudget: vi.fn(),
+  markAiBudgetReservationIndeterminate: vi.fn(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
-vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
+vi.mock('./aiCostTracker', () => ({
+  checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage,
+  calculateCostCents,
+  calculateCatalogCostCents,
+}));
+vi.mock('./aiBudgetReservations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiBudgetReservations')>()),
+  reserveAiBudget,
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+}));
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
+  resolveWireModel,
   LlmUnavailableError: class LlmUnavailableError extends Error {
     constructor() {
       super('AI is unavailable for this partner.');
@@ -31,11 +48,15 @@ import { LlmUnavailableError } from './llm/llmConfigResolver';
 
 const actor = { userId: 'u1', orgId: 'o1', partnerId: 'p1' };
 
-function aiMessage(json: object) {
+function aiMessage(json: object, webSearchRequests = 0) {
   return {
     stop_reason: 'end_turn',
     content: [{ type: 'text', text: JSON.stringify(json) }],
-    usage: { input_tokens: 100, output_tokens: 50 },
+    usage: {
+      input_tokens: 100,
+      output_tokens: 50,
+      server_tool_use: { web_search_requests: webSearchRequests },
+    },
   };
 }
 
@@ -49,10 +70,90 @@ beforeEach(() => {
   captureMessage.mockClear();
   captureException.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
+  reserveAiBudget.mockClear(); markAiBudgetReservationIndeterminate.mockClear(); releaseUnusedAiBudgetReservation.mockClear();
+  resolveWireModel.mockReset();
+  resolveWireModel.mockImplementation((_resolved: unknown, model: string) => ({ model }));
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
+  calculateCostCents.mockReset().mockReturnValue(1);
+  calculateCatalogCostCents.mockReset().mockReturnValue(1);
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '55555555-5555-4555-8555-555555555555',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({ kind: 'indeterminate', reservationId: '55555555-5555-4555-8555-555555555555' });
+  releaseUnusedAiBudgetReservation.mockResolvedValue({ kind: 'released', reservationId: '55555555-5555-4555-8555-555555555555' });
 });
 
 describe('enrichCatalogItem', () => {
+  it('caps each provider turn against the remaining durable reservation', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+      reservedCostCents: 7,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }));
+
+    await enrichCatalogItem('UPS', 'hardware', actor);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
+  it('does not dispatch when the reservation cannot cover maximum web-search fees', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+      reservedCostCents: 5,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toMatchObject({
+      code: 'AI_LIMIT', status: 429,
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('settles actual paid web-search requests in addition to token cost', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }, 2));
+
+    await enrichCatalogItem('UPS', 'hardware', actor);
+
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', undefined,
+      '55555555-5555-4555-8555-555555555555', 2,
+    );
+  });
+
+  it('does not dispatch after a durable budget denial', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toMatchObject({
+      code: 'AI_LIMIT', status: 429,
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('retains an indeterminate reservation on a provider transport failure', async () => {
+    create.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: 'o1',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+    });
+  });
+
   it('maps AI fields to a draft + price guidance and never sets unitPrice', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'APC Back-UPS 600VA', description: 'Battery backup',
@@ -78,8 +179,44 @@ describe('enrichCatalogItem', () => {
       50,
       true,
       'partner_key',
+      undefined,
+      '55555555-5555-4555-8555-555555555555',
+      0,
     );
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
+  });
+
+  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA', description: 'Battery backup',
+      itemType: 'hardware', unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: 80, priceHigh: 120, currency: 'USD', confidence: 0.8, notes: '',
+    }));
+
+    await enrichCatalogItem('apc 600va ups', undefined, actor);
+
+    // A catalog gateway 404s on the platform-logical id.
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
+    );
+    // …while the ledger keeps the logical id and prices from the revision.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
+      0,
+    );
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
@@ -261,13 +398,32 @@ describe('enrichCatalogItem', () => {
     expect(res.draft.description).toBeNull();
   });
 
-  it('skips org-scoped guardrails and cost when orgId is null', async () => {
+  // S6: this used to assert that an org-less caller DISPATCHED with the
+  // org-scoped guardrails simply skipped. That is the finding, not the
+  // contract — paid web-search turns on the platform key with no budget, no
+  // reservation and no usage row. The behaviour is now a refusal; the
+  // system-scope exemption below is the only way through.
+  it('refuses an org-less caller outright rather than dispatching unbudgeted', async () => {
+    await expect(enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' }))
+      .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(create).not.toHaveBeenCalled();
+    expect(checkBudget).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('still allows an org-less call that DECLARES itself system-initiated', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'N', description: null, itemType: 'service',
       unitOfMeasure: 'each', taxable: true, taxCategory: null,
       priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
     }));
-    await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' });
+    await enrichCatalogItem('x', undefined, {
+      userId: 'u1', orgId: null, partnerId: 'p1', systemInitiated: true,
+    });
+    // Platform-funded operational spend: still unbudgeted, deliberately, and
+    // tracked separately as an org-less quota decision. The exemption is
+    // DECLARED by the caller, never inferred from an ambient db scope.
+    expect(create).toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
@@ -345,7 +501,7 @@ describe('polishCatalogText', () => {
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
     expect(res.factChanges).toBeNull();
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
@@ -357,6 +513,85 @@ describe('polishCatalogText', () => {
       status: 503,
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Mirrors the `enrichCatalogItem` case above. Polish is a SECOND outbound
+   * surface in this service with its own turn runner (`runPolishTurn`) and its
+   * own `recordUsage` call in a `finally`, so it can regress independently of
+   * enrich — and did not have a wire-model test at all (#3922 W3 review round 2).
+   */
+  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA UPS',
+      description: 'APC Back-UPS 600VA battery backup with 7 outlets.',
+    }));
+
+    await polishCatalogText(
+      { name: 'spl apc back-ups 600va disti', description: 'apc backups 600va,7 outlets' },
+      actor,
+    );
+
+    // Translated against the config this call resolved, keyed on the LOGICAL id.
+    expect(resolveWireModel).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'partner', partnerId: 'p1' }),
+      'claude-sonnet-4-6',
+    );
+    // A catalog gateway 404s on the platform-logical id.
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
+    );
+    // …while the ledger keeps the logical id and prices from the revision, NOT
+    // Anthropic list rates.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
+    );
+  });
+
+  it('meters the stricter RETRY turn at the revision rates too', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    // Both turns drift, so both run and both spend.
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }));
+
+    await polishCatalogText({ name: 'apc back-ups 600va' }, actor);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // Both turns went to the wire id…
+    expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: 'anthropic/claude-sonnet-4-6',
+    }));
+    // …and the single accumulated `recordUsage` in the `finally` prices the
+    // combined spend from the revision snapshot.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 200, 100, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
+    );
   });
 
   it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
@@ -459,18 +694,21 @@ describe('polishCatalogText', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('falls back to a per-user rate limit (no org budget/recordUsage) when orgId is null', async () => {
-    create.mockResolvedValueOnce(aiMessage({ name: 'Clean Name', description: null }));
-    await polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null, partnerId: 'p1' });
-    expect(checkUserAiRateLimit).toHaveBeenCalledWith('u1');
+  // S6: a per-user rate limit bounds the RATE of unbudgeted spend; it never
+  // made the spend accounted. An org-less tenant caller is now refused.
+  it('refuses an org-less caller instead of falling back to a per-user rate limit', async () => {
+    await expect(polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
+      .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(create).not.toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
 
-  it('rejects with AI_LIMIT when the no-org per-user rate limit is exceeded', async () => {
+  it('keeps the per-user rate limit on the declared system-initiated org-less path', async () => {
     checkUserAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
-    await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
-      .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
+    await expect(polishCatalogText({ name: 'x' }, {
+      userId: 'u1', orgId: null, partnerId: 'p1', systemInitiated: true,
+    })).rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -602,6 +840,53 @@ describe('polishCatalogText', () => {
       100,
       true,
       'partner_key',
+      undefined,
+      '55555555-5555-4555-8555-555555555555',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review S6 — org-less catalog AI spend fails closed
+// ---------------------------------------------------------------------------
+
+describe('org-less catalog AI is refused before any provider work', () => {
+  const orglessActor = { userId: 'u1', orgId: null as string | null, partnerId: 'p1' };
+
+  beforeEach(() => {
+    create.mockReset();
+    reserveAiBudget.mockReset();
+    checkUserAiRateLimit.mockClear();
+    getAnthropicClientForPartner.mockClear();
+  });
+
+  it('refuses enrichCatalogItem with no organization, before resolving a provider client', async () => {
+    const thrown = await enrichCatalogItem('a widget', undefined, orglessActor)
+      .catch((err: unknown) => err);
+
+    expect(thrown).toBeInstanceOf(EnrichmentError);
+    expect(thrown).toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    // Fail CLOSED, and early: no key chosen, no reservation, no model call. The
+    // previous behaviour was a per-user rate limit plus a console warning, then
+    // a dispatch — paid web-search turns on the platform key that no ledger
+    // ever saw.
+    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('refuses polishCatalogText with no organization, before resolving a provider client', async () => {
+    const thrown = await polishCatalogText({ name: 'a widget' }, orglessActor)
+      .catch((err: unknown) => err);
+
+    expect(thrown).toBeInstanceOf(EnrichmentError);
+    expect(thrown).toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    // The per-user rate limit is no longer what stands between an org-less
+    // caller and the provider, so it is not even consulted.
+    expect(checkUserAiRateLimit).not.toHaveBeenCalled();
   });
 });

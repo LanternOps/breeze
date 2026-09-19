@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
+import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 
@@ -45,12 +45,13 @@ type PossibleReplacementBannerProps = {
  * site scope hides. In that case the banner still renders (the collision is
  * real and worth surfacing) with a generic label and no action.
  *
- * Decommission is IRREVERSIBLE from the user's point of view — server-side it
+ * Remove is IRREVERSIBLE from the user's point of view — server-side it
  * force-disconnects the agent WebSocket and tears down live remote sessions —
- * so it goes through the same `ConfirmDialog` every other decommission trigger
- * in the app uses (`DeviceActions.tsx`), reusing that component's copy keys
- * verbatim rather than paraphrasing them. A single-click DELETE here would be
- * the only unconfirmed path to that endpoint in the web app.
+ * so it goes through the same `RemoveDeviceDialog` every other Remove trigger
+ * in the app uses (`DeviceActions.tsx`, `DevicesPage.tsx`), reusing that
+ * component verbatim rather than paraphrasing it. A single-click DELETE here
+ * would be the only unconfirmed path to that endpoint in the web app — and,
+ * until #3987, the only one that could not queue the agent uninstall.
  */
 export default function PossibleReplacementBanner({
   possibleReplacementOfDeviceId,
@@ -112,11 +113,18 @@ export default function PossibleReplacementBanner({
   const alreadyDecommissioned = oldDevice?.status === 'decommissioned';
   const canDecommission = !unavailable && oldDevice != null && !alreadyDecommissioned;
 
-  const handleDecommission = async () => {
+  const handleDecommission = async (choice: { uninstallAgent: boolean }) => {
     setBusy(true);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/devices/${oldDeviceId}`, { method: 'DELETE' }),
+        // #3987: the agent answer rides in the JSON body. A bodyless DELETE
+        // reads as `uninstallAgent: false` on the API (back-compat default),
+        // which is how this surface left zombie agents behind.
+        request: () => fetchWithAuth(`/devices/${oldDeviceId}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uninstallAgent: choice.uninstallAgent }),
+        }),
         errorFallback: t('possibleReplacementBanner.decommissionFailed'),
         successMessage: t('possibleReplacementBanner.decommissionSucceeded'),
         onUnauthorized: UNAUTHORIZED,
@@ -196,21 +204,16 @@ export default function PossibleReplacementBanner({
         </div>
       </div>
       {confirmOpen && (
-        // Same dialog, same copy keys, same `destructive` variant as every
-        // other decommission trigger (DeviceActions.tsx). Reused rather than
-        // paraphrased so the two can never drift apart in any locale.
-        <ConfirmDialog
+        // Same dialog as every other Remove trigger (DeviceActions.tsx,
+        // DevicesPage.tsx). Reused rather than paraphrased so the surfaces can
+        // never drift apart in any locale — or on the agent question.
+        <RemoveDeviceDialog
           open
+          targets={[{ hostname: label, status: oldDevice?.status ?? 'offline' }]}
           onClose={() => {
             if (!busy) setConfirmOpen(false);
           }}
-          onConfirm={() => void handleDecommission()}
-          title={t('deviceActions.confirm.decommission.title')}
-          message={t('deviceActions.confirm.decommission.message', {
-            hostname: label,
-          })}
-          confirmLabel={t('deviceActions.confirm.decommission.confirm')}
-          variant="destructive"
+          onConfirm={(choice) => void handleDecommission(choice)}
           isLoading={busy}
           confirmTestId="possible-replacement-confirm"
         />

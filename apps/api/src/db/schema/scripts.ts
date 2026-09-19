@@ -1,14 +1,32 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import type { ScriptParameterDefinition } from '@breeze/shared';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, unique, char, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { ScriptApprovalMethod, ScriptParameterDefinition } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { aiSessions } from './ai';
+import { aiInitiatorKindEnum } from './aiInitiator';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
-export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']);
-export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation']);
+// 2026-10-16-100000-script-versions-immutable.sql. The birth record of a
+// version row: who or what produced this exact body.
+// Values mirror SCRIPT_ORIGINS in @breeze/shared (scriptProposals.ts) —
+// scripts.scriptVersions.test.ts pins both to the same order.
+export const scriptOriginEnum = pgEnum('script_origin', ['human', 'ai_proposal', 'imported', 'system']);
+// #3525: 'cancelling' is TRANSIENT — a cancel is in flight and unresolved. Only
+// a PROVEN stop terminalises as 'cancelled'; an unproven one reverts to
+// `cancel_prev_status`. Value order mirrors the installed type
+// (2026-10-07-110000 adds it AFTER 'running'), which drizzle-kit compares.
+export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled']);
+// #3525: the cancel REQUEST's lifecycle, orthogonal to the execution outcome
+// (spec OD8-C). NULL means no cancel was ever requested.
+export const scriptCancelStateEnum = pgEnum('script_cancel_state', ['requested', 'confirmed', 'unconfirmed', 'failed']);
+// 'monitor' (#5291 W04): a diagnostic run dispatched by a `script` monitor's
+// own probe. Deliberately distinct from 'policy' so the verdict handler can
+// tell a monitor's probe from any other policy-driven run on the same script.
+export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation', 'monitor']);
 
 // Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
 // strings (e.g. "0", "1"), values are AlertSeverity literals or null.
@@ -36,9 +54,37 @@ export const scripts = pgTable('scripts', {
   runAs: scriptRunAsEnum('run_as').notNull().default('system'),
   isSystem: boolean('is_system').notNull().default(false),
   version: integer('version').notNull().default(1),
+  // Spec §4.1 (2026-10-16-100300): the RECORD's birth. A human edit after
+  // promotion cuts a new head version with origin = human and empty review
+  // fields, so the library badge honestly drops to "edited since review".
+  origin: scriptOriginEnum('origin').notNull().default('human'),
+  // Bare uuid: the proposal is org-scoped incident data that may be erased long
+  // before this script is. The provenance panel renders "review evidence
+  // erased" rather than following a broken link.
+  originProposalId: uuid('origin_proposal_id'),
   // NULL = legacy behavior (non-zero exit = error). When set, see
   // ScriptExitCodeSeverityMapping above and deriveSeverityFromScript().
   exitCodeSeverityMapping: jsonb('exit_code_severity_mapping').$type<ScriptExitCodeSeverityMapping>(),
+  // #5129 — the agent's STRICT-level danger-pattern DESCRIPTIONS an admin
+  // explicitly acknowledged for this script (e.g. "PowerShell HKLM
+  // modification"). Dispatched with every run; the agent allows exactly these
+  // Strict patterns and still blocks any other match. Basic-level patterns
+  // ignore this entirely and can never be acknowledged.
+  //
+  // A SET, not a boolean, on purpose: a boolean would mean acknowledging an
+  // HKLM write permanently disarms Strict checking for the script, so a later
+  // edit introducing a credential-dumping pattern would inherit the approval
+  // silently. Re-derived on every save as (submitted ∩ patterns the content
+  // actually matches) — see services/scriptSecurityAcknowledgement.ts.
+  acknowledgedSecurityPatterns: text('acknowledged_security_patterns')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  // Who granted the most recent acknowledgement, and when. The audit log is
+  // the forensic record; these exist so the script record itself can say who
+  // accepted the risk without a log query.
+  securityAcknowledgedBy: uuid('security_acknowledged_by').references(() => users.id),
+  securityAcknowledgedAt: timestamp('security_acknowledged_at'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -58,7 +104,14 @@ export const scriptCategories = pgTable('script_categories', {
   description: text('description'),
   icon: varchar('icon', { length: 50 }),
   color: varchar('color', { length: 7 }),
-  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id),
+  // ON DELETE SET NULL (2026-10-13-120000-script-categories-parent-ownership-guard.sql,
+  // #4873): org_id is nullable here (partner-wide categories, epic #2135), so a
+  // single `DELETE ... WHERE org_id = $1` during GDPR org erasure does not remove
+  // a row set closed under this self-reference. Letting Postgres clear the edge is
+  // what keeps erasure from aborting with 23503. A DEFERRABLE constraint trigger
+  // (`script_categories_parent_guard`) additionally forbids a child naming a parent
+  // on a different owner axis.
+  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id, { onDelete: 'set null' }),
   order: integer('order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
@@ -67,18 +120,51 @@ export const scriptCategories = pgTable('script_categories', {
   orgNameIdx: index('script_categories_org_name_idx').on(table.orgId, table.name)
 }));
 
+/**
+ * An IMMUTABLE, content-addressed definition of one script execution.
+ *
+ * Append-only by construction: the table carries SELECT + INSERT RLS policies
+ * only, plus a BEFORE UPDATE trigger, and rows die solely through the parent's
+ * ON DELETE CASCADE (2026-10-16-100000-script-versions-immutable.sql). The one
+ * writer is services/scriptVersions.ts `cutScriptVersion` — enforced by
+ * services/scriptVersions.writers.contract.test.ts. Do not insert here directly.
+ */
 export const scriptVersions = pgTable('script_versions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  scriptId: uuid('script_id').notNull().references(() => scripts.id),
+  scriptId: uuid('script_id').notNull().references(() => scripts.id, { onDelete: 'cascade' }),
   version: integer('version').notNull(),
   content: text('content').notNull(),
+  // The full run definition, snapshotted at cut time, so readers never have to
+  // join `scripts` to learn what a past body actually ran as.
+  language: scriptLanguageEnum('language').notNull(),
+  timeoutSeconds: integer('timeout_seconds').notNull(),
+  runAs: scriptRunAsEnum('run_as').notNull(),
+  // Parameter DEFINITIONS, same contract as `scripts.parameters` above.
+  parameters: jsonb('parameters').$type<ScriptParameterDefinition[]>(),
+  // sha256 of the canonical content (NFC, CRLF -> LF, no trimming). The SQL
+  // twin of services/scriptVersions.ts `sha256Content` — change both or
+  // neither.
+  contentDigest: char('content_digest', { length: 64 }).notNull(),
+  origin: scriptOriginEnum('origin').notNull().default('human'),
+  // Provenance. Bare uuids, not FKs: proposals and reviews are org-scoped and
+  // left for erasure on a merge (spec §5), so a hard FK would either block
+  // erasure or drag history with it. A stale id simply matches nothing and the
+  // UI renders "review evidence erased".
+  proposalId: uuid('proposal_id'),
+  reviewId: uuid('review_id'),
+  reviewedAt: timestamp('reviewed_at'),
+  approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+  approvedAt: timestamp('approved_at'),
+  approvalMethod: text('approval_method').$type<ScriptApprovalMethod>(),
   changelog: text('changelog'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   scriptIdIdx: index('script_versions_script_id_idx').on(table.scriptId),
-  scriptIdVersionIdx: index('script_versions_script_id_version_idx').on(table.scriptId, table.version)
+  scriptIdVersionKey: unique('script_versions_script_id_version_key').on(table.scriptId, table.version)
 }));
+
+export type ScriptVersionRow = typeof scriptVersions.$inferSelect;
 
 export const scriptTags = pgTable('script_tags', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -118,13 +204,38 @@ export const scriptTemplates = pgTable('script_templates', {
   nameIdx: index('script_templates_name_idx').on(table.name)
 }));
 
+/**
+ * #2698: what the script custom-field write-back did for one execution.
+ * `rejected.reason` is one of the CustomFieldWriteRejection values in
+ * services/customFields/scriptWriteBack.ts. Keys only — never values.
+ */
+export interface ScriptCustomFieldWriteSummary {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+}
+
 export const scriptExecutions = pgTable('script_executions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  scriptId: uuid('script_id').notNull().references(() => scripts.id),
+  // NULLABLE since 2026-10-16-100200: a proposal-backed execution has no
+  // library script (spec D11). `script_executions_library_source_chk` pins
+  // (source_kind = 'library') = (script_id IS NOT NULL).
+  scriptId: uuid('script_id').references(() => scripts.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
+  // Shipped execution lane; independent from the creation-time cause below.
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
+  /** An automation caused by a sweep can have triggerType 'automation' and
+   * triggerKind 'sweep_finding'; these columns may legitimately disagree.
+   * Creation-time cause, distinct from the initiator/execution lane.
+   * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+   * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+   * action_intents_block_content_update guards all three on action intents.
+   */
+  triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+  triggerRefId: uuid('trigger_ref_id'),
+  triggerKey: varchar('trigger_key', { length: 200 }),
+
   // The automation run that queued this execution, when trigger_type is
   // 'automation' (#3162). Deliberately NOT a Drizzle `.references()`:
   // schema/automations.ts already imports this module, so pointing back at
@@ -133,6 +244,11 @@ export const scriptExecutions = pgTable('script_executions', {
   // a bare uuid. Readers filter on it (`WHERE automation_run_id = $run`), so a
   // stale id left behind by a purged run simply matches nothing.
   automationRunId: uuid('automation_run_id'),
+  // The `script` monitor whose probe this execution is (#5291 W04). NULL for
+  // every other execution. Bare uuid for the same reason as automation_run_id:
+  // schema/monitors definitions live in another module. FK in SQL is
+  // ON DELETE SET NULL — deleting a monitor must not delete run history.
+  monitorId: uuid('monitor_id'),
   // Run-time VALUES supplied by the caller, NOT definitions — do not annotate
   // this with ScriptParameterDefinition[]. Shape: `scriptParametersSchema`.
   parameters: jsonb('parameters'),
@@ -143,11 +259,84 @@ export const scriptExecutions = pgTable('script_executions', {
   stdout: text('stdout'),
   stderr: text('stderr'),
   errorMessage: text('error_message'),
+  // #2698: per-run summary of the script custom-field write-back.
+  customFieldResult: jsonb('custom_field_result').$type<ScriptCustomFieldWriteSummary>(),
+  // #3525 cancellation lifecycle, orthogonal to `status` (spec OD8-C).
+  // `status` says what happened to the PROCESS; these say what happened to the
+  // CANCEL REQUEST. A NULL cancel_state means no cancel was ever requested —
+  // enforced against cancel_requested_at by script_executions_cancel_state_chk.
+  cancelRequestedAt: timestamp('cancel_requested_at'),
+  // The AI-agent actor id is an ai_agents id, not a user id; the caller
+  // probes-and-degrades to NULL before writing here, as triggered_by already does.
+  cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'set null' }),
+  cancelState: scriptCancelStateEnum('cancel_state'),
+  // The `device_commands.id` of the queued script_cancel. Bare uuid for the same
+  // reason as automation_run_id: command rows are reaped independently and a
+  // stale id must simply match nothing rather than block a delete.
+  cancelCommandId: uuid('cancel_command_id'),
+  // The status held when the cancel was requested. An unconfirmed or failed
+  // cancel reverts to it, so the row never claims an outcome we cannot prove
+  // and reapStaleScriptExecutions keeps ownership of the deadline.
+  cancelPrevStatus: executionStatusEnum('cancel_prev_status'),
+  // #4888 — the run context this execution ACTUALLY used, resolved at dispatch
+  // as `override ?? script.runAs`. Before this column the answer lived only in
+  // the transient `device_commands.payload` (sanitised out of every history
+  // read), so execution history could not say whether a run went to SYSTEM or
+  // to the logged-in user. NULLABLE ON PURPOSE: rows written before #4888 do
+  // not know, and 'system' would be an assertion we cannot back.
+  runAs: scriptRunAsEnum('run_as'),
+  // The Windows session a `run_as = 'user'` run was pinned to (RDS session
+  // targeting). NULL = any interactive session.
+  targetSessionId: integer('target_session_id'),
+  // --- execution source + snapshot (2026-10-16-100200) -------------------
+  sourceKind: text('source_kind').$type<'library' | 'proposal'>().notNull().default('library'),
+  proposalId: uuid('proposal_id'),
+  // Written at dispatch for BOTH sources so readers stop joining `scripts`
+  // for the fields they need (staleCommandReaper, execution history, the
+  // get_script_execution tool). Nullable because rows created before this
+  // migration have no snapshot — every reader falls back to the join.
+  language: scriptLanguageEnum('language'),
+  timeoutSeconds: integer('timeout_seconds'),
+  contentDigest: char('content_digest', { length: 64 }),
+  // --- provenance (2026-10-16-100200) ------------------------------------
+  // All bare uuids: this table is device-denormalised and restamped on device
+  // move, so a same-org composite FK would abort the move.
+  scriptVersionId: uuid('script_version_id'),
+  reviewId: uuid('review_id'),
+  approvedBy: uuid('approved_by'),
+  approvalMethod: text('approval_method').$type<ScriptApprovalMethod>(),
+  // Snapshots, not links: device activity must still render after the proposal
+  // and its review are erased.
+  reviewRiskTier: text('review_risk_tier').$type<'low' | 'medium' | 'high' | 'critical'>(),
+  reviewSummary: varchar('review_summary', { length: 600 }),
+  // --- AI origin attribution (#5022 W01) ---------------------------------
+  // WHO DECIDED this run. Orthogonal to trigger_type (what scheduled it) and
+  // to triggered_by (the authenticated principal). NULL = "AI initiation not
+  // recorded", never "a human did this".
+  aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
+  // Real FK: both tables are org-scoped, so erasing a session should null this
+  // cleanly rather than block.
+  aiSessionId: uuid('ai_session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
+  // Bare uuid, like automation_run_id above: ai_agent_runs is deliberately
+  // excluded from the device-move re-stamp path, so a real FK would outlive
+  // its own tenant.
+  aiAgentRunId: uuid('ai_agent_run_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  proposalIdx: index('script_executions_proposal_idx')
+    .on(table.proposalId)
+    .where(sql`proposal_id IS NOT NULL`),
   automationRunIdIdx: index('script_executions_automation_run_id_idx')
     .on(table.automationRunId)
-    .where(sql`automation_run_id IS NOT NULL`)
+    .where(sql`automation_run_id IS NOT NULL`),
+  // #3525: the cancellation sweep scans only in-flight cancels.
+  cancellingIdx: index('script_executions_cancelling_idx')
+    .on(table.cancelRequestedAt)
+    .where(sql`status = 'cancelling'`),
+  // #3525: closers resolve the execution from the cancel command's id.
+  cancelCommandIdx: index('script_executions_cancel_command_idx')
+    .on(table.cancelCommandId)
+    .where(sql`cancel_command_id IS NOT NULL`)
 }));
 
 export const scriptExecutionBatches = pgTable('script_execution_batches', {

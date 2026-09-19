@@ -43,6 +43,11 @@ pnpm db:seed
 
 # Start dev servers
 pnpm dev
+
+# When you're done: stop the infrastructure (nothing stops it for you).
+# Add -v to also drop the database volumes.
+docker compose down
+docker compose ls -a   # shows any stack still running, from any checkout
 ```
 
 - **Frontend**: http://localhost:4321

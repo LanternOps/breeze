@@ -1,0 +1,36 @@
+---
+// Landing page for a portal account the MSP has disabled/suspended (sweep
+// 2026-09-08 G5-6). Reached via the middleware's authenticated-landing
+// redirect and from any page's own isAccountDisabledResponse check
+// (lib/accountStatus.ts) — never rendered from a live 403 body, so there is
+// no server error to (mis)report here, only a clear explanation.
+//
+// PortalLayout is used deliberately, not a bare page: its header already
+// carries the tested `data-portal-logout` sign-out control, so a disabled
+// user always has a working way to sign out from here, even though every
+// OTHER page they might reach is blocked.
+import PortalLayout from '../layouts/PortalLayout.astro';
+import { ErrorNotice, PageHeader } from '../components/portal/ui';
+import { loadPortalBranding } from '../lib/server';
+
+// The support address is the one thing worth an extra branding round trip on
+// this page — same reasoning as DashboardUnavailable's supportEmail fetch.
+const supportEmail = (await loadPortalBranding(Astro.request)).supportEmail;
+---
+
+<PortalLayout title="Account disabled">
+  <PageHeader title="Account disabled" />
+  <ErrorNotice>
+    <span data-testid="portal-account-disabled">
+      Your portal access has been disabled. Contact your IT provider.
+    </span>
+    {supportEmail && (
+      <a
+        class="ml-1 font-semibold underline underline-offset-4"
+        href={`mailto:${supportEmail}`}
+      >
+        {supportEmail}
+      </a>
+    )}
+  </ErrorNotice>
+</PortalLayout>

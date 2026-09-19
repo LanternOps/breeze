@@ -10,6 +10,8 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { aiScriptAuthoringEnabled } from '../config/env';
+import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
   getSession,
@@ -26,13 +28,23 @@ import {
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
+import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
+import {
+  calculateCatalogCostCents,
+  calculateCostCents,
+  getUsageSummary,
+  updateBudget,
+  getSessionHistory,
+  recordUsage,
+  type CatalogPricingSnapshot,
+} from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
 import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
+import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
@@ -49,11 +61,22 @@ import { captureException } from '../services/sentry';
 import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
-import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
-import { getAnthropicClientForPartner, LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import {
+  draftTicketFromTranscript,
+  ThinTranscriptError,
+  TicketDraftFailedError,
+} from '../services/aiTicketDraft';
+import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
+import {
+  isAiBudgetLockTimeout,
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+  type ReserveAiBudgetResult,
+} from '../services/aiBudgetReservations';
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -122,6 +145,22 @@ function generateSessionTitle(content: string): string {
   const truncated = cleaned.slice(0, 80);
   const lastSpace = truncated.lastIndexOf(' ');
   return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + '…';
+}
+
+type AiTurnBudgetDispatch = { reservationId: string; maxBudgetUsd?: number };
+
+function budgetDispatchFrom(result: ReserveAiBudgetResult): AiTurnBudgetDispatch | null {
+  if (result.kind === 'denied') return null;
+  return {
+    reservationId: result.reservationId,
+    ...(result.kind === 'reserved'
+      ? { maxBudgetUsd: result.reservedCostCents / 100 }
+      : {}),
+  };
+}
+
+async function releaseUnusedTurn(orgId: string, dispatch: AiTurnBudgetDispatch): Promise<void> {
+  await releaseUnusedAiBudgetReservation({ orgId, reservationId: dispatch.reservationId });
 }
 
 export const aiRoutes = new Hono();
@@ -407,18 +446,86 @@ aiRoutes.post(
 
     let draft;
     let billingSource: 'platform' | 'partner_key' = 'platform';
+    let catalogPricing: CatalogPricingSnapshot | undefined;
+    let reservationId: string | undefined;
     try {
-      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null);
+      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null, {
+        surface: 'one_shot_ticket_draft',
+        orgId: session.orgId,
+      });
       billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+      // The session's model translated to what the resolved endpoint speaks —
+      // a catalog endpoint 404s on the platform-logical id. Throws
+      // LlmUnavailableError (handled below as a 503) when the pinned revision
+      // has no verified mapping for this session's model.
+      const wire = resolveWireModel(resolved, model);
+      catalogPricing = wire.catalogPricing;
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: session.orgId,
+          idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
+          billingSource,
+          sessionId,
+        });
+      } catch (err) {
+        // Same fail-fast answer as the other admission sites: contention on the
+        // org row is a 503 the client can retry, not a 500.
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
+      if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
+      reservationId = reservation.reservationId;
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
-        model,
+        model: wire.model,
         partnerId: org.partnerId ?? null,
+        orgId: session.orgId,
         client,
+        ...(reservation.kind === 'reserved'
+          ? {
+            budgetCents: reservation.reservedCostCents,
+            calculateCostCents: catalogPricing
+              ? (inputTokens, outputTokens) => calculateCatalogCostCents(catalogPricing!, inputTokens, outputTokens)
+              : (inputTokens, outputTokens) => calculateCostCents(model, inputTokens, outputTokens),
+          }
+          : {}),
       });
     } catch (err) {
+      if (reservationId) {
+        try {
+          if (err instanceof ThinTranscriptError
+            || (err instanceof TicketDraftFailedError
+              && !err.providerOutcomeUnknown && err.inputTokens === 0 && err.outputTokens === 0)) {
+            await releaseUnusedAiBudgetReservation({ orgId: session.orgId, reservationId });
+          } else if (err instanceof TicketDraftFailedError && !err.providerOutcomeUnknown) {
+            await recordUsage(
+              sessionId,
+              session.orgId,
+              model,
+              err.inputTokens,
+              err.outputTokens,
+              false,
+              billingSource,
+              catalogPricing,
+              reservationId,
+            );
+          } else {
+            await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
+          }
+        } catch (budgetError) {
+          captureException(budgetError);
+        }
+      }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       console.error('[AI] Ticket draft failed:', err);
@@ -436,9 +543,16 @@ aiRoutes.post(
         draft.outputTokens,
         false,
         billingSource,
+        // Catalog traffic meters from the revision snapshot, never Anthropic
+        // list rates.
+        catalogPricing,
+        reservationId,
       );
-    } catch {
-      // non-fatal
+    } catch (err) {
+      captureException(err);
+      if (reservationId) {
+        await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId }).catch(captureException);
+      }
     }
 
     let deviceHostname: string | null = null;
@@ -557,7 +671,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
     const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
@@ -565,10 +679,35 @@ aiRoutes.post(
       return c.json({ error: 'ai_unavailable' }, 503);
     }
     if (useOpenAICompatibleProvider) {
+      const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: dbSession.orgId,
+          billingSource,
+          sessionId,
+          idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+        });
+      } catch (err) {
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
+      if (reservation.kind === 'denied') {
+        return c.json({ error: reservation.message }, 402);
+      }
+      const budgetDispatch = budgetDispatchFrom(reservation)!;
       const openaiManager = getOpenAISessionManager();
       const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
       if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'A message is already being processed for this session' }, 409);
       }
 
@@ -589,6 +728,7 @@ aiRoutes.post(
       } catch (err) {
         console.error('[AI/OpenAI] Failed to save user message to DB:', err);
         openaiSession.state = 'idle';
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'Failed to save message' }, 500);
       }
 
@@ -602,7 +742,13 @@ aiRoutes.post(
         }
       }
 
-      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt, sanitizedContent);
+      openaiManager.startTurn(
+        openaiSession,
+        dbSession.model,
+        systemPrompt,
+        sanitizedContent,
+        budgetDispatch,
+      );
 
       const subscriptionId = crypto.randomUUID();
       return streamSSE(c, async (stream) => {
@@ -630,29 +776,11 @@ aiRoutes.post(
     }
     // ---- End OpenAI-compatible path ----
 
-    // Get or create streaming session
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-        // Device-bound sessions narrow tool execution to the device's org
-        // (ai_sessions.org_id), not the login org (#3087).
-        deviceId: dbSession.deviceId,
-      },
-      auth,
-      c,
-      systemPrompt,
-      maxBudgetUsd,
-      resolved,
-    );
-
-    // Concurrent message guard — atomic check-and-set
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
+    // approval-only prior turn, then rotate the idle query so this turn is
+    // created with the exact durable reservation ceiling.
+    const priorSession = streamingSessionManager.get(sessionId);
+    if (priorSession?.state === 'processing') {
       // #3089: when the in-flight turn is blocked ONLY on pending tool
       // approvals, the assistant used to go mute — the user's message bounced
       // with a 409 while the model sat waiting up to 5 minutes per approval.
@@ -662,14 +790,76 @@ aiRoutes.post(
       // concludes the turn, and this message then proceeds normally. If the
       // session is busy for any other reason (model actively working), or the
       // turn doesn't conclude in time, fall back to a 409 as before.
-      const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      if (settle !== 'concluded') {
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
             : 'The assistant is wrapping up the previous turn — please try again in a moment',
         }, 409);
       }
+    }
+    if (streamingSessionManager.get(sessionId)) {
+      streamingSessionManager.remove(sessionId);
+    }
+
+    const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource,
+        sessionId,
+        idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') {
+      return c.json({ error: reservation.message }, 402);
+    }
+    const budgetDispatch = budgetDispatchFrom(reservation)!;
+
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+          // Device-bound sessions narrow tool execution to the device's org
+          // (ai_sessions.org_id), not the login org (#3087).
+          deviceId: dbSession.deviceId,
+        },
+        auth,
+        c,
+        systemPrompt,
+        budgetDispatch.maxBudgetUsd,
+        resolved,
+        undefined,
+        undefined,
+        { budgetReservationId: budgetDispatch.reservationId },
+      );
+    } catch (err) {
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      throw err;
+    }
+
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -689,6 +879,7 @@ aiRoutes.post(
     } catch (err) {
       console.error('[AI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       return c.json({ error: 'Failed to save message' }, 500);
     }
 
@@ -705,8 +896,17 @@ aiRoutes.post(
       }
     }
 
-    // Push message to the streaming input and start turn timeout
-    activeSession.inputController.pushMessage(sanitizedContent);
+    // Execution plane (spec §5.5): an `analysis` run associated with this
+    // session may have finished between turns (chat-initiated launch is
+    // currently disabled, #6086, but a preconfigured agent's run can still
+    // report back to a session this way). Its summary is prepended HERE
+    // rather than pushed when it arrived — pushing then would start a turn
+    // with no SSE subscriber, so the assistant's reply would never reach the
+    // browser.
+    const pendingRunResults = drainPendingRunResults(activeSession);
+    activeSession.inputController.pushMessage(
+      pendingRunResults ? `${pendingRunResults}\n\n${sanitizedContent}` : sanitizedContent,
+    );
     streamingSessionManager.startTurnTimeout(activeSession);
 
     const subscriptionId = crypto.randomUUID();
@@ -1040,12 +1240,19 @@ aiRoutes.get(
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      // System/partner users without a specific org — return zero usage
+      // System/partner users without a specific org: no org to resolve an
+      // effective budget for, so budget stays null. #4388: alerts.fired must
+      // still be present (empty) so callers can read it unconditionally.
       return c.json({
         daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         budget: null,
         billedTo: 'platform' as const,
+        // #4388 W04: present (null) on every /ai/usage response, same
+        // rationale as `alerts.fired` above: callers read `usage.credits`
+        // unconditionally.
+        credits: null,
+        alerts: { fired: [] },
       });
     }
 
@@ -1053,7 +1260,13 @@ aiRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const usage = await getUsageSummary(orgId);
+    // #4388 W04: the credit pool is PARTNER-wide, shared across every one of
+    // the MSP's customer orgs. An organization-scoped token belongs to one of
+    // those customers, so handing it that balance would leak a partner-level
+    // figure across the tenancy boundary (and let one customer watch another's
+    // spend drain it). Only partner- and system-scoped callers get it.
+    const includeCredits = auth.scope === 'partner' || auth.scope === 'system';
+    const usage = await getUsageSummary(orgId, { includeCredits });
     return c.json(usage);
   }
 );
@@ -1072,6 +1285,7 @@ aiRoutes.put(
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+    alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).nullable().optional(),
   })),
   async (c) => {
     const auth = c.get('auth');
@@ -1084,14 +1298,27 @@ aiRoutes.put(
 
     const body = c.req.valid('json');
 
+    // Normalise BEFORE the lock check: assertNotLocked compares with
+    // isDeepStrictEqual, which is array-order-sensitive, so checking the raw
+    // body would 403 a legitimate no-op resubmit of the same rungs sent in a
+    // different order.
+    const normalized = body.alertThresholdPercents == null
+      ? body
+      : { ...body, alertThresholdPercents: normalizeAlertThresholds(body.alertThresholdPercents) };
+
     // Enforce partner locks on AI budget fields. Submitted values are passed so a
     // field the partner enforces only 403s when the org actually changes it
     // (issue #2752); re-sending the enforced value is an allowed no-op.
-    if (Object.keys(body).length > 0) {
-      await assertNotLocked(orgId, 'aiBudgets', body);
+    if (Object.keys(normalized).length > 0) {
+      await assertNotLocked(orgId, 'aiBudgets', normalized);
     }
 
-    await updateBudget(orgId, body);
+    await updateBudget(orgId, normalized);
+
+    // A lowered cap or a new rung must fire now, not on the next turn (spec §4.2 #2).
+    // The evaluator wraps itself in runOutsideDbContext, so calling it from a
+    // request is safe; it never throws.
+    void evaluateAiBudgetThresholds(orgId);
 
     writeRouteAudit(c, {
       orgId,
@@ -1340,6 +1567,96 @@ aiRoutes.get(
         rejected: Number(row.rejected),
       })),
       executions,
+    });
+  }
+);
+
+// GET /admin/script-proposals-metrics - AI Risk Dashboard script-proposal panel (W05, #5612)
+aiRoutes.get(
+  '/admin/script-proposals-metrics',
+  requireScope('organization', 'partner', 'system'),
+  requireAiRead,
+  async (c) => {
+    // Same dark-when-off gate as every other AI script authoring surface
+    // (routes/ai/scriptProposals.ts) — without it, a deployment with the
+    // feature off gets a permanently-empty "Script Proposals" tab instead of
+    // the tab simply not answering.
+    if (!aiScriptAuthoringEnabled()) return c.json({ error: 'feature_disabled' }, 404);
+
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId;
+
+    if (!orgId) {
+      // Same shape as the populated branch below — ScriptProposalsPanel keys
+      // the unattended-run/lane-state cards on `!== undefined`, so a partial
+      // shape here would silently drop both cards for a partner/system-scope
+      // caller with no orgId instead of showing zero / not-configured.
+      return c.json({
+        scriptProposals: {
+          perDay: [], unattendedRuns: 0, laneState: null,
+          reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 },
+        },
+      });
+    }
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const sinceParam = c.req.query('since');
+    const untilParam = c.req.query('until');
+    const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const until = untilParam ? new Date(untilParam) : new Date();
+    if (isNaN(since.getTime())) return c.json({ error: `Invalid 'since' date: ${sinceParam}` }, 400);
+    if (isNaN(until.getTime())) return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
+
+    // 1. Proposals per day
+    const perDayRows = await db
+      .select({
+        date: drizzleSql<string>`DATE(${scriptProposals.createdAt})::text`,
+        count: drizzleSql<number>`COUNT(*)::int`,
+      })
+      .from(scriptProposals)
+      .where(and(eq(scriptProposals.orgId, orgId), gte(scriptProposals.createdAt, since), lte(scriptProposals.createdAt, until)))
+      .groupBy(drizzleSql`DATE(${scriptProposals.createdAt})`)
+      .orderBy(drizzleSql`DATE(${scriptProposals.createdAt}) ASC`);
+    const perDay = perDayRows.map((row) => ({ date: row.date, count: Number(row.count) }));
+
+    // 2. Reviewer disagreements — a human decision that goes against the
+    // latest completed model review. Extracted to services/scriptProposals/
+    // metrics.ts (raw SQL, DISTINCT ON) so a live-Postgres test can exercise
+    // it directly.
+    const reviewerDisagreements = await loadScriptProposalReviewerDisagreements(orgId, since, until);
+
+    // 3. Unattended runs in the window (W04, #5612)
+    const [unattendedCountRow] = await db
+      .select({ count: drizzleSql<number>`COUNT(*)::int` })
+      .from(scriptExecutions)
+      .where(
+        and(
+          eq(scriptExecutions.orgId, orgId),
+          eq(scriptExecutions.approvalMethod, 'unattended_reviewer_gated'),
+          gte(scriptExecutions.createdAt, since),
+          lte(scriptExecutions.createdAt, until),
+        ),
+      );
+    const unattendedRuns = Number(unattendedCountRow?.count ?? 0);
+
+    // 4. Lane state (W04) — one row per org, PK org_id; no row means the
+    // lane has never been evaluated for this org.
+    const [laneRow] = await db
+      .select({ state: aiScriptLaneState.state })
+      .from(aiScriptLaneState)
+      .where(eq(aiScriptLaneState.orgId, orgId))
+      .limit(1);
+    const laneState = laneRow?.state ?? null;
+
+    return c.json({
+      scriptProposals: {
+        perDay,
+        unattendedRuns,
+        laneState,
+        reviewerDisagreements,
+      },
     });
   }
 );

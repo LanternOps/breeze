@@ -30,7 +30,12 @@
     "desktopUnavailable": "Desktop Unavailable",
     "dismiss": "Dismiss",
     "downloadFor": "Download for {{platform}}",
+    "ending": {
+      "description": "The previous session is still shutting down on the device. Wait a moment and try again.",
+      "title": "Session still ending"
+    },
     "errors": {
+      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease and start fence support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
@@ -62,6 +67,21 @@
     "openInBrowser": "Open in Browser",
     "policyDisabled": "Remote desktop is disabled by policy",
     "policyDisabledNamed": "Remote desktop is disabled by policy \"{{name}}\"",
+    "revoked": {
+      "title": "Session revoked",
+      "setUpMfa": "Set up MFA",
+      "reasons": {
+        "session_ended": "The session had already ended.",
+        "user_inactive": "Your account is no longer active.",
+        "epoch_baseline_missing": "Your permissions could not be verified. Try connecting again.",
+        "permissions_changed": "Your permissions changed after this session started. Reconnect to continue with your current access.",
+        "membership_removed": "You no longer have access to this organization or device.",
+        "site_scope_lost": "This device is outside your assigned site scope.",
+        "mfa_required": "Multi-factor authentication is now required for remote desktop access.",
+        "hard_deadline": "This session reached its maximum allowed duration.",
+        "default": "The session was ended by a security policy. Reconnect to try again."
+      }
+    },
     "unavailable": {
       "default": "Desktop is unavailable on this device",
       "headless": "This device has no display — remote desktop is unavailable",
@@ -196,7 +216,7 @@
       "justNow": "Just now",
       "minutesAgo": "{{count}}m ago"
     },
-    "title": "Title",
+    "title": "File Activity",
     "unverifiedHint": "Unverified Hint"
   },
   "fileManager": {
@@ -236,7 +256,7 @@
       "scanned": "Scanned: {{count}} files",
       "selected": "Selected: {{count}} · {{size}}",
       "threshold": "Threshold",
-      "title": "Title",
+      "title": "Disk Intelligence",
       "trigger": "Trigger: {{value}}"
     },
     "dismiss": "Dismiss",
@@ -260,7 +280,7 @@
     "moveTo": "Move To",
     "selectedCount": "Selected Count",
     "size": "Size",
-    "title": "Title",
+    "title": "File Manager",
     "transfers": "Transfers",
     "trash": "Trash",
     "selectedCount_one": "{{count}} selected",
@@ -440,10 +460,10 @@
       "generic": "An error occurred"
     },
     "refreshStatus": "Refresh Status",
-    "title": "Title"
+    "title": "File Manager"
   },
   "remoteTerminal": {
-    "connectedBang": "Connected Bang",
+    "connectedBang": "Connected!",
     "connectingTo": "Connecting to {{hostname}}...",
     "copySelection": "Copy Selection",
     "disconnect": "Disconnect",
@@ -616,7 +636,7 @@
     "noServicesFound": "No Services Found",
     "ok": "Ok",
     "page": "Page {{current}} of {{total}}",
-    "refreshHint": "Refresh Hint",
+    "refreshHint": "Try refreshing to check for services.",
     "restartService": "Restart Service",
     "searchPlaceholder": "Search Placeholder",
     "serviceConfirm": "Are you sure you want to {{action}} the service {{service}}?",
@@ -663,7 +683,8 @@
       "connecting": "Connecting...",
       "disconnected": "Disconnected",
       "failed": "Failed",
-      "pending": "Pending"
+      "pending": "Pending",
+      "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
     "title": "Session History",
@@ -699,6 +720,7 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
+    "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",
     "viewRecording": "View Recording"

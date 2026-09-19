@@ -7,6 +7,15 @@ type CreateMonitorFormProps = {
   orgId?: string;
   assetId?: string;
   defaultTarget?: string;
+  /**
+   * Pre-select a monitor type instead of the icmp_ping default (#5213 W03 —
+   * the website/service hand-off wants to open straight to an HTTP check,
+   * not force the operator to notice and click the tile themselves). Only
+   * `http_check` seeds its own field (`httpUrl`) from `defaultTarget` today;
+   * `target` is seeded regardless, which is what icmp_ping/tcp_port already
+   * relied on.
+   */
+  defaultMonitorType?: 'icmp_ping' | 'tcp_port' | 'http_check' | 'dns_check';
   onCreated: () => void;
   onCancel: () => void;
 };
@@ -18,9 +27,9 @@ const monitorTypes = [
   { value: 'dns_check', labelKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.dnsCheck.label', descriptionKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.dnsCheck.description' }
 ] as const;
 
-export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCreated, onCancel }: CreateMonitorFormProps) {
+export default function CreateMonitorForm({ orgId, assetId, defaultTarget, defaultMonitorType, onCreated, onCancel }: CreateMonitorFormProps) {
   const { t } = useTranslation('common');
-  const [monitorType, setMonitorType] = useState<string>('icmp_ping');
+  const [monitorType, setMonitorType] = useState<string>(defaultMonitorType ?? 'icmp_ping');
   const [name, setName] = useState('');
   const [target, setTarget] = useState(defaultTarget ?? '');
   const [pollingInterval, setPollingInterval] = useState(60);
@@ -36,7 +45,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
   const [expectBanner, setExpectBanner] = useState('');
 
   // HTTP config
-  const [httpUrl, setHttpUrl] = useState('');
+  const [httpUrl, setHttpUrl] = useState(defaultMonitorType === 'http_check' ? (defaultTarget ?? '') : '');
   const [httpMethod, setHttpMethod] = useState('GET');
   const [expectedStatus, setExpectedStatus] = useState(200);
   const [expectedBody, setExpectedBody] = useState('');

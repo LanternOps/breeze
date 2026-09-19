@@ -6,6 +6,17 @@ Hand-written SQL, applied by `apps/api/src/db/autoMigrate.ts` on API boot.
 Enforced by `scripts/check-migration-naming.sh` — it runs as a pre-commit hook
 and again in CI, so you find out here rather than in a red `Test API`.
 
+The pre-commit guard only compares a new migration against history already
+reachable from the branch's own HEAD — it cannot see a migration that lands on
+`origin/main` *after* the branch was cut. A separate `pre-push` hook re-runs
+the same script as `check-migration-naming.sh --against-ref origin/main`
+(after fetching `origin/main` itself, and warning rather than blocking if that
+fetch fails, e.g. offline), so a branch whose migration sorted fine at commit
+time but has since been overtaken by `origin/main` fails locally, at push
+time, instead of surfacing later in CI's `Check Migrations` job on the merge
+commit — the round-trip that motivated adding this check. If it fails, rename
+the migration to sort after the newest one it names on `origin/main`.
+
 ## Naming
 
 - **`YYYY-MM-DD-<slug>.sql`.** The runner discovers files matching
@@ -61,14 +72,109 @@ with anything.
   logs. Silently fixing bad data destroys the forensic trail.
 - **RLS policies ship in the same migration that creates the table** — never
   deferred. See the tenancy shapes in the root `CLAUDE.md`.
+- **Writing rows requires system scope first.** Before the first
+  `UPDATE`/`DELETE`/`INSERT`/`MERGE` in the file:
+
+  ```sql
+  SELECT set_config('breeze.scope', 'system', true);
+  ```
+
+  (or `PERFORM set_config('breeze.scope', 'system', true);` as the first
+  statement inside a `DO` block). `breeze_current_scope()` defaults to `'none'`
+  (`0012-tenant-rls-deny-default.sql`) and 425 of the 442 public tables are
+  `FORCE ROW LEVEL SECURITY`, which binds the table **owner** too — and the
+  owner is the role migrations run as. On a connection that does not bypass
+  RLS, an unwrapped `UPDATE`/`DELETE` therefore matches **zero rows with no
+  error** — your `RAISE WARNING` prints a truthful-looking `0 cleaned` and the
+  migration moves on — and an unwrapped `INSERT` aborts with 42501. Reference
+  file: `2026-09-30-100000-rls-scoped-backfill-replay.sql`.
+
+  `is_local = true` scopes the setting to autoMigrate's per-file transaction,
+  so one line at the top covers the whole file — **except** in a
+  `-- @no-transaction` file, where each statement is sent separately and the
+  elevation must sit inside the same statement as the write.
+
+  Enforced by `apps/api/src/db/migrationRlsScope.test.ts` in the **Test API**
+  job. It carries a frozen baseline of the 122 shipped migrations that predate
+  the rule; that list is capped at a cutoff filename, so a new migration
+  **cannot** be silenced by adding it. See issue #4518.
+
+- **Set-based writes on partner-export material tables require pre-locks.**
+  Before any `UPDATE`, `DELETE`, `MERGE`, or `INSERT … SELECT` against a table carrying
+  `breeze_partner_export_(device_child|site_child|material)_(insert|update|delete)`
+  triggers, acquire **all partners shared first, then all orgs exclusive**, each
+  in ascending UUID order, over the union of rows every write will touch.
+  Configuration-material tables instead require **all partners exclusive first,
+  then all orgs under those exclusive partners**, using
+  `breeze_partner_export_lock_partners_exclusive` and
+  `breeze_partner_export_lock_orgs_under_exclusive_partners`. This covers
+  `configuration_owner_*`, `direct_org_*`, `policy_child_*`, `assignment_*`,
+  `custom_values_update`, and `normalized_policy_child` trigger functions.
+  System scope must precede the discovery reads too. Use this shape from
+  `2026-10-14-100050-discovered-assets-source-backfill-prelock.sql` (#5357):
+
+  ```sql
+  SELECT set_config('breeze.scope', 'system', true);
+
+  SELECT public.breeze_partner_export_lock_partners_shared(ARRAY(
+    SELECT DISTINCT o.partner_id
+      FROM public.discovered_assets d
+      JOIN public.organizations o ON o.id = d.org_id
+     WHERE d.source IS NULL
+       AND o.partner_id IS NOT NULL
+     ORDER BY 1
+  ));
+
+  SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
+    SELECT DISTINCT d.org_id
+      FROM public.discovered_assets d
+     WHERE d.source IS NULL
+       AND d.org_id IS NOT NULL
+     ORDER BY 1
+  ));
+
+  -- All backfill statements follow here, in the same transaction.
+  ```
+
+  Adapt the discovery predicates to cover **every** affected org and partner,
+  including both old and new owners when changing ownership. Statement triggers
+  share a transaction-wide lock ledger; a later write introducing a new partner
+  or a lower org UUID can otherwise abort the migration with a lock hierarchy
+  violation. Locks acquired in a previous migration do not carry into this one.
+  In a `-- @no-transaction` file, acquire locks and write inside the same `DO`
+  statement. `PERFORM` calls inside that block are supported.
+
+  A reviewed exception must carry a standalone annotation with a reason:
+  `-- @partner-export-locks: pre-acquired <reason explaining why locking is safe>`.
+  The static guard verifies preceding calls to both helpers; reviewers must
+  verify partner-before-org order and complete, sorted lock sets.
+
+  Enforced without a database by `apps/api/src/db/migrationPartnerExportLocks.test.ts`
+  in **Test API** (#5360). It derives tables from literal trigger declarations
+  and `FOREACH … IN ARRAY ARRAY[...]` trigger-installation loops. Its literal
+  baselines record exactly seven shipped device/site/material offenders and
+  fourteen configuration-material offenders (#5912), each with its own frozen
+  cutoff; neither baseline **may ever grow**. Both families use the same scanner
+  and reasoned annotation exception. Configuration tables are also derived from
+  the literal declarations and loops in the 2026-07-24 configuration-material-state
+  and 2026-07-25 canonical-configuration migrations, including normalized policy
+  children. Shipped offenders need fix-forward repairs; new files must satisfy
+  their family's helper pair before writing.
 
 ## Never edit a shipped migration
 
 `breeze_migrations` records a SHA-256 of each applied file, and the API refuses
 to boot on a mismatch — so *any* content change (even a comment) bricks every
 database that already applied it, while CI stays green migrating from empty.
-`scripts/check-migration-immutability.sh` enforces this against the latest
-release tag. Fix forward with a new migration.
+`scripts/check-migration-immutability.sh` enforces this against the highest
+semantic-version release tag reachable from the checked commit. Higher tags on
+other lineages must have reviewed provenance: exact registered candidates stay
+frozen on their candidate lineage, while applicable stable side-branch releases
+are checked as additional baselines. A higher tag already reachable from
+`origin/main` means the checked branch is behind main and fails closed. Automatic
+resolution requires full history and tags; pass an explicit base ref only when
+you deliberately need a deterministic one-baseline comparison. Fix forward with
+a new migration.
 
 **Renaming counts as editing**, and it has a second blast radius: integration
 suites replay migrations **by path**
@@ -76,6 +182,15 @@ suites replay migrations **by path**
 references fails as an `ENOENT` several minutes into Integration Tests, not as
 a compile error. `autoMigrate.test.ts` asserts every such reference resolves,
 so the unit job catches it first — but only if you run it.
+
+**A replayed migration must go through `replayMigration`, not a bare
+`readFile` + `sql.raw`.** If the file redefines a SQL function
+(`CREATE OR REPLACE FUNCTION`) that a LATER migration also redefines, a bare
+replay reverts that function to the earlier body for the rest of the vitest
+process — silently breaking any later suite in the same shard/CI job that
+depends on the later body (#3205 W07 / PR #4838).
+`apps/api/src/__tests__/integration/replayMigration.ts` re-applies every
+later definer automatically; see its header comment.
 
 ## Checklist for a new migration
 
@@ -86,7 +201,8 @@ so the unit job catches it first — but only if you run it.
 4. New tenant-scoped table? Work the RLS + cascade + export-policy registration
    lists in the root `CLAUDE.md` — they are separate contracts and the missed
    one is always a cascade list.
-5. `pnpm --filter @breeze/api test src/db/autoMigrate.test.ts`.
+5. Does it write rows? Elect system scope first (see Content rules).
+6. `pnpm --filter @breeze/api test --run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts`.
 
 ## Rule 3 — a new migration must sort AFTER every committed one
 

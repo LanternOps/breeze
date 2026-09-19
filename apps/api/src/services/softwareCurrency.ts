@@ -1,10 +1,23 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { softwareCatalog, softwareInventory, softwareVersions } from '../db/schema';
+import type { ResolvedAutomationReferences } from './automationReferenceAuthorization';
 
 export interface LatestVersionInfo {
   version: typeof softwareVersions.$inferSelect;
   catalogName: string;
+}
+
+export function latestVersionsFromResolvedAutomationReferences(
+  resolved: ResolvedAutomationReferences,
+): Map<string, LatestVersionInfo> {
+  const latestByCatalogId = new Map<string, LatestVersionInfo>();
+  for (const [catalogId, version] of resolved.softwareVersionsByCatalogId) {
+    const catalog = resolved.softwareCatalogsById.get(catalogId);
+    if (!catalog || version.catalogId !== catalogId) continue;
+    latestByCatalogId.set(catalogId, { version, catalogName: catalog.name });
+  }
+  return latestByCatalogId;
 }
 
 export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {

@@ -32,6 +32,20 @@ describe('describeApproverReason', () => {
     expect(describeApproverReason('exception:TypeError')).toContain('TypeError');
   });
 
+  it.each([
+    'attestation_failed',
+    'attestation_probe_failed',
+    'attestation_rejected_by_server',
+  ])('says that signing in again will NOT fix %s', (reason) => {
+    // The banner's only action is "Sign out and back in". A fresh grant re-runs
+    // the identical attestation on the identical device, so for these three the
+    // detail must say so or the user is sent in a loop.
+    const detail = describeApproverReason(reason);
+    expect(detail).not.toBe(reason);
+    expect(detail).toMatch(/signing in again will not/i);
+    expect(detail).toMatch(/administrator/i);
+  });
+
   it('passes an unrecognised code through instead of swallowing it', () => {
     expect(describeApproverReason('something_new')).toBe('something_new');
   });
@@ -80,5 +94,41 @@ describe('approverBannerCopy', () => {
     expect(approverBannerCopy('failed', null).title).not.toBe(
       approverBannerCopy('deferred', null).title
     );
+  });
+});
+
+// #5162 (#1374 W07 Task 2): a device can finish REGISTRATION successfully and
+// still not count for critical-tier (L4) approvals — its basis just isn't a
+// trusted one (e.g. `attestation_rejected_by_server`, or an old app build that
+// ran the pre-attestation legacy path). That is a distinct state from
+// `failed`/`deferred`: the device is not broken, its key is just weaker than
+// the badge on web now honestly shows (ApproverDevicesSection.tsx).
+describe('approverBannerCopy — unattested (registered but not L4-trusted)', () => {
+  it('never tells the user to enable biometrics', () => {
+    const copy = approverBannerCopy('unattested', 'attestation_rejected_by_server');
+    const text = `${copy.title} ${copy.body}`.toLowerCase();
+    expect(text).not.toMatch(/enable (face id|touch id|biometric)/);
+    expect(text).not.toMatch(/turn on (face id|touch id|biometric)/);
+    expect(text).not.toMatch(/isn.t set up for biometric/);
+  });
+
+  it('tells the user to update the app — signing in alone does not fix a stale build', () => {
+    expect(approverBannerCopy('unattested', null).actionLabel).toMatch(/update the app/i);
+  });
+
+  it('names critical-tier approvals as what is unavailable, not a blanket lockout', () => {
+    expect(approverBannerCopy('unattested', null).body).toMatch(/critical/i);
+  });
+
+  it('has a title distinct from both failed and deferred', () => {
+    const title = approverBannerCopy('unattested', null).title;
+    expect(title).not.toBe(approverBannerCopy('failed', null).title);
+    expect(title).not.toBe(approverBannerCopy('deferred', null).title);
+  });
+
+  it('decodes legacy_path_on_ios into an actionable detail instead of the bare code', () => {
+    const detail = describeApproverReason('legacy_path_on_ios');
+    expect(detail).not.toBe('legacy_path_on_ios');
+    expect(detail).toMatch(/update/i);
   });
 });

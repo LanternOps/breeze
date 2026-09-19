@@ -18,9 +18,23 @@ import {
 } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { reportInternalError } from '../../lib/errorReporting';
+import { osLabel } from '../../lib/osLabel';
+import { relativeTime } from '../../lib/relativeTime';
+import { formatCountLabel, formatDetailValue, formatIpValue, formatOsVersionValue } from './deviceDetailFields';
 
 interface Props {
   route: { params: { device: Device } };
+}
+
+/**
+ * Relative time reads at a glance, but an absolute timestamp is genuinely
+ * useful on a detail screen (matching against agent logs, ticket timestamps,
+ * etc.), so this keeps both rather than picking one.
+ */
+function formatTimestamp(iso: string): string {
+  const rel = relativeTime(iso);
+  const abs = new Date(iso).toLocaleString();
+  return rel ? `${rel} · ${abs}` : abs;
 }
 
 function statusDotColor(status: Device['status']): string {
@@ -76,6 +90,38 @@ function DetailRow({
         selectable
       >
         {value}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * A single-line row for the Open alerts / Open tickets counts (#5140):
+ * the label lives inside the text itself ("Open alerts · 3"), unlike
+ * DetailRow's caps-label-then-value shape, since neither count links to a
+ * filtered list yet (no such screen exists on mobile — see
+ * formatCountLabel's caller) and a bare label/value split would read oddly
+ * for a value that's already a full sentence fragment.
+ */
+function SummaryRow({
+  text,
+  textHi,
+  border,
+}: {
+  text: string;
+  textHi: string;
+  border: string;
+}) {
+  return (
+    <View
+      style={{
+        paddingVertical: spacing[3],
+        borderBottomWidth: 1,
+        borderBottomColor: border,
+      }}
+    >
+      <Text style={[type.body, { color: textHi }]} selectable>
+        {text}
       </Text>
     </View>
   );
@@ -268,24 +314,43 @@ export function DeviceDetailScreen({ route }: Props) {
             border={theme.border}
           />
         ) : null}
-        {device.ipAddress ? (
-          <DetailRow
-            label="IP ADDRESS"
-            value={device.ipAddress}
-            textHi={theme.textHi}
-            textLo={theme.textLo}
-            border={theme.border}
-          />
-        ) : null}
+        {/* Device Details v1 fields (#5140, decision #5117-2): IP,
+            logged-in user, OS version and the open alert/ticket counts
+            always render — "—" for absent values — unlike the rows above,
+            which hide entirely when the underlying field is unset. */}
+        <DetailRow
+          label="IP ADDRESS"
+          value={formatIpValue(device.lanIp, device.publicIp)}
+          textHi={theme.textHi}
+          textLo={theme.textLo}
+          border={theme.border}
+        />
+        <DetailRow
+          label="LOGGED-IN USER"
+          value={formatDetailValue(device.lastUser)}
+          textHi={theme.textHi}
+          textLo={theme.textLo}
+          border={theme.border}
+        />
         {device.os ? (
           <DetailRow
             label="OPERATING SYSTEM"
-            value={device.os}
+            value={formatOsVersionValue(osLabel(device.os), device.osVersion)}
             textHi={theme.textHi}
             textLo={theme.textLo}
             border={theme.border}
           />
         ) : null}
+        <SummaryRow
+          text={formatCountLabel('Open alerts', device.openAlertCount)}
+          textHi={theme.textHi}
+          border={theme.border}
+        />
+        <SummaryRow
+          text={formatCountLabel('Open tickets', device.openTicketCount)}
+          textHi={theme.textHi}
+          border={theme.border}
+        />
         {device.agentVersion ? (
           <DetailRow
             label="AGENT VERSION"
@@ -298,7 +363,7 @@ export function DeviceDetailScreen({ route }: Props) {
         {device.lastSeen ? (
           <DetailRow
             label="LAST SEEN"
-            value={new Date(device.lastSeen).toLocaleString()}
+            value={formatTimestamp(device.lastSeen)}
             textHi={theme.textHi}
             textLo={theme.textLo}
             border={theme.border}

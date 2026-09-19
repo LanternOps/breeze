@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
 import ScriptList, { type Script } from './ScriptList';
@@ -31,5 +31,34 @@ describe('ScriptList pagination', () => {
     expect(nextButton).toHaveAttribute('title', 'Next page');
     expect(previousButton).toBeDisabled();
     expect(nextButton).not.toBeDisabled();
+  });
+});
+
+describe('ScriptList duplicate action (#4887)', () => {
+  const oneScript: Script[] = [{
+    id: 'script-1',
+    name: 'Cleanup Temp Files',
+    language: 'bash',
+    category: 'maintenance',
+    osTypes: ['linux'],
+    createdAt: '2026-02-09T10:00:00.000Z',
+    updatedAt: '2026-02-09T10:00:00.000Z',
+  }];
+
+  it('renders a Duplicate row action and calls onDuplicate with the script', () => {
+    const onDuplicate = vi.fn();
+    render(<ScriptList scripts={oneScript} onDuplicate={onDuplicate} />);
+
+    const duplicateButton = screen.getByRole('button', { name: 'Duplicate script' });
+    fireEvent.click(duplicateButton);
+
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+    expect(onDuplicate).toHaveBeenCalledWith(oneScript[0]);
+  });
+
+  it('does not render a Duplicate action when no onDuplicate handler is passed', () => {
+    render(<ScriptList scripts={oneScript} />);
+
+    expect(screen.queryByRole('button', { name: 'Duplicate script' })).not.toBeInTheDocument();
   });
 });

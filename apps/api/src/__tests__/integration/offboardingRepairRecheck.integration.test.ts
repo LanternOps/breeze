@@ -31,11 +31,15 @@ import { getTestDb } from './setup';
  * would not return the tenant once the abort has committed.
  *
  * Scope, deliberately: this pins the RECHECK, not the lock. Every abort here
- * commits before the repair starts, so removing `.for('update')` leaves all of
- * these green. Holding an uncommitted `active` UPDATE open in one transaction
- * while the repair runs in another WOULD pin the lock — see the
- * `pg_stat_activity` barrier in `orgCurrencyCreationBarrier.integration.test.ts`
- * — and would also remove the need to export the function.
+ * commits before the repair starts, so removing `.for('update')` still leaves
+ * all of these green — do not read a green run of THIS file as the lock being
+ * covered.
+ *
+ * The lock is covered, separately: `offboardingRepairLockBarrier.integration.test.ts`
+ * (#4036) holds an uncommitted UPDATE open across the repair and drives the
+ * real `sweepOffboardingTenants`, asserting via `pg_blocking_pids` that the
+ * repair queues behind the tenant row. Deleting `.for('update')` reds THAT
+ * file. The two suites are complementary and both are load-bearing.
  */
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

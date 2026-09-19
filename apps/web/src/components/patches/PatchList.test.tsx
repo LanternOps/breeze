@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
 import PatchList, { type Patch } from './PatchList';
@@ -90,6 +90,41 @@ describe('PatchList CVE chips', () => {
   });
 });
 
+describe('PatchList severity (#3758)', () => {
+  it('renders an Unrated badge with a will-not-auto-approve note for a null-severity patch', () => {
+    const patch = makePatch({
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+      title: 'KB5000001',
+      severity: 'unrated',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.getAllByText('Unrated').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/will not auto-approve/i).length).toBeGreaterThan(0);
+  });
+
+  it('does not render the will-not-auto-approve note for a rated patch', () => {
+    const patch = makePatch({
+      id: '99999999-9999-9999-9999-999999999999',
+      title: 'KB6000001',
+      severity: 'critical',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.queryByText(/will not auto-approve/i)).toBeNull();
+  });
+
+  it('offers "Unrated" as a severity filter option', () => {
+    render(<PatchList patches={[]} />);
+
+    const filter = screen.getByDisplayValue(/all severities/i) as HTMLSelectElement;
+    const optionLabels = Array.from(filter.options).map(o => o.textContent);
+    expect(optionLabels).toContain('Unrated');
+  });
+});
+
 describe('PatchList page-size selector', () => {
   it('defaults to 25 rows per page', () => {
     render(<PatchList patches={makePatches(40)} />);
@@ -165,6 +200,21 @@ describe('PatchList header sorting', () => {
 
     fireEvent.click(screen.getByTestId('patch-sort-severity'));
     expect(renderedTitles()).toEqual(['Crit One', 'Mod One', 'Low One']);
+  });
+
+  it('sorts unrated severity last, after low (#3758)', () => {
+    render(
+      <PatchList
+        patches={[
+          makePatch({ id: 'ffffffff-ffff-ffff-ffff-ffffffffffff', title: 'Unrated One', severity: 'unrated' }),
+          makePatch({ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', title: 'Crit One', severity: 'critical' }),
+          makePatch({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', title: 'Low One', severity: 'low' }),
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('patch-sort-severity'));
+    expect(renderedTitles()).toEqual(['Crit One', 'Low One', 'Unrated One']);
   });
 
   it('marks the active sort header via aria-sort', () => {
@@ -262,5 +312,98 @@ describe('PatchList select-all across pages (#3157)', () => {
 
     // 30 criticals, not all 70 patches.
     expect(screen.getByText('30 selected')).toBeTruthy();
+  });
+});
+
+// #5585: an approved patch had no way to be unapproved/declined from the UI —
+// only Deploy showed, and bulk decline silently excluded approved rows.
+describe('PatchList unapprove (#5585)', () => {
+  it('renders an Unapprove action on an approved row when onUnapprove is given', () => {
+    const patch = makePatch({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', approvalStatus: 'approved' });
+    const onUnapprove = vi.fn();
+
+    render(<PatchList patches={[patch]} onUnapprove={onUnapprove} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    const button = desktop.getByTestId(`patch-row-${patch.id}-unapprove`);
+    fireEvent.click(button);
+    expect(onUnapprove).toHaveBeenCalledWith(patch);
+    // Deploy is still offered alongside it.
+    expect(desktop.getByTestId(`patch-row-${patch.id}-deploy`)).toBeTruthy();
+  });
+
+  it('does not render Unapprove when onUnapprove is not given', () => {
+    const patch = makePatch({ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', approvalStatus: 'approved' });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.queryByTestId(`patch-row-${patch.id}-unapprove`)).toBeNull();
+  });
+
+  it('does not render Unapprove on a non-approved row', () => {
+    const patch = makePatch({ id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', approvalStatus: 'pending' });
+
+    render(<PatchList patches={[patch]} onUnapprove={vi.fn()} />);
+
+    expect(screen.queryByTestId(`patch-row-${patch.id}-unapprove`)).toBeNull();
+  });
+});
+
+// #5585: bulk decline used to filter out approved rows (`selectedPendingIds`
+// excluded them), so there was no way to decline more than one approved
+// patch at a time. Approve must stay approvable-only.
+describe('PatchList bulk decline includes approved rows (#5585)', () => {
+  it('offers bulk decline for a selected approved patch, but not bulk approve', () => {
+    const approved = makePatch({ id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', approvalStatus: 'approved' });
+
+    render(
+      <PatchList
+        patches={[approved]}
+        onBulkApprove={async () => {}}
+        onBulkDecline={async () => {}}
+      />
+    );
+
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByRole('button', {
+      name: `Select ${approved.title}`,
+    }));
+
+    expect(screen.getByTestId('patch-bulk-decline')).toBeTruthy();
+    expect(screen.getByText('Decline 1')).toBeTruthy();
+    expect(screen.queryByTestId('patch-bulk-approve')).toBeNull();
+  });
+
+  it('passes approved patch ids to the bulk decline handler', async () => {
+    const approved = makePatch({ id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', approvalStatus: 'approved' });
+    const declined: string[][] = [];
+
+    render(
+      <PatchList
+        patches={[approved]}
+        onBulkDecline={async (ids) => { declined.push(ids); }}
+      />
+    );
+
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByRole('button', {
+      name: `Select ${approved.title}`,
+    }));
+    fireEvent.click(screen.getByTestId('patch-bulk-decline'));
+
+    await waitFor(() => expect(declined).toHaveLength(1));
+    expect(declined[0]).toEqual([approved.id]);
+  });
+
+  it('never offers bulk decline for an already-declined row', () => {
+    const declinedPatch = makePatch({ id: 'ffffffff-ffff-ffff-ffff-ffffffffffff', approvalStatus: 'declined' });
+
+    render(
+      <PatchList patches={[declinedPatch]} onBulkDecline={async () => {}} />
+    );
+
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByRole('button', {
+      name: `Select ${declinedPatch.title}`,
+    }));
+
+    expect(screen.queryByTestId('patch-bulk-decline')).toBeNull();
   });
 });

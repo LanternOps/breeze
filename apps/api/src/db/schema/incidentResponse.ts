@@ -67,6 +67,15 @@ export const incidents = pgTable('incidents', {
   containedAt: timestamp('contained_at'),
   resolvedAt: timestamp('resolved_at'),
   closedAt: timestamp('closed_at'),
+  /**
+   * Compare-and-swap markers for the background passes in jobs/incidentJobs.ts
+   * (wave 3.5a, #3825). Both passes previously recorded completion by appending
+   * to `timeline` and gated on reading that array back — check-then-act, which
+   * two processes both win. `timeline` stays the rendering surface; these are
+   * the control surface.
+   */
+  timelineEnrichedAt: timestamp('timeline_enriched_at', { withTimezone: true }),
+  escalatedAt: timestamp('escalated_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

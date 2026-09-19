@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const createMock = vi.fn();
-const { getAnthropicClientForPartnerMock } = vi.hoisted(() => ({
+const { getAnthropicClientForPartnerMock, resolveWireModelMock } = vi.hoisted(() => ({
   getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create: createMock }; },
 }));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner: getAnthropicClientForPartnerMock,
+  resolveWireModel: resolveWireModelMock,
 }));
 
 import { draftTicketFromTranscript, ThinTranscriptError } from './aiTicketDraft';
@@ -32,6 +34,24 @@ beforeEach(() => {
 });
 
 describe('draftTicketFromTranscript', () => {
+  it('caps both retry attempts within the reserved operation budget', async () => {
+    createMock.mockResolvedValueOnce(reply({
+      subject: 'S', problemSummary: 'P', resolutionSummary: '', wasFixed: false, suggestedTimeMinutes: 5,
+    }));
+
+    await draftTicketFromTranscript({
+      messages: transcript,
+      contextSnapshot: null,
+      elapsedMinutes: 5,
+      model: 'claude-x',
+      partnerId: 'partner-1',
+      budgetCents: 4,
+      calculateCostCents: (_inputTokens, outputTokens) => outputTokens / 100,
+    });
+
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
   it('returns a structured draft and maps wasFixed', async () => {
     createMock.mockResolvedValueOnce(reply({ subject: 'Outlook would not open', problemSummary: 'Outlook would not start.', resolutionSummary: 'Rebuilt the mail profile.', wasFixed: true, suggestedTimeMinutes: 15 }));
     const r = await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x', partnerId: 'partner-1' });
@@ -86,7 +106,28 @@ describe('draftTicketFromTranscript', () => {
       partnerId: 'partner-1',
     });
 
-    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
+    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1', { surface: 'one_shot_ticket_draft', orgId: null });
+  });
+
+  it('translates the model for the client it resolved itself', async () => {
+    // On the self-resolving path the caller never saw the endpoint, so the
+    // translation has to happen here — otherwise a catalog endpoint receives
+    // the platform-logical id and 404s.
+    resolveWireModelMock.mockReturnValueOnce({ model: 'anthropic/claude-x' });
+    createMock.mockResolvedValueOnce(reply({ subject: 'S', problemSummary: 'P', resolutionSummary: '', wasFixed: false, suggestedTimeMinutes: 5 }));
+
+    await draftTicketFromTranscript({
+      messages: transcript,
+      contextSnapshot: null,
+      elapsedMinutes: 5,
+      model: 'claude-x',
+      partnerId: 'partner-1',
+    });
+
+    expect(resolveWireModelMock).toHaveBeenCalledWith(expect.anything(), 'claude-x');
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-x' }),
+    );
   });
 
   it('uses an injected resolved client without resolving a second time', async () => {

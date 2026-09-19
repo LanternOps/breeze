@@ -1,5 +1,143 @@
-import { describe, expect, it, vi } from 'vitest';
-import { decryptSecret } from '../secretCrypto';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
+
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
+// refreshRealmSettings resolves the ambient `db` from '../../db' itself (its
+// signature is `(partnerId, provider)` — no db parameter), so it needs the
+// module mocked. Every OTHER test in this file constructs its own local mock
+// db and passes it directly as a function argument, so this mock does not
+// affect them.
+const { dbRef, ambientDb, getValidAccessTokenMock, ReauthRequiredErrorClass, fetchRealmSettingsMock } = vi.hoisted(() => {
+  class ReauthRequiredErrorClass extends Error {
+    constructor(message = 'Accounting connection requires reauthorization') {
+      super(message);
+      this.name = 'ReauthRequiredError';
+    }
+  }
+  const dbRef: { current: any } = { current: null };
+  const ambientDb = {
+    select: (...args: any[]) => dbRef.current.select(...args),
+    insert: (...args: any[]) => dbRef.current.insert(...args),
+    update: (...args: any[]) => dbRef.current.update(...args),
+    delete: (...args: any[]) => dbRef.current.delete(...args),
+    transaction: (...args: any[]) => dbRef.current.transaction(...args),
+  };
+  return {
+    dbRef,
+    ambientDb,
+    getValidAccessTokenMock: vi.fn(),
+    ReauthRequiredErrorClass,
+    fetchRealmSettingsMock: vi.fn(),
+  };
+});
+
+vi.mock('../../db', () => ({
+  db: ambientDb,
+  hasDbAccessContext: () => ctx.depth > 0,
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
+
+/**
+ * Context tracker for the `DbContextRunner` `refreshRealmSettings` now takes.
+ * The db mock's `hasDbAccessContext` reads the same depth, so the real
+ * (unmocked) `dbContextGuard.assertNoAmbientDbContext` runs its real logic.
+ */
+const ctx = vi.hoisted(() => ({ depth: 0 }));
+const runCtx = async <T>(fn: () => Promise<T>): Promise<T> => {
+  ctx.depth++;
+  try {
+    return await fn();
+  } finally {
+    ctx.depth--;
+  }
+};
+
+vi.mock('./accountingTokens', () => ({
+  getValidAccessToken: getValidAccessTokenMock,
+  ReauthRequiredError: ReauthRequiredErrorClass,
+}));
+
+vi.mock('./providerRegistry', () => ({
+  getAccountingProvider: () => ({ fetchRealmSettings: fetchRealmSettingsMock }),
+}));
+
+/**
+ * A single-row fake DB used only by refreshRealmSettings tests: supports the
+ * plain select/update `getConnection`/`updateMultiCurrencyEnabled` need, AND
+ * the `db.transaction(fn)` -> `tx.select().for('update')` / `tx.update()`
+ * shape `updateHomeCurrency` needs — all against the SAME mutable row, so a
+ * write made mid-flow (e.g. simulating a token-refresh bump of `updatedAt`)
+ * is visible to a subsequent read, matching real Postgres.
+ */
+function makeAmbientFakeDb(initialRow: Record<string, unknown> | null) {
+  const state = { row: initialRow };
+  const selectImpl = () => ({
+    from: () => ({ where: () => ({ limit: async () => (state.row ? [state.row] : []) }) }),
+  });
+  const updateImpl = () => ({
+    set: (patch: Record<string, unknown>) => ({
+      where: () => ({
+        returning: async () => {
+          if (!state.row) return [];
+          state.row = { ...state.row, ...patch };
+          return [{ id: state.row.id }];
+        },
+      }),
+    }),
+  });
+  const tx = {
+    select: vi.fn(() => ({
+      from: () => ({ where: () => ({ limit: () => ({ for: async () => (state.row ? [state.row] : []) }) }) }),
+    })),
+    update: vi.fn(updateImpl),
+    insert: vi.fn(),
+    delete: vi.fn(),
+  };
+  const db = {
+    select: vi.fn(selectImpl),
+    update: vi.fn(updateImpl),
+    insert: vi.fn(),
+    delete: vi.fn(),
+    transaction: vi.fn(async (fn: any) => fn(tx)),
+  };
+  return { db, state, tx };
+}
+
+function ambientConnectionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    partnerId: 'p1',
+    provider: 'quickbooks',
+    realmIdEncrypted: null,
+    accessTokenEncrypted: null,
+    refreshTokenEncrypted: null,
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    environment: 'production',
+    homeCurrency: 'USD',
+    multiCurrencyEnabled: null,
+    defaultIncomeAccountRef: null,
+    defaultTaxCodeRef: null,
+    pushMode: 'auto',
+    status: 'connected',
+    lastError: null,
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+    updatedAt: new Date('2026-09-01T00:00:00Z'),
+    realmIdFingerprint: null,
+    pullPayments: true,
+    pushPayments: true,
+    lastReconcileAt: null,
+    cdcCursor: null,
+    ...overrides,
+  };
+}
 
 function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }) {
   const ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -48,6 +186,11 @@ function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }
 }
 
 describe('accountingConnectionService', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbRef.current = null;
+  });
+
   it('encrypts tokens on upsert and returns decrypted on read', async () => {
     const captured: { row?: any } = {};
     const db = makeMockDb(captured);
@@ -225,5 +368,650 @@ describe('accountingConnectionService', () => {
 
     await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: new Date(), realmId: 'realm-A' }, 'USD'))
       .rejects.toThrow(/matched no accounting_connections row/);
+  });
+
+  it('mapConnection surfaces multiCurrencyEnabled from the row', async () => {
+    const captured: { row?: any } = { row: ambientConnectionRow({ multiCurrencyEnabled: true }) };
+    const db = makeMockDb(captured);
+    const { getConnection } = await import('./accountingConnectionService');
+
+    const conn = await getConnection(db, 'p1', 'quickbooks');
+    expect(conn?.multiCurrencyEnabled).toBe(true);
+  });
+
+  it('mapConnection surfaces null multiCurrencyEnabled (unknown) as null, not false', async () => {
+    const captured: { row?: any } = { row: ambientConnectionRow({ multiCurrencyEnabled: null }) };
+    const db = makeMockDb(captured);
+    const { getConnection } = await import('./accountingConnectionService');
+
+    const conn = await getConnection(db, 'p1', 'quickbooks');
+    expect(conn?.multiCurrencyEnabled).toBeNull();
+  });
+
+  // The multi-currency flag carries the SAME per-realm identity risk as the
+  // cached home currency: it is read off one specific realm's settings
+  // response, and `refreshRealmSettings` captures its generation before a
+  // multi-second QuickBooks round trip. It therefore gets the same
+  // compare-and-set, not a plain guarded UPDATE.
+  describe('updateMultiCurrencyEnabled', () => {
+    const at = new Date('2026-09-03T00:00:00Z');
+
+    it('writes the flag under the row lock at the expected realm + generation', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-A'), updatedAt: at, multiCurrencyEnabled: null,
+      }));
+      const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
+
+      await updateMultiCurrencyEnabled(db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true);
+
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
+    });
+
+    it('ABORTS when the row now belongs to a different realm — even at an IDENTICAL updatedAt', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-B'), updatedAt: at, multiCurrencyEnabled: null,
+      }));
+      const { updateMultiCurrencyEnabled, isHomeCurrencyCasAbort } = await import('./accountingConnectionService');
+
+      const err: unknown = await updateMultiCurrencyEnabled(
+        db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true,
+      ).catch((e: unknown) => e);
+
+      expect(isHomeCurrencyCasAbort(err)).toBe(true);
+      expect(state.row?.multiCurrencyEnabled).toBeNull(); // the old realm's flag never lands on the new realm
+    });
+
+    it('ABORTS on a stale generation (same realm, reconnected since)', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-A'), updatedAt: new Date('2026-09-04T00:00:00Z'), multiCurrencyEnabled: null,
+      }));
+      const { updateMultiCurrencyEnabled, isHomeCurrencyCasAbort } = await import('./accountingConnectionService');
+
+      const err: unknown = await updateMultiCurrencyEnabled(
+        db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true,
+      ).catch((e: unknown) => e);
+
+      expect(isHomeCurrencyCasAbort(err)).toBe(true);
+      expect(state.row?.multiCurrencyEnabled).toBeNull();
+    });
+
+    it('throws when the lock read returns nothing (deleted row or wrong RLS context)', async () => {
+      const { db } = makeAmbientFakeDb(null);
+      const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
+
+      await expect(updateMultiCurrencyEnabled(db as any, 'c1', 'p1', { updatedAt: at, realmId: null }, false))
+        .rejects.toThrow(/matched no accounting_connections row/);
+    });
+  });
+
+  describe('refreshRealmSettings', () => {
+    it('fetches realm settings and persists both fields', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow());
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
+
+      expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
+      expect(state.row?.homeCurrency).toBe('CAD');
+      expect(fetchRealmSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }));
+    });
+
+    it('throws not_connected (404) when the partner has no connection', async () => {
+      const { db } = makeAmbientFakeDb(null);
+      dbRef.current = db;
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'not_connected', status: 404 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('throws reauth_required (409) when the connection status is reauth_required', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ status: 'reauth_required' }));
+      dbRef.current = db;
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('throws reauth_required (409) when the token refresh reports the grant is dead', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow());
+      dbRef.current = db;
+      getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredErrorClass());
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('aborts the home-currency write on a lost CAS but still returns the freshly fetched settings', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: false });
+
+      const { refreshRealmSettings, AccountingHomeCurrencyCasAbortError } = await import('./accountingConnectionService');
+      // Force the exact abort updateHomeCurrency itself throws (reusing its own
+      // error class/fixture per the task brief), independent of timing games.
+      db.transaction = vi.fn(async () => {
+        throw new AccountingHomeCurrencyCasAbortError('updateHomeCurrency aborted: lost the compare-and-set');
+      });
+
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
+
+      expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: false });
+    });
+
+    it('propagates a GENUINE (non-CAS) home-currency write failure', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+      db.transaction = vi.fn(async () => {
+        throw new Error('deadlock detected');
+      });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toThrow('deadlock detected');
+    });
+
+    it('skips the home-currency write (never blanks it) when the realm reports no currency', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: null, multiCurrencyEnabled: true });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
+
+      expect(result).toEqual({ homeCurrency: null, multiCurrencyEnabled: true });
+      expect(state.row?.homeCurrency).toBe('USD'); // untouched
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
+    });
+
+    it('skips the multi-currency write (never blanks it) when the realm reports null', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD', multiCurrencyEnabled: true }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'USD', multiCurrencyEnabled: null });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
+
+      expect(result).toEqual({ homeCurrency: 'USD', multiCurrencyEnabled: null });
+      expect(state.row?.multiCurrencyEnabled).toBe(true); // untouched
+    });
+
+    it('re-reads the connection after a token refresh so the CAS compares against the post-refresh generation', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+      // getValidAccessToken rotating the token (updateTokens) would bump
+      // updatedAt on the row underneath the initial read.
+      getValidAccessTokenMock.mockImplementation(async () => {
+        if (state.row) state.row = { ...state.row, updatedAt: new Date('2026-09-01T01:00:00Z') };
+        return 'rotated-token';
+      });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
+
+      // If the CAS had compared against the STALE pre-refresh updatedAt, this
+      // write would have lost the race and homeCurrency would stay 'USD'.
+      expect(state.row?.homeCurrency).toBe('CAD');
+      expect(result.homeCurrency).toBe('CAD');
+    });
+  });
+
+  // Phase D (payment pull-back) — realm fingerprint, pull switch, CDC cursor.
+  describe('realm fingerprint', () => {
+    it('upsertConnection writes hmacFingerprint(realmId) on connect and reconnect', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+
+      expect(captured.insertValues.realmIdFingerprint).toBe(hmacFingerprint('realm-9'));
+      expect(captured.updateSet.realmIdFingerprint).toBe(hmacFingerprint('realm-9'));
+    });
+
+    it('upsertConnection leaves the fingerprint untouched when realmId is omitted (token-only reconnect)', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect('realmIdFingerprint' in captured.updateSet).toBe(false);
+    });
+
+    it('upsertConnection nulls the fingerprint when realmId is explicitly null', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: null });
+
+      expect(captured.updateSet.realmIdFingerprint).toBeNull();
+    });
+
+    it('fingerprintKeyGeneration parses the key id and returns null for junk', async () => {
+      const { fingerprintKeyGeneration } = await import('./accountingConnectionService');
+
+      expect(fingerprintKeyGeneration('fp1:k2:abcd')).toBe('k2');
+      expect(fingerprintKeyGeneration('abcd')).toBeNull();
+      expect(fingerprintKeyGeneration(null)).toBeNull();
+    });
+
+    it('mapConnection surfaces realmIdFingerprint, pullPayments, lastReconcileAt and cdcCursor', async () => {
+      const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+      const captured: { row?: any } = {
+        row: ambientConnectionRow({
+          realmIdFingerprint: 'fp1:legacy:deadbeef',
+          pullPayments: true,
+          lastReconcileAt: null,
+          cdcCursor: CURSOR,
+        }),
+      };
+      const db = makeMockDb(captured);
+      const { getConnection } = await import('./accountingConnectionService');
+
+      const conn = await getConnection(db, 'p1', 'quickbooks');
+
+      expect(conn).toMatchObject({
+        realmIdFingerprint: 'fp1:legacy:deadbeef',
+        pullPayments: true,
+        cdcCursor: CURSOR,
+        lastReconcileAt: null,
+      });
+    });
+  });
+
+  describe('backfillRealmFingerprints', () => {
+    it('#5193: reports a fingerprint collision to Sentry with allowlisted tag keys and keeps scanning other rows', async () => {
+      const collisionErr = Object.assign(
+        new Error('duplicate key value violates unique constraint "accounting_connections_provider_realm_fp_idx"'),
+        { code: '23505', constraint: 'accounting_connections_provider_realm_fp_idx' },
+      );
+      const rows = [
+        { id: 'conn-1', partnerId: 'p1', realmIdEncrypted: encryptSecret('realm-collide'), realmIdFingerprint: null },
+        { id: 'conn-2', partnerId: 'p2', realmIdEncrypted: encryptSecret('realm-ok'), realmIdFingerprint: null },
+      ];
+      let updateCalls = 0;
+      dbRef.current = {
+        select: () => ({ from: () => ({ where: async () => rows }) }),
+        update: () => ({
+          set: () => ({
+            where: () => ({
+              returning: async () => {
+                updateCalls++;
+                if (updateCalls === 1) throw collisionErr;
+                return [{ id: 'conn-2' }];
+              },
+            }),
+          }),
+        }),
+      };
+
+      const { backfillRealmFingerprints } = await import('./accountingConnectionService');
+      const result = await backfillRealmFingerprints();
+
+      // The collision on conn-1 must not abort the sweep: conn-2 still gets
+      // fingerprinted (finding E — Postgres would otherwise poison the whole
+      // batch's shared transaction with 25P02).
+      expect(result).toEqual({ scanned: 2, updated: 1, skipped: 1 });
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      // `module` and `op` have no allowlisted equivalent and were silently
+      // dropped before the #5193 fix; `service` + `accounting_connection_id`
+      // are what actually triage which connection collided.
+      expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+        service: 'accountingConnectionService',
+        accounting_connection_id: 'conn-1',
+      });
+    });
+  });
+
+  describe('advanceReconcileCursor', () => {
+    const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+    const STAMP = new Date('2026-09-02T20:10:01.000Z');
+
+    /** A dedicated db mock exposing the `.set(...)` argument for assertion. */
+    function makeReconcileDb(returningRows: Array<{ id: string }> = [{ id: 'c1' }]) {
+      const setMock = vi.fn((_patch: Record<string, unknown>) => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => returningRows),
+        })),
+      }));
+      const db = {
+        update: vi.fn(() => ({ set: setMock })),
+        select: vi.fn(),
+        insert: vi.fn(),
+        delete: vi.fn(),
+      };
+      return { db, setMock };
+    }
+
+    it('writes cdc_cursor + last_reconcile_at scoped to (id, partnerId)', async () => {
+      const { db, setMock } = makeReconcileDb();
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:abc', CURSOR, STAMP);
+
+      expect(setMock.mock.calls.at(-1)![0]).toEqual({
+        cdcCursor: CURSOR,
+        lastReconcileAt: STAMP,
+        updatedAt: expect.any(Date),
+      });
+    });
+  });
+
+  describe('advanceReconcileCursor: realm compare-and-set (finding C)', () => {
+    const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+    const STAMP = new Date('2026-09-02T20:10:01.000Z');
+
+    function makeCasDb(returningRows: Array<{ id: string }> = [{ id: 'c1' }]) {
+      const whereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => returningRows) }));
+      const db = {
+        update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereMock })) })),
+        select: vi.fn(), insert: vi.fn(), delete: vi.fn(),
+      };
+      return { db, whereMock };
+    }
+
+    it('binds the expected realm fingerprint into the guarded UPDATE', async () => {
+      const { db, whereMock } = makeCasDb();
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      const advanced = await advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:abc', CURSOR, STAMP);
+
+      expect(advanced).toBe(true);
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"realm_id_fingerprint" = \$\d+/i);
+      expect(params).toEqual(['c1', 'p1', 'fp1:k1:abc']);
+    });
+
+    it('matches a NULL fingerprint with IS NULL, never `= NULL`', async () => {
+      const { db, whereMock } = makeCasDb();
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await advanceReconcileCursor(db, 'c1', 'p1', null, CURSOR, STAMP);
+
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"realm_id_fingerprint" is null/i);
+      expect(params).toEqual(['c1', 'p1']);
+    });
+
+    it('returns false instead of throwing when the realm changed under the run', async () => {
+      // A reconnect to a DIFFERENT realm landed mid-run. Throwing would fail
+      // the job and retry it forever against a connection that has legitimately
+      // moved on; the next sweep reconciles the new realm from a null cursor.
+      const { db } = makeCasDb([]);
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await expect(advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:stale', CURSOR, STAMP))
+        .resolves.toBe(false);
+    });
+  });
+
+  describe('stampReconcileRunError (finding H)', () => {
+    function makeStampDb() {
+      const whereMock = vi.fn((..._args: [SQL]) => ({ returning: vi.fn(async () => [{ id: 'c1' }]) }));
+      const setMock = vi.fn((..._args: [Record<string, unknown>]) => ({ where: whereMock }));
+      const db = { update: vi.fn(() => ({ set: setMock })), select: vi.fn(), insert: vi.fn(), delete: vi.fn() };
+      return { db, setMock, whereMock };
+    }
+
+    it('writes the message under the payment-pull prefix, scoped to (id, partnerId)', async () => {
+      const { db, setMock, whereMock } = makeStampDb();
+      const { stampReconcileRunError } = await import('./accountingConnectionService');
+
+      await stampReconcileRunError(db, 'c1', 'p1', '3 item(s) failed');
+
+      expect(setMock.mock.calls.at(-1)![0]).toMatchObject({
+        lastError: 'Payment pull: 3 item(s) failed',
+      });
+      expect(new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL).params).toEqual(['c1', 'p1']);
+    });
+
+    it('clears ONLY a payment-pull-prefixed error, never a reauth/connection one', async () => {
+      const { db, setMock, whereMock } = makeStampDb();
+      const { stampReconcileRunError } = await import('./accountingConnectionService');
+
+      await stampReconcileRunError(db, 'c1', 'p1', null);
+
+      expect(setMock.mock.calls.at(-1)![0]).toMatchObject({ lastError: null });
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"last_error" like \$\d+/i);
+      expect(params).toEqual(['c1', 'p1', 'Payment pull: %']);
+    });
+  });
+
+  describe('resetConnectionForRealmChange (finding C)', () => {
+    function makeResetDb(mappingRows: Array<{ id: string }>) {
+      const deleteWhereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => mappingRows) }));
+      const updateSetMock = vi.fn((_patch: Record<string, unknown>) => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'c1' }]) })),
+      }));
+      // The owed-delete pre-count (review wave 2, finding 3) runs before the
+      // delete; nothing is owed in this fixture.
+      const selectMock = vi.fn(() => ({ from: () => ({ where: async () => [] }) }));
+      const db = {
+        delete: vi.fn(() => ({ where: deleteWhereMock })),
+        update: vi.fn(() => ({ set: updateSetMock })),
+        select: selectMock, insert: vi.fn(),
+      };
+      return { db, deleteWhereMock, updateSetMock };
+    }
+
+    it('deletes every mapping row for the connection and nulls the CDC watermark', async () => {
+      const { db, deleteWhereMock, updateSetMock } = makeResetDb([{ id: 'm1' }, { id: 'm2' }]);
+      const { resetConnectionForRealmChange } = await import('./accountingConnectionService');
+
+      const out = await resetConnectionForRealmChange(db, 'c1', 'p1');
+
+      expect(out).toEqual({ mappingsDeleted: 2, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
+      const del = new PgDialect().sqlToQuery(deleteWhereMock.mock.calls.at(-1)![0] as SQL);
+      expect(del.params).toEqual(['c1', 'p1']);
+      expect(updateSetMock.mock.calls.at(-1)![0]).toEqual({
+        cdcCursor: null,
+        lastReconcileAt: null,
+        updatedAt: expect.any(Date),
+      });
+    });
+  });
+
+  describe('pushPayments switch (Phase D2)', () => {
+    it('upsertConnection inserts pushPayments true by default', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+
+      expect(captured.insertValues.pushPayments).toBe(true);
+    }, 20_000);
+
+    it('upsertConnection leaves pushPayments untouched on a token-only reconnect', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect(captured.updateSet).toBeDefined();
+      expect('pushPayments' in captured.updateSet).toBe(false);
+    }, 20_000);
+
+    it('upsertConnection writes pushPayments when the caller supplies it', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { pushPayments: false });
+
+      expect(captured.updateSet.pushPayments).toBe(false);
+    }, 20_000);
+
+    it('upsertConnection stamps the push horizon on INSERT only', async () => {
+      // Review wave 2, finding 2. `push_payments_since` is the horizon this
+      // connection pushes payments FROM; a token-only reconnect (the OAuth
+      // callback) must NOT move it, or the whole history the horizon excludes
+      // would be re-opened.
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect(captured.insertValues.pushPaymentsSince).toBeInstanceOf(Date);
+      expect('pushPaymentsSince' in captured.updateSet).toBe(false);
+    }, 20_000);
+
+    it('the branch migration adds the horizon column idempotently and backfills existing rows', () => {
+      // The backfill is the half that cannot be unit-tested through the service:
+      // every connection that already exists at deploy must be stamped `now()`,
+      // or `push_payments` (default true) would push a partner's entire payment
+      // history the first time an old invoice is re-pushed.
+      const sqlText = readFileSync(
+        fileURLToPath(new URL('../../../migrations/2026-10-12-100000-quickbooks-payment-push.sql', import.meta.url)),
+        'utf-8',
+      );
+      expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS push_payments_since timestamptz');
+      expect(sqlText).toMatch(/UPDATE accounting_connections\s+SET push_payments_since = now\(\)\s+WHERE push_payments_since IS NULL/);
+      // RLS: accounting_connections is FORCE'd and the migration role is not a
+      // superuser on managed Postgres, so an unscoped UPDATE matches zero rows
+      // in production while CI (superuser) reports success.
+      expect(sqlText.indexOf("set_config('breeze.scope', 'system', true)"))
+        .toBeLessThan(sqlText.indexOf('SET push_payments_since = now()'));
+      // And it must report what it touched, per the migration authoring rules.
+      expect(sqlText).toContain('stamped push_payments_since=now() on %');
+    });
+
+    it('mapConnection surfaces pushPayments', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection, getConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+      const conn = await getConnection(db, 'p1', 'quickbooks');
+
+      expect(conn).toMatchObject({ pushPayments: true });
+    }, 20_000);
+  });
+
+  describe('listReconcilableConnections', () => {
+    /** A dedicated db mock exposing the compiled `.where(...)` clause for assertion. */
+    function makeSelectWhereDb() {
+      const whereMock = vi.fn((_cond: SQL) => Promise.resolve([]));
+      const db = {
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: whereMock })) })),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+      return { db, whereMock };
+    }
+
+    it('filters to provider AND status connected AND (pull_payments OR push_payments) — spec decision 6', async () => {
+      const { db, whereMock } = makeSelectWhereDb();
+      const { listReconcilableConnections } = await import('./accountingConnectionService');
+
+      await listReconcilableConnections(db, 'quickbooks');
+
+      const dialect = new PgDialect();
+      // Compiling the captured `and(...)` node standalone (outside the full
+      // query builder) fully table-qualifies each column — real Postgres
+      // output for a query executed through the builder omits the qualifier
+      // on a single-table query, but the compiled clause and bound params
+      // below are the actual filter Drizzle applies either way.
+      const { sql, params } = dialect.sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and \("accounting_connections"\."pull_payments" = \$\d+ or "accounting_connections"\."push_payments" = \$\d+\)/i);
+      expect(params).toEqual(['quickbooks', 'connected', true, true]);
+    });
+  });
+});
+
+describe('owed QuickBooks payment deletes on disconnect / realm change (review wave 2, finding 3)', () => {
+  // `accounting_entity_mappings_connection_partner_fk` is ON DELETE CASCADE, so
+  // dropping the connection row takes every mapping with it — including rows
+  // that still owe QuickBooks a payment DELETE. Breeze created those Payments in
+  // the partner's books and has not removed them; the disconnect must still
+  // work, but it must not be the last anyone ever hears of them.
+  const owedRows = [
+    { id: 'map-1', remoteEntityId: '181/145' },
+    { id: 'map-2', remoteEntityId: '182/146' },
+  ];
+
+  function dbWithOwedDeletes(owed: Array<{ id: string; remoteEntityId: string | null }>) {
+    const seen: { where?: unknown } = {};
+    return {
+      seen,
+      db: {
+        select: () => ({
+          from: () => ({
+            where: (cond: unknown) => {
+              seen.where = cond;
+              return Promise.resolve(owed);
+            },
+          }),
+        }),
+        delete: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'c1' }]) }) }),
+        update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'c1' }]) }) }) }),
+      } as never,
+    };
+  }
+
+  it('deleteConnection reports the owed payment deletes it is about to cascade away', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes(owedRows);
+      const { deleteConnection } = await import('./accountingConnectionService');
+
+      const result = await deleteConnection(db, 'p1', 'quickbooks');
+
+      expect(result.removed).toBe(true); // the disconnect is NEVER blocked
+      expect(result.owedPaymentDeletes).toEqual({ count: 2, remoteEntityIds: ['181/145', '182/146'] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('owed QuickBooks payment delete'),
+        expect.anything(),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('deleteConnection stays quiet when nothing is owed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes([]);
+      const { deleteConnection } = await import('./accountingConnectionService');
+
+      const result = await deleteConnection(db, 'p1', 'quickbooks');
+
+      expect(result.owedPaymentDeletes).toEqual({ count: 0, remoteEntityIds: [] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('resetConnectionForRealmChange reports them too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes(owedRows);
+      const { resetConnectionForRealmChange } = await import('./accountingConnectionService');
+
+      const result = await resetConnectionForRealmChange(db, 'c1', 'p1');
+
+      expect(result.owedPaymentDeletes.count).toBe(2);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

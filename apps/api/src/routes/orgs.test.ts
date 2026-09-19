@@ -1,6 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
+vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
+  lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
+  countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
+}));
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { orgRoutes } from './orgs';
+import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 
 vi.mock('../services', () => ({}));
 
@@ -9,8 +15,25 @@ vi.mock('../services/sentry', () => ({
   isSentryEnabled: vi.fn().mockReturnValue(false)
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../oauth/partnerScopePolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../oauth/partnerScopePolicy')>()),
+  clearPartnerScopePolicyCache: vi.fn(),
+}));
+
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn()
+}));
+
+// PATCH /partners/me fans a partner-wide aiBudgets change out to every org's
+// budget evaluation (#4388 W02) — mocked so these route tests pin the CALL,
+// not the queue/worker machinery (covered by jobs/aiBudgetAlertDelivery.test.ts).
+vi.mock('../jobs/aiBudgetAlertDelivery', () => ({
+  enqueueAiBudgetEvaluationForPartner: vi.fn().mockResolvedValue(undefined),
 }));
 
 // GET /orgs/sites rides the org's resolved enrollment defaults along for the
@@ -22,6 +45,40 @@ vi.mock('../services/enrollmentDefaults', () => ({
     deviceCount: 25,
     maxTtlMinutes: 43200
   }))
+}));
+
+// Archived orgs are read through a dedicated READ ONLY DB context (Wave 4
+// Task 3), which needs a real transaction — mocked here so these route tests
+// pin the CALL (partner pinning, when it fires) rather than the DB machinery.
+// The archived-context guarantees themselves are proven against real Postgres
+// in __tests__/integration/orgArchiveReadContext.integration.test.ts.
+// `archiveLifecycleCondition` / `isArchiveLifecycleRow` are pure predicates
+// with no DB machinery behind them, and the list route's system-scope
+// exclusion is asserted on their COMPILED SQL below — so they pass through
+// from the real module rather than being stubbed.
+vi.mock('../services/archivedOrgReads', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/archivedOrgReads')>()),
+  listArchivedOrgs: vi.fn(async () => ({ orgs: [], truncated: false })),
+  loadArchivedOrg: vi.fn(async () => null)
+}));
+
+// Per-org selection boundary (Wave 4 review fix I-1). The mock mirrors the
+// real resolver's fail-closed rules (its own suite is
+// services/partnerOrgSelection.test.ts) so existing 'all'-access cases need no
+// wiring, and a 'selected' case only sets `selectedOrgIds`.
+const { selectedOrgIds } = vi.hoisted(() => ({ selectedOrgIds: { current: [] as string[] } }));
+vi.mock('../services/partnerOrgSelection', () => ({
+  resolvePartnerOrgReach: vi.fn(async (auth: any) => {
+    if (!auth.partnerId) return { kind: 'none' };
+    if (auth.partnerOrgAccess === 'all') return { kind: 'allOfPartner' };
+    if (auth.partnerOrgAccess === 'selected') return { kind: 'selection', orgIds: selectedOrgIds.current };
+    return { kind: 'none' };
+  }),
+  partnerMemberMayReachOrg: vi.fn(async (auth: any, orgId: string) => {
+    if (auth.partnerOrgAccess === 'all') return true;
+    if (auth.partnerOrgAccess === 'selected') return selectedOrgIds.current.includes(orgId);
+    return false;
+  })
 }));
 
 vi.mock('../services/ipAllowlist', () => ({
@@ -51,7 +108,13 @@ vi.mock('../services/tenantLifecycle', () => ({
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
 }));
 
-vi.mock('../services/tenantOffboarding', () => ({
+// Spread the REAL module so its exported settings-key constants come from the
+// one source of truth (services/orgSettingsInternalKeys.ts imports them, and
+// re-declaring them here as literals would leave this suite green through a
+// rename while every consumer broke). Only the side-effecting functions below
+// are stubbed.
+vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/tenantOffboarding')>()),
   beginOrganizationOffboarding: vi.fn().mockResolvedValue({
     revocation: {
       apiKeysRevoked: 0,
@@ -79,9 +142,29 @@ vi.mock('../services/tenantOffboarding', () => ({
     otherCommandsCancelled: 0
   }),
   abortOrganizationOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 }),
-  abortPartnerOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 })
+  // #3996 — the drain-ending status write is composed INTO the abort's own
+  // transaction, so these doubles must RUN the callback they are handed; a
+  // canned return value would leave every status route without its org/partner
+  // row. The real ordering guarantee (lock, then write, then cancel) lives in
+  // services/tenantOffboarding.test.ts and the integration suite.
+  abortOrganizationOffboardingAroundStatusChange: vi.fn(
+    async (_orgId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  ),
+  abortPartnerOffboardingAroundStatusChange: vi.fn(
+    async (_partnerId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  )
 }));
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -162,6 +245,10 @@ vi.mock('../db/schema', () => ({
     // lower(...) comparison, so it needs a sentinel of its own.
     slug: { __column: 'organizations.slug' },
     status: { __column: 'organizations.status' },
+    // #4166 — the archive-lifecycle predicate pairs `status = 'offboarding'`
+    // with `offboarding_target = 'archive'`, and the system-scope list
+    // exclusion is asserted on that compiled pair.
+    offboardingTarget: { __column: 'organizations.offboardingTarget' },
     deletedAt: { __column: 'organizations.deletedAt' },
     createdAt: { __column: 'organizations.createdAt' }
   },
@@ -172,7 +259,17 @@ vi.mock('../db/schema', () => ({
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
-  devices: { siteId: { __column: 'devices.siteId' } },
+  // #5315 — `status` and `orgId` are sentinels (same pattern as sites.id /
+  // organizations.status) so the device-count tests can prove the
+  // decommissioned filter is applied to devices.status and not to some other
+  // column: an unrecognized chunk compiles to an opaque bound parameter, so
+  // the sentinel OBJECT itself shows up in `params` and identifies the column.
+  devices: {
+    siteId: { __column: 'devices.siteId' },
+    orgId: { __column: 'devices.orgId' },
+    status: { __column: 'devices.status' },
+    isEphemeral: { __column: 'devices.isEphemeral' },
+  },
   // Agent version pins (issue #2124) validate against this table at save time.
   agentVersions: { id: {}, component: {}, version: {} }
 }));
@@ -193,7 +290,14 @@ vi.mock('drizzle-orm', async (importActual) => {
     // suspended-org lifecycle override re-asserts its WHERE predicates
     // (eq(organizations.status,'suspended') / eq(organizations.partnerId,...))
     // without changing any behavior for the rest of the file.
-    eq: vi.fn(actual.eq)
+    eq: vi.fn(actual.eq),
+    // #5075 W04 — same rationale as `eq` above: spy with the REAL
+    // implementation so the PATCH /partners/me external-mode test can assert
+    // that the PSA-connection probe really carries `isNull(psaConnections.orgId)`.
+    // Without it the mocked `.where()` returns its canned row whatever it is
+    // handed, so dropping the partner-wide half of the ownership filter would
+    // not fail a single test.
+    isNull: vi.fn(actual.isNull)
   };
 });
 
@@ -236,7 +340,11 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, isNull, type SQL } from 'drizzle-orm';
+// Real table object (this module is NOT part of the '../db/schema' barrel mock),
+// so the ownership assertions below compare against the actual columns the
+// route uses rather than a sentinel that could drift.
+import { psaConnections } from '../db/schema/integrations';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
@@ -244,6 +352,7 @@ import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
+import { listArchivedOrgs, loadArchivedOrg } from '../services/archivedOrgReads';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
@@ -252,12 +361,17 @@ import {
 } from '../services/tenantLifecycle';
 import {
   abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
+import { writeRouteAudit } from '../services/auditEvents';
+import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 describe('org routes', () => {
   let app: Hono;
@@ -310,11 +424,63 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(countMfaPolicyLockouts).mockReset().mockResolvedValue(0);
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
+    selectedOrgIds.current = [];
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
+  });
+
+  describe('MFA policy activation safety', () => {
+    const id = '00000000-0000-4000-8000-000000000167';
+    const settings = { security: { allowedMethods: { totp: false, sms: false } } };
+
+    it.each([
+      ['PATCH', '/partners/me', 'partner'],
+      ['PATCH', `/partners/${id}`, 'partner'],
+      ['PATCH', `/organizations/${id}`, 'organization'],
+      ['PUT', `/organizations/${id}`, 'organization'],
+    ])('%s %s rejects newly stranded users before any write', async (method, path, kind) => {
+      if (path === '/partners/me') setAuthContext({ scope: 'partner', partnerId: id });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([{ id, partnerId: id, settings: {} }]), { limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) })),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockResolvedValueOnce(2);
+      const response = await app.request(`/orgs${path}`, { method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings, force: true }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'mfa_policy_would_lock_out_users', count: 2, countCapped: false });
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind, id });
+      expect(countMfaPolicyLockouts).toHaveBeenCalledWith({ kind, id }, settings);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('inventory read failure fails closed before persistence', async () => {
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) }),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockRejectedValueOnce(new Error('inventory unavailable'));
+      const response = await app.request(`/orgs/partners/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(500);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denied organization never reaches inventory or settings locks', async () => {
+      setAuthContext({ scope: 'partner', partnerId: id, canAccessOrg: () => false });
+      const response = await app.request(`/orgs/organizations/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(404);
+      expect(countMfaPolicyLockouts).not.toHaveBeenCalled();
+      expect(lockMfaPolicySettings).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /orgs/partners', () => {
@@ -424,6 +590,179 @@ describe('org routes', () => {
         'partner-1'
       );
     });
+
+    // Issue #4520: this platform-admin path inserts partners directly instead of
+    // going through createPartner(), so it used to miss the #3608 opt-out default
+    // and fall back to the readers' absent-means-enabled behaviour.
+    describe('new-partner default settings (#4520)', () => {
+      const captureInsertedValues = () => {
+        const captured: Record<string, unknown>[] = [];
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => {
+          const tx = {
+            insert: vi.fn(() => ({
+              values: vi.fn((vals: Record<string, unknown>) => {
+                captured.push(vals);
+                // Model the real `.returning(partnerPublicColumns())`, which
+                // projects the PERSISTED row — settings included. That echo is
+                // what tells an admin caller what actually landed.
+                return {
+                  returning: vi.fn().mockResolvedValue([
+                    { id: 'partner-1', settings: vals.settings }
+                  ])
+                };
+              })
+            }))
+          };
+          return fn(tx);
+        });
+        return captured;
+      };
+
+      it('writes settings.ticketing.inbound.enabled=false when the caller sends no settings', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
+        });
+      });
+
+      it('adds the default alongside caller-supplied settings without clobbering them', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: {
+              security: { ipAllowlist: ['10.0.0.0/8'] },
+              ticketing: { inbound: { unknownSenderMode: 'triage' } }
+            }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { ipAllowlist: ['10.0.0.0/8'], requireMfa: true },
+          ticketing: { inbound: { unknownSenderMode: 'triage', enabled: false } }
+        });
+      });
+
+      it('respects an explicit ticketing.inbound.enabled=true from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { ticketing: { inbound: { enabled: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: true } },
+          security: { requireMfa: true }
+        });
+      });
+
+      it('still folds the legacy allowedMfaMethods alias while applying the default', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { allowedMfaMethods: { totp: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { allowedMethods: { totp: true }, requireMfa: true },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      // `settings` is `z.any()`, so a malformed value reaches the handler. It
+      // cannot carry the flag, and the readers treat an untraversable path as
+      // absent (= inbound ENABLED), so it is normalized rather than persisted.
+      // The 201 body echoes the persisted row, so the caller is not left
+      // guessing what landed — assert that end-to-end, not just the insert.
+      it('normalizes a non-object settings value and echoes the result in the 201 body', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner', settings: 'nonsense' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
+        });
+        expect(await res.json()).toMatchObject({
+          settings: { ticketing: { inbound: { enabled: false } }, security: { requireMfa: true } }
+        });
+      });
+
+      // Spec D1: a platform admin creating a partner for a customer that has
+      // opted out passes requireMfa:false explicitly and it must win.
+      it('preserves an explicit security.requireMfa=false from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { requireMfa: false } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { requireMfa: false },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      it('echoes security.requireMfa=true in the 201 body when the caller omitted it', async () => {
+        captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(await res.json()).toMatchObject({ settings: { security: { requireMfa: true } } });
+      });
+    });
   });
 
   describe('GET /orgs/partners/:id', () => {
@@ -501,6 +840,9 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #3996 — a name-only patch ends no drain: no tenant-row lock, no
+      // device enumeration. See the org-side twin of this assertion.
+      expect(abortPartnerOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
 
     it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
@@ -714,7 +1056,14 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      // #3996 — the cancel must be composed INTO the status write's
+      // transaction, not issued after it. Asserting the composed entry point
+      // (and that the bare post-flip abort is NOT used) is what stops the old
+      // two-step shape being reintroduced.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -734,7 +1083,10 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -1323,6 +1675,82 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — timeTracking.sessionSuggestions (W06 #3900)', () => {
+    // Local copies of the helpers above (plain functions, safe to duplicate —
+    // same pattern the ticketing.inbound describe uses).
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('accepts settings.timeTracking.sessionSuggestions and deep-merges one level', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // A sibling block from the location-suggestions spec must survive a save
+      // that only carries sessionSuggestions.
+      mockCurrentPartnerSelect({ timeTracking: { locationSuggestions: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: {
+        enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5,
+      } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.timeTracking).toEqual({
+        locationSuggestions: { enabled: true },
+        sessionSuggestions: { enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5 },
+      });
+    });
+
+    it('rejects out-of-range suggestion thresholds with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: {
+        enabled: true, minSessionSeconds: 5,
+      } } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects an unknown key inside sessionSuggestions (400) so a typo is never silently stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: { enabledd: true } } } });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('PATCH /orgs/partners/me — emailSignature', () => {
     // Local copies of the :id-block helpers (plain functions, safe to
     // duplicate — same pattern as the ticketing.inbound describe above).
@@ -1560,6 +1988,15 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — the hard delete flips status to `churned`, which is not a
+      // draining status either, so this route composes its status write into
+      // the abort exactly like the PATCH path. Without this assertion a
+      // revert of THIS handler to a bare `db.update(...)` — reopening the
+      // commit-then-cancel window on the delete path only — stays green.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -1594,9 +2031,11 @@ describe('org routes', () => {
         })
       }) as any;
 
-    // Partner scope reads partners.settings for the preferred org order, which
-    // lands BETWEEN the page query and the device counts. It has to be queued
-    // explicitly once anything follows it, or it consumes the next mock.
+    // Partner scope reads partners.settings for the preferred org order. Since
+    // #4004 that order is the leading ORDER BY term of the page query itself,
+    // so the read lands BETWEEN the count and the page query — ahead of the
+    // rows it sorts, not after them. It has to be queued explicitly once
+    // anything follows it, or it consumes the next mock.
     const mockPartnerOrderSettings = () =>
       ({
         from: vi.fn().mockReturnValue({
@@ -1614,6 +2053,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 1 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1625,7 +2065,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 2 }]));
 
       const res = await app.request('/orgs/organizations?page=1&limit=1');
@@ -1648,6 +2087,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 2 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1659,7 +2099,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         // org-2 has no devices, so the grouped query simply omits it.
         .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 12 }]));
 
@@ -1669,6 +2108,402 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data.find((o: { id: string }) => o.id === 'org-1').deviceCount).toBe(12);
       expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
+    });
+
+    // #5315 — the org card counted decommissioned devices while every other
+    // device surface (fleet list, org record Overview tile and Devices tab)
+    // hides them, so a removed device made this card read one higher than the
+    // record it links to. Assert on the bound parameter: this suite mocks the
+    // schema module, so column names render blank in the compiled statement,
+    // and a JSON dump of the condition would match `devices.status`'s own
+    // `enumValues` and pass against unfixed code.
+    it('excludes decommissioned devices from the per-organization device count', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 12 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
+    // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
+    // Archived orgs are NOT in accessibleOrgIds (computeAccessibleOrgIds
+    // allowlists active|trial), so they can never come out of the paginated
+    // query — they are read through the READ ONLY archived context and
+    // appended. These cases pin WHEN that read fires and WHO it is scoped to.
+    describe('includeArchived', () => {
+      // Queues EXACTLY the db.select calls the handler makes: count, page rows,
+      // partner-order settings, and — only when the page returned rows — the
+      // grouped device count. An extra queued `mockReturnValueOnce` is not
+      // harmless: `vi.clearAllMocks()` clears calls but NOT the once-queue, so
+      // a leftover leaks into the next test and cascades through the file.
+      const mockOnePartnerPage = (orgIds: string[], total = orgIds.length) => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: total }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue(orgIds.map((id) => ({ id })))
+                  })
+                })
+              })
+            })
+          } as any);
+        if (orgIds.length > 0) {
+          vi.mocked(db.select).mockReturnValueOnce(mockOrgDeviceCounts([]));
+        }
+      };
+
+      it('does not read archived orgs at all without the flag', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      it('appends flagged archived orgs, scoped to the caller partner', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{ id: 'org-archived', status: 'archived', archived: true, deviceCount: 4 } as any],
+          truncated: false
+        });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).toHaveBeenCalledWith({
+          scope: { kind: 'partner', partnerId: 'partner-123' },
+          search: undefined,
+          limit: 10
+        });
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-1', 'org-archived']);
+        expect(body.data[1].archived).toBe(true);
+        // Archived rows ride along OUTSIDE the pagination arithmetic.
+        expect(body.pagination.total).toBe(1);
+        expect(body.archivedTruncated).toBe(false);
+      });
+
+      // #4166 — clicking Archive parks the org in `offboarding` for the whole
+      // agent-drain window. It matched neither allowlist, so it disappeared
+      // from BOTH branches of the union and Restore became unreachable. The
+      // status predicate itself is pinned on compiled SQL in
+      // services/archivedOrgReads.scope.test.ts (the service is mocked here);
+      // this case pins the ROUTE wiring — an archive-drain row reaches the
+      // caller, flagged, through the same append.
+      it('serves an org mid-archive-drain (offboarding) through the archived block', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{
+            id: 'org-draining',
+            status: 'offboarding',
+            offboardingTarget: 'archive',
+            archived: true,
+            purgeAt: '2026-10-01T00:00:00.000Z',
+            deviceCount: 2
+          } as any],
+          truncated: false
+        });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-1', 'org-draining']);
+        // `archived: true` means "read through the READ ONLY archived door",
+        // NOT `status === 'archived'` — the UI branches on the flag for
+        // read-onlyness and on `status` for what to render.
+        expect(body.data[1]).toMatchObject({
+          archived: true,
+          status: 'offboarding',
+          offboardingTarget: 'archive'
+        });
+      });
+
+      // #4166 — system scope short-circuits every RLS predicate and its live
+      // branch carries NO status filter, so archive-lifecycle orgs already come
+      // back from the paginated query. Appending the flagged copy on top would
+      // return each of them twice.
+      it('excludes archive-lifecycle orgs from the system-scope live query when appending', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        // The exclusion rides on the SHARED `conditions`, so it constrains the
+        // COUNT as well as the rows — and on every page, not only the last one
+        // where the append happens (the duplicate would otherwise sit on
+        // whichever page the live query put it).
+        //
+        // Scope of this assertion: it proves the route WIRES the exclusion in,
+        // not that the predicate's boolean structure is right. `../db/schema`
+        // is mocked with plain sentinels here, so drizzle cannot render them as
+        // identifiers and compiles them as bound params — the shape collapses
+        // to `not ($1 = $2 or ($3 = $4 and $5 = $6))` regardless of which
+        // columns those params stand for. The STRUCTURE is pinned against real
+        // drizzle columns in services/archivedOrgReads.scope.test.ts
+        // ('archive-lifecycle predicate (#4166)'), which is the suite to fix if
+        // this predicate's logic ever needs re-asserting.
+        const { sql: compiled, params } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not (');
+        expect(params).toEqual(
+          expect.arrayContaining([
+            { __column: 'organizations.status' },
+            { __column: 'organizations.offboardingTarget' },
+            'archived',
+            'offboarding',
+            'archive',
+          ]),
+        );
+      });
+
+      // `conditions` is built by a ternary on `queryPartnerId`, so the
+      // partner-filtered arm needs its own case — the exclusion is easy to add
+      // to one branch and miss in the other.
+      it('applies the exclusion on the partnerId-filtered system-scope arm too', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request(
+          '/orgs/organizations?page=1&limit=10&includeArchived=true'
+          + '&partnerId=11111111-1111-4111-8111-111111111111'
+        );
+
+        expect(res.status).toBe(200);
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not (');
+      });
+
+      // Without the opt-in nothing changes: a platform admin still sees
+      // archive-lifecycle orgs (unflagged) in the live list, exactly as before.
+      it('leaves the system-scope live query untouched without includeArchived', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+        expect(res.status).toBe(200);
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).not.toContain('not (');
+      });
+
+      // The archived block is capped at `limit` instead of being paginated, so
+      // the response has to SAY when that cap dropped tenants — an archived org
+      // silently missing from the list is one whose purge timer nobody sees.
+      it('reports archivedTruncated when the archived block hit its cap', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: Array.from({ length: 10 }, (_, i) => (
+            { id: `org-archived-${i}`, status: 'archived', archived: true, deviceCount: 0 } as any
+          )),
+          truncated: true
+        });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(11); // 1 live + the capped 10
+        expect(body.archivedTruncated).toBe(true);
+      });
+
+      // An empty page past the end of the live list is NOT the tail: with
+      // total=1 and limit=1, page 2 is empty and would otherwise append a
+      // second copy of every archived org to a page walk.
+      it('does not append on an empty page past the end of the live list', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage([], 1);
+
+        const res = await app.request('/orgs/organizations?page=2&limit=1&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual([]);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      // fetchAllOrganizations.ts walks every page and concatenates. Appending
+      // on each one would repeat every archived org per page.
+      it('appends only on the final page of the live result set', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1', 'org-2'] });
+        mockOnePartnerPage(['org-1'], 2);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=1&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      // A partner whose only orgs are archived has an EMPTY accessibleOrgIds.
+      // That short-circuited the whole handler before Wave 4, which would have
+      // made the flag a no-op for exactly the tenant it exists to serve.
+      it('still returns archived orgs when the partner has no live orgs', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [] });
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{ id: 'org-archived', status: 'archived', archived: true, deviceCount: 0 } as any],
+          truncated: false
+        });
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-archived']);
+        // No live-org queries were issued at all — there is nothing to query.
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      // A partner token with no partnerId must get NOTHING, never every
+      // partner's archived orgs (partnerId: null means "all" in the service).
+      it('reads nothing for a partner-scope caller with no partner id', async () => {
+        setAuthContext({ scope: 'partner', partnerId: null, accessibleOrgIds: [] });
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+        expect((await res.json()).data).toEqual([]);
+      });
+
+      // Review fix I-1: archived orgs are absent from accessibleOrgIds for
+      // EVERY member, so partner-id-only scoping meant archiving an org WIDENED
+      // who could read its full row (settings blob included) to techs who were
+      // 404'd on it the day before.
+      it("narrows the archived read to a 'selected' member's own selection", async () => {
+        selectedOrgIds.current = ['org-archived-mine'];
+        setAuthContext({
+          scope: 'partner', partnerId: 'partner-123',
+          partnerOrgAccess: 'selected', accessibleOrgIds: ['org-1']
+        });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).toHaveBeenCalledWith({
+          scope: { kind: 'partnerSelection', partnerId: 'partner-123', orgIds: ['org-archived-mine'] },
+          search: undefined,
+          limit: 10
+        });
+      });
+
+      it("reads nothing at all for an org_access='none' member", async () => {
+        setAuthContext({
+          scope: 'partner', partnerId: 'partner-123',
+          partnerOrgAccess: 'none', accessibleOrgIds: []
+        });
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
     });
 
     // The grouped count is ONE query for the whole page, not a per-row
@@ -1683,6 +2518,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 3 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1694,7 +2530,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({ groupBy: groupBySpy })
@@ -1718,6 +2553,11 @@ describe('org routes', () => {
     // silently see some orgs twice and miss others. This exercises the
     // general paginated branch (partner scope), NOT the own-org early-return
     // branch covered by the projection test below.
+    //
+    // This asserts the ARGUMENTS handed to a mocked `orderBy`, which cannot see
+    // what Postgres would actually run. The compiled-SQL assertions in
+    // `orgs.listQuery.test.ts` are the real guard on the emitted ORDER BY; this
+    // case pins only that the route reaches the builder on the partner branch.
     it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       let capturedOrderBy: unknown[] = [];
@@ -1727,6 +2567,8 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
         } as any)
+        // No stored order, so the sort is the bare tiebreaker.
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1759,6 +2601,7 @@ describe('org routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({ where: whereSpy })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1768,7 +2611,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce(mockOrgDeviceCounts([]));
 
       const res = await app.request('/orgs/organizations?search=contoso');
@@ -2138,35 +2980,93 @@ describe('org routes', () => {
 
   describe('GET /orgs/organizations/:id', () => {
     it('should return an organization', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }])
+      // UUID-shaped: the handler rejects a malformed `:id` with a 404 before
+      // any lookup, because it would otherwise reach a uuid column as 22P02.
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      // Two DISTINCT selects now: the org lookup, then the partner default tax
+      // rate. Staged with mockReturnValueOnce rather than one shared
+      // mockReturnValue so the test cannot pass by a single mock silently
+      // answering a second, different query.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null }])
+            })
+          })
+        } as any);
 
-      const res = await app.request('/orgs/organizations/org-1');
+      const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.id).toBe('org-1');
+      expect(body.id).toBe(orgId);
+      expect(body.partnerDefaultTaxRate).toBeNull();
+    });
+
+    it('includes the partner default tax rate', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: '0.07250' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.partnerDefaultTaxRate).toBe('0.07250');
     });
 
     it('should return 404 when organization not found', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // In the caller's accessible set AND uuid-shaped, so this reaches the
+      // real lookup and 404s on an empty result — not on the scope check or
+      // the malformed-id guard, either of which would make it vacuous.
+      const orgId = '22222222-2222-2222-2222-222222222222';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      const limit = vi.fn().mockResolvedValue([]);
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
+          where: vi.fn().mockReturnValue({ limit })
         })
       } as any);
 
-      const res = await app.request('/orgs/organizations/missing');
+      const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(404);
+      expect(limit).toHaveBeenCalled();
     });
 
     it('should block partner access when org is outside selected scope', async () => {
@@ -2177,10 +3077,174 @@ describe('org routes', () => {
         canAccessOrg: (orgId) => orgId === 'org-1'
       });
 
-      const res = await app.request('/orgs/organizations/org-999');
+      // UUID-shaped on purpose: a malformed id short-circuits to 404 before
+      // any of this, which would make the case vacuous.
+      const res = await app.request('/orgs/organizations/99999999-9999-9999-9999-999999999999');
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      // The org row is never queried in the caller's own context. Since Wave 4
+      // the handler does probe for an ARCHIVED org first — that probe is
+      // hard-pinned to the caller's own partner and returns null here, so the
+      // 404 stands.
+      expect(db.select).not.toHaveBeenCalled();
+      expect(loadArchivedOrg).toHaveBeenCalledWith({
+        orgId: '99999999-9999-9999-9999-999999999999',
+        scope: { kind: 'partner', partnerId: 'partner-123' }
+      });
+    });
+
+    it("scopes the archived detail probe to a 'selected' member's selection", async () => {
+      selectedOrgIds.current = ['77777777-7777-7777-7777-777777777777'];
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        partnerOrgAccess: 'selected',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: (orgId) => orgId === 'org-1'
+      });
+
+      await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(loadArchivedOrg).toHaveBeenCalledWith({
+        orgId: '77777777-7777-7777-7777-777777777777',
+        scope: {
+          kind: 'partnerSelection',
+          partnerId: 'partner-123',
+          orgIds: ['77777777-7777-7777-7777-777777777777']
+        }
+      });
+    });
+
+    it("does not probe the archived door at all for an org_access='none' member", async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        partnerOrgAccess: 'none',
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
+      });
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(404);
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
+    });
+
+    it('serves an archived org of the caller partner through the read-only archived context', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: (orgId) => orgId === 'org-1'
+      });
+      vi.mocked(loadArchivedOrg).mockResolvedValueOnce({
+        id: '77777777-7777-7777-7777-777777777777',
+        name: 'Archived Co',
+        status: 'archived',
+        archived: true
+      } as any);
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe('77777777-7777-7777-7777-777777777777');
+      expect(body.archived).toBe(true);
+      // Served ONLY through the archived door — never through the request's own
+      // read-write context.
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // #4166 — system scope reaches the row through the NORMAL read (it
+    // short-circuits every RLS predicate), so the flag has to be applied there
+    // too or the same org would come back read-only-flagged for a partner and
+    // unflagged for a platform admin.
+    it('flags an archive-drain org for system scope the same way it flags an archived one', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '77777777-7777-7777-7777-777777777777',
+              name: 'Draining Co',
+              status: 'offboarding',
+              offboardingTarget: 'archive'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: 'offboarding', archived: true });
+    });
+
+    // A CHURN drain ends at `churned`, which is deliberately invisible — it is
+    // not part of the archive lifecycle and must not be flagged read-only.
+    it('does NOT flag a churn drain as archive-lifecycle', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '77777777-7777-7777-7777-777777777777',
+              name: 'Churning Co',
+              status: 'offboarding',
+              offboardingTarget: 'churn'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).archived).toBeUndefined();
+    });
+
+    // `:id` is a raw path segment and every lookup feeds it to a uuid column,
+    // where a non-UUID raises Postgres 22P02 — an uncaught 500 plus a Sentry
+    // event that any caller can pump with `/organizations/undefined`.
+    it('404s a malformed id without touching the database', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['33333333-3333-3333-3333-333333333333']
+      });
+
+      const res = await app.request('/orgs/organizations/not-a-uuid');
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('404s a system-scope caller on a malformed id too (no 22P02 500)', async () => {
+      setAuthContext({ scope: 'system' });
+
+      const res = await app.request('/orgs/organizations/undefined');
 
       expect(res.status).toBe(404);
       expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // A partner token with no partnerId has no tenant to scope the archived
+    // probe to, so it must read nothing at all — never every partner's.
+    it('does not probe for an archived org when the partner token carries no partner id', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: null,
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
+      });
+
+      const res = await app.request('/orgs/organizations/44444444-4444-4444-4444-444444444444');
+
+      expect(res.status).toBe(404);
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
     });
   });
 
@@ -2215,6 +3279,271 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    // ── lifecycle-internal settings keys (review r3) ───────────────────────
+    // `settings` is a client-writable z.any() blob and this handler replaces
+    // the column WHOLESALE, so without the strip a caller could seed the
+    // purge-retry counter (neutering the ceiling) or the prior-status keys
+    // (choosing what a later restore/unfence reactivates the tenant AS). The
+    // strip helper's own matrix is services/orgSettingsInternalKeys.test.ts;
+    // this pins that the write path actually applies it.
+    describe('lifecycle-internal settings keys', () => {
+      const patchSettings = async (settings: Record<string, unknown>) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        // assertNotLocked('defaults', ...) resolves with no locks.
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ partnerId: 'partner-123', settings: {} }])
+          })
+        } as any);
+        const captured: Record<string, unknown>[] = [];
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn((values: Record<string, unknown>) => {
+            captured.push(values);
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+              })
+            };
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings })
+        });
+        return { res, written: captured[0]?.settings as Record<string, unknown> | undefined };
+      };
+
+      // `vi.clearAllMocks()` (global beforeEach) clears CALLS but not
+      // implementations, so the persistent db.select stub above would leak a
+      // `.limit`-less chain into every later test. Reinstate the factory
+      // default explicitly.
+      afterEach(() => {
+        vi.mocked(db.select).mockImplementation((() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+              limit: vi.fn(() => Promise.resolve([]))
+            }))
+          }))
+        })) as any);
+      });
+
+      it('strips every engine-owned key from a client PATCH, keeping the rest', async () => {
+        const { res, written } = await patchSettings({
+          purgingRecoveryAttempts: -9999,
+          archivePriorStatus: 'active',
+          mergePriorStatus: 'active',
+          archivePurgeWarn14SentAt: '2026-01-01T00:00:00.000Z',
+          archivePurgeWarn1SentAt: '2026-01-01T00:00:00.000Z',
+          branding: { primaryColor: '#123456' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(written).toEqual({ branding: { primaryColor: '#123456' } });
+      });
+
+      it('leaves an ordinary settings payload untouched', async () => {
+        const { res, written } = await patchSettings({ branding: { primaryColor: '#abc' } });
+
+        expect(res.status).toBe(200);
+        expect(written).toEqual({ branding: { primaryColor: '#abc' } });
+      });
+    });
+
+    // ── transitions OUT of a frozen status (review fix I-6) ────────────────
+    // The update schema already excludes archived/purging/merging as a TARGET,
+    // but nothing guarded the SOURCE side: for system scope `conditions` is
+    // just `id = ? AND deleted_at IS NULL`, and an archived org has
+    // `deleted_at IS NULL`. So PATCH {status:'active'} un-archived the org
+    // through the WRONG door — `restoreOrganizationTenantAccess` lifts only
+    // `tenant_suspended`, never Wave 4's `org_archived` tag, leaving a live,
+    // billable org whose entire fleet 401s forever with stale purge_at.
+    describe('lifecycle-frozen source statuses', () => {
+      const queueCurrentStatus = (status: string) => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ status }])
+            })
+          })
+        } as any);
+      };
+
+      const patchStatus = (status = 'active') =>
+        app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+
+      it.each(['archived', 'purging', 'merging'])(
+        '409s a status write on a %s org, for platform-admin system scope too',
+        async (current) => {
+          setAuthContext({
+            scope: 'system', partnerId: null,
+            user: { id: 'admin-1', email: 'a@b.test', name: 'Admin', isPlatformAdmin: true }
+          });
+          queueCurrentStatus(current);
+
+          const res = await patchStatus();
+
+          expect(res.status).toBe(409);
+          const body = await res.json();
+          expect(body.code).toBe('ORG_LIFECYCLE_FROZEN');
+          expect(body.currentStatus).toBe(current);
+          expect(db.update).not.toHaveBeenCalled();
+        }
+      );
+
+      it('points an archived org at the restore endpoint', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('archived');
+
+        const res = await patchStatus();
+
+        expect((await res.json()).error).toContain('/restore');
+      });
+
+      it('points a merging org at the merge endpoints', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('merging');
+
+        const res = await patchStatus();
+
+        expect((await res.json()).error).toContain('merge');
+      });
+
+      it('does not block a status write on a normal org', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('suspended');
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Acme' }])
+            })
+          })
+        } as any);
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(200);
+      });
+
+      // Review r3: the pre-read guard is a SEPARATE statement, so it is only
+      // advisory — an archive request, the purge CAS or a merge fence can land
+      // between the read and the UPDATE, whose base WHERE checks nothing but
+      // id + deleted_at. The frozen set is re-asserted IN the mutation.
+      it('re-asserts the frozen set inside the UPDATE WHERE (compiled SQL)', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');
+        let capturedWhere: unknown;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              capturedWhere = cond;
+              return { returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Acme' }]) };
+            })
+          })
+        } as any);
+
+        await patchStatus('suspended');
+
+        // `../db/schema` is mocked with sentinel columns here, so compiled
+        // columns render as bound params — the params ARE the signal: the
+        // status column sentinel, constrained by NOT IN the frozen three.
+        const { sql: compiled, params } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not in');
+        expect(params).toEqual(
+          expect.arrayContaining([
+            { __column: 'organizations.status' },
+            'archived',
+            'purging',
+            'merging',
+          ]),
+        );
+      });
+
+      it('409s when the org froze BETWEEN the guard read and the UPDATE (0-row race)', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');   // guard read: not frozen, proceed
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]) // the WHERE excluded it
+            })
+          })
+        } as any);
+        queueCurrentStatus('archived'); // re-read: it got archived under us
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.code).toBe('ORG_LIFECYCLE_FROZEN');
+        expect(body.currentStatus).toBe('archived');
+      });
+
+      it('still 404s a 0-row status update when the org is simply gone', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) })
+          })
+        } as any);
+        // Re-read finds nothing — not a frozen race, a missing org.
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe('Organization not found');
+      });
+
+      it('does not constrain the WHERE for a non-status update', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              capturedWhere = cond;
+              return { returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Renamed' }]) };
+            })
+          })
+        } as any);
+
+        await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).not.toContain('not in');
+      });
+
+      it('does not read the status at all for a non-status update', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Renamed' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(db.select).not.toHaveBeenCalled();
+      });
     });
 
     // #3967 — renaming an org's slug onto a sibling's must 409, not silently
@@ -2462,7 +3791,13 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      // #3996 — see the partner cases: composed with the status write, and
+      // the bare post-flip abort must be gone.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -2483,7 +3818,11 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -2632,6 +3971,25 @@ describe('org routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
+      // #4166 — making an archive-draining org VISIBLE must not make it
+      // WRITABLE. The read fix widens only the READ ONLY archived door;
+      // `computeAccessibleOrgIds` is untouched, so an `offboarding` org still
+      // fails `canAccessOrg`, and the suspended override refuses it because its
+      // ownership probe requires `status === 'suspended'`.
+      it('keeps an archive-draining org unwritable even though it is now listable', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'offboarding' }]) as any
+        );
+
+        const res = await patchOrg('org-draining', { status: 'active' });
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(db.update).not.toHaveBeenCalled();
+        expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
+      });
+
       it('does NOT let a non-status edit ride the override — suspended orgs stay unwritable', async () => {
         setSuspendedOrgPartnerContext('all');
 
@@ -2711,10 +4069,22 @@ describe('org routes', () => {
       it('ordinary read routes still cannot see the suspended org (no visibility widening)', async () => {
         setSuspendedOrgPartnerContext('all');
 
-        const res = await app.request('/orgs/organizations/org-suspended');
+        // The suspended org's id, UUID-shaped so the read route reaches its
+        // real branches instead of the malformed-id short-circuit.
+        const suspendedOrgId = '88888888-8888-8888-8888-888888888888';
+        const res = await app.request(`/orgs/organizations/${suspendedOrgId}`);
 
         expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
         expect(db.select).not.toHaveBeenCalled();
+        // Wave 4's archived probe is the only extra lookup, and it is scoped to
+        // ARCHIVED orgs of the caller's own partner — a SUSPENDED org resolves
+        // to null there (loadArchivedOrg checks the status itself), so this
+        // route still cannot see it.
+        expect(loadArchivedOrg).toHaveBeenCalledWith({
+          orgId: suspendedOrgId,
+          scope: { kind: 'partner', partnerId: 'partner-123' }
+        });
       });
     });
 
@@ -3152,6 +4522,11 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated by system');
+      // #3996 — a name-only patch ends no drain, so it must NOT take the
+      // tenant-row/command-row locks. A gate widened to every PATCH would
+      // otherwise put a FOR UPDATE and a full device enumeration on renames,
+      // and a pass-through mock looks identical whether it ran or not.
+      expect(abortOrganizationOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
   });
 
@@ -3173,6 +4548,12 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — see the partner delete: `churned` ends the drain, so the
+      // cancel belongs in the same transaction as the status write.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -3249,6 +4630,55 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
+    // decommissioned device still inflated the Sites table while the record's
+    // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
+    // a JSON dump of the Drizzle condition embeds `devices.status`'s
+    // `enumValues`, which contains the literal 'decommissioned' and would make
+    // this pass against unfixed code.
+    it('excludes decommissioned devices from the per-site device count', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.select)
@@ -4079,7 +5509,9 @@ describe('org routes', () => {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {}, invoiceDeviceAppendix: true,
+              }])
             })
           })
         };
@@ -4089,7 +5521,9 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+      expect(body).toMatchObject({
+        id: 'partner-123', name: 'Acme MSP', slug: 'acme', invoiceDeviceAppendix: true,
+      });
 
       expect(selectedColumns).toBeDefined();
       const keys = Object.keys(selectedColumns!);
@@ -4101,6 +5535,7 @@ describe('org routes', () => {
         'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
         'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
         'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'invoiceDeviceAppendix',
         'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
       ]) {
         expect(keys).toContain(expected);
@@ -4118,6 +5553,39 @@ describe('org routes', () => {
       ]) {
         expect(keys).not.toContain(internal);
       }
+    });
+
+    // #5075 W04 — Service Management mode surfaces on the partner settings
+    // read so the web settings card can render the current mode + bound PSA
+    // connection.
+    it('includes serviceManagementMode and serviceManagementPsaConnectionId', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // mockReturnValueOnce (not the persistent mockReturnValue the two tests
+      // above use): this describe's siblings prove that a persistent stub set
+      // here bleeds into later, unrelated db.select() calls in this file —
+      // vi.clearAllMocks() (beforeEach) clears call history but NOT a
+      // programmed mockReturnValue — and flipped an unrelated, otherwise-
+      // unmocked test 400 waiting on Postgres returning no rows into a 200.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'partner-123',
+              name: 'Acme MSP',
+              settings: {},
+              serviceManagementMode: 'native',
+              serviceManagementPsaConnectionId: null,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.serviceManagementMode).toBe('native');
+      expect(body.serviceManagementPsaConnectionId).toBeNull();
     });
   });
 
@@ -4153,6 +5621,90 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
+    it.each([
+      ['selected', ['org-1']],
+      ['none', []],
+      [null, []],
+      [undefined, []],
+    ] as const)(
+      'rejects partnerOrgAccess=%s before any partner-global side effect',
+      async (partnerOrgAccess, accessibleOrgIds) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: [...accessibleOrgIds],
+        });
+
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(clearPartnerScopePolicyCache).not.toHaveBeenCalled();
+        expect(clearPartnerAllowlistCache).not.toHaveBeenCalled();
+        expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows full-partner authority to update a partner-global security control', async () => {
+      setAuthContext({ scope: 'partner', partnerOrgAccess: 'all' });
+      const currentPartner = {
+        id: 'partner-123',
+        name: 'Acme MSP',
+        settings: { security: { requireMfa: true, maxSessions: 4 } },
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([currentPartner]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...currentPartner,
+              settings: { security: { requireMfa: false, maxSessions: 4 } },
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        settings: { security: { requireMfa: false, maxSessions: 4 } },
+      });
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(clearPartnerScopePolicyCache).toHaveBeenCalledWith('partner-123');
+      expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'partner.settings.update',
+        resourceId: 'partner-123',
+      }));
+    });
+
     it.each(['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const)(
       'accepts %s as the partner default language',
       async (language) => {
@@ -4280,6 +5832,151 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    // finding #2b: assertNotLocked (services/effectiveSettings.ts) compares with
+    // isDeepStrictEqual, which is array-order-sensitive. PUT /ai/budget already
+    // normalises alertThresholdPercents before persisting; this partner-scoped
+    // aiBudgets write path (the partner-wide equivalent) must do the same so a
+    // legitimate no-op resubmit in a different array order isn't stored
+    // differently from what was actually enforced.
+    it('normalises aiBudgets.alertThresholdPercents before persisting', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let persistedSettings: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          persistedSettings = data.settings as Record<string, unknown>;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: persistedSettings }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { aiBudgets: { alertThresholdPercents: [95, 50, 50] } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(persistedSettings?.aiBudgets).toMatchObject({ alertThresholdPercents: [50, 95] });
+    });
+
+    // spec §4.2 #3: a partner-wide cap/rung change must be re-evaluated for
+    // every org off-request, since the effective budget for orgs with no
+    // org-level override changes the instant the partner-wide default does.
+    it('enqueues a partner-wide budget re-evaluation when aiBudgets change (#4388)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: { aiBudgets: { monthlyBudgetCents: 5000 } } }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { aiBudgets: { monthlyBudgetCents: 5000 } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).toHaveBeenCalledWith('partner-123');
+    });
+
+    // W02 minor 8: `!== undefined` fires the fleet-wide fan-out on every save
+    // of the AI settings card, including the many that re-post an unchanged
+    // aiBudgets block alongside an edit to some other field. The fan-out walks
+    // EVERY org of the partner and evaluates each one, so a no-op resubmit is
+    // real, avoidable load. Compare the value actually being persisted against
+    // the previous one.
+    it('does NOT enqueue when the submitted aiBudgets is deep-equal to the stored one (#4388 W02)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const storedAiBudgets = { monthlyBudgetCents: 5000, alertThresholdPercents: [50, 95] };
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: { aiBudgets: storedAiBudgets } };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        // Rungs resubmitted in a different order: normalisation makes this
+        // byte-identical to what is already stored, so it is a true no-op.
+        body: JSON.stringify({ settings: { aiBudgets: { monthlyBudgetCents: 5000, alertThresholdPercents: [95, 50] } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
+    });
+
+    // NOTE: `updatePartnerSettingsSchema`'s `aiBudgets` field is
+    // `z.object({...}).optional()`, not `.nullable()` — an explicit
+    // `{ aiBudgets: null }` is rejected by zValidator before the handler ever
+    // runs (confirmed: zod's `invalid_type` on `null` for an optional object).
+    // So the `!== undefined` check in the handler (rather than a truthy check)
+    // is written to also cover a future null-clearing payload once the schema
+    // allows one, but that scenario isn't reachable through this route today
+    // and isn't exercised here — only the two reachable cases are.
+
+    it('does NOT enqueue a partner-wide budget re-evaluation on a PATCH that does not touch aiBudgets', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, name: 'Acme Managed Services' }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Acme Managed Services' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
     });
 
     // issue #2124: a partner-locked pin can freeze every child org's fleet, so an
@@ -4929,6 +6626,166 @@ describe('org routes', () => {
     });
   });
 
+  // #5075 W04 — Service Management mode. `native`/`off` force the PSA
+  // connection id to null; `external` requires a partner-wide (org_id IS
+  // NULL) psa_connections row owned by THIS partner.
+  describe('PATCH /orgs/partners/me — serviceManagementMode (#5075 W04)', () => {
+    const validConnectionId = '11111111-1111-4111-8111-111111111111';
+    const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+
+    function mockCurrentPartnerSelect() {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any;
+    }
+
+    function mockPsaConnectionSelect(rows: Array<{ id: string }>) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      } as any;
+    }
+
+    it('sets mode to off and forces the connection id to null', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'off',
+                serviceManagementPsaConnectionId: null,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'off' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('off');
+      expect(setData!.serviceManagementPsaConnectionId).toBeNull();
+    });
+
+    it('rejects external mode with no connection id', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'external' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects external mode when the connection lookup finds no row (cross-partner or org-scoped)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([]));
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts external mode with a matching partner-wide connection', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([{ id: validConnectionId }]));
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'external',
+                serviceManagementPsaConnectionId: validConnectionId,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('external');
+      expect(setData!.serviceManagementPsaConnectionId).toBe(validConnectionId);
+
+      // The mocked `.where()` answers with its canned row whatever predicate it
+      // is handed, so a 200 here proves only that SOME row came back — it does
+      // NOT prove the probe asked for the right one. Assert the three ownership
+      // conditions on the spies instead. Dropping any of them is a real
+      // cross-tenant defect: without the partner_id equality a partner could
+      // bind ANOTHER partner's PSA credentials, and without `org_id IS NULL` an
+      // org-scoped connection would be bound as if it were partner-wide and
+      // then serve every org under the partner from one org's credentials.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.id, validConnectionId);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.partnerId, 'partner-123');
+      expect(vi.mocked(isNull)).toHaveBeenCalledWith(psaConnections.orgId);
+    });
+
+    it('rejects a connection id with no mode alongside it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementPsaConnectionId: validConnectionId }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/requires serviceManagementMode/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('scope enforcement on /partners/me routes', () => {
     it('returns 403 when a system-scoped token hits GET /partners/me', async () => {
       setAuthContext({ scope: 'system' });
@@ -5117,6 +6974,8 @@ describe('org routes', () => {
       expect(writtenArg.settings.timezone).toBe('America/Chicago');
       expect(writtenArg.settings.branding).toEqual({ theme: 'dark' });
       expect(writtenArg.settings.organizationOrder).toEqual([id2, id1]);
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind: 'partner', id: 'partner-123' });
+      expect(vi.mocked(lockMfaPolicySettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.select).mock.invocationCallOrder[1]!);
     });
 
     it('rejects a system-scoped caller', async () => {
@@ -5171,7 +7030,17 @@ describe('org routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 1 }])
         })
       } as any);
-      // 2) main list query
+      // 2) partner-settings read — throws. Since #4004 this runs BEFORE the
+      // page query, because its result is the leading ORDER BY term; the
+      // soft-fail therefore has to leave the list query itself still runnable.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockRejectedValue(new Error('db blew up'))
+          })
+        })
+      } as any);
+      // 3) main list query — still runs, ordered by the created_at, id fallback
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -5180,14 +7049,6 @@ describe('org routes', () => {
                 orderBy: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org 1' }])
               })
             })
-          })
-        })
-      } as any);
-      // 3) partner-settings read — throws
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockRejectedValue(new Error('db blew up'))
           })
         })
       } as any);
@@ -5222,6 +7083,33 @@ describe('org routes', () => {
 
   describe('POST /orgs/import/preview and /orgs/import (#3242)', () => {
     const previewBody = { rows: [{ organization: 'Acme', site: 'HQ' }] };
+
+    it.each([
+      ['selected', '/orgs/import/preview', 'preview'],
+      ['none', '/orgs/import/preview', 'preview'],
+      ['selected', '/orgs/import', 'commit'],
+      ['none', '/orgs/import', 'commit'],
+    ] as const)(
+      'rejects partnerOrgAccess=%s on %s before entering the system-context %s seam',
+      async (partnerOrgAccess, path, seam) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: partnerOrgAccess === 'selected' ? ['org-1'] : [],
+        });
+
+        const res = await app.request(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(previewBody),
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
+        expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+      },
+    );
 
     it('preview returns the annotated rows for the partner scope caller', async () => {
       setAuthContext({ scope: 'partner' });
@@ -5380,5 +7268,46 @@ describe('org routes', () => {
       });
       expect(res.status).toBe(400);
     });
+  });
+});
+
+describe('org status is not manually settable to lifecycle states', () => {
+  for (const status of ['merging', 'archived', 'purging']) {
+    it(`create rejects status='${status}'`, () => {
+      const r = createOrganizationSchema.safeParse({ name: 'X', slug: 'x', status });
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.some(i => i.path[0] === 'status')).toBe(true);
+    });
+    it(`update rejects status='${status}'`, () => {
+      const r = updateOrganizationSchema.safeParse({ status });
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.some(i => i.path[0] === 'status')).toBe(true);
+    });
+  }
+});
+
+// Execution plane W05 (#5716, spec §8) — the per-org consent switch for
+// sandboxed analysis.
+describe('aiExternalProcessing consent flag', () => {
+  it('is accepted on UPDATE', () => {
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: true }).success).toBe(true);
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: false }).success).toBe(true);
+  });
+
+  it('rejects a non-boolean rather than coercing it', () => {
+    // A consent flag that accepts the string "false" and stores `true` is the
+    // worst possible failure mode for this particular field.
+    const r = updateOrganizationSchema.safeParse({ aiExternalProcessing: 'true' });
+    expect(r.success).toBe(false);
+  });
+
+  it('is NOT settable at CREATE — an org is never born already consenting', () => {
+    const r = createOrganizationSchema.safeParse({
+      name: 'X', slug: 'x', aiExternalProcessing: true,
+    });
+    // Either the field is stripped or the parse fails; what must never happen is
+    // a created org carrying consent nobody granted.
+    expect(r.success ? (r.data as Record<string, unknown>).aiExternalProcessing : undefined)
+      .toBeUndefined();
   });
 });

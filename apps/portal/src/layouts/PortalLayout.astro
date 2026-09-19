@@ -1,16 +1,22 @@
 ---
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
-import { loadPortalBranding } from '../lib/server';
+import { loadPortalBranding, loadPortalProfile } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
+import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
+import { buildPortalCustomCss } from '../lib/customCss';
 
 interface Props {
   title: string;
   /** Partner brand accent for a document rendered on this page (proposal or
    *  invoice), emitted below as a nonced <style> element (lib/docAccent.ts). */
   docAccent?: string | null;
+  /** The page sits on a linen sheet laid on the plaster desk. Paper documents
+   *  (proposal, invoice) opt out: their own white page is the sheet, and a
+   *  sheet under a sheet is the nested card the world refuses. */
+  sheet?: boolean;
 }
 
 // Design contract (The Guest Ledger) — a frontmatter comment so it stays out of
@@ -21,18 +27,34 @@ interface Props {
 // for titles and money, Hanken Grotesk elsewhere, statuses as a dot plus
 // uppercase tracked text, 12px surfaces. FIRST VIEWPORT: quiet left rail with
 // the firm's name; serif page title + one line of service copy; the ledger.
-const { title, docAccent } = Astro.props;
+const { title, docAccent, sheet = true } = Astro.props;
 // Astro.url.pathname includes the base (e.g. /c/devices); strip it so the
 // active-nav comparison below stays base-agnostic.
 const pathname = stripBase(Astro.url.pathname);
 const branding = await loadPortalBranding(Astro.request);
+const profile = await loadPortalProfile(Astro.request);
 // #2345 — Tickets is hidden when the org's branding has enableTickets: false.
 // Fail-open when the flag is absent (shared-domain portals get no branding row);
 // the API's 403 gate on /portal/tickets/* is the real enforcement.
 const navItems = buildPortalNavItems(branding);
 
 const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
+// Org-authored portal styling (#5940) — saved via the branding editor and
+// returned by /portal/branding, but never reached the DOM until now. Emitted
+// as its own nonced <style> element (see lib/customCss.ts) after the base
+// stylesheet + accent so it can override either, matching the docs' example
+// of targeting `.portal-header`.
+const customCssContent = buildPortalCustomCss(branding.customCss);
 const cspNonce = Astro.locals.cspNonce;
+
+// Curated chrome accent (packages/shared/src/types/portalChromeAccent.ts).
+// The default key ('spruce') needs no override block, so it's treated the
+// same as null/unset/unrecognized — the attribute is simply omitted and the
+// base :root tokens (already spruce) apply.
+const chromeAccent =
+  isPortalChromeAccent(branding.chromeAccent) && branding.chromeAccent !== PORTAL_CHROME_ACCENT_DEFAULT
+    ? branding.chromeAccent
+    : undefined;
 
 const isActive = (href: string) => {
   if (href === '/') return pathname === '/';
@@ -41,7 +63,7 @@ const isActive = (href: string) => {
 ---
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-accent={chromeAccent}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -50,9 +72,10 @@ const isActive = (href: string) => {
     <title>{title} | {branding.name || 'Customer Portal'}</title>
     {branding.faviconUrl && <link rel="icon" href={branding.faviconUrl} />}
     {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
+    {customCssContent && <style nonce={cspNonce} set:html={customCssContent}></style>}
     <ClientRouter />
   </head>
-  <body class="min-h-screen bg-background antialiased">
+  <body class="min-h-dvh bg-background antialiased">
     <a
       href="#portal-main"
       class="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50"
@@ -77,6 +100,7 @@ const isActive = (href: string) => {
           {navItems.map((item) => (
             <a
               href={withBase(item.href)}
+              data-testid={`portal-nav-${item.href.slice(1) || 'home'}`}
               aria-current={isActive(item.href) ? 'page' : undefined}
               class:list={[
                 'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',
@@ -118,7 +142,15 @@ const isActive = (href: string) => {
       </aside>
 
       <div class="flex min-w-0 flex-1 flex-col">
-        <header class="flex h-16 items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
+        {/* Header and main share one column (max-w-5xl, left-aligned against the
+            rail): the actions sit above the content's right edge, not the
+            viewport's, so a wide screen reads as page + margin rather than
+            three islands. `.portal-header` is the selector the branding docs
+            document as the supported customCss target
+            (apps/docs/.../branding.mdx) — keep it even though nothing else in
+            this file reads the class. */}
+        <header class="portal-header border-b border-border/70">
+          <div class="flex h-16 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
           <div class="flex min-w-0 items-center gap-3">
             <details class="relative shrink-0 lg:hidden">
               <summary class="cursor-pointer list-none rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent">
@@ -128,13 +160,25 @@ const isActive = (href: string) => {
                 {navItems.map((item) => (
                   <a
                     href={withBase(item.href)}
+                    aria-current={isActive(item.href) ? 'page' : undefined}
                     class:list={[
-                      'block rounded-md px-3 py-2 text-sm transition-colors',
+                      'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',
                       isActive(item.href)
-                        ? 'bg-accent font-semibold text-foreground'
+                        ? 'font-semibold text-foreground'
                         : 'font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground'
                     ]}
                   >
+                    {/* Same register mark the rail carries: the phone menu is
+                        the same navigation, so it marks "you are here" the same
+                        way — a filled accent wash is the pill this world
+                        refuses, and it carried no aria-current at all. */}
+                    <span
+                      aria-hidden="true"
+                      class:list={[
+                        'mr-3 h-4 w-0.5 rounded-full transition-colors duration-150',
+                        isActive(item.href) ? 'bg-primary' : 'bg-transparent group-hover:bg-border'
+                      ]}
+                    ></span>
                     {item.label}
                   </a>
                 ))}
@@ -147,6 +191,18 @@ const isActive = (href: string) => {
               <span class="truncate font-display text-xl font-semibold tracking-tight text-foreground lg:hidden">
                 {branding.name || 'Customer Portal'}
               </span>
+            )}
+            {/* At lg+ the rail carries the brand, so the header's left side names
+                the account instead: the customer's firm, and who is signed in.
+                Without it the desktop header was an 80px band with nothing but
+                the actions at far right. */}
+            {profile && (
+              <div data-testid="portal-account-context" class="hidden min-w-0 lg:block">
+                <p class="truncate text-sm font-semibold text-foreground">{profile.organizationName}</p>
+                <p class="truncate text-xs text-muted-foreground">
+                  Signed in as {profile.name || profile.email}
+                </p>
+              </div>
             )}
           </div>
 
@@ -178,10 +234,30 @@ const isActive = (href: string) => {
               Sign out
             </button>
           </div>
+          </div>
         </header>
 
-        <main id="portal-main" class="settle-in mx-auto w-full max-w-5xl flex-1 px-5 pb-16 pt-2 sm:px-8">
-          <slot />
+        <main id="portal-main" class="settle-in w-full max-w-6xl flex-1 px-3 pb-12 pt-4 sm:px-8 sm:pt-8">
+          {/* Figure and ground: the page is a sheet on the desk. The rail and
+              header stay on plaster; the content gets a linen surface with a
+              hairline edge, so the leftover width on a wide screen reads as
+              desk rather than as a page that never filled its column. */}
+          <div
+            data-testid="portal-sheet"
+            class:list={[
+              sheet && 'rounded-lg border border-border/70 bg-card px-4 py-6 sm:px-9 sm:py-8',
+            ]}
+          >
+            <slot />
+
+            {/* A ledger page has a foot. Partner footer text when the firm
+                wrote one; otherwise the firm's own name, quietly. No rule of
+                its own: most pages already close on one (ledger foot line,
+                empty-state band) and two rules read as a mistake. */}
+            <footer data-testid="portal-foot" class="mt-12 text-xs text-muted-foreground">
+              {branding.footerText || branding.name || 'Customer Portal'}
+            </footer>
+          </div>
 
           {/* The support contact used to live only in the desktop sidebar, and
               the mobile menu carries nav links only, so on a phone a customer

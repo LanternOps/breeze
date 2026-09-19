@@ -4,6 +4,7 @@
     "analytics": "Analytics",
     "approvals": "Approvals",
     "denials": "Denials",
+    "proposals": "Script Proposals",
     "failedToLoadData": "Failed to load data",
     "failedToLoadToolExecutions": "Failed to load tool executions",
     "guardrails": "Guardrails",
@@ -16,6 +17,19 @@
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Script Proposals",
+    "proposalsPerDay": "Proposals per day",
+    "reviewerDisagreements": "Reviewer disagreements",
+    "humanRejectedAfterApprove": "Human rejected after AI approved",
+    "humanApprovedAfterReject": "Human approved after AI rejected",
+    "unattendedRuns": "Unattended runs",
+    "laneState": "Unattended lane",
+    "laneOpen": "Open (paused after repeated failed verifications)",
+    "laneClosed": "Closed",
+    "laneNotConfigured": "Not configured for this organization",
+    "noData": "No script proposals in this time period"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "All",
@@ -1031,12 +1045,14 @@
       "loadWithStatus": "Failed to load rules (HTTP {{status}})",
       "load": "Failed to load rules",
       "updateRule": "Failed to update rule",
-      "deleteRule": "Failed to delete rule"
+      "deleteRule": "Failed to delete rule",
+      "reapproveRule": "Failed to re-approve rule"
     },
     "toasts": {
       "defaultVerdictSet": "Default verdict set to {{verdict}}",
       "ruleToggled": "Rule \"{{name}}\" {{state}}",
-      "ruleDeleted": "Rule \"{{name}}\" deleted"
+      "ruleDeleted": "Rule \"{{name}}\" deleted",
+      "ruleReapproved": "Rule \"{{name}}\" re-approved — auto-approve restored"
     },
     "states": {
       "disabled": "disabled",
@@ -1044,7 +1060,8 @@
     },
     "description": "Software policies are evaluated first — an allowlist/blocklist match decides before these rules. Rules then run in priority order (lowest first); the first match decides.",
     "actions": {
-      "addRule": "Add rule"
+      "addRule": "Add rule",
+      "reapprove": "Re-approve"
     },
     "defaultVerdict": {
       "label": "Default verdict",
@@ -1070,6 +1087,15 @@
       "title": "Delete PAM rule",
       "message": "Delete rule \"{{name}}\"? Elevation requests will no longer match it.",
       "confirm": "Delete rule"
+    },
+    "staleTierBadge": {
+      "label": "Stale",
+      "tooltip": "Risk tier {{tier}} no longer matches anything this rule can select, so it can never match.",
+      "tooltipWithTiers": "Risk tier {{tier}} no longer matches anything this rule can select, so it can never match. Tiers currently in use: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Auto-approve suspended",
+      "tooltip": "This rule auto-approved before the upgrade. It now requires human approval until an administrator re-approves it."
     }
   },
   "pamPamSignerGroupsTab": {
@@ -1344,7 +1370,7 @@
     "providers": {
       "umbrella": {
         "label": "Cisco Umbrella",
-        "helpText": "API key + secret from the Umbrella Reporting API; organizationId from your Umbrella dashboard URL.",
+        "helpText": "API key + secret from an Umbrella API Keys credential. Organization ID is optional — the token itself scopes the org.",
         "apiKeyPlaceholder": "reporting-api-key",
         "apiSecretPlaceholder": "reporting-api-secret",
         "organizationIdPlaceholder": "1234567"

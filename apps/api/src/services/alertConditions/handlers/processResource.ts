@@ -32,7 +32,7 @@ function createProcessResourceHandler(handlerType: 'process_cpu_high' | 'process
         .orderBy(desc(serviceProcessCheckResults.timestamp));
 
       if (results.length === 0) {
-        return { passed: false, description: `No recent results for process ${cond.processName}` };
+        return { passed: false, description: `No recent results for process ${cond.processName}`, dataAvailable: false };
       }
 
       const allExceed = results.every(r => {

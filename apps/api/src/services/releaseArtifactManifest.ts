@@ -6,6 +6,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { assertDistributableReleaseAsset, isUnsignedSelfHostAsset } from './releaseAssetTrust';
+import { safeFetchFollowingRedirects } from './urlSafety';
 
 // Warn once per asset name per process. This fires on the normal, intended path
 // for a stock public release (#3504) — every self-hoster on BINARY_SOURCE=github
@@ -95,7 +96,12 @@ export class ReleaseAssetNotDistributableError extends Error {
 }
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-const MAX_MANIFEST_BYTES = 1024 * 1024;
+/**
+ * Ceiling for the manifest and its signature. Exported because binarySync.ts
+ * fetches the SAME two artifacts by a second path (#4262) and must not drift
+ * from this value — an unexported copy there was a comment-enforced promise.
+ */
+export const MAX_MANIFEST_BYTES = 1024 * 1024;
 const PUBLIC_KEY_ENV_NAMES = [
   "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
   "BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
@@ -114,6 +120,8 @@ type ReleaseArtifactManifestAsset = {
   // predating this field, which is tolerated everywhere it's read (treated
   // as "no edition claim", never as "self-host" by default).
   edition?: unknown;
+  signingIdentity?: unknown;
+  signingTeamId?: unknown;
 };
 
 type ReleaseArtifactManifest = {
@@ -140,7 +148,36 @@ export type VerifiedReleaseArtifact = {
   platformTrust: string | null;
   intendedUse: string | null;
   edition: string | null;
+  signingIdentity: string | null;
+  signingTeamId: string | null;
 };
+
+function readMacosPublisher(
+  entry: ReleaseArtifactManifestAsset,
+  assetName: string,
+  required: boolean,
+): { signingIdentity: string | null; signingTeamId: string | null } {
+  const identity = entry.signingIdentity;
+  const teamId = entry.signingTeamId;
+  if (identity === undefined && teamId === undefined && !required) {
+    return { signingIdentity: null, signingTeamId: null };
+  }
+  if (
+    typeof identity !== "string" ||
+    identity.length < 1 ||
+    identity.length > 256 ||
+    /[\r\n]/.test(identity) ||
+    typeof teamId !== "string" ||
+    !/^[A-Z0-9]{10}$/.test(teamId) ||
+    !identity.startsWith("Developer ID Installer: ") ||
+    !identity.endsWith(` (${teamId})`)
+  ) {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact manifest has invalid macOS signing identity for ${assetName}`,
+    );
+  }
+  return { signingIdentity: identity, signingTeamId: teamId };
+}
 
 function sha256Hex(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
@@ -368,6 +405,8 @@ export async function verifyReleaseArtifactBuffer(args: {
   expectedRepository?: string;
   expectedRelease?: string | null;
   expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
 }): Promise<VerifiedReleaseArtifact> {
   verifyManifestSignature(args.manifestBytes, args.signatureBytes);
   const manifest = parseManifest(args.manifestBytes);
@@ -377,6 +416,7 @@ export async function verifyReleaseArtifactBuffer(args: {
     expectedRepository: args.expectedRepository,
     expectedRelease: args.expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
   });
 
   if (entry.size !== args.assetBuffer.length) {
@@ -387,6 +427,7 @@ export async function verifyReleaseArtifactBuffer(args: {
 
   const actualSha256 = sha256Hex(args.assetBuffer);
   assertSha256Equal(actualSha256, entry.sha256, args.assetName);
+  const publisher = readMacosPublisher(entry, args.assetName, args.requireMacosPublisher === true);
 
   return {
     assetName: args.assetName,
@@ -398,6 +439,7 @@ export async function verifyReleaseArtifactBuffer(args: {
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
     intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
+    ...publisher,
   };
 }
 
@@ -423,6 +465,7 @@ function selectManifestAsset(args: {
   expectedRepository?: string;
   expectedRelease?: string | null;
   expectedPlatformTrust?: string;
+  expectedEdition?: string;
 }): SelectedReleaseArtifactManifestAsset {
   const { manifest } = args;
   if (args.expectedRepository) {
@@ -445,12 +488,18 @@ function selectManifestAsset(args: {
   }
 
   const assets = manifest.assets as ReleaseArtifactManifestAsset[];
-  const entry = assets.find((candidate) => candidate.name === args.assetName);
-  if (!entry) {
+  const matches = assets.filter((candidate) => candidate.name === args.assetName);
+  if (matches.length === 0) {
     throw new ReleaseManifestAssetAbsentError(
       `Release artifact manifest does not include ${args.assetName}`,
     );
   }
+  if (matches.length !== 1) {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact manifest includes duplicate entries for ${args.assetName}`,
+    );
+  }
+  const entry = matches[0]!;
   if (
     typeof entry.sha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(entry.sha256)
@@ -497,6 +546,11 @@ function selectManifestAsset(args: {
       `Release artifact manifest platform trust mismatch for ${args.assetName}: expected ${args.expectedPlatformTrust}, got ${String(entry.platformTrust)}`,
     );
   }
+  if (args.expectedEdition && entry.edition !== args.expectedEdition) {
+    throw new ReleaseAssetNotDistributableError(
+      `Release artifact manifest edition mismatch for ${args.assetName}: expected ${args.expectedEdition}, got ${String(entry.edition)}`,
+    );
+  }
 
   return {
     ...entry,
@@ -512,6 +566,8 @@ export async function verifyReleaseArtifactManifestAsset(args: {
   expectedRepository?: string;
   expectedRelease?: string | null;
   expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
 }): Promise<VerifiedReleaseArtifact> {
   verifyManifestSignature(args.manifestBytes, args.signatureBytes);
   const manifest = parseManifest(args.manifestBytes);
@@ -521,7 +577,9 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     expectedRepository: args.expectedRepository,
     expectedRelease: args.expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
   });
+  const publisher = readMacosPublisher(entry, args.assetName, args.requireMacosPublisher === true);
   return {
     assetName: args.assetName,
     sha256: entry.sha256,
@@ -532,6 +590,7 @@ export async function verifyReleaseArtifactManifestAsset(args: {
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
     intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
+    ...publisher,
   };
 }
 
@@ -556,7 +615,14 @@ export function verifyReleaseArtifactManifestIntegrity(
 }
 
 async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
-  const resp = await fetch(url, { redirect: "follow" });
+  // A naive `redirect: "follow"` on verification inputs was an SSRF bypass
+  // (#3649): a trusted URL could redirect into private space. The guarded
+  // helper re-validates and pins every hop before it is dialed. `maxBytes`
+  // makes the manifest ceiling a streaming one — the socket is torn down on
+  // overrun rather than the body being buffered and measured afterwards.
+  const resp = await safeFetchFollowingRedirects(url, {
+    maxBytes: MAX_MANIFEST_BYTES,
+  });
   if (!resp.ok) {
     throw new Error(`Failed to fetch ${label}: ${resp.status}`);
   }
@@ -573,6 +639,112 @@ async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
   return buffer;
 }
 
+/**
+ * Best-effort sha256/size lookup for a named asset, for DISPLAY only (the
+ * bare-metal recovery media catalog, GET /backup/bmr/boot-media — W04b).
+ * Unlike verifyReleaseArtifactManifestAsset this does NOT check the Ed25519
+ * signature: the value shown here is not a trust decision (the actual
+ * download still goes through GitHub's release redirect, or the S3/disk
+ * path in self-host local mode, unaffected by this field), it is just
+ * "what does the manifest currently say" for an operator glancing at the
+ * download list. Returns null on ANY failure — unreachable manifest,
+ * malformed JSON, unknown asset — so a manifest hiccup degrades the catalog
+ * to "no checksum shown" rather than a 500.
+ */
+export async function lookupReleaseManifestAssetForDisplay(
+  assetName: string,
+  manifestUrl: string,
+): Promise<{ sha256: string; size: number } | null> {
+  try {
+    const manifestBytes = await fetchSmallBuffer(manifestUrl, "release artifact manifest");
+    const manifest = parseManifest(manifestBytes);
+    const assets = manifest.assets as ReleaseArtifactManifestAsset[];
+    const entry = assets.find((a) => a.name === assetName);
+    if (
+      !entry ||
+      typeof entry.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(entry.sha256) ||
+      typeof entry.size !== "number" ||
+      entry.size <= 0
+    ) {
+      return null;
+    }
+    return { sha256: entry.sha256, size: entry.size };
+  } catch {
+    return null;
+  }
+}
+
+export async function probeSafeReleaseArtifact(url: string): Promise<Response> {
+  return safeFetchFollowingRedirects(url, {
+    method: "HEAD",
+    timeoutMs: 5_000,
+    maxBytes: 0,
+  });
+}
+
+export async function fetchVerifiedGithubReleaseArtifact(args: {
+  assetName: string;
+  assetUrl: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  expectedRepository?: string;
+  expectedRelease?: string | null;
+  expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
+  maxAssetBytes: number;
+}): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
+  if (!isReleaseArtifactManifestVerificationConfigured()) {
+    throw new Error(
+      "Release artifact manifest public key is required for privileged installer downloads",
+    );
+  }
+
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    fetchSmallBuffer(args.manifestUrl, "release artifact manifest"),
+    fetchSmallBuffer(
+      args.signatureUrl,
+      "release artifact manifest Ed25519 signature",
+    ),
+  ]);
+  const selected = await verifyReleaseArtifactManifestAsset({
+    assetName: args.assetName,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository: args.expectedRepository,
+    expectedRelease: args.expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
+  if (selected.size <= 0 || selected.size > args.maxAssetBytes) {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact size for ${args.assetName} is outside the allowed range`,
+    );
+  }
+
+  const response = await safeFetchFollowingRedirects(args.assetUrl, {
+    maxBytes: selected.size,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch release artifact ${args.assetName}: ${response.status}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const verified = await verifyReleaseArtifactBuffer({
+    assetName: args.assetName,
+    assetBuffer: buffer,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository: args.expectedRepository,
+    expectedRelease: args.expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
+  return { buffer, verified };
+}
+
 export async function verifyGithubReleaseArtifactBuffer(args: {
   assetName: string;
   assetBuffer: Buffer;
@@ -581,6 +753,8 @@ export async function verifyGithubReleaseArtifactBuffer(args: {
   expectedRepository?: string;
   expectedRelease?: string | null;
   expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
 }): Promise<VerifiedReleaseArtifact | null> {
   if (!isReleaseArtifactManifestVerificationConfigured()) {
     if (releaseArtifactManifestVerificationRequired()) {
@@ -607,5 +781,7 @@ export async function verifyGithubReleaseArtifactBuffer(args: {
     expectedRepository: args.expectedRepository,
     expectedRelease: args.expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
   });
 }

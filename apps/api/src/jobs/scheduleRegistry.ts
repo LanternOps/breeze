@@ -62,6 +62,7 @@
  * guarantees hold, but absolute times move.)
  */
 
+import { isStructurallyValidCron } from '@breeze/shared';
 import { captureException } from '../services/sentry';
 
 /** A repeatable interval at or above this is epoch-aligned enough to matter. */
@@ -94,11 +95,20 @@ export const JOB_SCHEDULES = {
   'pax8-sync': '28 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
+  // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
+  // Ten minutes after the billing sweep so the two never hold the pool together.
+  'deliverable-sweep': '18 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
+  'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
   'event-log-retention': '3 7 * * *',
   'agent-log-retention': '23 7 * * *',
   'change-log-retention': '43 7 * * *',
+  // #4210 — outbox/incident retention family, same daily tier as the other
+  // batched-DELETE retention jobs above.
+  'ticket-outbox-retention': '13 7 * * *',
+  'intent-outbox-retention': '33 7 * * *',
+  'metric-anomaly-incident-retention': '53 7 * * *',
   'ip-history-retention': '3 8 * * *',
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',
@@ -111,9 +121,48 @@ export const JOB_SCHEDULES = {
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
+  'receipt-retention': '3 15 * * *',
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
+  'ai-unattended-exposure-retention': '8 18 * * *',
+  // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
+  // the evidence-window's day has fully closed, same lane as its sibling
+  // retention slot below (same queue/worker — Deviation #10).
+  'ai-agent-graduation-evaluate': '28 18 * * *',
+  // P2-6 (#4193): nightly value-accounting rollup. Daily lane; hour 18 held
+  // only minute 8 before this. Runs well after the day it summarises closed.
+  'ai-agent-impact-rollup': '33 18 * * *',
+  'ai-agent-op-evidence-retention': '48 18 * * *',
+  // #5306 — daily sweep of the MFA enrolment grace window: sends the "window
+  // opened" notice and the T-3 reminder to role-forced users who have never
+  // held a factor. Hour 19 was unused; minute 3 keeps the daily (mod 5) lane.
+  'mfa-enrollment-notice-sweep': '3 19 * * *',
+  // #2787 item 4 — daily purge of removed devices past their org's
+  // device_lifecycle retention window. Hour 8 in the daily (≡3 mod 5) lane
+  // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
+  // `audit-drift-evaluator` already fires hourly at :17.
+  'removed-device-purge': '13 8 * * *',
+  // #5329 (M365 tenant sync, spec §3.7) — daily prune of stale M365 snapshot
+  // rows (30 days past stale_since) and of Secure Score control_scores past
+  // 90 days, both via partial indexes so the sweep never rescans pruned
+  // history. Hour 19 was free in the daily tier; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'm365-sync-retention': '8 19 * * *',
+  // #5290 (Monitoring & automation unification, W03) — daily prune of CLOSED
+  // monitor_episodes rows past the 400-day retention window (open episodes are
+  // never pruned). Hour 20 was entirely free; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'monitor-episode-retention': '3 20 * * *',
+  // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
+  // the hosted drift report (listDomains vs local rows + outbox) and, on a
+  // `static` instance, the re-check that a domain the operator removed from
+  // EMAIL_DOMAINS_STATIC_ALLOWED stops being used. A slot rather than
+  // `repeat: { every: 24h }` — BullMQ anchors `every` to the epoch, so a 24 h
+  // repeatable fires at exactly 00:00:00.000 UTC alongside every other one (see
+  // this file's header). Hour 21 was entirely free; :03 keeps the daily = 3
+  // (mod 5) lane.
+  'sending-domains-daily': '3 21 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -121,17 +170,27 @@ export const JOB_SCHEDULES = {
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
+  // Share the :12 lane on alternate six-hour slots; no coarse collision.
+  'script-verify-reconcile': '12 0,6,12,18 * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
   'software-upload-session-cleanup': '15 * * * *',
   'audit-drift-evaluator': '17 * * * *',
-  'abuse-signals-sweep': '22 * * * *',
+  'abuse-signals-sweep': '22,37,52,7 * * * *',
+  'partner-trust-promote': '*/15 * * * *',
+  'accounting-mapping-sweep': '4,19,34,49 * * * *',
   'backup-expired-snapshot-cleanup': '27 2,8,14,20 * * *',
   'software-remediation-request-cleanup': '35 * * * *',
   'backup-recovery-token-expiry': '37 * * * *',
   'warranty-batch-sync': '42 3,9,15,21 * * *',
   'cis-scan-scheduler': '47 * * * *',
   'cis-score-aggregator': '52 * * * *',
+  // W08 #3902 — hourly sweep of abandoned pending ticket-comment attachments.
+  // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
+  'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
+  // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
+  // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
+  'ai-artifact-expiry-sweeper': '2 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;
@@ -148,44 +207,6 @@ export function jobSchedule(key: JobScheduleKey): string {
 // Operator overrides
 // ---------------------------------------------------------------------------
 
-const CRON_FIELD_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0, 59], // minute
-  [0, 23], // hour
-  [1, 31], // day of month
-  [1, 12], // month
-  [0, 7], // day of week (7 == Sunday)
-];
-
-const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-
-function isValidCronField(field: string, index: number): boolean {
-  const [min, max] = CRON_FIELD_RANGES[index]!;
-  const names = index === 3 ? MONTH_NAMES : index === 4 ? DAY_NAMES : [];
-
-  const readValue = (token: string): number | null => {
-    const named = names.indexOf(token.toLowerCase());
-    if (named >= 0) return index === 3 ? named + 1 : named;
-    if (!/^\d+$/.test(token)) return null;
-    const value = Number(token);
-    return value >= min && value <= max ? value : null;
-  };
-
-  return field.split(',').every((listItem) => {
-    if (listItem === '') return false;
-    const [rangePart, stepPart, ...extra] = listItem.split('/');
-    if (extra.length > 0) return false;
-    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return false;
-    if (rangePart === '*') return true;
-    const bounds = rangePart!.split('-');
-    if (bounds.length > 2) return false;
-    const parsed = bounds.map(readValue);
-    if (parsed.some((value) => value === null)) return false;
-    if (parsed.length === 2 && parsed[0]! > parsed[1]!) return false;
-    return true;
-  });
-}
-
 /**
  * Structural validation of an operator-supplied cron pattern.
  *
@@ -195,15 +216,14 @@ function isValidCronField(field: string, index: number): boolean {
  * (a two-field value such as star-slash-five, which looks fine and is not).
  * `scheduleRegistry.contract.test.ts`
  * cross-checks this function against the real parser over a corpus.
+ *
+ * Moved to `@breeze/shared` (P2-2 task 2) so the scheduled-sweeps schedule
+ * validator (`validators/aiAgentSchedules.ts`) can reuse the same structural
+ * rule instead of duplicating it — re-exported here (rather than left as an
+ * import-only consumer) so every existing caller of this module keeps working
+ * unchanged.
  */
-export function isStructurallyValidCron(pattern: string): boolean {
-  const fields = pattern.trim().split(/\s+/);
-  // 6 fields = the optional leading seconds field BullMQ also accepts.
-  if (fields.length !== 5 && fields.length !== 6) return false;
-  const fiveFields = fields.length === 6 ? fields.slice(1) : fields;
-  if (fields.length === 6 && !isValidCronField(fields[0]!, 0)) return false;
-  return fiveFields.every((field, index) => isValidCronField(field, index));
-}
+export { isStructurallyValidCron };
 
 /**
  * Read an operator cron override, falling back LOUDLY to the allocated slot.

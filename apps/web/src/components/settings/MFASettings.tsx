@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MfaMethod } from '../../stores/auth';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 const DIGIT_COUNT = 6;
 
@@ -35,8 +36,8 @@ type MFASettingsProps = {
    * It lives only in the parent's React state and the `#ssoReauthGrant=`
    * fragment is stripped at mount, so a reload while the QR is on screen — or
    * a session restore, or opening the page in a second tab — loses it. Without
-   * this the Verify button would post no proof at all, the server would 401,
-   * and the user would be staring at that error on a screen with no password
+   * this the Verify button would post no proof at all, the server would refuse
+   * it, and the user would be staring at that error on a screen with no password
    * field and no way to re-verify. Defaults to `true` so the password road and
    * any caller that does not pass it are unaffected.
    */
@@ -45,10 +46,28 @@ type MFASettingsProps = {
   phoneLast4?: string;
   smsAllowed?: boolean;
   qrCodeDataUrl?: string;
+  /**
+   * #5319: the base32 TOTP secret the `/auth/mfa/setup` response already
+   * returns alongside the QR image. Rendering only the QR strands anyone
+   * enrolling on the device the browser is on (no second camera to scan with)
+   * and anyone using a screen reader — a QR image has no accessible content.
+   * Undefined only when the caller predates this or the API omitted it, in
+   * which case the manual-entry block is not rendered at all.
+   */
+  totpSecret?: string;
   recoveryCodes?: string[];
-  onEnable?: (code: string, currentPassword: string) => void | Promise<void>;
-  onDisable?: (code: string, currentPassword: string) => void | Promise<void>;
-  onGenerateRecoveryCodes?: (currentPassword: string) => void | Promise<void>;
+  /**
+   * #4413: resolve to `false` when the write was REJECTED (e.g. the 400
+   * `mfa_code_invalid` a mistyped TOTP earns — #4470). `undefined` — what a handler that only sets
+   * `errorMessage` returns — is treated as success, matching `onRequestSetup`
+   * and keeping the prop back-compatible. Without a verdict the panel used to
+   * collapse on every outcome, discarding a secret the server will never
+   * re-issue.
+   */
+  onEnable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
+  onDisable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
+  onGenerateRecoveryCodes?: (currentPassword: string, currentFactorCode: string) => void | boolean | Promise<void | boolean>;
+  onSendRecoveryStepUpCode?: () => void | boolean | Promise<void | boolean>;
   onRequestSetup?: (currentPassword: string) => Promise<boolean> | boolean;
   onVerifyPhone?: (phoneNumber: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
   onConfirmPhone?: (phoneNumber: string, code: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
@@ -78,10 +97,12 @@ export default function MFASettings({
   phoneLast4,
   smsAllowed = false,
   qrCodeDataUrl,
+  totpSecret,
   recoveryCodes,
   onEnable,
   onDisable,
   onGenerateRecoveryCodes,
+  onSendRecoveryStepUpCode,
   onRequestSetup,
   onVerifyPhone,
   onConfirmPhone,
@@ -95,6 +116,26 @@ export default function MFASettings({
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
+  // #4471: the codes are shown exactly once, so a copy has to say whether it worked.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // #5319: the manual-entry key has its own copy verdict — it is on screen at
+  // the same time as nothing else copyable, but the recovery-codes state lives
+  // in a different view and must not be reused across them.
+  const [secretCopyState, setSecretCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // Authenticator apps accept the key unspaced; humans read it in groups of
+  // four. Show the grouped form, copy the raw one.
+  const normalizedTotpSecret = totpSecret?.replace(/\s+/g, '').toUpperCase() || undefined;
+  const groupedTotpSecret = normalizedTotpSecret
+    ? (normalizedTotpSecret.match(/.{1,4}/g) ?? []).join(' ')
+    : undefined;
+  // #4414: the regeneration is destructive and irreversible, so it is gated on
+  // an explicit confirm that states the invalidation BEFORE the request goes
+  // out — not on a warning the user reads after their saved codes are dead.
+  const [confirmRegenerateOpen, setConfirmRegenerateOpen] = useState(false);
+  // #4413: the last enrollment submit was rejected. Drives the "your QR is
+  // still good, just try the next code" hint — without it a bare "Invalid MFA
+  // code" reads as "start over", which is exactly what mints a second secret.
+  const [enrollCodeRejected, setEnrollCodeRejected] = useState(false);
   const [localError, setLocalError] = useState<string>();
   const [localSuccess, setLocalSuccess] = useState<string>();
   const [smsRecoveryCodes, setSmsRecoveryCodes] = useState<string[]>();
@@ -109,6 +150,7 @@ export default function MFASettings({
   const [currentPassword, setCurrentPassword] = useState('');
   const [disablePassword, setDisablePassword] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryFactorCode, setRecoveryFactorCode] = useState('');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -245,25 +287,43 @@ export default function MFASettings({
     // the parent supplies the SSO re-auth grant instead, so requiring a
     // non-empty password here would make the Verify button permanently inert.
     // But a passwordless account with NO grant left has no proof at all, and
-    // firing the request anyway just buys a 401 on a screen with nothing to
-    // retry with. Refuse to issue it; the view offers re-verification instead.
+    // firing the request anyway just buys a rejection on a screen with nothing
+    // to retry with. Refuse to issue it; the view offers re-verification instead.
     if (isLoading || isSubmitting || code.length !== DIGIT_COUNT
       || needsSsoReVerify
       || (!isPasswordless && !currentPassword)) {
       return;
     }
+    // `undefined` (a handler that only sets `errorMessage`) counts as success;
+    // only an explicit `false` or a throw is a rejection.
+    let succeeded = true;
     try {
       setIsSubmitting(true);
-      await onEnable?.(code, currentPassword);
-      setView('status');
+      succeeded = (await onEnable?.(code, currentPassword)) !== false;
     } catch {
       // Parent handler surfaces errors via the errorMessage prop.
+      succeeded = false;
     } finally {
-      // Always clear sensitive state, regardless of outcome — keeps the
-      // plaintext password from sitting in component state across views.
       setIsSubmitting(false);
+      // Clear the digits either way: on success they are spent, on failure the
+      // user needs an empty field for the NEXT 30-second code.
       resetDigits();
-      setCurrentPassword('');
+      setEnrollCodeRejected(!succeeded);
+      if (succeeded) {
+        // Clear the plaintext password as soon as the flow that needs it ends.
+        setCurrentPassword('');
+        // #4414: /auth/mfa/enable is the only moment the recovery codes exist
+        // in plaintext. Show them once, here — the regenerate action is the
+        // only other way to see any, and it destroys these.
+        setShowCodes(true);
+        setView('recovery');
+      } else {
+        // #4413: stay on the QR. Leaving this view discards a secret the server
+        // will not re-issue, so a mistyped digit would cost a whole re-
+        // enrollment — and the password collected at the gate has to survive
+        // with it, or the retry is refused for an entirely different reason.
+        focusIndex(0);
+      }
     }
   };
 
@@ -271,40 +331,91 @@ export default function MFASettings({
     if (isLoading || isSubmitting || code.length !== DIGIT_COUNT || !disablePassword) {
       return;
     }
+    // Same verdict contract as enable: only `false`/throw means rejected.
+    let succeeded = true;
     try {
       setIsSubmitting(true);
-      await onDisable?.(code, disablePassword);
-      setView('status');
+      succeeded = (await onDisable?.(code, disablePassword)) !== false;
     } catch {
       // Parent handler surfaces errors via the errorMessage prop.
+      succeeded = false;
     } finally {
       setIsSubmitting(false);
       resetDigits();
       setDisablePassword('');
+      // #4413 (same class): collapsing on a rejected code hid the error behind
+      // a panel that still read "Enabled", so the user could not tell whether
+      // the code or the password was wrong — or that anything had failed.
+      if (succeeded) setView('status');
     }
   };
 
   const handleRegenerateCodes = async () => {
     if (!recoveryPassword) {
       setLocalError(t('mFASettings.currentPasswordIsRequired'));
+      setConfirmRegenerateOpen(false);
+      return;
+    }
+    if ((currentMethod === 'totp' || currentMethod === 'sms') && recoveryFactorCode.length !== DIGIT_COUNT) {
+      setLocalError(t('mFASettings.currentMfaCodeRequired', { defaultValue: 'A current MFA code is required' }));
+      setConfirmRegenerateOpen(false);
       return;
     }
 
     try {
       setIsSubmitting(true);
       setLocalError(undefined);
-      await onGenerateRecoveryCodes?.(recoveryPassword);
-      setShowCodes(true);
+      // #4414: only reveal on a confirmed success. The old unconditional
+      // `setShowCodes(true)` re-displayed the PREVIOUS set after a failed
+      // regeneration, which reads as "here are your new codes".
+      if ((await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode)) !== false) {
+        // `displayCodes` prefers `smsRecoveryCodes`, and a regeneration only
+        // refreshes the `recoveryCodes` PROP. Leaving the SMS set in place
+        // would keep rendering the codes this call just invalidated.
+        setSmsRecoveryCodes(undefined);
+        setShowCodes(true);
+      }
+    } catch {
+      // Parent handler surfaces errors via the errorMessage prop.
     } finally {
       setIsSubmitting(false);
+      // The field is on this same screen, so re-typing costs one action —
+      // cheap next to leaving a plaintext password in component state.
       setRecoveryPassword('');
+      setRecoveryFactorCode('');
+      setConfirmRegenerateOpen(false);
     }
   };
 
-  const handleCopyRecoveryCodes = () => {
+  const handleCopyRecoveryCodes = async () => {
     const codes = smsRecoveryCodes || recoveryCodes;
-    if (codes?.length) {
-      navigator.clipboard.writeText(codes.join('\n'));
+    if (!codes?.length) return;
+    // #4471: writeText rejects in insecure contexts, under a permissions
+    // policy, or outside a user gesture on some browsers — and this is the
+    // only screen that will ever show these codes, so a silent miss here
+    // costs the user their recovery path.
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(codes.join('\n'));
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
+    } catch {
+      setCopyState('failed');
+    }
+  };
+
+  // #5319: the same clipboard failure modes as the recovery codes (insecure
+  // context, permissions policy, no user gesture) apply here, and a silent
+  // miss on the enrollment screen leaves the user with no way to finish.
+  const handleCopyTotpSecret = async () => {
+    if (!normalizedTotpSecret) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(normalizedTotpSecret);
+      setSecretCopyState('copied');
+      window.setTimeout(() => setSecretCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
+    } catch {
+      setSecretCopyState('failed');
     }
   };
 
@@ -620,6 +731,7 @@ export default function MFASettings({
                 setCurrentPassword('');
                 setLocalError(undefined);
                 setLocalSuccess(undefined);
+                setEnrollCodeRejected(false);
                 setView('confirm-password-setup');
               }}
               disabled={isLoading}
@@ -695,9 +807,15 @@ export default function MFASettings({
               <span className="text-sm font-medium">{t('mFASettings.recoveryCodes')}</span>
               <p className="text-xs text-muted-foreground">
                 {t('mFASettings.useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat')}</p>
+              {/* #4414: there is no read action here and there cannot be — the
+                  server keeps only hashes. Saying so is what stops the one
+                  remaining button from being mistaken for one. */}
+              <p className="text-xs text-muted-foreground">
+                {t('mFASettings.recoveryCodesAreShownOnceAndCannotBeDisplayedAgain')}</p>
             </div>
             <button
               type="button"
+              data-testid="mfa-recovery-regenerate-start"
               onClick={() => {
                 setView('recovery');
                 setShowCodes(false);
@@ -706,7 +824,7 @@ export default function MFASettings({
               }}
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              {t('mFASettings.viewCodes')}</button>
+              {t('mFASettings.regenerateRecoveryCodes')}</button>
           </div>
         )}
 
@@ -818,6 +936,61 @@ export default function MFASettings({
                 {t('mFASettings.qRCodeUnavailable')}</div>
             )}
           </div>
+          {/* #5319: the manual-entry key. The QR image alone is unusable when
+              the authenticator lives on the device already showing this page,
+              and carries no content a screen reader can read out. */}
+          {groupedTotpSecret && (
+            <div className="space-y-2 rounded-md border bg-muted/30 p-4">
+              <p className="text-sm font-medium">{t('mFASettings.cantScanTheCode')}</p>
+              <p className="text-sm text-muted-foreground">
+                {t('mFASettings.enterThisSetupKeyInYourAuthenticatorAppInstead')}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                {/* The sr-only label is a SIBLING, never an aria-label on the
+                    <code>: an accessible name overrides the element's text, so
+                    labelling it would announce "Setup key" INSTEAD of the key —
+                    the exact failure this block exists to fix. */}
+                <span>
+                  <span className="sr-only">{t('mFASettings.setupKey')}</span>
+                  <code
+                    data-testid="mfa-totp-secret"
+                    className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
+                  >
+                    {groupedTotpSecret}
+                  </code>
+                </span>
+                <button
+                  type="button"
+                  data-testid="mfa-copy-totp-secret"
+                  onClick={handleCopyTotpSecret}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                  >
+                    <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+                    <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+                  </svg>
+                  {secretCopyState === 'copied'
+                    ? t('mFASettings.copiedSetupKey')
+                    : t('mFASettings.copySetupKey')}
+                </button>
+              </div>
+              {secretCopyState === 'failed' && (
+                <p
+                  data-testid="mfa-copy-totp-secret-error"
+                  role="alert"
+                  className="text-sm text-destructive"
+                >
+                  {t('mFASettings.copySetupKeyFailed')}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -829,7 +1002,7 @@ export default function MFASettings({
 
         {/* #4018: the single-use grant is gone (reload, restored session, or a
             second tab), so there is no proof left to send. Say so and offer the
-            only thing that fixes it rather than letting the submit 401. */}
+            only thing that fixes it rather than letting the submit be refused. */}
         {needsSsoReVerify && (
           <p data-testid="mfa-sso-grant-lost" className="text-sm text-muted-foreground">
             {t('mFASettings.ssoReauthProofExpired')}
@@ -838,11 +1011,21 @@ export default function MFASettings({
 
         {renderError()}
 
+        {/* #4413: the server's "Invalid MFA code" says nothing about whether
+            the enrollment survived. It does — say so, or the user re-enrolls
+            and strands the secret they just scanned. */}
+        {enrollCodeRejected && (
+          <p data-testid="mfa-code-rejected-hint" className="text-sm text-muted-foreground">
+            {t('mFASettings.thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe')}
+          </p>
+        )}
+
         <div className="flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
             onClick={() => {
               resetDigits();
+              setEnrollCodeRejected(false);
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
@@ -960,6 +1143,7 @@ export default function MFASettings({
             </div>
             <button
               type="button"
+              data-testid="mfa-copy-recovery-codes"
               onClick={handleCopyRecoveryCodes}
               className="flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
@@ -972,15 +1156,59 @@ export default function MFASettings({
                 <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
                 <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
               </svg>
-              {t('mFASettings.copyCodes')}</button>
+              {copyState === 'copied' ? t('mFASettings.copiedCodes') : t('mFASettings.copyCodes')}</button>
+            {copyState === 'failed' && (
+              <p
+                data-testid="mfa-copy-recovery-codes-error"
+                role="alert"
+                className="text-sm text-destructive"
+              >
+                {t('mFASettings.copyCodesFailed')}
+              </p>
+            )}
           </div>
         ) : (
-          <div className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
-            {t('mFASettings.clickTheButtonBelowToViewOrGenerateNewRecoveryCodes')}</div>
+          <div
+            data-testid="mfa-recovery-no-codes"
+            className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground"
+          >
+            {t('mFASettings.existingCodesCannotBeDisplayedAgainRegeneratingIssuesA')}</div>
         )}
 
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
           {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
+            {currentMethod === 'passkey'
+              ? t('mFASettings.currentPasskeyRequired', { defaultValue: 'Your current passkey will be requested' })
+              : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+          </label>
+          {currentMethod !== 'passkey' && (
+            <input
+              id="mfa-recovery-factor-code"
+              data-testid="mfa-recovery-factor-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={DIGIT_COUNT}
+              value={recoveryFactorCode}
+              onChange={e => setRecoveryFactorCode(e.target.value.replace(/\D/g, '').slice(0, DIGIT_COUNT))}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+          )}
+          {currentMethod === 'sms' && (
+            <button
+              type="button"
+              data-testid="mfa-recovery-send-sms"
+              onClick={() => { void onSendRecoveryStepUpCode?.(); }}
+              disabled={isLoading}
+              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('mFASettings.sendVerificationCode', { defaultValue: 'Send verification code' })}
+            </button>
+          )}
+        </div>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
@@ -1004,24 +1232,40 @@ export default function MFASettings({
             type="button"
             onClick={() => {
               setRecoveryPassword('');
+              setRecoveryFactorCode('');
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
             {t('mFASettings.back')}</button>
+          {/* #4414: one action, and it is honestly named. The label no longer
+              flips to a read verb before the first press — that flip is what
+              made a regeneration look like a way to look your codes up. */}
           <button
             type="button"
-            onClick={handleRegenerateCodes}
-            disabled={isLoading || !recoveryPassword}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="mfa-recovery-regenerate"
+            onClick={() => setConfirmRegenerateOpen(true)}
+            disabled={isLoading || !recoveryPassword || (
+              (currentMethod === 'totp' || currentMethod === 'sms')
+              && recoveryFactorCode.length !== DIGIT_COUNT
+            )}
+            className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading
-              ? t('mFASettings.generating')
-              : showCodes
-                ? t('mFASettings.regenerateCodes')
-                : t('mFASettings.showRecoveryCodes')}
+            {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}
           </button>
         </div>
+
+        <ConfirmDialog
+          open={confirmRegenerateOpen}
+          onClose={() => setConfirmRegenerateOpen(false)}
+          onConfirm={() => { void handleRegenerateCodes(); }}
+          title={t('mFASettings.regenerateRecoveryCodesQuestion')}
+          message={t('mFASettings.regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou')}
+          confirmLabel={t('mFASettings.regenerateCodes')}
+          variant="destructive"
+          isLoading={isLoading}
+          confirmTestId="confirm-regenerate-recovery-codes"
+        />
       </div>
     );
   }

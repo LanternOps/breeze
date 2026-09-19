@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // The mocked query builder doesn't do real SQL filtering, so a naive mock
 // that just hands back a fixed row array can't prove the join CONDITION
 // changed. Instead this captures the actual condition object built by
-// `resolveAlertRulesForDevice` for the configPolicyFeatureLinks join (an
+// `resolveAlertRulesForDevice` for the configPolicyEffectiveFeatureLinks join (an
 // `eq`/`inArray` node produced by the real, unmocked and/eq/inArray from the
 // mocked 'drizzle-orm' below) and evaluates it against each candidate row's
 // simulated link featureType — the same shadowing bug this migration fixes
@@ -33,10 +33,14 @@ vi.mock('../db/schema', () => ({
     partnerId: 'configurationPolicies.partnerId',
     status: 'configurationPolicies.status',
   },
-  configPolicyFeatureLinks: {
-    id: 'configPolicyFeatureLinks.id',
-    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
-    featureType: 'configPolicyFeatureLinks.featureType',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'configPolicyEffectiveFeatureLinks.id',
+    configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId',
+    sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId',
+    inherited: 'configPolicyEffectiveFeatureLinks.inherited',
+    featureType: 'configPolicyEffectiveFeatureLinks.featureType',
+    featurePolicyId: 'configPolicyEffectiveFeatureLinks.featurePolicyId',
+    inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings',
   },
   configPolicyAssignments: {
     id: 'configPolicyAssignments.id',
@@ -128,6 +132,34 @@ function makeSettings(overrides: Record<string, unknown> = {}): any {
 }
 
 describe('isInMaintenanceWindow', () => {
+  // AI patch agent W04 (#5750): the wall clock is rendered in UTC field
+  // space, so the SERVER's zone never enters the arithmetic. Pinned with
+  // TZ-sensitive dates: on a US-zone server the old local-constructor
+  // rendering turned 02:00 UTC into 03:00 on the US spring-forward Sunday.
+  describe('server-timezone independence', () => {
+    it('evaluates a UTC 02:00 window on the US spring-forward Sunday exactly at 02:00Z', () => {
+      const settings = makeSettings({ windowStart: '02:00' });
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T01:59:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T02:00:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T03:59:59Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-08T04:00:00Z')).active).toBe(false);
+    });
+
+    it("reads a once window's naive datetime as wall time in the WINDOW's zone", () => {
+      const settings = makeSettings({ recurrence: 'once', timezone: 'Asia/Kolkata', windowStart: '2026-03-15T02:00:00' });
+      // 02:00 IST is 20:30Z the previous day.
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T20:29:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T20:30:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-14T22:30:00Z')).active).toBe(false);
+    });
+
+    it("renders a once window carrying an explicit Z into the window's zone (it names an instant)", () => {
+      const settings = makeSettings({ recurrence: 'once', timezone: 'Asia/Kolkata', windowStart: '2026-03-15T02:00:00Z' });
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-15T01:59:59Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-03-15T02:00:00Z')).active).toBe(true);
+    });
+  });
+
   // ============================================
   // Daily recurrence
   // ============================================
@@ -320,6 +352,70 @@ describe('isInMaintenanceWindow', () => {
   });
 
   // ============================================
+  // windowEndsAt (#3207)
+  // ============================================
+
+  // The close of the window is the ceiling on a reboot deferral deadline — a
+  // user may not postpone a maintenance-window restart past the end of the
+  // window. The projection that produces it is subtle: windowStart, windowEnd
+  // and localNow are wall-clock times rendered as naive Dates, so only their
+  // DIFFERENCE is meaningful; it has to be added back onto the real `now` to
+  // become an instant. A wrong projection is silent — it would either grant
+  // deferral time past the real close or truncate it — so it is pinned here
+  // rather than left to the comment.
+  describe('windowEndsAt', () => {
+    it('is null whenever the window is inactive', () => {
+      const now = new Date('2026-02-17T03:00:00Z');
+      expect(isInMaintenanceWindow(makeSettings(), now).windowEndsAt).toBeNull();
+    });
+
+    it('is null for an unknown recurrence', () => {
+      const now = new Date('2026-02-17T00:30:00Z');
+      const settings = makeSettings({ recurrence: 'fortnightly' });
+      expect(isInMaintenanceWindow(settings, now).windowEndsAt).toBeNull();
+    });
+
+    it('is the real instant the active daily window closes', () => {
+      // Daily window is midnight + 2h in UTC; at 00:30 it closes at 02:00Z.
+      const now = new Date('2026-02-17T00:30:00Z');
+      const result = isInMaintenanceWindow(makeSettings(), now);
+      expect(result.active).toBe(true);
+      expect(result.windowEndsAt?.toISOString()).toBe('2026-02-17T02:00:00.000Z');
+    });
+
+    it('always lies in the future while the window is active', () => {
+      for (const iso of ['2026-02-17T00:00:00Z', '2026-02-17T00:30:00Z', '2026-02-17T01:59:00Z']) {
+        const now = new Date(iso);
+        const result = isInMaintenanceWindow(makeSettings(), now);
+        expect(result.active, iso).toBe(true);
+        expect(result.windowEndsAt!.getTime(), iso).toBeGreaterThan(now.getTime());
+      }
+    });
+
+    it('is a UTC instant, not a wall-clock time, under a non-UTC timezone', () => {
+      // 05:30Z is 00:30 in America/New_York (EST, UTC-5). The window closes at
+      // 02:00 LOCAL, i.e. 07:00Z — NOT 02:00Z. Returning the naive wall-clock
+      // Date here would be 5 hours early and silently cut deferral short.
+      const now = new Date('2026-02-17T05:30:00Z');
+      const settings = makeSettings({ timezone: 'America/New_York' });
+      const result = isInMaintenanceWindow(settings, now);
+      expect(result.active).toBe(true);
+      expect(result.windowEndsAt?.toISOString()).toBe('2026-02-17T07:00:00.000Z');
+    });
+
+    it('stays consistent with the remaining duration across timezones', () => {
+      // Same offset into the window in two zones => same time remaining.
+      const utc = isInMaintenanceWindow(makeSettings(), new Date('2026-02-17T00:30:00Z'));
+      const nyc = isInMaintenanceWindow(
+        makeSettings({ timezone: 'America/New_York' }),
+        new Date('2026-02-17T05:30:00Z')
+      );
+      const remaining = (r: typeof utc, now: string) => r.windowEndsAt!.getTime() - Date.parse(now);
+      expect(remaining(nyc, '2026-02-17T05:30:00Z')).toBe(remaining(utc, '2026-02-17T00:30:00Z'));
+    });
+  });
+
+  // ============================================
   // Suppress flags
   // ============================================
 
@@ -348,6 +444,170 @@ describe('isInMaintenanceWindow', () => {
       expect(result.suppressPatching).toBe(false);
       expect(result.suppressAutomations).toBe(false);
       expect(result.suppressScripts).toBe(false);
+    });
+  });
+
+  // ============================================
+  // Recurring start time (issue #4224)
+  // ============================================
+
+  // Before #4224 every recurring window was hardcoded to local midnight and
+  // `windowStart` was read for `once` only, so a policy saying "daily, 2h,
+  // Europe/Warsaw" silently ran 00:00-02:00 with no way to say otherwise.
+  // `windowStart` now carries an "HH:MM" time-of-day for the recurring
+  // cadences, and the evaluator anchors to the most recent occurrence at or
+  // before now (so a window may have opened in the *previous* period).
+  describe('recurring start time', () => {
+    describe('daily', () => {
+      it('anchors the daily window to the configured time of day', () => {
+        const settings = makeSettings({ windowStart: '01:50', durationHours: 2 });
+        // 01:50 + 2h = 03:50, so 02:30 is inside the window the admin chose
+        // (and outside the midnight window the old code assumed).
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-17T02:30:00Z')).active).toBe(true);
+      });
+
+      it('is inactive before the configured start time', () => {
+        const settings = makeSettings({ windowStart: '01:50', durationHours: 2 });
+        // 00:30 precedes today's 01:50 start; the previous occurrence
+        // (Feb 16 01:50-03:50) is long over.
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z')).active).toBe(false);
+      });
+
+      it('stays active after the start time on the same day', () => {
+        const settings = makeSettings({ windowStart: '22:00', durationHours: 2 });
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-17T23:00:00Z')).active).toBe(true);
+      });
+
+      it('keeps a window that opened yesterday active past midnight', () => {
+        const settings = makeSettings({ windowStart: '23:00', durationHours: 2 });
+        // Feb 16 23:00 - Feb 17 01:00 — 00:30 falls in the previous day's window.
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z')).active).toBe(true);
+        // 01:30 is past that window's end and before tonight's 23:00 start.
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-17T01:30:00Z')).active).toBe(false);
+      });
+    });
+
+    describe('weekly', () => {
+      it('anchors the weekly window to the configured time of day', () => {
+        // 2026-02-15 is a Sunday.
+        const settings = makeSettings({ recurrence: 'weekly', windowStart: '03:00', durationHours: 2 });
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-15T04:00:00Z')).active).toBe(true);
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-15T01:00:00Z')).active).toBe(false);
+      });
+
+      it('keeps a Sunday-night window active into Monday', () => {
+        const settings = makeSettings({ recurrence: 'weekly', windowStart: '23:00', durationHours: 3 });
+        // Sunday Feb 15 23:00 - Monday Feb 16 02:00.
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-16T01:00:00Z')).active).toBe(true);
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-16T03:00:00Z')).active).toBe(false);
+      });
+    });
+
+    describe('monthly', () => {
+      it('anchors the monthly window to the configured time of day', () => {
+        const settings = makeSettings({ recurrence: 'monthly', windowStart: '06:00', durationHours: 2 });
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-01T07:00:00Z')).active).toBe(true);
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-01T05:00:00Z')).active).toBe(false);
+      });
+
+      it('keeps a window that opened on the 1st active into the 2nd', () => {
+        const settings = makeSettings({ recurrence: 'monthly', windowStart: '23:00', durationHours: 3 });
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-02T01:00:00Z')).active).toBe(true);
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-02T03:00:00Z')).active).toBe(false);
+      });
+
+      it('falls back to the previous month when the 1st has not reached the start time', () => {
+        const settings = makeSettings({ recurrence: 'monthly', windowStart: '12:00', durationHours: 2 });
+        // Feb 1 04:00 precedes Feb 1 12:00, so the most recent occurrence is
+        // Jan 1 12:00-14:00 — long over.
+        expect(isInMaintenanceWindow(settings, new Date('2026-02-01T04:00:00Z')).active).toBe(false);
+      });
+    });
+
+    it('honours the configured timezone when anchoring', () => {
+      // 2026-02-17T07:00:00Z is 08:00 in Europe/Warsaw (CET = UTC+1).
+      const settings = makeSettings({ timezone: 'Europe/Warsaw', windowStart: '07:30', durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T07:00:00Z')).active).toBe(true);
+      // 06:00Z is 07:00 Warsaw — before the 07:30 start.
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T06:00:00Z')).active).toBe(false);
+    });
+
+    it('accepts a full ISO datetime and uses only its time component', () => {
+      // A policy switched from `once` to `daily` still has a datetime stored;
+      // anchor to its time of day rather than silently reverting to midnight.
+      const settings = makeSettings({ windowStart: '2026-01-05T04:30:00', durationHours: 1 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T05:00:00Z')).active).toBe(true);
+    });
+
+    it('keeps midnight anchoring when no start time is stored', () => {
+      // Pre-#4224 rows have window_start NULL — their schedule must not move.
+      const settings = makeSettings({ windowStart: null, durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T02:30:00Z')).active).toBe(false);
+    });
+
+    it('treats an empty start time as midnight', () => {
+      const settings = makeSettings({ windowStart: '   ', durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z')).active).toBe(true);
+    });
+
+    it('warns and falls back to midnight for an unparseable start time', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({ windowStart: 'not-a-time', durationHours: 2 });
+      const result = isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z'));
+      expect(result.active).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not-a-time'));
+      warnSpy.mockRestore();
+    });
+
+    it('warns and falls back to midnight for an out-of-range start time', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({ windowStart: '25:00', durationHours: 2 });
+      const result = isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z'));
+      expect(result.active).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('25:00'));
+      warnSpy.mockRestore();
+    });
+
+    // `migrateToConfigPolicies` stores `once` windows as `toISOString()`, so a
+    // policy later switched to a recurring cadence can still hold a Z-suffixed
+    // instant. Its digits are UTC, not wall-clock time in `settings.timezone` —
+    // reading them as local would shift the window by the zone's offset with
+    // nothing in the UI to show for it.
+    it('refuses to read a Z-suffixed instant as a local time of day', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({
+        timezone: 'Europe/Warsaw',
+        windowStart: '2026-01-05T04:30:00.000Z',
+        durationHours: 2,
+      });
+      // 23:30Z is 00:30 Warsaw — inside the midnight fallback window, and
+      // outside the 04:30-06:30 window the naive digit read would produce.
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-16T23:30:00Z')).active).toBe(true);
+      // 04:00Z is 05:00 Warsaw — inside that bogus window, outside midnight's.
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T04:00:00Z')).active).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('2026-01-05T04:30:00.000Z'));
+      warnSpy.mockRestore();
+    });
+
+    it('refuses to read a datetime with a numeric UTC offset as a local time of day', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({
+        timezone: 'Europe/Warsaw',
+        windowStart: '2026-01-05T04:30:00+02:00',
+        durationHours: 2,
+      });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-16T23:30:00Z')).active).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('+02:00'));
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn about windowStart for the `once` recurrence', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({ recurrence: 'once', windowStart: 'not-a-date' });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T00:30:00Z')).active).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 
@@ -456,7 +716,7 @@ describe('resolveAlertRulesForDevice', () => {
 
   // Recursively walks the mocked condition tree built by the real (unmocked
   // logic, mocked drizzle-orm primitives) and/eq/inArray calls, looking for
-  // the node that constrains configPolicyFeatureLinks.featureType. Any other
+  // the node that constrains configPolicyEffectiveFeatureLinks.featureType. Any other
   // sub-condition (e.g. the configPolicyId equality half of the join) is
   // treated as always-true here — this harness only needs to prove which
   // featureType values the join filter itself admits.
@@ -466,10 +726,10 @@ describe('resolveAlertRulesForDevice', () => {
     if (node.op === 'and' && Array.isArray(node.conditions)) {
       return node.conditions.every((c) => featureTypeConditionAdmits(c, featureType));
     }
-    if (node.op === 'eq' && node.column === 'configPolicyFeatureLinks.featureType') {
+    if (node.op === 'eq' && node.column === 'configPolicyEffectiveFeatureLinks.featureType') {
       return node.value === featureType;
     }
-    if (node.op === 'inArray' && node.column === 'configPolicyFeatureLinks.featureType') {
+    if (node.op === 'inArray' && node.column === 'configPolicyEffectiveFeatureLinks.featureType') {
       return (node.values ?? []).includes(featureType);
     }
     return true;
@@ -477,7 +737,7 @@ describe('resolveAlertRulesForDevice', () => {
 
   // Simulates the assignments -> policies -> featureLinks -> alertRules join
   // chain. `.innerJoin` calls happen in a fixed order in the real code:
-  // (1) configurationPolicies, (2) configPolicyFeatureLinks, (3)
+  // (1) configurationPolicies, (2) configPolicyEffectiveFeatureLinks, (3)
   // configPolicyAlertRules — the 2nd call's condition is the one this test
   // cares about.
   function makeAlertRuleJoinChain(candidateRows: CandidateRow[]) {
@@ -648,7 +908,7 @@ describe('resolveGoverningAlertRulePolicyForDevice', () => {
     return chain;
   }
 
-  // The `policyIdsWithRules` query: configPolicyFeatureLinks innerJoin
+  // The `policyIdsWithRules` query: configPolicyEffectiveFeatureLinks innerJoin
   // configPolicyAlertRules, .where(...), awaited — no orderBy.
   function makeRulesChain(rows: { configPolicyId: string }[]) {
     const chain: any = {

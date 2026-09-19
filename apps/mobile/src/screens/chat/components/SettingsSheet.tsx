@@ -19,7 +19,17 @@ import Animated, {
 import Constants from 'expo-constants';
 
 import { useApprovalTheme, palette, radii, spacing, type } from '../../../theme';
-import { useAppDispatch, useAppSelector } from '../../../store';
+import {
+  clearNotificationPrefsError,
+  loadTicketPushPrefs,
+  saveTicketPushPrefs,
+  selectTicketPushPrefs,
+  selectTicketPushPrefsError,
+  selectTicketPushPrefsErrorKind,
+  selectTicketPushPrefsSaving,
+  useAppDispatch,
+  useAppSelector,
+} from '../../../store';
 import { logoutAsync } from '../../../store/authSlice';
 import {
   blockPairedDevice,
@@ -41,7 +51,8 @@ import { getAccountDeletionUrl } from '../../../services/serverConfig';
 import { ease, duration } from '../../../lib/motion';
 import { track } from '../../../lib/analytics';
 import { relativeTime } from '../../../lib/relativeTime';
-import { Toast } from '../../../components/Toast';
+import { useNetworkConnected } from '../../../lib/useNetworkConnected';
+import { ToastOutlet, useToast } from '../../../components/toast/ToastHost';
 import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
@@ -87,6 +98,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   // to system Settings when that's the real control.
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const pushRegistrationReason = useAppSelector((s) => s.auth.pushRegistrationReason);
+  const prefsError = useAppSelector(selectTicketPushPrefsError);
+  const prefsErrorKind = useAppSelector(selectTicketPushPrefsErrorKind);
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -97,7 +110,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricOn, setBiometricOn] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
 
   useEffect(() => {
     if (!visible) {
@@ -118,7 +131,28 @@ export function SettingsSheet({ visible, onCancel }: Props) {
     // semantics — the sheet is the entry point).
     void dispatch(fetchPairedDevices());
     void dispatch(fetchConnectedApps());
-  }, [visible, sheetWidth, dispatch]);
+
+    // Ticket push preferences are per USER, so another phone (or the API) can
+    // have changed them since this sheet last opened. Only worth loading when
+    // push actually registered — the controls are hidden otherwise (#4336).
+    if (pushRegistration === 'ok') void dispatch(loadTicketPushPrefs());
+  }, [visible, sheetWidth, dispatch, pushRegistration]);
+
+  // A failed preference save has already been rolled back in the slice; without
+  // this the value would just silently snap back and look like a missed tap.
+  // The two failures are worded apart on purpose — a load failure happens on
+  // sheet open, when the technician has not saved anything.
+  useEffect(() => {
+    if (!prefsError) return;
+    showToast({
+      kind: 'error',
+      text:
+        prefsErrorKind === 'load'
+          ? 'Could not load notification settings.'
+          : 'Could not save notification settings.',
+    });
+    dispatch(clearNotificationPrefsError());
+  }, [prefsError, prefsErrorKind, dispatch]);
 
   function onRevokeDevice(device: PairedMobileDevice) {
     if (device.isCurrent) {
@@ -146,9 +180,9 @@ export function SettingsSheet({ visible, onCancel }: Props) {
           onPress: async () => {
             const result = await dispatch(blockPairedDevice({ id: device.id }));
             if (blockPairedDevice.fulfilled.match(result)) {
-              setToast({ kind: 'success', text: 'Device revoked.' });
+              showToast({ kind: 'success', text: 'Device revoked.' });
             } else {
-              setToast({ kind: 'error', text: 'Could not revoke device.' });
+              showToast({ kind: 'error', text: 'Could not revoke device.' });
             }
           },
         },
@@ -171,9 +205,9 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         onPress: async () => {
           const result = await dispatch(revokeConnectedAppAsync({ clientId: app.clientId }));
           if (revokeConnectedAppAsync.fulfilled.match(result)) {
-            setToast({ kind: 'success', text: 'App revoked.' });
+            showToast({ kind: 'success', text: 'App revoked.' });
           } else {
-            setToast({ kind: 'error', text: 'Could not revoke app.' });
+            showToast({ kind: 'error', text: 'Could not revoke app.' });
           }
         },
       },
@@ -212,7 +246,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
 
   function onPasswordSuccess() {
     setPasswordOpen(false);
-    setToast({ kind: 'success', text: 'Password updated.' });
+    showToast({ kind: 'success', text: 'Password updated.' });
   }
 
   function onPressDeleteAccount() {
@@ -228,11 +262,23 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             // We track the user-intent click, not the actual server-side
             // deletion request (that happens on the web flow).
             track('account_deletion_requested');
-            // The deletion page is served on the server the user selected at
-            // sign-in (e.g. https://us.2breeze.app/account/delete), not a
-            // hardcoded marketing domain. Resolve it at tap time.
-            const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
-            await safeOpen(url);
+            try {
+              // The deletion page is served on the server the user selected
+              // at sign-in (e.g. https://us.2breeze.app/account/delete), not
+              // a hardcoded marketing domain. Resolve it at tap time.
+              //
+              // getAccountDeletionUrl throws ServerUrlReadError when the
+              // stored server can't be read (rather than opening the wrong
+              // tenant's deletion page) — surface that instead of letting the
+              // promise reject silently.
+              const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
+              await safeOpen(url);
+            } catch {
+              showToast({
+                kind: 'error',
+                text: 'Could not open the deletion page. Please try again.',
+              });
+            }
           },
         },
       ],
@@ -247,7 +293,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         style: 'destructive',
         onPress: () => {
           onCancel();
-          dispatch(logoutAsync());
+          dispatch(logoutAsync({ deliberate: true }));
         },
       },
     ]);
@@ -284,6 +330,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             biometricAvailable={biometricAvailable}
             biometricOn={biometricOn}
             pushCopy={notificationsRowCopy(pushRegistration, pushRegistrationReason)}
+            pushRegistered={pushRegistration === 'ok'}
             buildVersion={buildVersion}
             pairedDevices={pairedDevices}
             connectedApps={connectedApps}
@@ -299,15 +346,16 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             onRevokeDevice={onRevokeDevice}
             onRevokeApp={onRevokeApp}
           />
-          {/* Toast inside the sliding container so its left/right gutters
-              are relative to the sheet (84% width), not the modal root. */}
-          <Toast
-            visible={!!toast}
-            text={toast?.text ?? ''}
-            kind={toast?.kind ?? 'success'}
-            onHidden={() => setToast(null)}
-            bottomOffset={insets.bottom + spacing[16]}
-          />
+          {/* This sheet is an RN Modal, which always paints ABOVE the app-wide
+              toast host, so it mounts its own outlet. Only the topmost mounted
+              outlet renders (see toastState.topOutletId), so the toast is never
+              painted twice — and this outlet's id genuinely tracks the sheet
+              being on screen, because Modal.render returns null while it is
+              hidden (react-native Modal.js `_shouldShowModal`), which also
+              keeps the outlet alive through iOS's dismiss animation. It sits
+              inside the sliding container so its gutters are relative to the
+              sheet (84% width), not the modal root. */}
+          <ToastOutlet />
         </Animated.View>
       </View>
 
@@ -328,6 +376,7 @@ function SheetBody({
   biometricAvailable,
   biometricOn,
   pushCopy,
+  pushRegistered,
   buildVersion,
   pairedDevices,
   connectedApps,
@@ -350,6 +399,7 @@ function SheetBody({
   biometricAvailable: boolean;
   biometricOn: boolean;
   pushCopy: NotificationsRowCopy;
+  pushRegistered: boolean;
   buildVersion: string;
   pairedDevices: PairedMobileDevice[];
   connectedApps: ConnectedApp[];
@@ -373,6 +423,9 @@ function SheetBody({
           paddingTop: insetTop + spacing[6],
           paddingBottom: spacing[8],
         }}
+        // The bar itself is drawn over by the cap below, so keep the scroll
+        // indicator out from under it rather than letting it run to y=0.
+        scrollIndicatorInsets={{ top: insetTop }}
       >
         <View
           style={{
@@ -415,6 +468,10 @@ function SheetBody({
           onPress={onPressNotificationSettings}
           theme={theme}
         />
+
+        {/* Only meaningful once a push token exists — otherwise the server has
+            nowhere to send what these settings govern (#4336). */}
+        {pushRegistered ? <TicketPushPreferenceRows theme={theme} /> : null}
 
         <SectionDivider color={theme.border} />
 
@@ -510,6 +567,24 @@ function SheetBody({
           {buildVersion}
         </Text>
       </View>
+
+      {/* `insetTop` only positions the RESTING layout — it does nothing once the
+          list is scrolled, and the avatar, account name and email then ride up
+          into the status bar and collide with the clock and the Dynamic Island.
+          An opaque cap in the sheet's own surface colour, painted last so it
+          sits above the list, gives that strip something to disappear behind.
+          Not pressable: taps in the status-bar strip belong to the OS. */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: insetTop,
+          backgroundColor: theme.bg1,
+        }}
+      />
     </View>
   );
 }
@@ -694,12 +769,14 @@ function ToggleRow({
   description,
   value,
   onChange,
+  disabled,
   theme,
 }: {
   label: string;
   description?: string;
   value: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
   theme: ReturnType<typeof useApprovalTheme>;
 }) {
   return (
@@ -709,6 +786,7 @@ function ToggleRow({
         paddingVertical: spacing[3],
         flexDirection: 'row',
         alignItems: 'center',
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       <View style={{ flex: 1, marginRight: spacing[3] }}>
@@ -722,9 +800,141 @@ function ToggleRow({
       <Switch
         value={value}
         onValueChange={onChange}
+        disabled={disabled}
         trackColor={{ false: theme.bg3, true: palette.brand.deep }}
         thumbColor={value ? palette.brand.base : theme.textMd}
       />
+    </View>
+  );
+}
+
+/**
+ * W10 (#4336). The two ticket push categories.
+ *
+ * Reads the slice itself rather than taking six more props through SheetBody —
+ * it is already at twenty, and none of these values are of any use to the rest
+ * of the sheet.
+ */
+function TicketPushPreferenceRows({ theme }: { theme: ReturnType<typeof useApprovalTheme> }) {
+  const dispatch = useAppDispatch();
+  const connected = useNetworkConnected();
+  const prefs = useAppSelector(selectTicketPushPrefs);
+  const saving = useAppSelector(selectTicketPushPrefsSaving);
+
+  // No offline write queue for preferences: a setting saved into a queue would
+  // sit there silently disagreeing with what the server is using to decide what
+  // to push. Disabled-with-a-reason is the honest state.
+  const disabled = !connected || saving;
+
+  return (
+    <>
+      <ToggleRow
+        label="Assigned to me"
+        description={
+          connected
+            ? 'Push when a ticket is assigned to you'
+            : 'Offline — reconnect to change'
+        }
+        value={prefs.assignedEnabled}
+        onChange={(next) => {
+          void dispatch(saveTicketPushPrefs({ assignedEnabled: next }));
+        }}
+        disabled={disabled}
+        theme={theme}
+      />
+      <SegmentedRow
+        label="SLA breaches"
+        // These controls govern PUSH ONLY. "Off" must not read as "hide it
+        // entirely" — the in-app inbox row and the email are still written on
+        // every breach, and the worker implements exactly that. A toggle that
+        // quietly means more than it says is how support tickets get filed
+        // against the notification system.
+        description={
+          connected
+            ? 'Push when a ticket misses its response or resolution SLA. Your in-app inbox still records every breach.'
+            : 'Offline — reconnect to change'
+        }
+        value={prefs.slaScope}
+        options={[
+          { value: 'off', label: 'Off' },
+          { value: 'owned', label: 'My tickets' },
+          { value: 'any', label: 'All tickets' },
+        ]}
+        onChange={(scope) => {
+          if (scope === prefs.slaScope) return;
+          void dispatch(saveTicketPushPrefs({ slaScope: scope }));
+        }}
+        disabled={disabled}
+        theme={theme}
+      />
+    </>
+  );
+}
+
+function SegmentedRow<T extends string>({
+  label,
+  description,
+  value,
+  options,
+  onChange,
+  disabled,
+  theme,
+}: {
+  label: string;
+  description?: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+  disabled?: boolean;
+  theme: ReturnType<typeof useApprovalTheme>;
+}) {
+  return (
+    <View
+      style={{
+        paddingHorizontal: spacing[6],
+        paddingVertical: spacing[3],
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
+      {description ? (
+        <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
+          {description}
+        </Text>
+      ) : null}
+      <View
+        style={{
+          flexDirection: 'row',
+          marginTop: spacing[2],
+          borderRadius: radii.md,
+          backgroundColor: theme.bg3,
+          padding: 2,
+        }}
+      >
+        {options.map((option) => {
+          const selected = option.value === value;
+          return (
+            <Pressable
+              key={option.value}
+              accessibilityRole="button"
+              accessibilityState={{ selected, disabled: !!disabled }}
+              disabled={disabled}
+              onPress={() => onChange(option.value)}
+              style={{
+                flex: 1,
+                paddingVertical: spacing[2],
+                alignItems: 'center',
+                borderRadius: radii.sm,
+                backgroundColor: selected ? palette.brand.deep : 'transparent',
+              }}
+            >
+              <Text style={[type.meta, { color: selected ? palette.brand.base : theme.textMd }]}>
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }

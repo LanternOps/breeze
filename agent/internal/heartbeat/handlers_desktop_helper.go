@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/launchdplist"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -247,7 +248,12 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 	clipHostToViewer := policy.ClipboardHostToViewer
 	clipViewerToHost := policy.ClipboardViewerToHost
 	req := ipc.DesktopStartRequest{
-		SessionID:               sessionID,
+		SessionID: sessionID,
+		// SEC-038: the helper runs its own fence, so it needs the generation
+		// this start was admitted at. Forwarded verbatim as the canonical
+		// decimal string the server emitted — never re-encoded through a
+		// number.
+		StartGeneration:         desktopStartGenerationForHelper(payload),
 		Offer:                   offer,
 		ICEServers:              iceRaw,
 		DisplayIndex:            displayIndex,
@@ -256,6 +262,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		ClipboardViewerToHost:   &clipViewerToHost,
 		IdleTimeoutMinutes:      int(policy.IdleTimeout / time.Minute),
 		MaxSessionDurationHours: int(policy.MaxDuration / time.Hour),
+		RevocationLease:         desktop.RevocationLeaseToIPC(policy.RevocationLease),
 	}
 
 	// Only one start may be in flight per desktop session — see
@@ -378,6 +385,20 @@ func desktopStartLostHelper(err error) bool {
 // always-on path treats that as worth retrying against a freshly spawned
 // helper; every other failure is terminal and must be surfaced verbatim.
 func (h *Heartbeat) startDesktopOnSession(session *sessionbroker.Session, sessionID string, req ipc.DesktopStartRequest) (tools.CommandResult, bool) {
+	// SEC-038 readiness barrier: a helper must not be handed a
+	// generation-bearing start before it has been seeded with what this
+	// service already knows. The seed is a REQUEST, so its reply — not merely
+	// its dispatch — is what orders it ahead of the start; a helper
+	// dispatching messages on independent goroutines could otherwise apply
+	// them in either order.
+	if req.StartGeneration != "" {
+		if err := h.ensureHelperFenceSynced(session); err != nil {
+			return tools.NewErrorResult(fmt.Errorf(
+				"could not seed the desktop start fence on helper session %s; refusing the start: %w",
+				session.SessionID, err), 0), desktopStartLostHelper(err)
+		}
+	}
+
 	resp, err := session.SendCommand(nextDesktopStartCommandID(sessionID), ipc.TypeDesktopStart, req, desktopStartCommandTimeout)
 	if err != nil {
 		lostHelper := desktopStartLostHelper(err)
@@ -678,65 +699,11 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 // darwinHelperPlists defines the LaunchAgent plists the agent writes to disk
 // when they're missing, so the desktop helper self-configures without a .pkg.
+// The XML itself comes from internal/launchdplist — the single source of
+// truth for these plists (#4379).
 var darwinHelperPlists = map[string]string{
-	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist": `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>user_session</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`,
-	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>login_window</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>LoginWindow</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`,
+	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist":        launchdplist.DesktopHelperUser,
+	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": launchdplist.DesktopHelperLoginWindow,
 }
 
 // ensureDarwinHelperPrereqs prepares everything a macOS desktop helper needs

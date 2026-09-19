@@ -98,6 +98,20 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
 }));
 
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` and
+// `correlations.ts` (both mounted under `alertRoutes`, ./alerts/index.ts)
+// now import from `services/aiAgents/alertVerdicts`. Unmocked, the real
+// module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  latestVerdictForGroup: vi.fn(async () => null),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
+
 vi.mock('../db/schema', () => ({
   alertCorrelationGroups: {
     id: 'alertCorrelationGroups.id',
@@ -173,7 +187,7 @@ vi.mock('../middleware/auth', async () => ({
       roleId: 'role-1',
       scope: 'organization',
       allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-    } : undefined);
+    } : {});
     return next();
   }),
   requireMfa: vi.fn(() => (c: any, next: any) => {
@@ -823,17 +837,17 @@ describe('alert routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: whereMock1
+            leftJoin: vi.fn().mockReturnValue({ where: whereMock1 })
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: whereMock2
+            leftJoin: vi.fn().mockReturnValue({ where: whereMock2 })
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 3 }])
+            leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 3 }]) })
           })
         } as any);
 
@@ -868,14 +882,7 @@ describe('alert routes', () => {
             })
           })
         } as any)
-        // validateAlertRuleNotificationBindings: org → partnerId lookup (dual-axis #2130)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ partnerId: '99999999-9999-9999-9999-999999999999' }])
-            })
-          })
-        } as any)
+        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([])
@@ -913,14 +920,7 @@ describe('alert routes', () => {
             })
           })
         } as any)
-        // validateAlertRuleNotificationBindings: org → partnerId lookup (dual-axis #2130)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ partnerId: '99999999-9999-9999-9999-999999999999' }])
-            })
-          })
-        } as any)
+        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([])

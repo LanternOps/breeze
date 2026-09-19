@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Livrables de service",
+    "empty": "Aucun livrable pour le moment. Ajoutez les rapports et révisions récurrents dus à ce client."
+  },
+  "table": {
+    "name": "Livrable",
+    "cadence": "Fréquence",
+    "nextDue": "Prochaine échéance",
+    "lastDelivered": "Dernière livraison",
+    "status": "État",
+    "portal": "Portail"
+  },
+  "cadence": {
+    "monthly": "Mensuelle",
+    "quarterly": "Trimestrielle",
+    "semiannual": "Semestrielle",
+    "annual": "Annuelle",
+    "one_time": "Unique"
+  },
+  "status": {
+    "on_track": "Dans les délais",
+    "due_soon": "Échéance imminente",
+    "late": "En retard",
+    "missed": "Manqué",
+    "inactive": "Inactif"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Planifiée",
+      "open": "Ouverte",
+      "awaiting_evidence": "En attente d'une preuve",
+      "delivered": "Livrée",
+      "missed": "Manquée",
+      "waived": "Exemptée"
+    }
+  },
+  "actions": {
+    "add": "Ajouter un livrable",
+    "edit": "Modifier",
+    "deactivate": "Désactiver",
+    "deliver": "Marquer comme livré",
+    "waive": "Exempter",
+    "reopen": "Rouvrir",
+    "reschedule": "Reporter",
+    "addEvidence": "Ajouter une preuve",
+    "removeEvidence": "Retirer la preuve",
+    "save": "Enregistrer",
+    "cancel": "Annuler"
+  },
+  "form": {
+    "name": "Nom",
+    "description": "Description",
+    "contract": "Contrat",
+    "noContract": "Non lié à un contrat",
+    "contractsUnavailable": "Impossible de charger les contrats de cette organisation. Rechargez la page avant d'enregistrer.",
+    "cadence": "Fréquence",
+    "anchorDueDate": "Première date d'échéance",
+    "effectiveFrom": "En vigueur à compter du",
+    "effectiveUntil": "En vigueur jusqu'au",
+    "leadDays": "Préavis (jours)",
+    "graceDays": "Période de grâce (jours)",
+    "artifactRequired": "Preuve requise avant de marquer comme livré",
+    "completionMode": {
+      "label": "Achèvement",
+      "explicit": "Marqué comme livré par un technicien",
+      "on_ticket_resolve": "Livré lorsque le billet lié est résolu"
+    },
+    "autoEvidenceReport": "Joindre les exécutions de rapport comme preuve",
+    "autoEvidenceNone": "Aucun",
+    "autoEvidenceHelp": "La preuve est générée le jour d'échéance et devient visible pour le client lorsque l'occurrence est livrée.",
+    "autoEvidenceEmpty": "Aucun type de rapport de preuve géré n'est encore disponible.",
+    "owner": "Responsable",
+    "ticketCategory": "Catégorie de billet",
+    "portalVisible": "Afficher dans le portail client",
+    "sortOrder": "Ordre d'affichage",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "checklistTemplate": "Modèle de liste de vérification",
+    "checklistTemplateNone": "Aucun",
+    "checklistTemplateAllOrgs": "Toutes les orgs",
+    "checklistTemplateManage": "Gérer les modèles de liste de vérification"
+  },
+  "drawer": {
+    "title": "Occurrences",
+    "empty_one": "Aucune occurrence pour l’instant. La première est planifiée {{count}} jour avant son échéance.",
+    "empty_other": "Aucune occurrence pour l’instant. La première est planifiée {{count}} jours avant son échéance.",
+    "emptyWithDate_one": "Aucune occurrence pour l’instant. La première est planifiée {{count}} jour avant son échéance ({{date}}).",
+    "emptyWithDate_other": "Aucune occurrence pour l’instant. La première est planifiée {{count}} jours avant son échéance ({{date}}).",
+    "evidence": "Preuves",
+    "noEvidence": "Aucune preuve jointe",
+    "late": "En retard",
+    "rescheduledFrom": "Reportée depuis le {{date}}",
+    "deliveryNote": "Note de livraison",
+    "waivedReason": "Motif de l'exemption",
+    "newDueDate": "Nouvelle date d'échéance",
+    "uploadEvidence": "Téléverser un fichier comme preuve",
+    "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo. Le fichier est classé dans la bibliothèque de documents de cette organisation.",
+    "evidenceDocument": "Document de preuve",
+    "upload": "Téléverser",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Afficher la liste de vérification",
+    "hideChecklist": "Masquer la liste de vérification"
+  },
+  "evidence": {
+    "reportRun": "Exécution de rapport",
+    "document": "Document",
+    "reportRunId": "Identifiant d'exécution de rapport"
+  },
+  "upcoming": {
+    "title": "90 prochains jours",
+    "empty": "Rien n'est dû au cours des 90 prochains jours."
+  },
+  "group": {
+    "noContract": "Aucun contrat"
+  },
+  "errors": {
+    "evidenceRequired": "Joignez une preuve avant de marquer cette occurrence comme livrée.",
+    "duplicateName": "Un livrable portant ce nom existe déjà pour cette organisation.",
+    "loadFailed": "Impossible de charger les livrables.",
+    "saveFailed": "Impossible d'enregistrer le livrable.",
+    "actionFailed": "Impossible de mettre à jour l'occurrence.",
+    "uploadFailed": "Impossible de téléverser le fichier de preuve.",
+    "tooLarge": "Ce fichier dépasse 10 Mo.",
+    "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être joints.",
+    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu."
+  },
+  "confirm": {
+    "deactivate": "Désactiver {{name}}? Les occurrences ouvertes seront fermées et aucune nouvelle ne sera planifiée.",
+    "deleteKeyDate": "Supprimer la date importante {{label}}?"
+  },
+  "keyDates": {
+    "title": "Dates importantes",
+    "empty": "Aucune date importante enregistrée.",
+    "add": "Ajouter une date importante",
+    "label": "Libellé",
+    "kind": {
+      "label": "Type",
+      "insurance_renewal": "Renouvellement d'assurance",
+      "vendor_contract_end": "Fin du contrat avec un fournisseur",
+      "compliance_deadline": "Échéance de conformité",
+      "audit": "Vérification",
+      "other": "Autre"
+    },
+    "date": "Date",
+    "recursAnnually": "Se répète chaque année",
+    "remindDaysBefore": "Rappel (jours avant)",
+    "portalVisible": "Afficher dans le portail client",
+    "contractEnd": "Fin du contrat",
+    "notes": "Notes",
+    "owner": "Responsable",
+    "edit": "Modifier la date importante",
+    "delete": "Supprimer",
+    "errors": {
+      "loadFailed": "Impossible de charger les dates importantes.",
+      "saveFailed": "Impossible d'enregistrer la date importante."
+    },
+    "toast": {
+      "saved": "Date importante enregistrée",
+      "deleted": "Date importante supprimée"
+    }
+  },
+  "toast": {
+    "saved": "Livrable enregistré",
+    "delivered": "Marqué comme livré",
+    "waived": "Occurrence exemptée",
+    "reopened": "Occurrence rouverte",
+    "rescheduled": "Occurrence reportée",
+    "evidenceAdded": "Preuve ajoutée",
+    "evidenceRemoved": "Preuve retirée",
+    "deactivated": "Livrable désactivé",
+    "evidenceUploaded": "Preuve téléversée"
+  },
+  "templates": {
+    "pageTitle": "Modèles de livrables",
+    "pageDescription": "Définissez un niveau de service une fois et appliquez-le à n'importe quel client. Les ensembles valables pour tout le partenaire sont disponibles pour chaque organisation que vous gérez.",
+    "empty": "Aucun ensemble de modèles pour l'instant.",
+    "allOrganizations": "Toutes les orgs",
+    "actions": {
+      "newSet": "Nouvel ensemble de modèles",
+      "addItem": "Ajouter un livrable",
+      "apply": "Appliquer l'ensemble de modèles",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer",
+      "cancel": "Annuler"
+    },
+    "form": {
+      "name": "Nom de l'ensemble",
+      "description": "Descriptif",
+      "itemName": "Nom du livrable",
+      "cadence": "Fréquence",
+      "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
+      "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
+      "artifactRequired": "Preuve requise",
+      "completionMode": "Achèvement",
+      "autoEvidenceReportType": "Type de rapport de preuve"
+    },
+    "ownerScope": {
+      "legend": "Pour qui est cet ensemble?",
+      "allOrganizations": "Toutes les organisations (tout le partenaire)",
+      "thisOrganizationOnly": "Cette organisation seulement"
+    },
+    "apply": {
+      "title": "Appliquer l'ensemble de modèles",
+      "set": "Ensemble de modèles",
+      "contract": "Contrat (facultatif)",
+      "noContract": "Aucun contrat",
+      "effectiveFrom": "En vigueur à partir du",
+      "owner": "Responsable (facultatif)",
+      "submit": "Appliquer",
+      "created_one": "{{count}} livrable créé",
+      "created_other": "{{count}} livrables créés",
+      "skipped": "Ignorés (déjà présents) : {{names}}"
+    },
+    "errors": {
+      "collision": "Ces livrables existent déjà sur la cible : {{names}}",
+      "duplicateSetName": "Un ensemble de modèles portant ce nom existe déjà.",
+      "duplicateItemName": "Un élément portant ce nom existe déjà dans l'ensemble.",
+      "partnerWideDenied": "La gestion des modèles valables pour tout le partenaire nécessite un accès complet à l'organisation partenaire.",
+      "loadFailed": "Impossible de charger les ensembles de modèles.",
+      "saveFailed": "Impossible d'enregistrer l'ensemble de modèles.",
+      "deleteFailed": "Impossible de supprimer l'ensemble de modèles.",
+      "itemSaveFailed": "Impossible d'enregistrer le livrable.",
+      "itemDeleteFailed": "Impossible de retirer le livrable.",
+      "applyFailed": "Impossible d'appliquer l'ensemble de modèles."
+    },
+    "toast": {
+      "setSaved": "Ensemble de modèles enregistré",
+      "setDeleted": "Ensemble de modèles supprimé",
+      "itemSaved": "Livrable enregistré",
+      "itemDeleted": "Livrable retiré",
+      "applied": "Ensemble de modèles appliqué"
+    }
+  }
+}

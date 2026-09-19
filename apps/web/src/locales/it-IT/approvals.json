@@ -10,6 +10,30 @@
   },
   "requestedBy": "Richiesto da {{client}}",
   "proposedByAgent": "Proposto da {{agent}} (agente IA)",
+  "targetDevice": "Dispositivo di destinazione: {{hostname}}",
+  "batch": {
+    "approveAll": "Approva tutto ({{count}})",
+    "declineAll": "Rifiuta tutto ({{count}})",
+    "groupTitle": "{{count}} richieste simili · {{tool}}",
+    "moreHostnames": "+{{count}} altri",
+    "denyConfirmSummary": "Questo rifiuta {{count}} richieste per {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organizzazione",
+    "allOrganizations": "Tutte le organizzazioni ({{count}})",
+    "orgOption": "{{name}} ({{count}} in attesa)",
+    "searchLabel": "Cerca",
+    "searchPlaceholder": "Cerca per azione, dispositivo o agente…",
+    "sortLabel": "Ordina per",
+    "sortExpiringSoonest": "In scadenza",
+    "sortNewest": "Più recenti",
+    "showingLoaded": "Mostrando {{shown}} di {{loaded}} caricate",
+    "clearFilters": "Cancella filtri",
+    "noMatches": {
+      "title": "Nessuna approvazione corrisponde ai filtri",
+      "description": "Prova un'altra organizzazione o un altro termine di ricerca, oppure cancella i filtri."
+    }
+  },
   "risk": {
     "low": "Rischio basso",
     "medium": "Rischio medio",
@@ -25,11 +49,67 @@
   "deciding": "Invio in corso…",
   "expiresIn": "Scade tra {{minutes}} min",
   "expiresSoon": "Scade tra meno di un minuto",
+  "expiresInHours": "Scade tra {{hours}} h",
+  "expiresInDays": "Scade tra {{days}} giorni",
+  "expired": "Scaduta",
+  "unknownOrganization": "Organizzazione sconosciuta",
+  "intentNoLongerPending": "Quell’approvazione non è più in sospeso.",
+  "dismiss": "Ignora",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} approvato per {{org}}",
+  "pagination": {
+    "showing": "Visualizzazione di {{shown}} su {{total}}",
+    "showingCount": "Visualizzazione di {{shown}}",
+    "loadMore": "Carica altro",
+    "loadMoreError": "Impossibile caricare altro. Riprova."
+  },
   "errors": {
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
+    "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici, quindi un'altra persona autorizzata deve decidere su questa richiesta.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
-    "decisionFailed": "Impossibile inviare la decisione. Riprova."
+    "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
+    "decisionFailed": "Impossibile inviare la decisione. Riprova.",
+    "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
+    "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme.",
+    "batchTooLarge": "Questo gruppo contiene troppe richieste per essere deciso insieme. Approvale in gruppi più piccoli.",
+    "driftedFromBatch": "Questa richiesta è cambiata e deve essere decisa singolarmente."
   },
-  "registerDevice": "Registra dispositivo"
+  "registerDevice": "Registra dispositivo",
+  "alwaysAllow": {
+    "button": "Approva e consenti sempre",
+    "confirm": {
+      "title": "Approva e richiedi la preautorizzazione",
+      "message": "Questo approva la richiesta che stai visualizzando in questo momento. Chiede inoltre a un secondo approvatore di preautorizzare {{opKey}} per l’agente di questa organizzazione: si applica solo alle esecuzioni future e non autorizza mai questa richiesta né altre già in attesa di decisione.",
+      "action": "Approva e richiedi"
+    },
+    "toasts": {
+      "requested": "Approvato. Un secondo approvatore deve approvare la preautorizzazione prima che questa operazione venga eseguita senza supervisione, e si applica solo alle esecuzioni future."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Approvato, ma non è stato possibile inviare la richiesta di preautorizzazione. Riprova dalle impostazioni dell’agente.",
+      "policyDecideDisabled": "Approvato. Non è stato possibile richiedere la preautorizzazione perché è disattivata per questa distribuzione."
+    }
+  },
+  "recent": {
+    "title": "Recenti",
+    "subtitle": "Già decise o concluse",
+    "loading": "Caricamento delle approvazioni recenti…",
+    "error": "Impossibile caricare le approvazioni recenti.",
+    "retry": "Riprova",
+    "empty": "Nulla si è concluso di recente.",
+    "status": {
+      "failed": "Non riuscita",
+      "rejected": "Rifiutata",
+      "expired": "Scaduta",
+      "cancelled": "Annullata",
+      "completed": "Completata",
+      "denied": "Negata",
+      "approved": "Approvata",
+      "reported": "Segnalata",
+      "unknown": "Sconosciuto"
+    }
+  },
+  "proposedByAgentExecuteNotice": "Approvare questo lo esegue subito — non è una simulazione, nemmeno in modalità ombra."
 }

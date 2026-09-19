@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const publishEventMock = vi.fn(async (..._args: any[]) => 'event-id');
 const resolveAllBackupAssignedDevicesMock = vi.fn(async (..._args: any[]) => [] as any[]);
+const captureRecoveryAuthorizationSubjectMock = vi.fn();
+const authorizeQueuedRecoveryWorkMock = vi.fn();
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: (...args: any[]) => publishEventMock(...args),
@@ -8,6 +10,10 @@ vi.mock('../../services/eventBus', () => ({
 
 vi.mock('../../services/featureConfigResolver', () => ({
   resolveAllBackupAssignedDevices: (...args: any[]) => resolveAllBackupAssignedDevicesMock(...args),
+}));
+
+vi.mock('../../services/auditService', () => ({
+  createAuditLogAsync: vi.fn(),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -22,16 +28,44 @@ vi.mock('../../services/backupMetrics', () => ({
   setLowReadinessDevices: vi.fn(),
 }));
 
-import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
+vi.mock('../../services/recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: (...args: unknown[]) => captureRecoveryAuthorizationSubjectMock(...args),
+  authorizeQueuedRecoveryWork: (...args: unknown[]) => authorizeQueuedRecoveryWorkMock(...args),
+}));
+
+import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary, toVerificationListItem } from './verificationService';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { createAuditLogAsync } from '../../services/auditService';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 
 describe('backup verification service', () => {
   beforeEach(() => {
     publishEventMock.mockClear();
+    vi.mocked(createAuditLogAsync).mockClear();
+    vi.mocked(recordBackupDispatchFailure).mockClear();
     resolveAllBackupAssignedDevicesMock.mockReset();
     resolveAllBackupAssignedDevicesMock.mockResolvedValue([]);
     vi.mocked(queueCommandForExecution).mockReset();
+    captureRecoveryAuthorizationSubjectMock.mockReset();
+    captureRecoveryAuthorizationSubjectMock.mockResolvedValue({
+      authorizationPrincipalKind: 'system',
+      authorizationPrincipalId: 'backup-verification-scheduler',
+      authorizationGrantRevision: 'system-recovery-v1',
+      authorizationState: 'pending',
+      authorizationDenialCode: null,
+      authorizationCheckedAt: null,
+    });
+    authorizeQueuedRecoveryWorkMock.mockReset();
+    authorizeQueuedRecoveryWorkMock.mockResolvedValue({
+      subject: {},
+      resources: {
+        resources: [
+          { kind: 'device', id: 'dev-001', role: 'target', orgId: 'org-123', deviceId: 'dev-001', siteId: 'site-1' },
+          { kind: 'snapshot', id: 'snap-001', role: 'source', orgId: 'org-123', deviceId: 'dev-001', siteId: 'site-1' },
+        ],
+      },
+    });
   });
 
   it('rejects backupJobId/deviceId mismatches', async () => {
@@ -227,7 +261,7 @@ describe('backup verification service', () => {
         provider: 's3',
         providerConfig: expect.objectContaining({ bucket: 'breeze-backups' }),
       }),
-      expect.anything()
+      expect.objectContaining({ expectedOrgId: 'org-123' })
     );
 
     const idx = backupVerifications.findIndex((v) => v.id === verification.id);
@@ -324,6 +358,118 @@ describe('backup verification service', () => {
     })).rejects.toThrow('Device is offline, cannot execute command');
 
     expect(backupVerifications.length).toBe(priorCount);
+  });
+
+  it('does not let a manual source string select scheduled system authority', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-manual-source', status: 'sent' } as any,
+    });
+
+    const { verification } = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'post-backup-integrity-check',
+    });
+
+    expect(captureRecoveryAuthorizationSubjectMock).not.toHaveBeenCalled();
+    expect(authorizeQueuedRecoveryWorkMock).not.toHaveBeenCalled();
+    const index = backupVerifications.findIndex((row) => row.id === verification.id);
+    if (index >= 0) backupVerifications.splice(index, 1);
+    verificationOrgById.delete(verification.id);
+  });
+
+  it('captures fixed scheduler authority and gates current device/snapshot lineage before dispatch', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-scheduled', status: 'sent' } as any,
+    });
+
+    const { verification } = await runScheduledBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'post-backup-integrity-check',
+    });
+
+    expect(captureRecoveryAuthorizationSubjectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal: { kind: 'system', reason: 'backup-verification-scheduler' },
+      }),
+      'org-123',
+      'verify',
+    );
+    expect(authorizeQueuedRecoveryWorkMock).toHaveBeenCalledWith(
+      expect.objectContaining({ authorizationPrincipalId: 'backup-verification-scheduler' }),
+      'org-123',
+      [
+        { kind: 'device', id: 'dev-001', role: 'target' },
+        { kind: 'snapshot', id: 'snap-001', role: 'source' },
+      ],
+      'verify',
+    );
+    expect(queueCommandForExecution).toHaveBeenCalledOnce();
+    const index = backupVerifications.findIndex((row) => row.id === verification.id);
+    if (index >= 0) backupVerifications.splice(index, 1);
+    verificationOrgById.delete(verification.id);
+  });
+
+  it.each(['integrity', 'test_restore'] as const)(
+    'refuses %s after the device moves between lineage authorization and dispatch',
+    async (verificationType) => {
+      const dispatch = vi.fn();
+      vi.mocked(queueCommandForExecution).mockImplementationOnce(async (_deviceId, _type, _payload, options) => {
+        // The queue reads the current org after the scheduler's lineage check.
+        const currentOrgId = 'org-new-owner';
+        if (options?.expectedOrgId && options.expectedOrgId !== currentOrgId) {
+          return { error: 'Device not found' };
+        }
+        dispatch();
+        return { command: { id: 'cmd-stale-owner', status: 'sent' } as any };
+      });
+      const priorIds = new Set(backupVerifications.map((row) => row.id));
+      try {
+        await expect(runScheduledBackupVerification({
+          orgId: 'org-123',
+          deviceId: 'dev-001',
+          backupJobId: 'job-001',
+          verificationType,
+          source: 'weekly-test-restore',
+        })).rejects.toThrow('Device not found');
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(backupVerifications.find((row) => !priorIds.has(row.id))).toMatchObject({
+          orgId: 'org-123', status: 'failed', details: { reason: 'device_org_changed' },
+        });
+        expect(recordBackupDispatchFailure).toHaveBeenCalledWith('backup_verification', 'device_org_changed');
+        expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+          orgId: 'org-123', result: 'failure', details: expect.objectContaining({ reason: 'device_org_changed' }),
+        }));
+      } finally {
+        for (let i = backupVerifications.length - 1; i >= 0; i--) {
+          if (!priorIds.has(backupVerifications[i]!.id)) {
+            verificationOrgById.delete(backupVerifications[i]!.id);
+            backupVerifications.splice(i, 1);
+          }
+        }
+      }
+    },
+  );
+
+  it('performs zero command or verification writes when scheduled authority is denied', async () => {
+    const before = backupVerifications.length;
+    authorizeQueuedRecoveryWorkMock.mockRejectedValueOnce(new Error('site_access_denied'));
+
+    await expect(runScheduledBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'test_restore',
+      source: 'weekly-test-restore',
+    })).rejects.toThrow('site_access_denied');
+
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(backupVerifications).toHaveLength(before);
   });
 });
 
@@ -536,5 +682,43 @@ describe('timeoutStaleVerifications', () => {
 
     const updated = backupVerifications.find((v) => v.id === verificationId);
     expect(updated?.status).toBe('pending');
+  });
+});
+
+describe('toVerificationListItem', () => {
+  const base = { id: 'v1', status: 'failed' } as any;
+
+  it('exposes only a bounded failure reason for failed rows', () => {
+    const out = toVerificationListItem({
+      ...base,
+      details: { reason: 'Verification timed out after 30 minutes', files: ['/secret/path'], commandId: 'c1' },
+    });
+    expect(out.details).toEqual({ reason: 'Verification timed out after 30 minutes' });
+  });
+
+  it('caps reason length at exactly 200 characters, unmodified up to the boundary', () => {
+    expect(toVerificationListItem({ ...base, details: { reason: 'x'.repeat(200) } }).details)
+      .toEqual({ reason: 'x'.repeat(200) });
+    expect(toVerificationListItem({ ...base, details: { reason: 'x'.repeat(1000) } }).details)
+      .toEqual({ reason: 'x'.repeat(200) });
+  });
+
+  it('normalizes internal whitespace and drops a whitespace-only reason', () => {
+    expect(toVerificationListItem({ ...base, details: { reason: 'Error:\n  disk full\t' } }).details)
+      .toEqual({ reason: 'Error: disk full' });
+    expect(toVerificationListItem({ ...base, details: { reason: '   \n\t  ' } }).details).toBeNull();
+    expect(
+      toVerificationListItem({ ...base, details: { simulated: true, reason: '   ' } }).details,
+    ).toEqual({ simulated: true });
+  });
+
+  it('drops reason for non-failed rows and non-string reasons', () => {
+    expect(toVerificationListItem({ ...base, status: 'passed', details: { reason: 'nope' } }).details).toBeNull();
+    expect(toVerificationListItem({ ...base, details: { reason: { a: 1 } } }).details).toBeNull();
+  });
+
+  it('keeps the simulated marker alongside the reason', () => {
+    const out = toVerificationListItem({ ...base, details: { simulated: true, reason: 'boom', other: 1 } });
+    expect(out.details).toEqual({ simulated: true, reason: 'boom' });
   });
 });

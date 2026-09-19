@@ -31,8 +31,37 @@ export interface ClientAiEntraClaims {
   tid: string;
   /** Entra object id of the user within the tenant (GUID, lowercased). */
   oid: string;
-  /** Best-effort email (preferred_username when address-shaped, else email claim), lowercased. */
+  /**
+   * Best-effort address for DISPLAY and for `portal_users.email` storage
+   * (UPN when address-shaped, else the email claim), lowercased.
+   *
+   * NEVER trust this for identity LINKING — it cannot say which claim it came
+   * from. Use `upn` / `emailClaim` + `emailDomainOwnerVerified` for that
+   * (services/clientAiEntraAddress.ts applies the rule).
+   */
   email: string | null;
+  /**
+   * The `preferred_username` claim when address-shaped, lowercased.
+   *
+   * This is the UPN: Entra only issues one on a domain the tenant owns, so it
+   * is the one address claim that carries an ownership guarantee.
+   */
+  upn: string | null;
+  /**
+   * The raw `email` claim when address-shaped, lowercased.
+   *
+   * UNVERIFIED by default. It is settable on a user object by a tenant admin
+   * and Microsoft makes no ownership promise about it — the nOAuth class of
+   * account-takeover bugs is exactly this claim being trusted as an identity.
+   */
+  emailClaim: string | null;
+  /**
+   * Entra's `xms_edov` ("email domain owner verified"): true when the issuing
+   * tenant has proved it owns the domain of the `email` claim. Microsoft added
+   * it precisely so relying parties can tell a verified address from a typed-in
+   * one. Absent => false; only a real JSON boolean `true` counts.
+   */
+  emailDomainOwnerVerified: boolean;
   /** Display name when present. */
   name: string | null;
   aud: string | string[];
@@ -114,6 +143,7 @@ export async function verifyEntraIdToken(
     oid?: unknown;
     preferred_username?: unknown;
     email?: unknown;
+    xms_edov?: unknown;
     name?: unknown;
     scp?: unknown;
   };
@@ -142,7 +172,13 @@ export async function verifyEntraIdToken(
   return {
     tid,
     oid,
+    // Kept for display/storage only. The two source claims below are what the
+    // linking rule reads, because they are NOT interchangeable.
     email: preferred ?? emailClaim,
+    upn: preferred,
+    emailClaim,
+    // Strict boolean: a truthy coercion would let a string "false" verify.
+    emailDomainOwnerVerified: payload.xms_edov === true,
     name: typeof payload.name === 'string' ? payload.name : null,
     aud: payload.aud as string | string[],
     iss: payload.iss as string,

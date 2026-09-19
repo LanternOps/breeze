@@ -44,6 +44,21 @@ Output binaries are placed in `agent/bin/`.
 | macOS Apple Silicon | `make build-darwin` | `bin/breeze-agent-darwin-arm64` |
 | Windows amd64 | `make build-windows` | `bin/breeze-agent-windows-amd64.exe` |
 
+## Other Agent Binaries
+
+`make build` (and plain `make build-all`) compiles the main `breeze-agent` binary plus its companion processes in one pass. Each companion also has its own current-platform and all-platforms targets:
+
+| Binary | Purpose | Current-platform target | All-platforms target |
+|---|---|---|---|
+| `breeze-desktop-helper` | The end-user Helper process (AI chat, screenshots, tray icon) -- see [Helper](/agents/helper/) | `make build-desktop-helper` | `make build-all-desktop-helper` |
+| `breeze-backup` | Runs backup, restore, and verify jobs dispatched by the agent -- see [Backup Management](/agents/commands/#backup-management) | `make build-backup` | `make build-all-backup` |
+| `breeze-watchdog` | Restarts the agent service if it stops responding | `make build-watchdog` | `make build-watchdog-linux` / `-darwin` / `-windows` |
+| `breeze-user-helper` | Windows-only sibling of `breeze-agent` that launches into the logged-in user's session (an `asInvoker` manifest, so it isn't blocked by UAC token filtering) | `make build-windows-user-helper` | -- (Windows-only) |
+
+<Aside type="note">
+  `make build-all-desktop-helper` only builds the macOS (darwin amd64/arm64) variants -- there is no Linux or Windows target for it yet. `make build-all-backup` covers all three platforms.
+</Aside>
+
 ## Windows MSI Installer
 
 To build an MSI installer for enterprise deployment:

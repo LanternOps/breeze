@@ -10,13 +10,11 @@ import {
   deviceWarranty,
   devices,
   alerts,
-  configPolicyFeatureLinks,
-  configPolicyAssignments,
-  configurationPolicies,
-  deviceGroupMemberships,
 } from '../db/schema';
 import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { buildResolveAlertCas, createSourcedAlert } from './alertService';
 import { publishEvent } from './eventBus';
+import { resolveEffectiveWarrantyInlineSettings } from './warrantyPolicyResolution';
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -44,77 +42,22 @@ const DISABLED_SETTINGS: WarrantyAlertSettings = {
 };
 
 /**
- * Resolve warranty inline settings for a device from configuration policies.
- * Uses a simplified resolution (closest-wins) without requiring auth context.
+ * Resolve warranty ALERT thresholds for a device from configuration policies.
  *
- * Warranty alerting is opt-in: if no active warranty config policy is assigned to
- * the device (directly or via group/site/org/partner), this returns
- * DISABLED_SETTINGS so no alert fires (#1320).
+ * The hierarchy resolution itself lives in warrantyPolicyResolution.ts and is
+ * shared with the heartbeat's HP CMSL delivery (#5511 W02, D6) — a second copy
+ * would drift from this one's #3963 and #2930 fixes.
+ *
+ * Warranty alerting is opt-in: if no active warranty config policy is assigned
+ * to the device (directly or via group/site/org/partner), this returns
+ * DISABLED_SETTINGS so no alert fires (#1320). A policy that resolves with a
+ * null blob is a different case and keeps the per-link DEFAULT_SETTINGS.
  */
 async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertSettings> {
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+  if (inlineSettings === undefined) return DISABLED_SETTINGS;
 
-  if (!device) return DISABLED_SETTINGS;
-
-  // Get device group IDs
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
-
-  // Find warranty feature links from active policies assigned to this device
-  // Priority: device > device_group > site > organization > partner (closest wins)
-  const targetIds = [deviceId, ...groupIds, device.siteId, device.orgId].filter(Boolean) as string[];
-
-  const rows = await db
-    .select({
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
-      level: configPolicyAssignments.level,
-      priority: configPolicyAssignments.priority,
-    })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(
-      configurationPolicies,
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id)
-    )
-    .innerJoin(
-      configPolicyAssignments,
-      eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
-    )
-    .where(
-      and(
-        eq(configPolicyFeatureLinks.featureType, 'warranty'),
-        eq(configurationPolicies.status, 'active'),
-        inArray(configPolicyAssignments.targetId, targetIds)
-      )
-    );
-
-  // No active warranty policy assigned to this device → alerting is opt-in, so
-  // resolve to disabled rather than the enabled-by-default thresholds (#1320).
-  if (rows.length === 0) return DISABLED_SETTINGS;
-
-  // Sort by level priority (device=5, device_group=4, site=3, org=2, partner=1)
-  const levelPriority: Record<string, number> = {
-    device: 5,
-    device_group: 4,
-    site: 3,
-    organization: 2,
-    partner: 1,
-  };
-
-  rows.sort((a, b) => {
-    const la = levelPriority[a.level] ?? 0;
-    const lb = levelPriority[b.level] ?? 0;
-    if (la !== lb) return lb - la; // higher level priority wins
-    return b.priority - a.priority; // higher priority number wins
-  });
-
-  const inline = rows[0]!.inlineSettings as Partial<WarrantyAlertSettings> | null;
+  const inline = inlineSettings as Partial<WarrantyAlertSettings> | null;
   if (!inline) return DEFAULT_SETTINGS;
 
   return {
@@ -249,47 +192,29 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
-  // Create alert
-  const [newAlert] = await db
-    .insert(alerts)
-    .values({
-      ruleId: null,
-      deviceId,
-      orgId: device.orgId,
-      configPolicyId: null,
-      configItemName: 'warranty_expiry',
-      severity,
-      title,
-      message,
-      context: {
-        warrantyEndDate: warranty.warrantyEndDate,
-        daysRemaining,
-        manufacturer: warranty.manufacturer,
-        serialNumber: warranty.serialNumber,
-        source: 'warranty_evaluator',
-      },
-      status: 'active',
-      triggeredAt: new Date(),
-    })
-    .returning();
+  // Create alert. Routed through createSourcedAlert so a failed publish rolls
+  // the row back instead of leaving a silent alert the dedupe above would then
+  // treat as "already open" forever (#5325).
+  const alertId = await createSourcedAlert({
+    deviceId,
+    orgId: device.orgId,
+    severity,
+    title,
+    message,
+    context: {
+      warrantyEndDate: warranty.warrantyEndDate,
+      daysRemaining,
+      manufacturer: warranty.manufacturer,
+      serialNumber: warranty.serialNumber,
+      source: 'warranty_evaluator',
+    },
+    configItemName: 'warranty_expiry',
+    publisher: 'warranty-alert-evaluator',
+  });
 
-  if (newAlert) {
-    await publishEvent(
-      'alert.triggered',
-      device.orgId,
-      {
-        alertId: newAlert.id,
-        deviceId,
-        severity,
-        title,
-        message,
-        source: 'warranty_evaluator',
-      },
-      'warranty-alert-evaluator'
-    );
-
-    console.log(`[WarrantyAlertEvaluator] Created warranty alert ${newAlert.id} for device ${deviceId}`);
-    return newAlert.id;
+  if (alertId) {
+    console.log(`[WarrantyAlertEvaluator] Created warranty alert ${alertId} for device ${deviceId}`);
+    return alertId;
   }
 
   return null;
@@ -326,15 +251,28 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
       )
     );
 
+  let lost = 0;
+
   for (const alert of openAlerts) {
-    await db
+    // Winner-takes-all (#4094): the status predicate, not the read above, decides
+    // whether this evaluator performed the transition. Updating by id alone let a
+    // technician's resolve and this sweep both publish `alert.resolved` for one
+    // real transition.
+    const resolvedAt = new Date();
+    const written = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
       })
-      .where(eq(alerts.id, alert.id));
+      .where(buildResolveAlertCas(alert.id))
+      .returning({ id: alerts.id });
+
+    if (written.length === 0) {
+      lost += 1;
+      continue;
+    }
 
     await publishEvent(
       'alert.resolved',
@@ -343,8 +281,25 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
         alertId: alert.id,
         deviceId,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
+        resolvedAt: resolvedAt.toISOString(),
+        resolvedBy: null,
+        triggeredAt: alert.triggeredAt.toISOString(),
       },
       'warranty-alert-evaluator'
+    );
+  }
+
+  // Losing an individual CAS is normal — a technician got there first — so this
+  // deliberately does NOT log per loss. Losing EVERY candidate is different: this
+  // sweep is the only routine resolver of warranty_expiry alerts, so a total
+  // shortfall is the shape an RLS write-policy divergence would take, and under
+  // `breeze_app` such a write raises no error at all. One aggregate line per
+  // invocation gives that failure somewhere to show up instead of looking
+  // identical to "nothing needed resolving".
+  if (lost > 0 && lost === openAlerts.length) {
+    console.warn(
+      `[WarrantyAlertEvaluator] auto-resolve transitioned 0 of ${openAlerts.length} open ` +
+      `warranty alert(s) for device ${deviceId}; every compare-and-swap matched no rows.`
     );
   }
 }

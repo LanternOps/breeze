@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNotNull, isNull, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
 import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
@@ -26,6 +26,14 @@ export interface TenantRestorationResult {
 // .crossTenantProbe, set by recordCrossTenantDrop in agentWs.ts) is never
 // silently lifted by restoring a tenant.
 const TENANT_SUSPENDED_TOKEN_REASON = AGENT_TOKEN_SUSPEND_REASON.tenantSuspended;
+
+/** Archive-only agent suspension tag; restore clears only rows carrying it. */
+export const ARCHIVE_SUSPENDED_TOKEN_REASON = 'org_archived';
+
+function inAmbientOrNewSystemContext<T>(fn: () => Promise<T>): Promise<T> {
+  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
 
 /**
  * Expire enrollment keys for the orgs so a still-valid key can't (re-)mint a
@@ -153,14 +161,17 @@ export async function severAgentCredentialsForOrgIds(
  * suspension (or any other reason tag) survives the transition untouched.
  */
 export async function prepareAgentDrainForOrgIds(
-  orgIds: string[]
+  orgIds: string[],
+  options: { preserveEnrollmentKeys?: boolean } = {}
 ): Promise<{ enrollmentKeysInvalidated: number; agentTokensRestored: number }> {
   if (orgIds.length === 0) {
     return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
   }
 
   await invalidateAgentTenantCache(orgIds);
-  const enrollmentKeysInvalidated = await expireEnrollmentKeysForOrgIds(orgIds, new Date());
+  const enrollmentKeysInvalidated = options.preserveEnrollmentKeys
+    ? 0
+    : await expireEnrollmentKeysForOrgIds(orgIds, new Date());
   await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
   // Lift the superseded tenant-suspensions AFTER the socket sever, not before:
   // clearing the flag re-opens this fleet's auth gate, and a device that
@@ -218,6 +229,64 @@ async function restoreAgentCredentialsForOrgIds(orgIds: string[]): Promise<Tenan
     .returning({ id: devices.id });
 
   return { agentTokensRestored: restored.length };
+}
+
+/**
+ * Archive's reversible credential cutoff. The current schema has a reversible,
+ * reason-tagged flag only for device agent tokens, so this intentionally does
+ * not mutate API keys, OAuth rows, user sessions, or enrollment keys. The
+ * organization status gate makes those surfaces unusable while archived.
+ */
+export async function suspendOrganizationTenantAccessReversibly(
+  orgId: string
+): Promise<{ agentTokensSuspended: number }> {
+  return inAmbientOrNewSystemContext(async () => {
+    await invalidateAgentTenantCache([orgId]);
+    const suspended = await db
+      .update(devices)
+      .set({
+        agentTokenSuspendedAt: new Date(),
+        agentTokenSuspendedReason: ARCHIVE_SUSPENDED_TOKEN_REASON,
+      })
+      .where(
+        and(
+          inArray(devices.orgId, [orgId]),
+          // ONLY devices nothing else has already suspended. Re-tagging a
+          // `tenant_suspended` row to `org_archived` (the previous behaviour)
+          // handed archive ownership of a suspension it did not create — and
+          // `liftArchiveSuspension` then cleared it on restore, so
+          // archive→restore silently un-severed the fleet of an org suspended
+          // for non-payment or abuse. `TENANT_SUSPENDED_TOKEN_REASON`'s own
+          // contract is that another reason is "never silently lifted"; a
+          // still-suspended org is already severed, so skipping those rows
+          // costs nothing and keeps the round trip honest (org-lifecycle Wave 4
+          // review fix I-3, restore is status-preserving).
+          isNull(devices.agentTokenSuspendedAt)
+        )
+      )
+      .returning({ id: devices.id });
+
+    await disconnectLiveAgentSocketsForOrgIds([orgId], 'Organization archived');
+    return { agentTokensSuspended: suspended.length };
+  });
+}
+
+/** Lift only archive-owned device suspensions; security suspensions survive. */
+export async function liftArchiveSuspension(orgId: string): Promise<TenantRestorationResult> {
+  return inAmbientOrNewSystemContext(async () => {
+    const restored = await db
+      .update(devices)
+      .set({ agentTokenSuspendedAt: null, agentTokenSuspendedReason: null })
+      .where(
+        and(
+          inArray(devices.orgId, [orgId]),
+          eq(devices.agentTokenSuspendedReason, ARCHIVE_SUSPENDED_TOKEN_REASON)
+        )
+      )
+      .returning({ id: devices.id });
+    await invalidateAgentTenantCache([orgId]);
+    return { agentTokensRestored: restored.length };
+  });
 }
 
 async function revokeApiKeysForOrgIds(orgIds: string[]): Promise<number> {

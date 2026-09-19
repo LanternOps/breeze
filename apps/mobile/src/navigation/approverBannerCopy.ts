@@ -15,7 +15,7 @@
  * needs its own step-up flow — tracked separately, not wired here.
  */
 
-export type ApproverBannerSeverity = 'failed' | 'deferred';
+export type ApproverBannerSeverity = 'failed' | 'deferred' | 'unattested';
 
 export interface ApproverBannerCopy {
   title: string;
@@ -34,6 +34,25 @@ export function describeApproverReason(reason: string | null): string | null {
   if (!reason) return null;
   if (reason === 'no_reauth_grant') return null; // expected for a restored session
   if (reason === 'missing_device_id') return 'The server accepted the key but returned no device id.';
+  // #1374 W05 — attestation reasons. None of these is fixed by signing in again:
+  // a fresh grant re-runs the identical attestation against the identical
+  // device and server. Say so, or the banner's remedy sends the user in a loop.
+  if (reason === 'attestation_failed') {
+    return 'This phone supports hardware attestation but could not complete it, so it was not registered. Signing in again will not change this — contact your administrator.';
+  }
+  if (reason === 'attestation_probe_failed') {
+    return 'This phone could not determine whether it supports hardware attestation, so it was not registered. Signing in again will not change this — contact your administrator.';
+  }
+  if (reason === 'attestation_rejected_by_server') {
+    return 'This phone is registered, but the server did not accept its hardware attestation, so critical approvals are unavailable from it. Signing in again will not change this — contact your administrator.';
+  }
+  // #5162 (#1374 W07) — set by RootNavigator when an iOS registration succeeds
+  // with no attestation reason at all: the native attestation module wasn't
+  // linked into this build, so the legacy (non-attested) path ran instead. This
+  // one DOES fix with an update, unlike the two attestation reasons above.
+  if (reason === 'legacy_path_on_ios') {
+    return 'This phone’s app build doesn’t include hardware attestation yet. Update to the latest version from the App Store, then sign in again.';
+  }
   if (reason === 'http_401' || reason === 'http_403') {
     return 'The server rejected this phone’s one-time registration grant (it expires a few minutes after sign-in).';
   }
@@ -56,6 +75,22 @@ export function approverBannerCopy(
         'Sign in again to let this phone sign approvals with Face ID. Until then approvals from this device are recorded at the lowest assurance level.',
       detail,
       actionLabel: 'Sign out and back in',
+    };
+  }
+
+  // #5162 (#1374 W07): registration itself succeeded — this is NOT the
+  // failed/deferred case above. The phone signs ordinary approvals fine; what
+  // it can't do is critical-tier ones (PAM elevation, destructive/blocklist
+  // overrides, tier-4 AI actions), because its key's basis isn't in the
+  // server's L4-trusted set. The fix is usually a newer app build, not a
+  // biometric toggle, so the action differs from the other two severities.
+  if (severity === 'unattested') {
+    return {
+      title: 'This phone can’t approve critical actions yet',
+      body:
+        'This phone is registered and can approve ordinary requests, but its key isn’t hardware-attested, so critical-tier approvals (privileged access, destructive actions) aren’t available from it. This is not about Face ID being switched on.',
+      detail,
+      actionLabel: 'Update the app, then sign in again',
     };
   }
 

@@ -391,6 +391,174 @@
         "blocking": "Engelleniyor…",
         "blockDevice": "Cihazı engelle"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "LLM Sağlayıcı Kataloğu",
+      "description": "Ortakların yapay zekâ trafiğini yönlendirebileceği, platform tarafından onaylanmış uç noktalar.",
+      "totalEntries": "Toplam kayıt:",
+      "refresh": "Yenile",
+      "addEntry": "Sağlayıcı ekle",
+      "loading": "Katalog yükleniyor…",
+      "empty": "Henüz katalog kaydı yok.",
+      "dismiss": "Kapat",
+      "platformAdmin": {
+        "title": "Platform yöneticisi erişimi gerekli",
+        "prefix": "LLM sağlayıcı kataloğu Breeze platform yöneticileri tarafından yönetilir. Hesabınız",
+        "role": "bir organizasyon/ortak yöneticisi",
+        "suffix": "onu doğrudan görüntüleyemez veya düzenleyemez."
+      },
+      "errors": {
+        "load": "Katalog yüklenemedi",
+        "generic": "Bir hata oluştu",
+        "createEntry": "Sağlayıcı oluşturulamadı",
+        "createRevision": "Revizyon oluşturulamadı",
+        "activate": "Revizyon etkinleştirilemedi",
+        "setStatus": "Durum güncellenemedi",
+        "verify": "Doğrulama isteği başarısız oldu"
+      },
+      "notice": {
+        "entryCreated": "\"{{name}}\" sağlayıcısı oluşturuldu.",
+        "revisionCreated": "\"{{name}}\" için yeni revizyon oluşturuldu.",
+        "activated": "Revizyon etkinleştirildi.",
+        "statusUpdated": "Durum {{status}} olarak güncellendi."
+      },
+      "status": {
+        "draft": "Taslak",
+        "listed": "Listelendi",
+        "delisted": "Listeden kaldırıldı"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Ad",
+        "status": "Durum",
+        "activeRevision": "Etkin revizyon",
+        "revisions": "Revizyonlar",
+        "actions": "İşlemler"
+      },
+      "actions": {
+        "expand": "Revizyonları göster",
+        "collapse": "Revizyonları gizle",
+        "addRevision": "Revizyon ekle",
+        "activate": "Etkinleştir",
+        "list": "Listele",
+        "delist": "Listeden kaldır",
+        "verify": "Doğrulamayı çalıştır"
+      },
+      "confirmDelist": "\"{{name}}\" listeden kaldırılsın mı? Bunu zaten kullanan ortaklar çalışmaya devam eder, ancak yeni kurulumlar için seçim listesinden kalkar.",
+      "revision": {
+        "baseUrl": "Temel URL",
+        "authMode": "Kimlik doğrulama modu",
+        "dataNote": "Veri işleme notu",
+        "createdAt": "Oluşturuldu",
+        "notVerified": "Doğrulanmadı",
+        "verified": "Doğrulandı",
+        "activateBlocked": "Bu revizyon etkinleştirilmeden önce eşlenen her modelin doğrulamayı geçmesi gerekir.",
+        "listBlocked": "Bu sağlayıcı listelenmeden önce etkin revizyondaki eşlenen her modelin doğrulamayı geçmesi gerekir."
+      },
+      "authModeOptions": {
+        "x-api-key": "API anahtarı başlığı",
+        "bearer": "Bearer belirteci"
+      },
+      "entryForm": {
+        "title": "Sağlayıcı ekle",
+        "fields": {
+          "slug": "Slug",
+          "name": "Ad",
+          "notes": "Notlar"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Bu sağlayıcı hakkında dahili notlar…"
+        },
+        "submit": "Sağlayıcı oluştur",
+        "cancel": "Vazgeç"
+      },
+      "revisionForm": {
+        "title": "\"{{name}}\" için revizyon ekle",
+        "fields": {
+          "baseUrl": "Temel URL",
+          "authMode": "Kimlik doğrulama modu",
+          "dataNote": "Veri işleme notu"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Bu uç noktanın istek verileriyle ne yaptığı…"
+        },
+        "modelMap": {
+          "title": "Model eşleme ve fiyatlandırma",
+          "description": "Yalnızca eşlenen modeller ortaklar tarafından seçilebilir. Fiyatlar milyon jeton başına sent cinsindendir.",
+          "included": "Bu modeli dahil et",
+          "providerModel": "Sağlayıcı model kimliği",
+          "inputPrice": "Girdi",
+          "outputPrice": "Çıktı",
+          "cacheReadPrice": "Önbellek okuma",
+          "cacheWritePrice": "Önbellek yazma"
+        },
+        "submit": "Revizyon oluştur",
+        "cancel": "Vazgeç",
+        "errors": {
+          "noModelsMapped": "Bir revizyon oluşturmadan önce en az bir modeli eşleyin."
+        }
+      },
+      "verifyForm": {
+        "title": "Doğrulamayı çalıştır — {{model}}",
+        "description": "Anahtar yalnızca bu istek için kullanılır ve asla saklanmaz.",
+        "apiKeyLabel": "Test API anahtarı",
+        "apiKeyPlaceholder": "Geçici bir test anahtarı yapıştırın",
+        "submit": "Çalıştır",
+        "cancel": "Vazgeç",
+        "running": "Çalışıyor…",
+        "passed": "Geçti",
+        "failed": "Başarısız"
+      }
+    },
+    "aiKillSwitch": {
+      "title": "Yapay Zeka Acil Durdurma Anahtarı",
+      "description": "Denetimsiz yapay zeka aracı etkinliği için platform genelinde acil durdurma. Bunu değiştirmek tüm iş ortaklarını aynı anda etkiler — bu, kiracı başına bir ayar değil, bir platform işlemidir.",
+      "refresh": "Yenile",
+      "loading": "Acil durdurma anahtarı durumu yükleniyor…",
+      "impactNote": "Anahtarı kapatmak, tüm iş ortakları için denetimsiz yapay zeka eylemlerini yaklaşık 5 saniye içinde durdurur. Devam etmekte olan eylemler kesintiye uğramaz.",
+      "platformAdmin": {
+        "title": "Platform yöneticisi erişimi gerekli",
+        "description": "Yapay zeka acil durdurma anahtarı, Breeze platform yöneticileri tarafından yönetilen platform genelinde bir kontroldür. Hesabınız bunu görüntüleyemez veya değiştiremez."
+      },
+      "status": {
+        "active": "Yapay zeka eylemleri etkin",
+        "killed": "Yapay zeka eylemleri durduruldu"
+      },
+      "fields": {
+        "epoch": "Epok",
+        "updatedBy": "Son değiştiren",
+        "updatedAt": "Son değiştirilme zamanı",
+        "lastReason": "Son neden",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Yapay zeka eylemlerini platform genelinde durdur",
+        "restore": "Yapay zeka eylemlerini geri yükle"
+      },
+      "confirm": {
+        "killTitle": "Yapay zeka eylemleri platform genelinde durdurulsun mu?",
+        "killDescription": "Bu, Breeze'deki tüm iş ortakları için denetimsiz yapay zeka aracı etkinliğini hemen durdurur. Bunu yalnızca aktif bir olay için kullanın.",
+        "restoreTitle": "Yapay zeka eylemleri geri yüklensin mi?",
+        "restoreDescription": "Bu, Breeze'deki tüm iş ortakları için denetimsiz yapay zeka aracı etkinliğini yeniden etkinleştirir.",
+        "reasonLabel": "Neden (denetim günlüğü için zorunlu)",
+        "reasonPlaceholder": "Olayı veya bu değişikliğin nedenini açıklayın…",
+        "cancel": "İptal",
+        "killSubmit": "Yapay zeka eylemlerini durdur",
+        "restoreSubmit": "Yapay zeka eylemlerini geri yükle"
+      },
+      "notice": {
+        "killed": "Yapay zeka eylemleri platform genelinde durduruldu.",
+        "restored": "Yapay zeka eylemleri platform genelinde geri yüklendi."
+      },
+      "errors": {
+        "load": "Acil durdurma anahtarı durumu yüklenemedi",
+        "generic": "Bir hata oluştu",
+        "flip": "Acil durdurma anahtarı güncellenemedi",
+        "mfaRequired": "Yapay zeka acil durdurma anahtarını değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
     }
   },
   "audit": {
@@ -566,80 +734,6 @@
         "previous": "Önceki",
         "page": "Sayfa {{page}}",
         "next": "Sonraki"
-      }
-    },
-    "complianceReport": {
-      "title": "Uyumluluk Raporu",
-      "description": "Uyumluluk kontrollerine uygun, denetime hazır özetler oluşturun.",
-      "generateReport": "Rapor Oluştur",
-      "dataAccessAudit": "Veri Erişim Denetimi",
-      "sensitiveOperations": "Hassas İşlemler",
-      "reviewRequired": "İnceleme gerekli",
-      "categories": {
-        "gdpr": {
-          "label": "GDPR"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Veri erişim etkinlikleri",
-          "dsarRequests": "DSAR istekleri",
-          "retentionAlerts": "Saklama uyarıları"
-        },
-        "soc2": {
-          "controlExceptions": "Kontrol istisnaları",
-          "privilegedActions": "Ayrıcalıklı işlemler",
-          "policyAttestations": "Politika onayları"
-        },
-        "hipaa": {
-          "phiAccessEvents": "PHI erişim etkinlikleri",
-          "roleChanges": "Rol değişiklikleri",
-          "encryptionChecks": "Şifreleme kontrolleri"
-        },
-        "helpers": {
-          "past30Days": "son 30 gün",
-          "pending2": "beklemede 2",
-          "overdue": "gecikmiş",
-          "last7Days": "son 7 gün",
-          "withinScope": "kapsam dahilinde",
-          "complete": "tamamlandı",
-          "past14Days": "son 14 gün",
-          "requiresReview": "inceleme gerektiriyor",
-          "compliant": "uyumlu"
-        }
-      },
-      "table": {
-        "user": "Kullanıcı",
-        "data": "Veri",
-        "purpose": "Amaç",
-        "time": "Zaman"
-      },
-      "data": {
-        "customerRecords": "Müşteri Kayıtları",
-        "adminPortal": "Yönetici Portalı",
-        "payrollRecords": "Bordro Kayıtları",
-        "deviceGroupVip": "Cihaz Grubu - VIP"
-      },
-      "purpose": {
-        "billingReview": "Faturalandırma incelemesi",
-        "securityAudit": "Güvenlik denetimi",
-        "complianceSampling": "Uyumluluk örneklemesi",
-        "accessProvisioning": "Erişim yetkilendirmesi"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Müşteri veri kümesi CSV'ye aktarıldı",
-        "mfaWindowReduced": "MFA penceresi 15 dakikaya düşürüldü",
-        "roleChangedExternalContractor": "Harici yüklenicinin rolü değiştirildi"
-      },
-      "severity": {
-        "high": "Yüksek",
-        "medium": "Orta"
       }
     },
     "userActivityReport": {

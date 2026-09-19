@@ -1,4 +1,4 @@
-import { Job, Queue, Worker } from 'bullmq';
+import { DelayedError, Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { withSystemDbAccessContext } from '../db';
@@ -35,23 +35,37 @@ function getDrExecutionQueue(): Queue<DrExecutionQueueJobData> {
   return drExecutionQueue;
 }
 
+export async function processDrExecutionReconcileJob(
+  job: Job<DrExecutionQueueJobData>,
+): Promise<{ executionId: string; status: string }> {
+  const outcome = await withSystemDbAccessContext(async () => {
+    const data = parseQueueJobData(DR_EXECUTION_QUEUE, job, drExecutionQueueJobDataSchema);
+    if (data.type !== 'reconcile-execution') {
+      throw new Error(`Unknown DR execution job type: ${(data as { type: string }).type}`);
+    }
+    assertQueueJobName(DR_EXECUTION_QUEUE, job, 'reconcile-execution');
+    return {
+      data,
+      outcome: await reconcileDrExecution(data.executionId),
+    };
+  });
+
+  if (outcome.outcome.nextDelayMs !== null) {
+    if (!job.token) throw new Error('Active DR reconcile job is missing its worker token');
+    await job.moveToDelayed(Date.now() + outcome.outcome.nextDelayMs, job.token);
+    throw new DelayedError();
+  }
+
+  return {
+    executionId: outcome.data.executionId,
+    status: outcome.outcome.execution?.status ?? 'missing',
+  };
+}
+
 function createDrExecutionWorker(): Worker<DrExecutionQueueJobData> {
   return new Worker<DrExecutionQueueJobData>(
     DR_EXECUTION_QUEUE,
-    async (job: Job<DrExecutionQueueJobData>) => {
-      return withSystemDbAccessContext(async () => {
-        const data = parseQueueJobData(DR_EXECUTION_QUEUE, job, drExecutionQueueJobDataSchema);
-        if (data.type !== 'reconcile-execution') {
-          throw new Error(`Unknown DR execution job type: ${(data as { type: string }).type}`);
-        }
-        assertQueueJobName(DR_EXECUTION_QUEUE, job, 'reconcile-execution');
-        const execution = await reconcileDrExecution(data.executionId);
-        return {
-          executionId: data.executionId,
-          status: execution?.status ?? 'missing',
-        };
-      });
-    },
+    processDrExecutionReconcileJob,
     {
       connection: getBullMQConnection(),
       concurrency: 4,
@@ -69,6 +83,9 @@ export async function enqueueDrExecutionReconcile(executionId: string, delayMs =
   if (existing) {
     const state = await existing.getState();
     if (isReusableState(state)) {
+      if (state === 'delayed' && delayMs === 0) {
+        await existing.changeDelay(0);
+      }
       return existing.id!;
     }
     if (state === 'completed' || state === 'failed') {

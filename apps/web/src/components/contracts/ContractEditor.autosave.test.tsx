@@ -50,7 +50,10 @@ const draftDetail: ContractDetail = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed services',
-      catalogItemId: null, unitPrice: '500.00', manualQuantity: null, siteId: null, taxable: false,
+      catalogItemId: null, unitPrice: '500.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      siteId: null, siteName: null, site: null, deviceRoles: null,
+      deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: false,
       sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
   ],
@@ -64,7 +67,7 @@ beforeEach(() => {
     if (url.startsWith('/orgs/sites')) return resp({ data: [] });
     return resp({ data: {} });
   });
-  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [] } }));
+  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null, overages: [] } }));
   (api.updateContract as any).mockResolvedValue(resp({ data: {} }));
   (api.removeContractLine as any).mockResolvedValue(resp({ data: { ok: true } }));
 });
@@ -202,6 +205,15 @@ describe('ContractEditor — blur autosave (existing contract)', () => {
     await screen.findByTestId('contract-form-name');
     expect(screen.queryByTestId('contract-form-org')).not.toBeInTheDocument();
     expect(await screen.findByTestId('contract-form-org-readonly')).toHaveTextContent('Acme');
+  });
+
+  it('links the read-only org name to its organization record (#5075 W03)', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-form-name');
+    const link = await screen.findByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/organizations/org-1');
+    expect(link).toHaveTextContent('Acme');
   });
 
   it('shows an inline error when the custom interval is emptied, and does not PATCH', async () => {

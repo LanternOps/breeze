@@ -100,7 +100,8 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdCapturePprof: handleCapturePprof,
 
 	// Auto-update management
-	tools.CmdSetAutoUpdate: handleSetAutoUpdate,
+	tools.CmdSetAutoUpdate:   handleSetAutoUpdate,
+	tools.CmdAgentRollbackV1: handleAgentRollback,
 }
 
 // dispatchCommand looks up the handler for a command type and executes it,

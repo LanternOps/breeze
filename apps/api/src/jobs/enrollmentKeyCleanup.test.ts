@@ -72,6 +72,9 @@ vi.mock('../services/sentry', () => ({
 }));
 
 import { sql } from 'drizzle-orm';
+// Real tables, not mocked: asserting the reaper targets the table it claims to
+// is only meaningful against the actual schema objects.
+import { enrollmentKeys, partnerEnrollmentKeyIdempotency } from '../db/schema';
 import {
   __testOnly,
   createEnrollmentKeyCleanupWorker,
@@ -268,7 +271,9 @@ describe('enrollmentKeyCleanup worker', () => {
       });
 
       expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-      expect(deleteMock).toHaveBeenCalledTimes(1);
+      // Two deletes: expired keys, then the partner idempotency claims.
+      expect(deleteMock).toHaveBeenCalledTimes(2);
+      expect(deleteMock.mock.calls[0]![0]).toBe(enrollmentKeys);
       expect(result).toMatchObject({ deletedCount: 2 });
     });
 
@@ -281,7 +286,7 @@ describe('enrollmentKeyCleanup worker', () => {
       createEnrollmentKeyCleanupWorker();
       await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j2' });
 
-      expect(whereMock).toHaveBeenCalledTimes(1);
+      expect(whereMock).toHaveBeenCalledTimes(2);
       const cond = whereMock.mock.calls[0]![0];
       const text = sqlText(cond);
 
@@ -293,7 +298,7 @@ describe('enrollmentKeyCleanup worker', () => {
       createEnrollmentKeyCleanupWorker();
       await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j3' });
 
-      expect(whereMock).toHaveBeenCalledTimes(1);
+      expect(whereMock).toHaveBeenCalledTimes(2);
       const cond = whereMock.mock.calls[0]![0];
       const text = sqlText(cond);
 
@@ -386,6 +391,53 @@ describe('enrollmentKeyCleanup worker', () => {
         const cond = whereMock.mock.calls[0]![0];
         expect(sqlText(cond)).toContain('not exists');
         expect(result).toMatchObject({ deletedCount: 3 });
+      });
+    });
+
+    /**
+     * The claim table behind `X-Idempotency-Key` on
+     * `POST /partner-api/v1/enrollment-keys`. Its migration says the reaper is
+     * registered alongside this job; these tests are what make that true rather
+     * than aspirational. Without the sweep, the table grows until org erasure —
+     * the FK cascade from `enrollment_keys` only clears claims whose key was
+     * itself purged, and a claim can have no key at all.
+     */
+    describe('partner enrollment-key idempotency claims', () => {
+      it('reaps claims past the retention window, on the indexed created_at path', async () => {
+        vi.useFakeTimers();
+        const now = new Date('2026-07-03T00:00:00.000Z');
+        vi.setSystemTime(now);
+
+        createEnrollmentKeyCleanupWorker();
+        await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j5' });
+
+        expect(deleteMock.mock.calls[1]![0]).toBe(partnerEnrollmentKeyIdempotency);
+        const text = sqlText(whereMock.mock.calls[1]![0]);
+        expect(text).toContain('created_at');
+        const expectedCutoff = new Date(
+          now.getTime() - __testOnly.PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS * 86_400_000,
+        );
+        expect(text).toContain(expectedCutoff.toISOString());
+        vi.useRealTimers();
+      });
+
+      it('reports the reaped claim count separately from the key count', async () => {
+        returningMock
+          .mockResolvedValueOnce([{ id: 'k1' }, { id: 'k2' }, { id: 'k3' }])
+          .mockResolvedValueOnce([{ id: 'c1' }]);
+        createEnrollmentKeyCleanupWorker();
+
+        const result = await capturedWorkerProcessor.current!({
+          name: 'enrollment-key-cleanup',
+          id: 'j6',
+        });
+
+        expect(result).toMatchObject({ deletedCount: 3, deletedIdempotencyClaimCount: 1 });
+      });
+
+      it('retains claims for longer than any plausible client retry window', () => {
+        expect(__testOnly.PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS)
+          .toBeGreaterThanOrEqual(1);
       });
     });
 

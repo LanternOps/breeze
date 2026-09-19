@@ -3,6 +3,10 @@ import { optionalQueryBoolean } from './queryParams';
 
 export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
+// `billed` is an invoice lifecycle fact, not a routine time/part disposition.
+// Invoice issue writes it internally after locking the invoice and every source;
+// public create/update inputs retain the technician-owned dispositions only.
+const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract']);
 
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
@@ -19,7 +23,7 @@ export const createTimeEntrySchema = z.object({
   description: z.string().max(10_000).optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
   message: 'endedAt must be after startedAt',
   path: ['endedAt']
@@ -32,7 +36,7 @@ export const updateTimeEntrySchema = z.object({
   description: z.string().max(10_000).nullable().optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 
 export const startTimerSchema = z.object({
@@ -83,7 +87,7 @@ export const ticketPartSchema = z.object({
   unitPrice: z.number().nonnegative().multipleOf(0.01).default(0),
   costBasis: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
   isBillable: z.boolean().optional(),
-  billingStatus: billingStatusSchema.optional(),
+  billingStatus: routineBillingStatusSchema.optional(),
   notes: z.string().max(10_000).optional()
 });
 
@@ -107,3 +111,56 @@ export const billablesExportQuerySchema = z.object({
 export type CreateTimeEntryInput = z.infer<typeof createTimeEntrySchema>;
 export type UpdateTimeEntryInput = z.infer<typeof updateTimeEntrySchema>;
 export type TicketPartInput = z.infer<typeof ticketPartSchema>;
+
+// ── W06 (#3900): provenance vocabulary + suggestion routes ──────────────────
+// `source` is READ-side only in this wave. It is never accepted on any
+// create/update schema: provenance is stamped by the server (spec D5).
+// `ai_suggested` (#4177, W04) is stamped only by the action-intent release
+// path when a technician approves an AI time-entry proposal — like every
+// other value it is never accepted from a public create/update payload.
+export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session', 'ai_suggested'] as const;
+export const timeEntrySourceSchema = z.enum(TIME_ENTRY_SOURCES);
+export type TimeEntrySource = z.infer<typeof timeEntrySourceSchema>;
+
+export const timeSuggestionSignalSchema = z.object({
+  kind: z.literal('remote_session'),
+  id: z.string().guid()
+}).strict();
+export type SuggestionSignal = z.infer<typeof timeSuggestionSignalSchema>;
+
+const signalsField = z.array(timeSuggestionSignalSchema).min(1).max(20)
+  .refine((s) => new Set(s.map((x) => `${x.kind}:${x.id}`)).size === s.length, { message: 'signals must be unique' });
+
+/**
+ * `.strict()` is deliberate (a typo'd param must 400, never silently widen the
+ * day). Web callers therefore MUST pass `skipOrgIdInjection` to `fetchWithAuth`
+ * — it appends `?orgId=<uuid>` to every request otherwise, which this schema
+ * rejects. Suggestions are user-scoped, never org-scoped, so there is no
+ * `orgId` to honour.
+ */
+export const suggestionsQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  // IANA zone; validated with Intl in the service (400 INVALID_TZ) so the
+  // shared package stays runtime-agnostic.
+  tz: z.string().min(1).max(64).optional(),
+  userId: z.string().guid().optional()
+}).strict();
+
+export const confirmSuggestionSchema = z.object({
+  signals: signalsField,
+  ticketId: z.string().guid().nullable().optional(),
+  startedAt: z.coerce.date(),
+  // Optional: the server fills the signal envelope end. Mandatory when any
+  // member signal is 'unreliable' (400 ENDED_AT_REQUIRED).
+  endedAt: z.coerce.date().optional(),
+  description: z.string().max(10_000).optional(),
+  isBillable: z.boolean().optional(),
+  hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional()
+}).strict().refine((v) => v.endedAt === undefined || v.endedAt.getTime() > v.startedAt.getTime(), {
+  message: 'endedAt must be after startedAt',
+  path: ['endedAt']
+});
+export type ConfirmSuggestionInput = z.infer<typeof confirmSuggestionSchema>;
+
+export const suggestionSignalsSchema = z.object({ signals: signalsField }).strict();
+export type SuggestionSignalsInput = z.infer<typeof suggestionSignalsSchema>;

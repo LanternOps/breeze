@@ -4,6 +4,7 @@
     "analytics": "Analytique",
     "approvals": "Approbations",
     "denials": "Dénégations",
+    "proposals": "Propositions de scripts",
     "failedToLoadData": "Impossible de charger les données",
     "failedToLoadToolExecutions": "Impossible de charger les exécutions d’outils",
     "guardrails": "Rampes de sécurité",
@@ -16,6 +17,19 @@
     "value24h": "24h 24h",
     "value30d": "30 j",
     "value7d": "7 j"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Propositions de scripts",
+    "proposalsPerDay": "Propositions par jour",
+    "reviewerDisagreements": "Désaccords du réviseur",
+    "humanRejectedAfterApprove": "Rejet humain après approbation de l'IA",
+    "humanApprovedAfterReject": "Approbation humaine après rejet de l'IA",
+    "unattendedRuns": "Exécutions sans supervision",
+    "laneState": "Voie sans supervision",
+    "laneOpen": "Ouverte (suspendue après des échecs de vérification répétés)",
+    "laneClosed": "Fermée",
+    "laneNotConfigured": "Non configurée pour cette organisation",
+    "noData": "Aucune proposition de script pour cette période"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "Tous",
@@ -1031,12 +1045,14 @@
       "loadWithStatus": "Impossible de charger les règles (HTTP {{status}})",
       "load": "Impossible de charger les règles",
       "updateRule": "Impossible de mettre à jour la règle",
-      "deleteRule": "Impossible de supprimer la règle"
+      "deleteRule": "Impossible de supprimer la règle",
+      "reapproveRule": "Échec de la réapprobation de la règle"
     },
     "toasts": {
       "defaultVerdictSet": "Verdict par défaut fixé à {{verdict}}",
       "ruleToggled": "Règle « {{name}} » {{state}}",
-      "ruleDeleted": "Règle « {{name}} » supprimée"
+      "ruleDeleted": "Règle « {{name}} » supprimée",
+      "ruleReapproved": "Règle « {{name}} » réapprouvée — approbation automatique rétablie"
     },
     "states": {
       "disabled": "désactivé",
@@ -1044,7 +1060,8 @@
     },
     "description": "Les politiques logicielles sont d’abord évaluées — une correspondance par liste de permis ou de blocage décide avant ces règles. Les règles s’exécutent ensuite dans l’ordre de priorité (le plus bas en premier) ; Le premier match décide.",
     "actions": {
-      "addRule": "Ajouter une règle"
+      "addRule": "Ajouter une règle",
+      "reapprove": "Réapprouver"
     },
     "defaultVerdict": {
       "label": "Verdict par défaut",
@@ -1070,6 +1087,15 @@
       "title": "Supprimer la règle PAM",
       "message": "Supprimer la règle « {{name}} » ? Les demandes d’élévation ne correspondront plus.",
       "confirm": "Supprimer la règle"
+    },
+    "staleTierBadge": {
+      "label": "Obsolète",
+      "tooltip": "Le niveau de risque {{tier}} ne correspond plus à rien que cette règle puisse sélectionner, elle ne pourra donc plus jamais correspondre.",
+      "tooltipWithTiers": "Le niveau de risque {{tier}} ne correspond plus à rien que cette règle puisse sélectionner, elle ne pourra donc plus jamais correspondre. Niveaux actuellement utilisés : {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Approbation automatique suspendue",
+      "tooltip": "Cette règle approuvait automatiquement avant la mise à niveau. Elle exige maintenant une approbation humaine jusqu’à ce qu’un administrateur la réapprouve."
     }
   },
   "pamPamSignerGroupsTab": {

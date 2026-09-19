@@ -5,6 +5,6 @@ import RemoteFilesPage from '../../../components/remote/RemoteFilesPage';
 const { deviceId } = Astro.params;
 ---
 
-<DashboardLayout title="Remote File Manager">
+<DashboardLayout titleKey="titles.remoteFilesDevice">
   <RemoteFilesPage deviceId={deviceId!} client:load />
 </DashboardLayout>

@@ -15,8 +15,25 @@ import type { AiTool } from './aiTools';
 import {
   resolveSiteAllowedDeviceIds,
   resolveSiteDevicePartition,
+  runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+
+/**
+ * The device-id set this caller may read, across BOTH restriction axes.
+ *
+ * A device-LESS analysis run carries `allowedDeviceIds` and no `allowedSiteIds`
+ * (`agentAuthContext.ts`), so a guard spelled `if (auth.allowedSiteIds && …)`
+ * no-ops for it and the tool reads org-wide (#6096 RC3). Returns `null` only
+ * when NEITHER axis is set; `[]` means restricted with nothing in scope.
+ */
+async function resolveScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return runFrozenDeviceIds(auth);
+  const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+  // Site-restricted without an org context: fail closed rather than widen.
+  if (!orgId) return [];
+  return resolveSiteAllowedDeviceIds(orgId, auth);
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -25,6 +42,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -34,7 +54,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -88,13 +111,16 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       //       OUT-of-scope fleet device (R3b residual).
       // Both narrowings leave rows with no device reference governed by the org
       // axis only, and are a no-op for unrestricted partner/system callers.
+      // The block is entered when EITHER axis is set: a device-LESS analysis run
+      // carries `allowedDeviceIds` and no site axis, and `resolveSiteDevicePartition`
+      // already intersects both (#6096 RC3).
       //
       // Array-valued `details.deviceIds` (software deploy jobs, device-link
       // groups) IS now closed (SR5-17): a row is excluded if its array shares any
       // element with the out-of-scope set. Known residual: free-text device
       // hostnames in `resourceName` carry no reliable device id to key off, so
       // those references are left to the org axis.
-      if (auth.allowedSiteIds && auth.canAccessSite) {
+      if (auth.allowedDeviceIds || (auth.allowedSiteIds && auth.canAccessSite)) {
         const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         // One device scan yields both partitions: `allowed` (in-scope, for the
         // device-typed narrowing) and `forbidden` (out-of-site-scope org
@@ -225,16 +251,15 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         const access = await verifyDeviceAccess(input.deviceId as string, auth);
         if ('error' in access) return JSON.stringify({ error: access.error });
         conditions.push(eq(deviceChangeLog.deviceId, input.deviceId as string));
-      } else if (auth.allowedSiteIds && auth.canAccessSite) {
-        // Site axis (app-layer only; RLS does NOT enforce it). deviceChangeLog is
-        // device-keyed; when no deviceId is supplied, a site-restricted caller may
-        // only see changes for devices in their allowed sites. Narrow both the rows
-        // and count queries (they share `whereClause`). No-op for unrestricted callers.
-        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-        if (!orgId) {
-          return JSON.stringify({ changes: [], total: 0, showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
-        }
-        const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+      } else if (auth.allowedDeviceIds || (auth.allowedSiteIds && auth.canAccessSite)) {
+        // Site AND exact-device axes (app-layer only; RLS enforces neither).
+        // deviceChangeLog is device-keyed; when no deviceId is supplied, a
+        // restricted caller may only see changes for devices it can reach — its
+        // allowed sites, its frozen device set, or the intersection. Narrow both
+        // the rows and count queries (they share `whereClause`). A device-LESS
+        // analysis run has ONLY the device axis, so this branch must not be
+        // gated on `allowedSiteIds` alone (#6096 RC3). No-op when unrestricted.
+        const allowed = await resolveScopedDeviceIds(auth);
         if (!allowed || allowed.length === 0) {
           return JSON.stringify({ changes: [], total: 0, showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }

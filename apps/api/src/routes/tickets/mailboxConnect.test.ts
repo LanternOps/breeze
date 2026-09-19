@@ -32,6 +32,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     restoreVerifiedConnection: vi.fn(async () => true),
     isMailboxConnectionSnapshotCurrent: vi.fn(async () => true),
     probeMailbox: vi.fn(),
+    refreshErrorReason: vi.fn(),
     bindVerifiedTenant: vi.fn(async () => {}),
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
     disableConnection: vi.fn(async () => true),
@@ -99,9 +100,11 @@ vi.mock('../../services/ticketMailbox/connectionService', () => ({
   restoreVerifiedConnection: mocks.restoreVerifiedConnection,
   isMailboxConnectionSnapshotCurrent: mocks.isMailboxConnectionSnapshotCurrent,
   probeMailbox: mocks.probeMailbox,
+  refreshErrorReason: mocks.refreshErrorReason,
   bindVerifiedTenant: mocks.bindVerifiedTenant,
   listMailboxConnections: mocks.listMailboxConnections,
   disableConnection: mocks.disableConnection,
+  MAILBOX_VERIFICATION_FAILED: 'Mailbox verification failed',
 }));
 vi.mock('../../services/ticketMailbox/consentSessionService', () => ({
   createAdminConsentSession: mocks.createAdminConsentSession,
@@ -643,6 +646,48 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('Graph leaked body');
   });
 
+  it('carries the sanitized probe reason into lastError and the audit details', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'Graph returned 403', reason: 'Graph 403 (ErrorAccessDenied)' });
+    await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
+    );
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ outcome: 'probe_failed', probeReason: 'Graph 403 (ErrorAccessDenied)' }),
+    }));
+  });
+
+  it('retest returns and stores the sanitized probe reason', async () => {
+    mocks.setConnectedMailboxStatus.mockResolvedValue(true);
+    mocks.getMailboxConnection.mockResolvedValueOnce(connection({ status: 'connected' }));
+    mocks.probeMailbox.mockResolvedValueOnce({ ok: false, error: 'Graph returned 404', reason: 'Graph 404 (ErrorInvalidUser)' });
+    const res = await app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await expect(res.json()).resolves.toEqual({
+      ok: false, error: 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    });
+    expect(mocks.setConnectedMailboxStatus).toHaveBeenCalledWith(
+      expect.anything(), 'error', 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    );
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ probeReason: 'Graph 404 (ErrorInvalidUser)' }),
+    }));
+  });
+
+  it('refreshes the stored reason on a repeated failed retest of an already-error connection (#6192)', async () => {
+    mocks.refreshErrorReason.mockResolvedValue(true);
+    mocks.getMailboxConnection.mockResolvedValueOnce(connection({ status: 'error' }));
+    mocks.probeMailbox.mockResolvedValueOnce({ ok: false, error: 'Graph returned 404', reason: 'Graph 404 (ErrorInvalidUser)' });
+    const res = await app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await expect(res.json()).resolves.toEqual({
+      ok: false, error: 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    });
+    expect(mocks.refreshErrorReason).toHaveBeenCalledWith(
+      expect.anything(), 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    );
+  });
+
   it('audits a cross-partner ownership conflict without exposing the service error', async () => {
     mocks.bindVerifiedTenant.mockRejectedValue(new Error(`Mailbox tenant is already owned by another partner: ${OTHER_PARTNER_ID}`));
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {
@@ -787,7 +832,7 @@ describe('M365 mailbox lifecycle routes', () => {
     mocks.getMailboxConnection.mockResolvedValue(connection({ status: 'error' }));
     let finishProbe!: (value: { ok: false; error: string }) => void;
     mocks.probeMailbox.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
-    mocks.isMailboxConnectionSnapshotCurrent.mockResolvedValue(false);
+    mocks.refreshErrorReason.mockResolvedValue(false);
 
     const retest = app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
     await vi.waitFor(() => expect(mocks.probeMailbox).toHaveBeenCalledOnce());
@@ -795,9 +840,9 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await retest;
 
     expect(response.status).toBe(409);
-    expect(mocks.isMailboxConnectionSnapshotCurrent).toHaveBeenCalledWith(
+    expect(mocks.refreshErrorReason).toHaveBeenCalledWith(
       expect.objectContaining({ id: CONNECTION_ID, consentAttemptId: ATTEMPT_ID }),
-      'error',
+      'Mailbox verification failed',
     );
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ outcome: 'stale' }),

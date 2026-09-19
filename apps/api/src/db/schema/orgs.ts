@@ -1,5 +1,6 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { ImpactWeightOverrides } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -7,6 +8,10 @@ export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'int
 // mode until the fleet drains or the window closes, then severed + `churned`.
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned', 'offboarding']);
 export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
+export const partnerTrustStateEnum = pgEnum('partner_trust_state', ['probation', 'trusted', 'restricted']);
+export type PartnerTrustState = (typeof partnerTrustStateEnum.enumValues)[number];
+export const ipClassEnum = pgEnum('ip_class', ['residential', 'business', 'hosting', 'vpn', 'tor', 'unknown']);
+export type IpClass = (typeof ipClassEnum.enumValues)[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
 // 'quick_support' is the hidden per-partner org that holds ephemeral Quick
 // Support devices and support_sessions rows. Exactly one per partner
@@ -14,7 +19,7 @@ export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community',
 // accessibleOrgIds so RLS lets techs reach their own support sessions, but it
 // is excluded from every user-facing org enumeration and device/billing count.
 export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal', 'quick_support']);
-export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding']);
+export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding', 'merging', 'archived', 'purging']);
 
 export const partners = pgTable('partners', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -40,6 +45,12 @@ export const partners = pgTable('partners', {
   // accepted. Dedicated column, not settings JSONB — the settings cards replace
   // sub-objects wholesale (#3597), and a column keeps gate === read-back.
   autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
+  // P2-6 (#4193). PARTIAL overrides of DEFAULT_IMPACT_WEIGHTS (@breeze/shared);
+  // NULL means "defaults". Dedicated column, not a partners.settings
+  // sub-object — settings cards replace sub-objects wholesale (#3597) and
+  // would silently drop the weights. Never read directly — always through
+  // resolveImpactWeights().
+  aiImpactWeights: jsonb('ai_impact_weights').$type<ImpactWeightOverrides | null>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
@@ -50,6 +61,22 @@ export const partners = pgTable('partners', {
   // signups already record mcp_origin_ip/mcp_origin_user_agent above.
   signupIp: varchar('signup_ip', { length: 45 }),
   signupUserAgent: text('signup_user_agent'),
+  // Partner trust probation (spec 2026-09-02). Lifecycle stays in `status`;
+  // this is the capability axis. Default 'trusted' grandfathers every
+  // pre-existing partner; register-partner sets 'probation' under enforce.
+  trustState: partnerTrustStateEnum('trust_state').notNull().default('trusted'),
+  trustChangedAt: timestamp('trust_changed_at', { withTimezone: true }),
+  // FK partners_trust_changed_by_fkey is defined in the SQL migration because
+  // users.ts imports partners from this file, making a Drizzle reference cyclic.
+  trustChangedBy: uuid('trust_changed_by'),
+  trustReason: text('trust_reason'),
+  trustReviewRequestedAt: timestamp('trust_review_requested_at', { withTimezone: true }),
+  // Lifetime count of agent enrollments made while in probation. Never
+  // decremented: deleting a device must not recycle the probation quota.
+  probationEnrollments: integer('probation_enrollments').notNull().default(0),
+  signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
+  signupIpAsn: integer('signup_ip_asn'),
+  signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),
@@ -100,6 +127,12 @@ export const partners = pgTable('partners', {
   // added or imported. Partners can opt out if their jurisdiction treats hardware
   // as non-taxable or they prefer to set taxability item-by-item.
   autoTaxHardware: boolean('auto_tax_hardware').notNull().default(true),
+  // #3205 W07: partner default for the "Billed devices" appendix on invoice
+  // PDFs. A dedicated column, for the reason autoEmailInvoiceOnQuoteAccept
+  // states: settings cards replace sub-objects wholesale (#3597), and a column
+  // keeps gate === read-back with no #3608 stored-false ambiguity. Resolved
+  // ONCE at issue onto invoices.device_appendix; never read at render time.
+  invoiceDeviceAppendix: boolean('invoice_device_appendix').notNull().default(false),
   // Partner-authored AI copy style for enrich/polish (NULL = built-in house
   // format: generic customer-friendly name + "• "-bulleted spec description).
   catalogAiStyle: text('catalog_ai_style'),
@@ -108,10 +141,41 @@ export const partners = pgTable('partners', {
   // surface gate on this; it is NOT in settings JSONB because that is
   // partner-writable and the partner must not be able to self-enable.
   aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
+  // #5075 W04 — which service-desk/billing module this partner runs.
+  // 'native' = Breeze's own service desk & billing (default, and what every
+  // partner ran before this column existed); 'external' = the partner's PSA is
+  // the system of record and `serviceManagementPsaConnectionId` names the
+  // partner-wide connection; 'off' = RMM only — the Service Desk and Billing
+  // nav sections, the org record's Tickets/Billing tabs, and NEW ticket
+  // creation (ticketService.createTicket, 409) are all withdrawn.
+  //
+  // NOT authorization: existing tickets stay readable and every route keeps its
+  // own permission checks. The single behavioural gate is ticket CREATION.
+  // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
+  // which is a platform-granted entitlement).
+  serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
+  // only: integrations.ts already imports orgs.ts, so a `.references()` here
+  // would close an import cycle. Paired with the mode by
+  // partners_service_management_connection_chk — set iff mode = 'external'.
+  serviceManagementPsaConnectionId: uuid('service_management_psa_connection_id'),
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
 });
+
+/**
+ * Name of the per-partner, case-insensitive, lifetime slug uniqueness index
+ * (#3967 — migrations/2026-09-08-organizations-partner-slug-unique.sql).
+ *
+ * Exported and used by the `uniqueIndex()` call below so there is exactly ONE
+ * place this string is written: every handler that maps its 23505 to a 409 has
+ * to name the index EXACTLY (an unconstrained "any 23505 is a slug conflict"
+ * check misdiagnoses every other unique violation raised by the same statement
+ * — #3982), and a name that only matched by copy-paste is a silent way for
+ * that mapping to stop firing.
+ */
+export const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -146,6 +210,15 @@ export const organizations = pgTable('organizations', {
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
+  // Org lifecycle (spec 2026-08-26): NULL until archived; purgeAt NULL = keep forever.
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  purgeAt: timestamp('purge_at', { withTimezone: true }),
+  // Which terminal status finalizeOrganizationOffboarding lands on.
+  offboardingTarget: varchar('offboarding_target', { length: 16 }).notNull().default('churn'),
+  // Execution plane W04 (spec 2026-09-13 §8): per-org opt-in for model-written
+  // code to execute on a vendor sandbox. Default false until the DPA review;
+  // enforced at analysis-run ADMISSION (runService.ts), never in the catalog.
+  aiExternalProcessing: boolean('ai_external_processing').notNull().default(false),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),
@@ -156,7 +229,7 @@ export const organizations = pgTable('organizations', {
   // downgrade this to a bare `.unique()` on the column: that would mean a
   // GLOBAL namespace and would stop two unrelated MSPs both onboarding an
   // "acme".
-  partnerSlugUnique: uniqueIndex('organizations_partner_slug_uniq').on(table.partnerId, sql`lower(${table.slug})`),
+  partnerSlugUnique: uniqueIndex(ORG_SLUG_UNIQUE_INDEX).on(table.partnerId, sql`lower(${table.slug})`),
 }));
 
 export const sites = pgTable('sites', {
@@ -172,6 +245,7 @@ export const sites = pgTable('sites', {
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => ({
   idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
+  orgIdIdx: index('sites_org_id_idx').on(table.orgId),
 }));
 
 export const enrollmentKeys = pgTable('enrollment_keys', {
@@ -181,6 +255,12 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   name: varchar('name', { length: 255 }).notNull(),
   key: varchar('key', { length: 64 }).notNull().unique(),
   keySecretHash: varchar('key_secret_hash', { length: 64 }),
+  /**
+   * Monotonic credential epoch. Bootstrap tokens snapshot this value when
+   * issued; rotating the parent increments it so authority derived from the
+   * superseded credential cannot be redeemed afterward.
+   */
+  credentialGeneration: integer('credential_generation').notNull().default(1),
   usageCount: integer('usage_count').notNull().default(0),
   maxUsage: integer('max_usage'),
   expiresAt: timestamp('expires_at'),
@@ -196,4 +276,17 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   // Plain uuid — the FK lives in SQL to avoid a circular import with
   // supportSessions.ts (which imports organizations from this file).
   supportSessionId: uuid('support_session_id'),
+});
+
+// Durable "loser merged into survivor" record (spec 2026-08-26). loser_org_id
+// deliberately has no FK — the loser org row is erased after the merge.
+export const orgMergeEvents = pgTable('org_merge_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  loserOrgId: uuid('loser_org_id').notNull(),
+  loserOrgName: varchar('loser_org_name', { length: 255 }).notNull(),
+  survivorOrgId: uuid('survivor_org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  actorUserId: uuid('actor_user_id'),
+  summary: jsonb('summary').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

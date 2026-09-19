@@ -37,6 +37,7 @@ const deviceFixture = (over: Partial<ApproverDevice> = {}): ApproverDevice => ({
   label: 'Front-desk laptop',
   kind: 'platform',
   isPlatformBound: true,
+  platformBoundBasis: 'webauthn_backup_flags',
   createdAt: '2026-06-01T12:00:00.000Z',
   lastUsedAt: '2026-06-10T09:00:00.000Z',
   disabledAt: null,
@@ -60,6 +61,67 @@ describe('ApproverDevicesSection', () => {
     expect(screen.getByTestId('approver-device-label-dev-1').textContent).toContain('Front-desk laptop');
     expect(screen.getByTestId('approver-device-platform-badge-dev-1')).toBeTruthy();
     expect(listApproverDevicesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows "Hardware-attested" for a device with a basis in the L4 trusted set (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ platformBoundBasis: 'ios_se_p256_app_attest' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Hardware-attested');
+  });
+
+  it('shows a neutral "Not attested" badge with a tooltip for a legacy_unattested basis (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: 'legacy_unattested' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+    expect(badge.getAttribute('title')).toBe(
+      "Critical approvals aren't available from this device until it's re-registered on an attested app build.",
+    );
+  });
+
+  it('shows "Not attested" for an unattested basis, not the honest-but-confusing raw boolean (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: false, platformBoundBasis: 'unattested' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+  });
+
+  // ios_keychain_rsa_app_attest textually resembles the trusted
+  // ios_se_p256_app_attest and is EXPLICITLY excluded from the L4-trusted set
+  // server-side (authenticatorAssurance.ts) because App Attest there vouches
+  // for the app instance, not that the RSA key itself lives in hardware. It's
+  // exactly the value most likely to be miscopied into the mirrored web set by
+  // a future edit, so pin it here.
+  it('shows "Not attested" for ios_keychain_rsa_app_attest, not the similarly-named trusted basis (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: 'ios_keychain_rsa_app_attest' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+  });
+
+  // A device from an API predating #1374 W02 sends no `platformBoundBasis` at
+  // all. Fail toward the honest badge, never the reverse.
+  it('shows "Not attested" when platformBoundBasis is missing entirely (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: undefined }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
   });
 
   it('shows an empty state when no devices are registered', async () => {
@@ -125,6 +187,32 @@ describe('ApproverDevicesSection', () => {
 
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' }));
     expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('My workstation');
+  });
+
+  // #4470: the TOTP/passkey tiers mint through POST /auth/mfa/step-up, which
+  // now rejects a bad proof with 400 + `code: 'mfa_proof_invalid'` instead of
+  // a 401. Without a branch on the code this would fall through to the raw
+  // server string and lose the tier-specific copy.
+  it.each([
+    ['totp' as const, 'mfa_proof_invalid', 'Incorrect code.'],
+    ['password' as const, 'invalid_credentials', 'Incorrect password.'],
+  ])('maps the #4470 400 proof rejection for the %s tier', async (tier, code, expected) => {
+    const err = Object.assign(new Error('Invalid credentials'), { status: 400, code });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={tier === 'totp' ? 'totp' : null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.change(
+      screen.getByTestId(tier === 'totp' ? 'approver-stepup-code' : 'approver-stepup-password'),
+      { target: { value: tier === 'totp' ? '123456' : 'wrong' } },
+    );
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: expected }));
+    expect(showToastMock).not.toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Session expired — reload the page and try again.',
+    });
   });
 
   it('shows a session-expired error (not "Incorrect password") on a 401 whose message is NOT the credential-failure string', async () => {

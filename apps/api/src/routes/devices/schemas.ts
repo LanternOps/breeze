@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
 import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
@@ -95,6 +96,113 @@ export const listNetworkDevicesSchema = z.object({
   search: z.string().optional(),
 });
 
+// GET /devices/manual — the manual arm of the unified Devices list (#4622).
+// Mirrors listNetworkDevicesSchema above exactly so the three arms of the
+// unified list share one query vocabulary.
+export const listManualAssetsSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  includeTotal: boolStr,
+
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  orgIds: csvUuidList,
+  siteIds: csvUuidList,
+
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+  search: z.string().optional(),
+});
+
+// POST /devices/manual — create a manual (non-networked) inventory asset.
+// Written array-friendly on purpose: the CSV import path (spec Decision 6,
+// deferred) reuses this element schema verbatim rather than re-deriving
+// validation.
+/** YYYY-MM-DD calendar date; the `date` column type. The regex alone lets
+ *  "2026-02-30" through to Postgres as a 500, so round-trip it via Date.UTC. */
+export const purchaseDateSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
+  .refine((v) => {
+    const [y, m, d] = v.split('-').map(Number) as [number, number, number];
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }, 'must be a real calendar date')
+  .nullish();
+
+export const createManualAssetSchema = z.object({
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
+  name: z.string().min(1).max(255),
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+  manufacturer: z.string().max(255).nullish(),
+  model: z.string().max(255).nullish(),
+  serialNumber: z.string().max(255).nullish(),
+  assetTag: z.string().max(128).nullish(),
+  location: z.string().max(255).nullish(),
+  assignedContactId: z.string().guid().nullish(),
+  notes: z.string().nullish(),
+  tags: z.array(z.string()).optional(),
+  // Hardware Lifecycle report. YYYY-MM-DD; null clears. An operator-entered
+  // value is recorded as source 'manual' and is never overwritten by sync.
+  purchaseDate: purchaseDateSchema,
+});
+
+// PATCH /devices/manual/:id. orgId is immutable after create (matching
+// updateDeviceSchema's pattern of omitting the tenant key from the partial).
+export const updateManualAssetSchema = createManualAssetSchema
+  .partial()
+  .omit({ orgId: true })
+  .extend({ retiredAt: z.union([z.null(), z.string().datetime()]).optional() });
+
+// POST /devices/manual/:id/link — exactly one subject (deviceId XOR
+// discoveredAssetId), mirroring discovery.ts's linkAssetSchema shape.
+export const linkManualAssetSchema = z.object({
+  deviceId: z.string().guid().optional(),
+  discoveredAssetId: z.string().guid().optional(),
+}).refine(
+  (v) => (v.deviceId == null) !== (v.discoveredAssetId == null),
+  { message: 'Provide exactly one of deviceId or discoveredAssetId' },
+);
+
+
+// POST /devices/network — hand-entered network asset (#5213 W02). `label` is
+// REQUIRED: W01 left a known gap where a url-only row falls through to an
+// empty display name in the unified-list DTO (network.ts's hostname
+// precedence is label > hostname > url > ip) — requiring it here closes that
+// at the door. At least one of ipAddress/hostname/url is required, mirroring
+// the DB CHECK discovered_assets_manual_identity_chk so a bad payload gets a
+// clean 400 instead of falling through to a raw 23514.
+// Base object shape shared by create and update — kept separate from the
+// `.refine()`-wrapped create schema below because zod 4's refine wrapper
+// cannot be `.partial()`ed directly (no `innerType()` unwrap, unlike zod 3).
+const networkAssetFields = z.object({
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
+  label: z.string().min(1).max(255),
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).default('unknown'),
+  // zod 4 dropped `z.string().ip()` in favor of the standalone ipv4/ipv6
+  // validators; `inet` in Postgres accepts either family.
+  ipAddress: z.union([z.ipv4(), z.ipv6()]).nullish(),
+  hostname: z.string().max(255).nullish(),
+  url: z.string().url().max(2048).nullish(),
+  macAddress: z.string().max(17).nullish(),
+  manufacturer: z.string().max(255).nullish(),
+  model: z.string().max(255).nullish(),
+  notes: z.string().nullish(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const createNetworkAssetSchema = networkAssetFields.refine(
+  (v) => Boolean(v.ipAddress || v.hostname || v.url),
+  { message: 'Provide at least one of: IP address, hostname, or URL' },
+);
+
+// PATCH /devices/network/:id — orgId/siteId are immutable once created (a
+// network asset does not move orgs through this route), so they are omitted
+// rather than merely optional.
+export const updateNetworkAssetSchema = networkAssetFields
+  .partial()
+  .omit({ orgId: true, siteId: true });
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.
@@ -105,7 +213,9 @@ export const updateDeviceSchema = z.object({
     z.string().max(100),
     z.union([z.string().max(10000), z.number(), z.boolean(), z.null()])
   ).optional(),
-  deviceRole: z.enum(DEVICE_ROLES).optional()
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
+  // Hardware Lifecycle report — see createManualAssetSchema.purchaseDate.
+  purchaseDate: purchaseDateSchema,
 });
 
 // POST /devices/provision — admin pre-creates a device row + downloadable
@@ -136,6 +246,14 @@ export const moveOrgSchema = z.object({
   // monetary rows, the move is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED)
   // unless explicitly accepted; `true` additionally requires invoices:write.
   acceptCurrencyMismatch: z.boolean().optional(),
+  // Device move-org step-up (spec 2026-09-18 D2/D3): a single-use grant
+  // minted by POST /auth/mfa/step-up for operation 'device_move_org', bound
+  // to this exact { deviceId, orgId, siteId, acceptCurrencyMismatch }.
+  // Required whenever ENABLE_2FA is on; the route answers
+  // 403 STEP_UP_REQUIRED when it is missing or does not validate.
+  // Deliberately NOT .strict() (unlike the maintenance schemas): the only
+  // behaviour change for existing callers is the grant requirement itself.
+  stepUpGrant: z.string().guid().optional(),
 });
 
 export const metricsQuerySchema = z.object({
@@ -182,10 +300,38 @@ export const bulkCommandSchema = z.object({
   payload: z.any().optional()
 });
 
-export const maintenanceModeSchema = z.object({
-  enable: z.boolean(),
-  durationHours: z.number().int().positive().max(168).optional()
-});
+/**
+ * RMM-QA-176 D4. `reason` and `durationHours` are REQUIRED on entry: the exit
+ * contract's "audit actor/reason/window" clause cannot be met by an audit row
+ * that says `reason: null`, and there is no released client to protect — the
+ * route is JWT-only (index.ts:840) so no API-key integration can exist, and the
+ * web ships its dialog in the same PR. Both branches are `.strict()`, so an old
+ * client sending `{ enable: false, durationHours }` gets a named 400 rather
+ * than silently having a field ignored. Bounds are imported, never retyped:
+ * the step-up mint schema binds the SAME numbers into the grant digest.
+ */
+export const maintenanceReasonSchema = z.string().trim().min(3).max(500);
+export const maintenanceDurationSchema = z.number().int().min(1).max(MAINTENANCE_MAX_DURATION_HOURS);
+
+export const maintenanceModeSchema = z.discriminatedUnion('enable', [
+  z.object({
+    enable: z.literal(true),
+    reason: maintenanceReasonSchema,
+    durationHours: maintenanceDurationSchema,
+    stepUpGrant: z.string().guid().optional(),
+  }).strict(),
+  z.object({
+    enable: z.literal(false),
+  }).strict(),
+]);
+
+/** Entry-only. Exit stays per-device — ending suppression needs no batching. */
+export const bulkMaintenanceSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(MAINTENANCE_MAX_BULK_DEVICES),
+  reason: maintenanceReasonSchema,
+  durationHours: maintenanceDurationSchema,
+  stepUpGrant: z.string().guid().optional(),
+}).strict();
 
 export const createGroupSchema = z.object({
   orgId: z.string().guid(),
@@ -238,3 +384,19 @@ export const updateLinkGroupSchema = z
     (d) => d.name !== undefined || d.addDeviceIds !== undefined || d.removeDeviceIds !== undefined,
     { message: 'Provide at least one of name, addDeviceIds, or removeDeviceIds' },
   );
+
+/**
+ * Hard ceiling on a bulk lifecycle call (#2787). Enforced HERE and again in
+ * the bulk-purge worker: the queue payload outlives the request, so a
+ * validator-only bound would be enforced by whichever process happened to
+ * write the job rather than by the one doing the deleting.
+ *
+ * 500 is the same order as the existing bulk-command surface; it bounds a
+ * synchronous restore loop to a few seconds and a purge job to a few minutes.
+ */
+export const BULK_LIFECYCLE_MAX_DEVICES = 500;
+
+/** `{ deviceIds: [...] }` body shared by bulk restore and bulk permanent delete. */
+export const bulkDeviceIdsSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(BULK_LIFECYCLE_MAX_DEVICES),
+});

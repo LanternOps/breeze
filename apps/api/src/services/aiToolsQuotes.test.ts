@@ -36,8 +36,12 @@ vi.mock('./quoteService', () => ({
 vi.mock('./quoteLifecycle', () => ({
   sendQuote: vi.fn().mockResolvedValue({
     quote: { id: 'quote-1', status: 'sent' },
-    emailed: false,
     acceptUrl: 'https://example.test/portal/quote/token',
+    // #3905 — the email is a deferred the tool invokes itself.
+    deliverEmail: vi.fn().mockResolvedValue({
+      quote: { id: 'quote-1', status: 'sent' },
+      emailed: false,
+    }),
   }),
   declineQuoteByActor: vi.fn().mockResolvedValue({ id: 'quote-1', status: 'declined' }),
 }));
@@ -155,6 +159,8 @@ describe('manage_quotes', () => {
     );
 
     expect(quoteLifecycle.sendQuote).toHaveBeenCalledWith('quote-1', actor);
+    // The tool must still report the delivery outcome — an AI caller that only
+    // saw `quote.status = sent` would tell the tech the customer was emailed.
     expect(JSON.parse(out)).toEqual({
       quote: { id: 'quote-1', status: 'sent' },
       emailed: false,
@@ -340,6 +346,87 @@ describe('manage_quotes input validation (#2362)', () => {
       actor,
     );
     expect(JSON.parse(out)).toEqual({ id: 'line-1', quoteId: 'quote-1' });
+  });
+
+  it('add_manual_line accepts a per_device_role line with roles and no quantity', async () => {
+    const line = {
+      sourceType: 'manual', name: 'Managed servers', unitPrice: 40, taxable: true,
+      recurrence: 'monthly', contractLineType: 'per_device_role', deviceRoles: ['server'],
+    };
+
+    const out = await getTool().handler({ action: 'add_manual_line', quoteId: 'quote-1', line }, auth);
+
+    expect(quoteService.addManualLine).toHaveBeenCalledWith(
+      'quote-1', expect.objectContaining(line), actor,
+    );
+    expect(JSON.parse(out)).toEqual({ id: 'line-1', quoteId: 'quote-1' });
+  });
+
+  it('add_manual_line rejects a client quantity on a device-set line', async () => {
+    const out = await getTool().handler({
+      action: 'add_manual_line', quoteId: 'quote-1',
+      line: {
+        sourceType: 'manual', name: 'Managed servers', quantity: 12, unitPrice: 40, taxable: true,
+        recurrence: 'monthly', contractLineType: 'per_device_role', deviceRoles: ['server'],
+      },
+    }, auth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(JSON.parse(out).error).toContain('line.quantity');
+    expect(quoteService.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line rejects a device set on a one-time line', async () => {
+    const out = await getTool().handler({
+      action: 'add_manual_line', quoteId: 'quote-1',
+      line: {
+        sourceType: 'manual', name: 'Managed servers', unitPrice: 40, taxable: true,
+        recurrence: 'one_time', contractLineType: 'per_device_role', deviceRoles: ['server'],
+      },
+    }, auth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(JSON.parse(out).error).toContain('line.recurrence');
+    expect(quoteService.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line rejects per_device_group without deviceGroupId', async () => {
+    const out = await getTool().handler({
+      action: 'add_manual_line', quoteId: 'quote-1',
+      line: {
+        sourceType: 'manual', name: 'VIP laptops', unitPrice: 40, taxable: true,
+        recurrence: 'monthly', contractLineType: 'per_device_group',
+      },
+    }, auth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(JSON.parse(out).error).toContain('line.deviceGroupId');
+    expect(quoteService.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line accepts an allowance on a device-set line', async () => {
+    const line = {
+      sourceType: 'manual', name: 'Managed endpoints', unitPrice: 40, taxable: true,
+      recurrence: 'monthly', contractLineType: 'per_device', includedQuantity: 25,
+      overageMode: 'bill', overageUnitPrice: 12.5,
+    };
+
+    await getTool().handler({ action: 'add_manual_line', quoteId: 'quote-1', line }, auth);
+
+    expect(quoteService.addManualLine).toHaveBeenCalledWith(
+      'quote-1', expect.objectContaining(line), actor,
+    );
+  });
+
+  it('update_line rejects contractLineType because the descriptor type is immutable', async () => {
+    const out = await getTool().handler({
+      action: 'update_line', quoteId: 'quote-1', lineId: 'line-1',
+      patch: { contractLineType: 'per_device' },
+    }, auth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(JSON.parse(out).error).toContain('contractLineType');
+    expect(quoteService.updateLine).not.toHaveBeenCalled();
   });
 
   it('add_catalog_line with partNumber but no catalogItemId returns a VALIDATION_ERROR, not a throw', async () => {
@@ -564,5 +651,29 @@ describe('list_quotes / get_quote read tools (#2361)', () => {
     // No UPDATE runs, so updatedAt cannot be bumped by an empty patch.
     expect(quoteService.updateQuote).not.toHaveBeenCalled();
     expect(quoteService.getQuote).not.toHaveBeenCalled();
+  });
+});
+
+/** #6110 finding 1 — quote routes are `requireScope('partner','system')`
+ *  (routes/quotes/quotes.ts:40, lifecycle.ts:18, bulk.ts:14). */
+describe('quote tools refuse organization scope (#6110 finding 1)', () => {
+  const orgAuth = { ...auth, scope: 'organization' as const, orgId: 'org-1' };
+
+  it.each(['list_quotes', 'get_quote', 'manage_quotes'] as const)(
+    '%s refuses an organization-scoped caller', async (name) => {
+      vi.clearAllMocks();
+      const out = await getTool(name).handler({ quoteId: 'q-1', action: 'delete_draft' }, orgAuth);
+      expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+      expect(quoteService.getQuote).not.toHaveBeenCalled();
+      expect(quoteService.listQuotes).not.toHaveBeenCalled();
+      expect(quoteService.deleteDraftQuote).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still admits a partner-scoped caller', async () => {
+    vi.clearAllMocks();
+    const out = await getTool('get_quote').handler({ quoteId: 'q-1' }, auth);
+    expect(JSON.parse(out)).not.toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(quoteService.getQuote).toHaveBeenCalled();
   });
 });

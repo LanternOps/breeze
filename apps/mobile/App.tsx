@@ -82,6 +82,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { store, type AppDispatch, type RootState } from './src/store';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { AppLockGate } from './src/navigation/AppLockGate';
+import { ToastHost } from './src/components/toast/ToastHost';
 import {
   registerForPushNotifications,
   reconcilePushRegistration,
@@ -207,7 +208,13 @@ function App() {
                 locked screen cover EVERY authenticated surface, including the
                 ApprovalScreen takeover that ApprovalGate renders. */}
             <AppLockGate>
-              <RootNavigator />
+              {/* Inside AppLockGate so the lock screen and privacy cover paint
+                  OVER any toast; outside RootNavigator so one host serves every
+                  screen and a toast survives the navigation a decision often
+                  triggers (#5368). */}
+              <ToastHost>
+                <RootNavigator />
+              </ToastHost>
             </AppLockGate>
           </SafeAreaProvider>
         </PaperProvider>

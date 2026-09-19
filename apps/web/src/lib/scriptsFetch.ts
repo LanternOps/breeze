@@ -41,6 +41,11 @@ export interface FetchAllScriptsOptions {
   /** Include `is_system` seed scripts. Matches the old query param exactly —
    *  two of the four call sites passed it, two did not. */
   includeSystem?: boolean;
+  /** Scope the walk to ONE org explicitly instead of the switcher's org that
+   *  `fetchWithAuth` would inject — for a caller acting on a row that belongs
+   *  to a specific org (the AI agent script picker, #5089 review). The
+   *  injection skips a url that already names an `orgId`. */
+  orgId?: string;
   /** Override the per-page size for tests. Production should leave this at the
    *  module default. */
   pageLimit?: number;
@@ -88,6 +93,7 @@ export async function fetchAllScripts<T = Record<string, unknown>>(
 
     const params = new URLSearchParams();
     if (options.includeSystem) params.set('includeSystem', 'true');
+    if (options.orgId) params.set('orgId', options.orgId);
     params.set('limit', String(pageLimit));
     params.set('page', String(pageNum + 1));
 

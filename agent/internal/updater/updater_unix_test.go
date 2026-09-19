@@ -52,6 +52,11 @@ func TestRollback_UnlinksBeforeWrite(t *testing.T) {
 }
 
 func TestReplaceBinary_UnlinksBeforeWrite(t *testing.T) {
+	// These tests use plain-text stand-in "binaries", which are not Mach-O and
+	// would always fail the real macOS code-signature gate added in #3458. The
+	// gate has its own coverage in replace_binary_signature_test.go.
+	stubStagedSignatureCheck(t, func(string) error { return nil })
+
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "breeze-agent")
 	newBinaryPath := filepath.Join(tmpDir, "new-binary")

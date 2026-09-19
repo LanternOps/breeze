@@ -30,11 +30,20 @@
     "contentChanged": "This request's details changed after it was created, so it can no longer be approved.",
     "expired": "This request expired before it could be decided.",
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
+    "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",
     "approvedToast": "Action approved",
-    "deniedToast": "Action denied"
+    "approvedToast_one": "{{count}} action approved",
+    "approvedToast_other": "{{count}} actions approved",
+    "deniedToast": "Action denied",
+    "deniedToast_one": "{{count}} action denied",
+    "deniedToast_other": "{{count}} actions denied",
+    "runContextLabel": "Run context:",
+    "runContextChosenByAssistant": "chosen by the assistant",
+    "runContextScriptDefault": "the script's saved default",
+    "runContextOverrides": "chosen by the assistant, overriding the script's saved default ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Waiting for response...",
@@ -48,6 +57,7 @@
     "description": "Ask about your devices, alerts, metrics, or troubleshoot issues.",
     "unknownTool": "Unknown tool",
     "toolResult": "Tool result",
+    "unattendedRelease": "Reviewed by the AI script reviewer and released without an approval card.",
     "pauseAi": "Pause AI",
     "quickActions": {
       "serverHealth": {
@@ -118,6 +128,9 @@
   },
   "aiToolCallCard": {
     "running": "Running...",
+    "approvedRunning": "Approved · running",
+    "approvedFailed": "Approved · failed",
+    "approvedCompleted": "Approved · completed",
     "input": "Input:",
     "error": "Error:",
     "output": "Output:"
@@ -128,7 +141,7 @@
     "tabs": {
       "orgs": "Organizations",
       "sessions": "Sessions",
-      "usage": "Usage",
+      "usage": "Office add-in usage",
       "templates": "Templates"
     }
   },
@@ -424,7 +437,9 @@
     "limit": "Up to 5 concurrent conversations"
   },
   "workspaceTab": {
-    "approvalPending": "Approval pending"
+    "approvalPending": "Approval pending",
+    "renameLabel": "Rename chat",
+    "renameHint": "Double-click to rename"
   },
   "workspaceTabBar": {
     "newTabShortcut": "New tab (Cmd+Shift+N)",
@@ -442,5 +457,52 @@
     "timeMinutesAria": "Time (minutes)",
     "billable": "Billable",
     "createTicket": "Create ticket"
+  },
+  "scriptProposal": {
+    "title": "AI-authored script",
+    "goal": "Goal",
+    "expectedEffect": "Expected effect",
+    "verificationClaim": "How this will be verified",
+    "rollback": "Rollback",
+    "findings": "Reviewer findings",
+    "blastRadius": "Blast radius (advisory)",
+    "touches": "Touches",
+    "devices": "Target devices",
+    "showCode": "Show script",
+    "hideCode": "Hide script",
+    "acknowledgeTitle": "Acknowledge dangerous patterns",
+    "acknowledgeRequirement": "Acknowledging requires script write permission and a recent MFA sign-in.",
+    "acknowledgeIncomplete": "Acknowledge every pattern to approve.",
+    "expiresIn": "Expires in {{duration}}",
+    "requestChanges": "Request changes",
+    "notePlaceholder": "What should the author change?",
+    "noteRequired": "A note is required.",
+    "sendBack": "Send back to the author",
+    "severityInfo": "Info",
+    "severityWarning": "Warning",
+    "severityBlocking": "Blocking",
+    "saveToLibrary": "Save to library",
+    "verificationPending": "Verification pending",
+    "verified": "Verified",
+    "verificationFailed": "Verification failed",
+    "verificationUnknown": "Could not be verified",
+    "promoteDescription": "Description (optional)",
+    "ownerScopeOrganization": "This organization only",
+    "ownerScopePartner": "All organizations under this partner",
+    "nameRequired": "A name is required."
+  },
+  "aiRunCard": {
+    "title": "Analysis run",
+    "openRun": "Open the full run",
+    "resultOnRunPage": "This finished after the conversation moved on — the full result is kept on the run page.",
+    "status": {
+      "queued": "queued",
+      "running": "working",
+      "completed": "finished",
+      "failed": "failed",
+      "cancelled": "cancelled",
+      "expired": "expired",
+      "skipped": "skipped"
+    }
   }
 }

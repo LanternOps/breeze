@@ -32,6 +32,7 @@ const {
   mockEvaluateFilter,
   mockHasDbAccessContext,
   mockGetCurrentDbAccessContext,
+  mockSchedulePeripheralPolicyDevice,
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
@@ -40,6 +41,11 @@ const {
   mockEvaluateFilter: vi.fn(),
   mockHasDbAccessContext: vi.fn(),
   mockGetCurrentDbAccessContext: vi.fn(),
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job'),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
 
 vi.mock('../db', () => ({
@@ -157,6 +163,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
   it('logs a shortfall with the matched count and the count that actually landed', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))       // group lookup
+      .mockReturnValueOnce(whereChain([]))                  // resolver memberships
       .mockReturnValueOnce(whereChain([]))                  // current memberships
       .mockReturnValueOnce(whereChain([{ count: 0 }]));     // post-write verification
     mockEvaluateFilter.mockResolvedValue({
@@ -181,6 +188,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
       .mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([{ count: 2 }]));
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1', 'dev-2'],
@@ -198,11 +206,14 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       { deviceId: 'dev-1', groupId: 'group-1', orgId: 'org-a', addedBy: 'dynamic_rule' },
       { deviceId: 'dev-2', groupId: 'group-1', orgId: 'org-a', addedBy: 'dynamic_rule' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith('dev-1', 'dynamic_membership_changed');
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith('dev-2', 'dynamic_membership_changed');
   });
 
   it('counts a pinned non-matching member towards the expected total', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
       .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
       .mockReturnValueOnce(whereChain([{ count: 2 }])); // pinned-1 + dev-1
     mockEvaluateFilter.mockResolvedValue({
@@ -220,6 +231,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
   it('writes the membership log as one batched insert instead of one per device', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([{ count: 3 }]));
     mockEvaluateFilter.mockResolvedValue({

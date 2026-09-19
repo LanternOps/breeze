@@ -21,7 +21,8 @@ const PROFILE_CONTRACTS = [
   },
   {
     id: 'customer-graph-read',
-    version: 2,
+    // v3 (2026-09-08): tenant-sync foundation added four application scopes.
+    version: 3,
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-read',
@@ -95,8 +96,9 @@ describe('M365 permission profiles', () => {
   });
 
   it('requires reconciliation whenever stored manifest version differs', () => {
-    expect(connectionNeedsConsentReconciliation('customer-graph-read', 2)).toBe(false);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 3)).toBe(false);
     expect(connectionNeedsConsentReconciliation('customer-graph-read', 1)).toBe(true);
-    expect(connectionNeedsConsentReconciliation('customer-graph-read', 3)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 2)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 4)).toBe(true);
   });
 });

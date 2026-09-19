@@ -18,6 +18,7 @@
  *     src/__tests__/integration/pendingMfaEpoch.integration.test.ts
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
@@ -66,8 +67,11 @@ describe('POST /auth/mfa/verify — pending session bound to a stale mfa_epoch i
         userId: user.id,
         mfaMethod: 'totp',
         passkeyAvailable: false,
+        recoveryAvailable: false,
         authEpoch: 1,
         mfaEpoch: pendingMfaEpoch, // bound to N
+        transitionId: randomUUID(),
+        browserGeneration: 1,
         statusExpectation: 'active',
         allowedMethods: { totp: true, sms: true, passkey: true },
         expiresAt: Date.now() + 5 * 60 * 1000,

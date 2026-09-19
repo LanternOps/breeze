@@ -1,9 +1,14 @@
 /**
- * AI Fleet Status Tool
+ * AI Deployment-Invite Funnel Tool
  *
- * get_fleet_status (Tier 1): Returns per-tenant device/invite funnel metrics
- * for the MCP bootstrap flow. The agent polls this during a deployment so it
- * can report "3 of 5 devices online so far" back to the user.
+ * get_invite_funnel (Tier 1): Returns per-tenant deployment-invite funnel
+ * metrics for the MCP bootstrap flow. The agent polls this during a deployment
+ * so it can report "3 of 5 devices online so far" back to the user.
+ *
+ * Named `get_fleet_status` until #5362: the name read as a fleet overview, so
+ * the model picked it for "Show fleet status" and narrated "your fleet is
+ * empty" from this tool's zeros on a 51-device tenant that had never used
+ * invites. The name is what wins tool selection — keep it funnel-specific.
  *
  * The response shape is intentionally minimal and bootstrap-focused: it does
  * not overlap with `get_fleet_health` (reliability scoring) or `query_devices`
@@ -19,6 +24,7 @@ import { deploymentInvites } from '../db/schema/deploymentInvites';
 import { enrollmentKeys } from '../db/schema/orgs';
 import { devices } from '../db/schema/devices';
 import type { AuthContext } from '../middleware/auth';
+import { deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import type { AiTool, AiToolTier } from './aiTools';
 
 export interface InviteFunnel {
@@ -54,16 +60,16 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
   let inviteScopeCondition;
   if (auth.scope === 'organization') {
     if (!auth.orgId) {
-      throw new Error('get_fleet_status: organization scope requires an org context');
+      throw new Error('get_invite_funnel: organization scope requires an org context');
     }
     inviteScopeCondition = eq(deploymentInvites.orgId, auth.orgId);
   } else if (auth.scope === 'partner') {
     if (!auth.partnerId) {
-      throw new Error('get_fleet_status: partner scope requires a partner context');
+      throw new Error('get_invite_funnel: partner scope requires a partner context');
     }
     inviteScopeCondition = eq(deploymentInvites.partnerId, auth.partnerId);
   } else {
-    throw new Error(`get_fleet_status: unsupported auth scope '${auth.scope}'`);
+    throw new Error(`get_invite_funnel: unsupported auth scope '${auth.scope}'`);
   }
 
   // SR5-18: a site-restricted caller must additionally be narrowed by the
@@ -88,9 +94,23 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
   // enrollment key is outside the caller's site allowlist so the top-of-funnel
   // totals/clicks reflect only site-visible invites. No-op for unrestricted
   // callers (canAccessSite absent).
-  const invites = auth.canAccessSite
+  const siteScopedInvites = auth.canAccessSite
     ? rawInvites.filter((i) => auth.canAccessSite!(i.keySiteId))
     : rawInvites;
+
+  // Exact-device axis (#6096), independent of the site axis above. A run bound
+  // to a frozen device set may only count invites that landed on one of ITS
+  // devices: a sibling's invite is another device's row, and an invite with no
+  // device yet is attributable to none of them, so both drop out of the
+  // top-of-funnel totals. A device-LESS analysis run carries this axis with no
+  // site axis at all, which is why it cannot ride on `canAccessSite`.
+  const invites = auth.allowedDeviceIds
+    ? filterToDeviceScope(
+      auth,
+      siteScopedInvites.filter((i) => i.deviceId !== null),
+      (i) => i.deviceId,
+    )
+    : siteScopedInvites;
 
   const total_invited = invites.length;
   // `clicked` count uses status OR a non-null clickedAt so a row that has
@@ -118,6 +138,9 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
         .where(
           and(
             inArray(devices.id, deviceIds),
+            // Exact-device axis: a device-bound/frozen-set run never reads a
+            // sibling device row, even one an in-scope invite points at.
+            deviceScopeCondition(auth, devices.id),
             // Defense-in-depth: partner scope already implied by invite row, but
             // re-scope via the device's org->partner link would require a join;
             // skip it here — RLS on `devices` + the explicit inArray on invite-
@@ -125,32 +148,41 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
           ),
         );
 
-  // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
-  // caller must not see enrolled devices in sites outside their allowlist.
-  // No-op for unrestricted callers (canAccessSite absent or returns true).
-  const deviceRows = auth?.canAccessSite
-    ? allDeviceRows.filter((d) => auth.canAccessSite!(d.siteId))
-    : allDeviceRows;
+  // Both app-layer axes (RLS enforces neither): a site-restricted caller must
+  // not see enrolled devices in sites outside their allowlist, and a run with a
+  // frozen device set must not see devices outside it. No-op for unrestricted
+  // callers (neither axis present).
+  const deviceRows = filterToDeviceScope(
+    auth,
+    auth?.canAccessSite ? allDeviceRows.filter((d) => auth.canAccessSite!(d.siteId)) : allDeviceRows,
+    (d) => d.id,
+  );
+
+  // "Is this caller narrowed on ANY device-bearing axis?" — the enrolled/recent
+  // counts below fail closed for a narrowed caller and keep their pre-existing
+  // lenient behaviour (count an enrolled invite whose device row is gone) only
+  // for a genuinely unrestricted one.
+  const deviceNarrowed = Boolean(auth?.canAccessSite || auth.allowedDeviceIds);
 
   const byDeviceId = new Map(deviceRows.map((d) => [d.id, d] as const));
-  // Enrolled count. Only a site-restricted caller narrows to in-scope devices
-  // (fail closed). Unrestricted callers keep prior behavior: an enrolled invite
+  // Enrolled count. Only a NARROWED caller narrows to in-scope devices (fail
+  // closed). Unrestricted callers keep prior behavior: an enrolled invite
   // counts even if its device row is missing (e.g. the device was deleted after
   // enrollment) — `byDeviceId.has` would wrongly drop that case.
   const devices_enrolled = invites.filter(
     (i) =>
       i.status === 'enrolled' &&
       i.deviceId !== null &&
-      (auth?.canAccessSite ? byDeviceId.has(i.deviceId) : true),
+      (deviceNarrowed ? byDeviceId.has(i.deviceId) : true),
   ).length;
   const devices_online = deviceRows.filter((d) => d.status === 'online').length;
   const devices_pending = deviceRows.filter((d) => d.status === 'pending').length;
 
   const recent_enrollments = enrolledWithDevice
     .filter((i) => i.enrolledAt !== null)
-    // Site-restricted callers: drop enrollments whose device is out of scope
+    // Narrowed callers: drop enrollments whose device is out of scope
     // (filtered out of deviceRows) rather than surfacing an "unknown" stub.
-    .filter((i) => (auth?.canAccessSite ? byDeviceId.has(i.deviceId!) : true))
+    .filter((i) => (deviceNarrowed ? byDeviceId.has(i.deviceId!) : true))
     .sort((a, b) => (b.enrolledAt?.getTime() ?? 0) - (a.enrolledAt?.getTime() ?? 0))
     .slice(0, RECENT_ENROLLMENTS_LIMIT)
     .map((i) => {
@@ -175,12 +207,12 @@ export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunn
 }
 
 export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set('get_fleet_status', {
+  aiTools.set('get_invite_funnel', {
     tier: 1 as AiToolTier,
     definition: {
-      name: 'get_fleet_status',
+      name: 'get_invite_funnel',
       description:
-        'Return the deployment-invite funnel for this tenant: how many invites were sent, clicked, enrolled as devices, and are currently online. Includes up to 10 most-recent enrollments (device_id, hostname, os, invited_email, enrolled_at). Use this during MCP bootstrap to answer "how many of my invites turned into working agents?".',
+        'Deployment-invite funnel only (invites sent/clicked/enrolled). NOT a fleet overview: for device counts or online/offline status use query_devices or get_fleet_health. Reports how many deployment invites were sent, clicked, enrolled as devices, and are currently online, plus up to 10 most-recent enrollments (device_id, hostname, os, invited_email, enrolled_at). A tenant whose devices were enrolled without invites correctly reports zeros here — that does NOT mean the fleet is empty. Use during MCP bootstrap to answer \"how many of my invites turned into working agents?\".',
       input_schema: {
         type: 'object' as const,
         properties: {},
@@ -194,7 +226,7 @@ export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ invite_funnel: funnel });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';
-        console.error('[fleet:get_fleet_status]', message, err);
+        console.error('[fleet:get_invite_funnel]', message, err);
         return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
       }
     },

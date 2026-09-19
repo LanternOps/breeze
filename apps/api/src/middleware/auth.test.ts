@@ -38,7 +38,8 @@ vi.mock('../services/mfaPolicy', () => ({
   getEffectiveMfaPolicy: vi.fn(async () => ({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   }))
 }));
 
@@ -52,6 +53,19 @@ const ipGuardMocks = vi.hoisted(() => ({
 
 vi.mock('./ipAllowlistGuard', () => ({
   ipAllowlistGuard: ipGuardMocks.ipAllowlistGuard
+}));
+
+const mobileBlockMocks = vi.hoisted(() => ({
+  getBoundMobileDeviceBlock: vi.fn(async (): Promise<{ reason: string | null } | null> => null)
+}));
+
+vi.mock('./mobileDeviceBlocked', () => ({
+  getBoundMobileDeviceBlock: mobileBlockMocks.getBoundMobileDeviceBlock,
+  mobileDeviceBlockedResponse: (c: any, block: { reason: string | null }) => c.json({
+    error: 'This device has been deactivated. Please re-pair to continue.',
+    code: 'device_blocked',
+    reason: block.reason
+  }, 403)
 }));
 
 vi.mock('../db', () => ({
@@ -71,6 +85,7 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     passwordChangedAt: 'passwordChangedAt',
     mfaEnabled: 'mfaEnabled',
+    partnerId: 'partnerId',
     isPlatformAdmin: 'isPlatformAdmin',
     authEpoch: 'authEpoch',
     mfaEpoch: 'mfaEpoch'
@@ -98,11 +113,11 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
-import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
+import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
@@ -133,6 +148,7 @@ const activeUser = {
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
+  partnerId: 'partner-123',
   isPlatformAdmin: false,
   // Matches basePayload's aep/mep so the new epoch gate (Task 8) doesn't
   // reject these pre-existing tests.
@@ -316,6 +332,30 @@ describe('authMiddleware', () => {
     );
   });
 
+  it('rejects a blocked signed mobile binding on an ordinary authenticated API path', async () => {
+    const app = buildAuthApp();
+    const boundPayload = { ...basePayload, mdid: 'blocked-installation-id' };
+    vi.mocked(verifyToken).mockResolvedValue(boundPayload);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({
+      reason: 'lost phone'
+    });
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer blocked-bound-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      code: 'device_blocked',
+      reason: 'lost phone'
+    });
+    expect(mobileBlockMocks.getBoundMobileDeviceBlock).toHaveBeenCalledWith(
+      boundPayload.sub,
+      boundPayload.mdid
+    );
+  });
+
   it('propagates the ipAllowlistGuard deny Response instead of swallowing it', async () => {
     // Regression: the guard returns its 403 as a value (it does not throw).
     // authMiddleware must return the withDbAccessContext result, otherwise
@@ -335,6 +375,29 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.code).toBe('ip_not_allowed');
+  });
+
+  it('uses the live owning partner for an organization token whose authorization partnerId is null', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, partnerId: null });
+    mockUserSelect([{ ...activeUser, partnerId: 'partner-current' }]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(ipGuardMocks.ipAllowlistGuard).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(Function),
+      {
+        partnerId: 'partner-current',
+        isPlatformAdmin: false,
+        actorId: activeUser.id,
+        actorEmail: activeUser.email,
+      },
+    );
+    expect((await res.json()).auth.partnerId).toBeNull();
   });
 
   it('rejects active users when their tenant context is inactive or deleted', async () => {
@@ -445,12 +508,14 @@ describe('authMiddleware', () => {
   const requirePolicy = {
     required: true,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   };
   const noRequirePolicy = {
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   };
 
   it('returns 428 mfa_enrollment_required when the effective policy requires MFA and the user has none enabled', async () => {
@@ -520,6 +585,28 @@ describe('authMiddleware', () => {
     expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
+  it('allows an unenrolled user to load /auth/mfa/enrollment-options through the 428 gate', async () => {
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.get('/api/v1/auth/mfa/enrollment-options', (c) => c.json({ allowedMethods: {} }));
+
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null,
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+    const res = await app.request('/api/v1/auth/mfa/enrollment-options', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+  });
+
   // I6: passkey registration is an enrollment action (passkey is the always-
   // allowed, phishing-resistant factor). A policy-required-but-unenrolled user
   // MUST be able to reach /auth/passkeys/register/* — otherwise the broadened
@@ -560,6 +647,23 @@ describe('authMiddleware', () => {
   it('does not exempt other /sso paths', () => {
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/providers')).toBe(false);
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/link/start/abc')).toBe(false);
+  });
+
+  it('exempts /auth/cf-access-logout/prepare (a logout action) from forced MFA enrollment (RMM-QA-164)', () => {
+    // The route durably revokes refresh authority and mints a one-time
+    // navigation ticket to the Cloudflare Access logout hops — pure
+    // teardown, the CF-fronted twin of /auth/logout. A policy-required,
+    // unenrolled Partner Admin (every fresh-install bootstrap admin since
+    // RMM-QA-164) must still be able to sign out; without this the gate
+    // 428s the prepare call and the CF session can never be terminated.
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/auth/cf-access-logout/prepare')).toBe(true);
+  });
+
+  it('does not widen the logout exemption beyond the prepare route', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/complete')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare/extra')).toBe(false);
   });
 
   it('permits an enrolled user without consulting the resolver at all', async () => {
@@ -972,6 +1076,64 @@ describe('requirePermission', () => {
     expect(res.status).toBe(200);
   });
 
+  // #5733 — requirePermission must hand the TOKEN SCOPE to getUserPermissions.
+  // Without it the resolver only knows about partnerId/orgId, both null on a
+  // system token, so it fell through to "no membership" → 403 on every
+  // requirePermission route that also admits requireScope(... 'system').
+  it('forwards scope=system so getUserPermissions can resolve a platform admin (#5733)', async () => {
+    const systemAuth = {
+      ...baseAuth,
+      user: { ...baseAuth.user, isPlatformAdmin: true },
+      partnerId: null,
+      orgId: null,
+      scope: 'system' as const,
+    };
+    const systemPerms = {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'platform-admin',
+      scope: 'system' as const,
+    };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('still answers 403 for a system token the resolver refuses (non-platform-admin)', async () => {
+    const systemAuth = { ...baseAuth, partnerId: null, orgId: null, scope: 'system' as const };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('No permissions found');
+  });
+
   it('stores permissions in context after successful check', async () => {
     let capturedPerms: any;
     const app = new Hono();
@@ -1040,6 +1202,64 @@ describe('requireMfa', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+
+  // Contract: the `mfa` claim means "this session satisfies the EFFECTIVE MFA
+  // policy" (login/SSO/CF-Access mint it from getEffectiveMfaPolicy). It is
+  // NOT proof that a factor was presented — a tenant that does not require
+  // MFA admits password-only sessions here by design. Anything that needs a
+  // proven fresh factor uses the step-up grant primitive instead
+  // (services/mfaStepUpGrant.ts). These pin the gate's only input.
+  it('rejects when the auth context carries no token at all (claim absent ≠ satisfied)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', { ...baseAuth, token: undefined });
+      await next();
+    });
+    app.use(requireMfa());
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+  });
+
+  it('hasSatisfiedMfa reads only the mfa claim: true only for mfa === true', () => {
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: true } } as any)).toBe(true);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: false } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: undefined } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: 'true' } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: undefined } as any)).toBe(false);
+  });
+});
+
+describe('requireInteractiveSession', () => {
+  function appWith(auth: unknown) {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      if (auth !== undefined) c.set('auth', auth);
+      await next();
+    });
+    app.use(requireInteractiveSession());
+    app.get('/test', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('admits a user_session principal', async () => {
+    const res = await appWith({ ...baseAuth, principal: { kind: 'user_session' } }).request('/test');
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['api_key', 'oauth_grant', 'ai_agent', 'system', 'unknown'])('denies a %s principal with a written 403', async (kind) => {
+    const res = await appWith({ ...baseAuth, principal: { kind } }).request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+  });
+
+  it('denies when there is no auth context at all', async () => {
+    const res = await appWith(undefined).request('/test');
+    expect(res.status).toBe(403);
   });
 });
 
@@ -1136,6 +1356,106 @@ describe('requirePartner', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+// #5733 — requireOrgAccess and requireSiteAccess each fall back to resolving
+// permissions themselves when an earlier requirePermission did not publish them.
+// That fallback must forward the token scope for exactly the same reason
+// requirePermission does: a system token carries no partnerId/orgId, so without
+// the scope the resolver has no axis to look up and denies a platform admin.
+// Asserting the CALL ARGUMENTS (not just the resulting status) is the point —
+// a status-only assertion passes whether or not the field is forwarded.
+describe('scope forwarding to getUserPermissions (#5733)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const systemAuth = {
+    ...baseAuth,
+    user: { ...baseAuth.user, isPlatformAdmin: true },
+    partnerId: null,
+    orgId: null,
+    scope: 'system' as const,
+    canAccessOrg: () => true,
+  };
+  const systemPerms = {
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: null,
+    orgId: null,
+    roleId: 'platform-admin',
+    scope: 'system' as const,
+  };
+
+  it('requireOrgAccess forwards the scope on its self-resolve fallback', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth); // no `permissions` published — forces the fallback
+      await next();
+    });
+    app.use('/orgs/:orgId', requireOrgAccess());
+    app.get('/orgs/:orgId', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(canAccessOrg).mockReturnValue(true);
+
+    const res = await app.request('/orgs/org-abc');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('requireSiteAccess forwards the scope on its self-resolve fallback', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use('/sites/:siteId', requireSiteAccess());
+    app.get('/sites/:siteId', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(canAccessSite).mockReturnValue(true);
+
+    const res = await app.request('/sites/site-abc');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('does NOT invent a scope for an ordinary org token (the membership path is unchanged)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('devices', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+    });
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    await app.request('/test');
+
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: baseAuth.partnerId || undefined,
+      orgId: baseAuth.orgId || undefined,
+      scope: baseAuth.scope,
+    });
   });
 });
 

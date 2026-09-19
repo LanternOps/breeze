@@ -65,8 +65,12 @@ agent's configuration to keep the device's identity — see step 2).
      the agent re-enrolls as a new device record instead.
    - **macOS / Linux** — run the install script over the existing
      installation, or replace the binary and run
-     `breeze-agent service install`, which reinstalls the binary and restarts
-     the service without re-enrolling. See
+     `breeze-agent service install`, which reinstalls the binary and, because
+     the device is already enrolled, starts the service again automatically
+     without re-enrolling. (On agent v0.110.0 and earlier, `service install`
+     stopped the service without restarting it — on those versions, follow it
+     with `sudo systemctl restart breeze-agent breeze-watchdog`, or prefer the
+     in-band auto-update instead.) See
      [Agent Installation](/agents/installation/) for the full commands.
 
 3. Let the device check in. The agent reports its edition on every check-in,

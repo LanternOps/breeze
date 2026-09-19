@@ -47,7 +47,14 @@ const COMPACTION_TIERS: CompactConfig[] = [
   { maxStringChars: 300, maxArrayItems: 10, maxObjectKeys: 15, maxDepth: 4, maxStdoutChars: 1_000 },
 ];
 
-const MAX_TOOL_RESULT_CHARS = 8_000;
+/**
+ * The single chat-context budget for one tool result. EXPORTED because the
+ * artifact capture hook (services/artifacts/toolResultCapture.ts) must fire on
+ * exactly this threshold: a duplicated literal would drift the first time this
+ * is tuned, and the capture would then either never fire or fire on results
+ * that still fit.
+ */
+export const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
 const STDOUT_TEXT_CHARS = 6_000;
 const STDERR_TEXT_CHARS = 1_200;
@@ -639,8 +646,44 @@ function safeStringify(value: unknown): string {
  * outcome 2, where the rows are intact and must be consumed — `manage_alerts`
  * in particular returns `_chat` right next to a real `alerts` array.
  */
-export function compactToolResultForChat(toolName: string, rawResult: string): string {
+/**
+ * The shape `captureLargeToolResult` returns for an oversized result
+ * (execution-plane spec §5.2): an opaque handle with raw previews, plus the
+ * tool's own result, which is then compacted here exactly as it would have been
+ * without the capture. Recognised STRUCTURALLY (handle + compacted string), not
+ * by the presence of an `artifact` key, so a tool that legitimately returns
+ * `{ artifact: … }` is untouched.
+ */
+function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
+  if (!isRecord(value)) return null;
+  const { artifact, compacted } = value as Record<string, unknown>;
+  if (typeof compacted !== 'string') return null;
+  if (!isRecord(artifact) || typeof artifact.handle !== 'string') return null;
+  if (Object.keys(value).length !== 2) return null;
+  return { artifact, compacted };
+}
+
+export function compactToolResultForChat(
+  toolName: string,
+  rawResult: string,
+  maxChars: number = MAX_TOOL_RESULT_CHARS,
+): string {
   const parsed = tryParseJson(rawResult);
+
+  // Capture envelope: the artifact block is small, fixed and must survive
+  // verbatim (it is the model's only route back to the bytes). Compact the
+  // INNER payload with the remaining budget so `applyToolSpecificCompaction`
+  // still sees the tool's native shape — keyed on `stdout`/`alerts`/… — rather
+  // than `artifact`/`compacted`, and the model's view of the compacted half is
+  // byte-identical to what it would have got with capture switched off.
+  const envelope = asCaptureEnvelope(parsed);
+  if (envelope) {
+    const artifactJson = JSON.stringify({ artifact: envelope.artifact, compacted: '' });
+    const innerBudget = Math.max(512, maxChars - artifactJson.length - 8);
+    const inner = compactToolResultForChat(toolName, envelope.compacted, innerBudget);
+    return safeStringify({ artifact: envelope.artifact, compacted: tryParseJson(inner) ?? inner });
+  }
+
   if (parsed === null) {
     // Non-JSON output is raw tool payload (command stdout, file contents, log
     // text) — NOT error text. It is deliberately not error-scrubbed here: the
@@ -649,7 +692,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     // Thrown errors never reach this branch; they are wrapped in
     // JSON.stringify({ error }) by sanitizeThrownToolError at the call sites.
     const redactedRaw = redactAiToolOutputText(rawResult);
-    if (redactedRaw.length <= MAX_TOOL_RESULT_CHARS) {
+    if (redactedRaw.length <= maxChars) {
       return redactedRaw;
     }
     return JSON.stringify({
@@ -688,7 +731,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     const compacted = compactValue(toolSpecific, tierStats, tier);
     const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
-    if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
+    if (serialized.length <= maxChars) {
       return serialized;
     }
   }

@@ -4,7 +4,9 @@
 
 export type DiscoveredAssetType =
   | 'workstation' | 'server' | 'printer' | 'router' | 'switch'
-  | 'firewall' | 'access_point' | 'phone' | 'iot' | 'camera' | 'nas' | 'unknown';
+  | 'firewall' | 'access_point' | 'phone' | 'iot' | 'camera' | 'nas'
+  // website/service (#5213 W03): an IP-less manual asset whose identity is a URL.
+  | 'website' | 'service' | 'unknown';
 
 export type DiscoveredAssetStatus = 'new' | 'identified' | 'managed' | 'ignored' | 'offline';
 

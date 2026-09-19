@@ -81,7 +81,7 @@ All filters are additive — a log entry must match all active filters to appear
 
 ### Log retention
 
-Diagnostic logs are retained for **7 days** by default. A cleanup job runs every 24 hours (starting from server startup) and removes entries older than the retention window.
+Diagnostic logs are retained for **7 days** by default. A cleanup job runs once per day at a fixed scheduled time (not tied to server startup) and removes entries older than the retention window.
 
 To change the retention period, set the `AGENT_LOG_RETENTION_DAYS` environment variable on the API server:
 
@@ -145,13 +145,17 @@ GET /api/v1/devices/DEVICE_ID/diagnostic-logs?level=error&component=websocket&li
 
 ## Agent Service Commands
 
-The Breeze agent binary includes a `service` subcommand for managing itself as a Windows system service. These commands are run directly on the endpoint, not via the Breeze API.
+The Breeze agent binary includes a `service` subcommand for managing itself as a system service. These commands are run directly on the endpoint, not via the Breeze API, and are available on **Windows, macOS, and Linux** — each platform registers with its own native service manager (the Windows Service Control Manager, launchd on macOS, systemd on Linux) under the covers, but the `install`/`uninstall`/`start`/`stop` subcommands are the same everywhere.
 
 <Aside>
-  **Windows only.** The `service` subcommand is not available on macOS or Linux. On those platforms, manage the agent process using your system's normal service manager (launchd on macOS, systemd on Linux).
+  **Elevated privileges required.** On Windows, run the command from an **Administrator** command prompt or PowerShell session. On macOS and Linux, prefix the command with `sudo`.
 </Aside>
 
-All `service` commands require the terminal to be running as **Administrator** because they interact with the Windows Service Control Manager (SCM).
+macOS and Linux also expose a `service status` subcommand (`sudo breeze-agent service status`), which prints the native service manager's status output. This subcommand does not exist on Windows.
+
+<Aside type="note">
+  The examples below use Windows syntax (`breeze-agent.exe`, run from an Administrator prompt). On macOS and Linux, drop the `.exe` and prefix each command with `sudo` — for example `sudo breeze-agent service install`. The specific restart-backoff timings and Service Control Manager (SCM) details below are Windows-specific; macOS (launchd) and Linux (systemd) restart the agent automatically on failure using their own native restart policies.
+</Aside>
 
 ### Commands
 
@@ -166,6 +170,12 @@ All `service` commands require the terminal to be running as **Administrator** b
     - Start automatically when Windows boots
     - Restart automatically on failure (after 5 s on the first failure, 10 s on the second, 30 s on the third)
     - Reset the failure count after 24 hours of stable operation
+
+    Safe to re-run on a host where the service already exists: it stops the running service, replaces the binary, repoints the registration at it, and then **starts the service again** if it was running beforehand or the host is already enrolled. A fresh, un-enrolled host is left stopped deliberately — enroll first, then start. If the service is meant to come back and fails to start, the command exits non-zero and says so rather than reporting success.
+
+    <Aside type="caution">
+      **v0.110.0 and earlier:** `service install` did **not** start the service, and re-running it on a host that already had the service failed with "service already exists". After installing or upgrading on those versions, run `breeze-agent.exe service start` yourself.
+    </Aside>
   </TabItem>
   <TabItem label="Uninstall">
     ```cmd
@@ -200,6 +210,8 @@ breeze-agent.exe service install
 breeze-agent.exe service start
 ```
 
+`service install` already starts the service on an enrolled host, so the explicit `service start` is only needed on a fresh host that has not enrolled yet (and on agents at v0.110.0 or earlier, where install never started anything).
+
 **Stop and uninstall:**
 
 ```cmd
@@ -230,8 +242,8 @@ The command must be run from an **Administrator** command prompt or PowerShell s
 
 **`service install` fails with "service already exists"**
 
-The `BreezeAgent` service is already registered. Run `breeze-agent.exe service uninstall` first if you need to re-install, or use `breeze-agent.exe service start` if the service is simply stopped.
+Only on **v0.110.0 and earlier**, where `service install` could not upgrade an existing registration. Run `breeze-agent.exe service uninstall` first if you need to re-install, or `breeze-agent.exe service start` if the service is simply stopped. Newer agents upgrade the existing service in place instead of failing.
 
 **`service start` fails after install**
 
-Ensure the agent binary path has not moved since installation. The SCM stores the absolute path at install time. If the binary was relocated, uninstall and reinstall the service.
+The SCM stores the absolute path to the binary. On current agents, re-running `breeze-agent.exe service install` repoints the registration at the binary's real location; on **v0.110.0 and earlier** you have to uninstall and reinstall the service instead. If the start still fails, check **Event Viewer → Windows Logs → Application** for the service's own start error.

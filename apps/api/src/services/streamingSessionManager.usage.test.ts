@@ -11,10 +11,11 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
-const { queryMock, recordUsageMock, calculateCostCentsMock } = vi.hoisted(() => ({
+const { queryMock, recordUsageMock, calculateCostCentsMock, markIndeterminateMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   recordUsageMock: vi.fn(() => Promise.resolve()),
   calculateCostCentsMock: vi.fn(() => 42),
+  markIndeterminateMock: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -41,6 +42,9 @@ vi.mock('./aiCostTracker', () => ({
   // Pure helper — kept real so these tests exercise the actual summing rule.
   sumInputTokens: (u: Record<string, number | null | undefined>) =>
     (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: markIndeterminateMock,
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -87,6 +91,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: 'config-1',
   configVersion: 3,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 /** Partner-scoped technician: orgId is null on the auth context (the #3095 trigger). */
@@ -142,6 +147,7 @@ async function runSession(
   sessionId: string,
   messages: unknown[],
   resolved: UsableLlmConfig = PLATFORM_CONFIG,
+  budgetReservationId?: string,
 ) {
   mockSdkQuery(messages);
   const session = await manager.getOrCreate(
@@ -152,12 +158,46 @@ async function runSession(
     'PROMPT',
     undefined,
     resolved,
+    undefined,
+    undefined,
+    budgetReservationId ? { budgetReservationId } : undefined,
   );
   await session.processorPromise;
   return session;
 }
 
 describe('result usage recording — partner-scoped sessions (#3095)', () => {
+  it('threads a durable reservation into atomic result settlement', async () => {
+    await runSession('sess-reserved', [
+      resultMsg({ total_cost_usd: 0.03, usage: { input_tokens: 100, output_tokens: 50 } }),
+    ], PLATFORM_CONFIG, '77777777-7777-4777-8777-777777777777');
+
+    expect(recordUsageMock).toHaveBeenCalledWith(
+      'sess-reserved',
+      ORG,
+      expect.any(Object),
+      'platform',
+      undefined,
+      '77777777-7777-4777-8777-777777777777',
+    );
+    expect(markIndeterminateMock).not.toHaveBeenCalled();
+  });
+
+  it('retains a reservation when the provider exits without any usage result', async () => {
+    await runSession(
+      'sess-unknown',
+      [],
+      PLATFORM_CONFIG,
+      '77777777-7777-4777-8777-777777777777',
+    );
+
+    expect(recordUsageMock).not.toHaveBeenCalled();
+    expect(markIndeterminateMock).toHaveBeenCalledWith({
+      orgId: ORG,
+      reservationId: '77777777-7777-4777-8777-777777777777',
+    });
+  });
+
   it('passes partner_key from the immutable session config snapshot', async () => {
     await runSession('sess-byok', [
       resultMsg({ total_cost_usd: 0.03, usage: { input_tokens: 100, output_tokens: 50 } }),
@@ -168,6 +208,11 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
       ORG,
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'partner_key',
+      // 5th arg: the catalog pricing snapshot (#3922 W3) — undefined for a
+      // direct-Anthropic partner session, which prices from MODEL_PRICING.
+      undefined,
+      // 6th arg: no durable reservation on this legacy-session fixture.
+      undefined,
     );
   });
 
@@ -180,7 +225,7 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
     expect(recordUsageMock).toHaveBeenCalledWith('sess-partner', ORG, expect.objectContaining({
       total_cost_usd: 0.03,
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
     // The RLS db-access context must also be built from the DB-row org, not auth.orgId (null).
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'organization', orgId: ORG }),
@@ -200,7 +245,7 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
     expect(recordUsageMock).toHaveBeenCalledTimes(1);
     expect(recordUsageMock).toHaveBeenCalledWith('sess-err', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 70, output_tokens: 20 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 });
 
@@ -220,7 +265,7 @@ describe('fallback accumulation from assistant messages', () => {
         cache_read_input_tokens: 300,
         cache_creation_input_tokens: 200,
       },
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 
   it('prefers SDK-reported result usage over the accumulator when present', async () => {
@@ -231,7 +276,7 @@ describe('fallback accumulation from assistant messages', () => {
 
     expect(recordUsageMock).toHaveBeenCalledWith('sess-sdk-wins', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 
   it('resets the accumulator between turns (multi-turn sessions)', async () => {
@@ -245,10 +290,10 @@ describe('fallback accumulation from assistant messages', () => {
     expect(recordUsageMock).toHaveBeenCalledTimes(2);
     expect(recordUsageMock).toHaveBeenNthCalledWith(1, 'sess-multiturn', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 10 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
     expect(recordUsageMock).toHaveBeenNthCalledWith(2, 'sess-multiturn', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 40, output_tokens: 5 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 
   it('flushes accumulated usage when the turn ends without a result message', async () => {
@@ -261,7 +306,7 @@ describe('fallback accumulation from assistant messages', () => {
     expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
       num_turns: 1,
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 
   it('feeds abandoned-turn usage to the per-user recordExtraUsage hook (client sessions)', async () => {
@@ -287,7 +332,7 @@ describe('fallback accumulation from assistant messages', () => {
     // Org ledger and per-user ledger both get the abandoned turn's tokens.
     expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned-extra', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
-    }), 'platform');
+    }), 'platform', undefined, undefined);
     expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 500, outputTokens: 60, costCents: 42 });
     expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 500, 60, 0, 0);
   });
@@ -342,7 +387,7 @@ describe('fallback accumulation from assistant messages', () => {
         cache_read_input_tokens: 120_000,
         cache_creation_input_tokens: 4_500,
       },
-    }), 'platform');
+    }), 'platform', undefined, undefined);
   });
 
   it('does not double-record when a completed turn is followed by teardown', async () => {

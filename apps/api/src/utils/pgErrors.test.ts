@@ -102,10 +102,25 @@ describe('isTransientLockError', () => {
     expect(isTransientLockError(wrapped)).toBe(true);
   });
 
+  it('matches lock_not_available (55P03), including Drizzle-wrapped (#3925)', () => {
+    // Raised only where a caller has set `lock_timeout` (see
+    // tightenLockTimeout / INVENTORY_LOCK_TIMEOUT_MS) — "you lost a lock race
+    // before the timeout, the work was not applied, try again", same as
+    // 40P01/40001.
+    expect(isTransientLockError(Object.assign(new Error('lock timeout'), { code: '55P03' }))).toBe(true);
+    const wrapped = Object.assign(new Error('Failed query: select ... for update of state'), {
+      cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    });
+    expect(isTransientLockError(wrapped)).toBe(true);
+  });
+
   it('does not match errors that a retry cannot fix', () => {
     // 25P02 is the SYMPTOM of an already-aborted transaction, not a lost race —
-    // retrying it in place would loop until the budget ran out.
-    for (const code of ['23505', '23502', '23503', '42501', '25P02', '40002']) {
+    // retrying it in place would loop until the budget ran out. 57014 is a
+    // `statement_timeout` cancellation, a different SQLSTATE from 55P03's
+    // `lock_timeout` cancellation, and not one this codebase treats as
+    // transient.
+    for (const code of ['23505', '23502', '23503', '42501', '25P02', '40002', '57014']) {
       expect(isTransientLockError(Object.assign(new Error('x'), { code }))).toBe(false);
     }
     expect(isTransientLockError(new Error('plain'))).toBe(false);
@@ -135,6 +150,28 @@ describe('retryOnTransientLockError', () => {
     const fn = vi.fn().mockRejectedValue(deadlock);
     await expect(retryOnTransientLockError('t', fn, { attempts: 2 })).rejects.toBe(deadlock);
     expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a 55P03 lock-timeout cancellation and succeeds on a later attempt (#3925)', async () => {
+    // Same "lost the race, retry" contract as 40P01/40001 — this is the
+    // ingest's `lock_timeout` bound (INVENTORY_LOCK_TIMEOUT_MS) firing while a
+    // correlation pass holds device_vulnerabilities/software_inventory locks.
+    const lockTimeout = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+    const fn = vi.fn()
+      .mockRejectedValueOnce(lockTimeout)
+      .mockResolvedValue('ok');
+    await expect(retryOnTransientLockError('t', fn)).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after exhausting attempts on a 55P03 that never clears (#3925)', async () => {
+    // The bounded-wait ingest still gives up loudly (rethrows) rather than
+    // waiting unbounded — this is the "bound the wait" half of #3925, the
+    // "retries on it" half is the test above.
+    const lockTimeout = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+    const fn = vi.fn().mockRejectedValue(lockTimeout);
+    await expect(retryOnTransientLockError('t', fn, { attempts: 3 })).rejects.toBe(lockTimeout);
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 
   it('rethrows a non-lock error immediately without burning retries', async () => {

@@ -2,7 +2,15 @@ import '@/lib/i18n';
 import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../stores/auth')>();
+  // #4767 — AutomationsPage now also reads useAuthStore (via usePermissions()
+  // and its own canManagePartnerWide selector) to gate the Cancel run
+  // affordance; a bare `{ fetchWithAuth }` replacement drops that export and
+  // usePermissions() throws. Keep the real store (defaults to no user, so
+  // Cancel run stays correctly hidden — this file isn't testing that).
+  return { ...actual, fetchWithAuth: vi.fn() };
+});
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import AutomationsPage from './AutomationsPage';
@@ -47,5 +55,53 @@ describe('AutomationsPage managed automation mapping', () => {
 
     await screen.findByText('Triage critical alerts');
     expect(screen.queryByTestId('automation-managed-by-agent-badge')).toBeNull();
+  });
+
+  it('links "new" and row edit to /jobs, not /automations (#5288)', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    const newLink = await screen.findByRole('link', { name: /new/i });
+    expect(newLink).toHaveAttribute('href', '/jobs/new');
+  });
+});
+
+describe('AutomationsPage monitor-managed filtering (#5287)', () => {
+  it('hides a row compiled from a monitor from the Jobs list', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        data: [
+          { ...automation, id: 'automation-2', name: 'Compiled from monitor', managedByMonitorId: 'monitor-1' },
+          automation,
+        ],
+      }),
+    );
+
+    render(<AutomationsPage />);
+
+    await screen.findByText('Triage critical alerts');
+    expect(screen.queryByText('Compiled from monitor')).toBeNull();
+  });
+
+  it('still shows a row that omits managedByMonitorId', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByText('Triage critical alerts')).toBeInTheDocument();
+  });
+});
+
+describe('AutomationsPage elevated action mapping', () => {
+  it('carries stored actions from the API response to the elevated badge', async () => {
+    fetchMock.mockResolvedValue(json({ data: [{
+      ...automation,
+      actions: [{ type: 'run_script', scriptId: 'script-1', runAs: 'elevated' }],
+    }] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByTestId('automation-elevated-badge')).toHaveTextContent('Elevated');
   });
 });

@@ -169,6 +169,8 @@ describe('GET /devices — response shape', () => {
         reliabilityTrend: 'degrading',
         helperLifecycleMode: 'on-demand',
         possibleReplacementOfDeviceId: '55555555-5555-4555-8555-555555555555',
+        purchaseDate: '2025-03-01',
+        purchaseDateSource: 'vendor',
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
@@ -217,6 +219,11 @@ describe('GET /devices — response shape', () => {
       'possibleReplacementOfDeviceId',
       '55555555-5555-4555-8555-555555555555',
     );
+    // #5701 follow-up — purchaseDate/purchaseDateSource are selected in
+    // core.ts's query but were being dropped by this same response mapper,
+    // so the Device Settings modal showed a blank field after save/reload.
+    expect(row).toHaveProperty('purchaseDate', '2025-03-01');
+    expect(row).toHaveProperty('purchaseDateSource', 'vendor');
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -260,6 +267,8 @@ describe('GET /devices — response shape', () => {
         reliabilityScore: null,
         reliabilityTrend: null,
         helperLifecycleMode: null,
+        purchaseDate: null,
+        purchaseDateSource: null,
       },
     ]);
 
@@ -309,5 +318,30 @@ describe('GET /devices — response shape', () => {
     expect(Object.prototype.hasOwnProperty.call(row, 'lanIp')).toBe(true);
     expect(row.wanIp).toBeNull();
     expect(row.lanIp).toBeNull();
+
+    // #3207 W5 — scheduled-restart keys present (null) for a device with no
+    // restart booked, which is the steady state for nearly the whole fleet.
+    // Present-but-null is load-bearing here beyond rendering a dash:
+    // rebootMaxDeferrals null means "this agent predates deferral reporting"
+    // and 0 means "this restart cannot be postponed", and the badge renders
+    // those two differently. A key silently dropped by the response mapper
+    // would collapse them into the same "absent" case.
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootScheduledAt')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootDeadline')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootSource')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootDeferralsUsed')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootMaxDeferrals')).toBe(true);
+    expect(row.rebootScheduledAt).toBeNull();
+    expect(row.rebootDeadline).toBeNull();
+    expect(row.rebootSource).toBeNull();
+    expect(row.rebootDeferralsUsed).toBeNull();
+    expect(row.rebootMaxDeferrals).toBeNull();
+
+    // #5701 follow-up — keys present (null) for devices with no purchase
+    // date recorded yet.
+    expect(Object.prototype.hasOwnProperty.call(row, 'purchaseDate')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'purchaseDateSource')).toBe(true);
+    expect(row.purchaseDate).toBeNull();
+    expect(row.purchaseDateSource).toBeNull();
   });
 });

@@ -2,17 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { deploymentResults } from '../db/schema';
 import { redactSecretsFromOutput } from './secretRedaction';
-
-/**
- * Command-id shape used for WS-dispatched software installs:
- * `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`. The attempt
- * suffix is optional for backward compatibility with command ids already
- * queued/in-flight before it was introduced — those parse to attempt 0.
- * Shared by the HTTP result route (routes/agents/commands.ts) and the WS
- * orphan-result branch (routes/agentWs.ts) so both transports parse
- * identically.
- */
-export const SW_INSTALL_COMMAND_ID_REGEX = /^sw-install-([0-9a-f-]{36})-([0-9a-f-]{36})(?:-(\d+))?$/i;
+import { applyAutomationActionTerminal } from './automationActionResults';
 
 export interface SoftwareInstallResultInput {
   deploymentId: string;
@@ -28,10 +18,8 @@ export interface SoftwareInstallResultInput {
   startedAt?: string | Date | null;
   durationMs?: number | null;
   /**
-   * Which retry attempt this result belongs to — parsed from the WS command
-   * id's `-<attemptNumber>` suffix, or from the queued device_commands
-   * payload's `retryCount` field for the offline fallback transport. Defaults
-   * to 0 (first attempt, and legacy command ids with no suffix). Compared
+   * Which retry attempt this result belongs to, from the device_commands
+   * payload's `retryCount` field. Defaults to 0 (first attempt). Compared
    * against the row's CURRENT retryCount so a late result from a
    * superseded attempt (retry already bumped retryCount and re-dispatched
    * under a new command id) is dropped instead of being misattributed to the
@@ -78,7 +66,7 @@ function normalizeInstallError(error: string | null | undefined): string | null 
   return error;
 }
 
-export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<void> {
+export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<string | null> {
   const attemptNumber = input.attemptNumber ?? 0;
   const drStatus =
     input.status === 'completed'
@@ -135,5 +123,73 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
       `device=${input.deviceId} attempt=${attemptNumber}: no pending row at this attempt ` +
       `(already applied, superseded by a retry, or unknown).`
     );
+    return null;
   }
+
+  const effectiveId = Array.isArray(updated) && typeof updated[0]?.id === 'string'
+    ? updated[0].id
+    : null;
+  if (!effectiveId) return null;
+
+  await applyAutomationActionTerminal({
+    source: 'deployment_result',
+    deploymentResultId: effectiveId,
+    terminalStatus: drStatus === 'completed' ? 'succeeded' : 'failed',
+    output: input.stdout != null ? redactSecretsFromOutput(input.stdout) : null,
+    error: input.error != null
+      ? redactSecretsFromOutput(normalizeInstallError(input.error) as string)
+      : input.stderr != null
+        ? redactSecretsFromOutput(input.stderr)
+        : null,
+    completedAt,
+  });
+  return effectiveId;
+}
+
+/**
+ * Reconcile a `software_install` result onto its `deployment_results` row
+ * (#5128). Extracted so BOTH transports run identical logic: the HTTP result
+ * route (`routes/agents/commands.ts`) and the WebSocket generic result path
+ * (`routes/agentWs.ts`). It lives HERE, beside `applySoftwareInstallResult`,
+ * rather than in `softwareDeployment.ts`: that module statically pulls in the
+ * whole dispatch graph (agentWs, the discovery worker, …), which neither result
+ * route should have to import just to reconcile one row. Both transports use
+ * the persisted command's payload to identify the deployment and attempt.
+ *
+ * The helper's own `status='pending'` + `retryCount === attempt` guard makes
+ * double delivery (HTTP and WS) and a result from a retry-superseded attempt a
+ * no-op, so calling this from both paths is safe.
+ */
+export async function reconcileSoftwareInstallResult(
+  command: { type: string; payload: unknown },
+  deviceId: string,
+  normalized: {
+    status: 'completed' | 'failed' | 'timeout';
+    exitCode?: number | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    error?: string | null;
+    startedAt?: string | null;
+    durationMs?: number | null;
+  },
+): Promise<void> {
+  if (command.type !== 'software_install') return;
+  const payload =
+    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+      ? (command.payload as Record<string, unknown>)
+      : {};
+  if (typeof payload.deploymentId !== 'string') return;
+
+  await applySoftwareInstallResult({
+    deploymentId: payload.deploymentId,
+    deviceId,
+    status: normalized.status,
+    exitCode: normalized.exitCode,
+    stdout: normalized.stdout,
+    stderr: normalized.stderr,
+    error: normalized.error,
+    startedAt: normalized.startedAt,
+    durationMs: normalized.durationMs,
+    attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
+  });
 }

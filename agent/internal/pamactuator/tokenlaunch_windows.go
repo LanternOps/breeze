@@ -11,6 +11,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -63,13 +65,129 @@ type launchParams struct {
 	TargetPath  string
 	CommandLine string
 	SessionID   uint32
+	Suspended   bool
 }
 
 // launchOutcome reports the result of the raw launch. Reason is "" on success.
 type launchOutcome struct {
-	PID    uint32
-	Reason string
-	Err    error
+	PID                 uint32
+	Reason              string
+	Err                 error
+	Process             windows.Handle
+	PrimaryThread       windows.Handle
+	HelperProcess       windows.Handle
+	ProcessCreationTime time.Time
+}
+
+type SuspendedLaunchRequest struct {
+	ActuationID     string
+	Username        string
+	Password        string
+	TargetPath      string
+	SubjectUsername string
+}
+
+func (r SuspendedLaunchRequest) CreationFlags() uint32 {
+	return windows.CREATE_SUSPENDED
+}
+
+type SuspendedProcess struct {
+	pid                 uint32
+	processCreationTime time.Time
+	process             windows.Handle
+	primaryThread       windows.Handle
+	sessionID           uint32
+	cleanup             func()
+	helperProcess       windows.Handle
+	threadCloseOnce     sync.Once
+	processCloseOnce    sync.Once
+	cleanupOnce         sync.Once
+}
+
+func (p *SuspendedProcess) PID() uint32                         { return p.pid }
+func (p *SuspendedProcess) ProcessCreationTime() time.Time      { return p.processCreationTime }
+func (p *SuspendedProcess) ProcessHandle() windows.Handle       { return p.process }
+func (p *SuspendedProcess) PrimaryThreadHandle() windows.Handle { return p.primaryThread }
+func (p *SuspendedProcess) SessionID() uint32                   { return p.sessionID }
+
+func (p *SuspendedProcess) HelperAlive() bool {
+	if p == nil || p.helperProcess == 0 {
+		return false
+	}
+	status, err := windows.WaitForSingleObject(p.helperProcess, 0)
+	return err == nil && status == uint32(windows.WAIT_TIMEOUT)
+}
+
+func (p *SuspendedProcess) ClosePrimaryThread() {
+	if p == nil {
+		return
+	}
+	p.threadCloseOnce.Do(func() {
+		if p.primaryThread != 0 {
+			windows.CloseHandle(p.primaryThread)
+			p.primaryThread = 0
+		}
+	})
+}
+
+func (p *SuspendedProcess) Close() {
+	if p == nil {
+		return
+	}
+	p.ClosePrimaryThread()
+	p.processCloseOnce.Do(func() {
+		if p.process != 0 {
+			_ = windows.TerminateProcess(p.process, 1)
+			windows.CloseHandle(p.process)
+			p.process = 0
+		}
+		if p.helperProcess != 0 {
+			windows.CloseHandle(p.helperProcess)
+			p.helperProcess = 0
+		}
+	})
+	p.cleanupOnce.Do(func() {
+		if p.cleanup != nil {
+			p.cleanup()
+		}
+	})
+}
+
+// LaunchSuspendedV2 is the token-launch-only v2 primitive. It never calls the
+// consent/SendInput actuator. The caller owns both returned handles and must
+// assign the process to its named Job Object before resuming the thread.
+func LaunchSuspendedV2(ctx context.Context, request SuspendedLaunchRequest) (*SuspendedProcess, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sessionID, err := resolveSubjectSessionStrict(Request{
+		ElevationRequestID: request.ActuationID,
+		SubjectUsername:    request.SubjectUsername,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := spawnSessionHelper(launchParams{
+		Username: request.Username, Password: request.Password, TargetPath: request.TargetPath,
+		CommandLine: fmt.Sprintf("\"%s\"", request.TargetPath), SessionID: sessionID, Suspended: true,
+	})
+	if out.Reason != "" {
+		if out.PrimaryThread != 0 {
+			windows.CloseHandle(out.PrimaryThread)
+		}
+		if out.Process != 0 {
+			windows.CloseHandle(out.Process)
+		}
+		if out.HelperProcess != 0 {
+			windows.CloseHandle(out.HelperProcess)
+		}
+		if out.Err != nil {
+			return nil, fmt.Errorf("%s: %w", out.Reason, out.Err)
+		}
+		return nil, errors.New(out.Reason)
+	}
+	return &SuspendedProcess{pid: out.PID, processCreationTime: out.ProcessCreationTime,
+		process: out.Process, primaryThread: out.PrimaryThread, helperProcess: out.HelperProcess, sessionID: sessionID}, nil
 }
 
 // tokenLauncher performs the raw Win32 elevation launch. Isolated behind an
@@ -154,6 +272,20 @@ func resolveSubjectSession(req Request) (uint32, error) {
 		return 0, err
 	}
 	slog.Info("pamactuator: resolved target session",
+		"elevationRequestId", req.ElevationRequestID, "session", id, "source", source,
+		"subjectUsername", bareUsername(req.SubjectUsername))
+	return id, nil
+}
+
+func resolveSubjectSessionStrict(req Request) (uint32, error) {
+	id, source, err := resolveSubjectSessionStrictWith(req, sessionIDForUsername)
+	if err != nil {
+		slog.Warn("pamactuator: strict subject session resolution failed",
+			"elevationRequestId", req.ElevationRequestID, "source", source, "error", err.Error(),
+			"subjectUsername", bareUsername(req.SubjectUsername))
+		return 0, err
+	}
+	slog.Info("pamactuator: resolved strict subject session",
 		"elevationRequestId", req.ElevationRequestID, "session", id, "source", source,
 		"subjectUsername", bareUsername(req.SubjectUsername))
 	return id, nil
@@ -272,22 +404,32 @@ type winTokenLauncher struct{}
 // instead of its normal startup. It is passed by spawnSessionHelper.
 const sessionLaunchHelperFlag = "--pam-session-launch-helper"
 
-// sessionLaunchParams / sessionLaunchResult are the stdin/stdout JSON contract
+// sessionLaunchParams / sessionLaunchResult / sessionLaunchAcknowledgement are the JSON contract
 // between the session-0 stage (spawnSessionHelper) and the in-session helper
-// (MaybeRunSessionLaunchHelper). Params (incl. the credential) travel on the
-// helper's stdin pipe — never on its command line — and the result on stdout.
+// (MaybeRunSessionLaunchHelper). Params and the ownership acknowledgement
+// travel on stdin; the credential is never on the command line. The result
+// travels on stdout.
 type sessionLaunchParams struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	TargetPath  string `json:"targetPath"`
 	CommandLine string `json:"commandLine"`
 	SessionID   uint32 `json:"sessionId"`
+	Suspended   bool   `json:"suspended,omitempty"`
+	ParentPID   uint32 `json:"parentPid,omitempty"`
 }
 
 type sessionLaunchResult struct {
-	PID    uint32 `json:"pid"`
-	Reason string `json:"reason"`
-	Err    string `json:"err,omitempty"`
+	PID                 uint32 `json:"pid"`
+	Reason              string `json:"reason"`
+	Err                 string `json:"err,omitempty"`
+	ProcessHandle       uint64 `json:"processHandle,omitempty"`
+	PrimaryThreadHandle uint64 `json:"primaryThreadHandle,omitempty"`
+	ProcessCreationTime string `json:"processCreationTime,omitempty"`
+}
+
+type sessionLaunchAcknowledgement struct {
+	Accepted bool `json:"accepted"`
 }
 
 // Launch performs the Path B elevation launch. It runs as SYSTEM in session 0
@@ -407,11 +549,16 @@ func spawnSessionHelper(p launchParams) launchOutcome {
 	}
 	// Detach: the helper runs independently and outlives this call.
 	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
+	helperProcess := pi.Process
+	if !p.Suspended {
+		windows.CloseHandle(helperProcess)
+		helperProcess = 0
+	}
 
 	// Send the params, then read the single result object the helper writes.
 	inFile := os.NewFile(uintptr(inW), "pam-helper-stdin")
 	outFile := os.NewFile(uintptr(outR), "pam-helper-stdout")
+	defer inFile.Close()
 	defer outFile.Close()
 	if err := json.NewEncoder(inFile).Encode(sessionLaunchParams{
 		Username:    p.Username,
@@ -419,20 +566,68 @@ func spawnSessionHelper(p launchParams) launchOutcome {
 		TargetPath:  p.TargetPath,
 		CommandLine: p.CommandLine,
 		SessionID:   p.SessionID,
+		Suspended:   p.Suspended,
+		ParentPID:   uint32(os.Getpid()),
 	}); err != nil {
-		inFile.Close()
+		if helperProcess != 0 {
+			windows.CloseHandle(helperProcess)
+		}
 		return launchOutcome{Reason: "session_helper_failed", Err: err}
 	}
-	inFile.Close() // EOF for the helper's stdin decode
 
 	var res sessionLaunchResult
 	if err := json.NewDecoder(outFile).Decode(&res); err != nil {
+		if helperProcess != 0 {
+			windows.CloseHandle(helperProcess)
+		}
 		return launchOutcome{Reason: "session_helper_failed",
 			Err: fmt.Errorf("reading helper result: %w", err)}
 	}
-	out := launchOutcome{PID: res.PID, Reason: res.Reason}
+	out := launchOutcome{PID: res.PID, Reason: res.Reason, HelperProcess: helperProcess,
+		Process: windows.Handle(res.ProcessHandle), PrimaryThread: windows.Handle(res.PrimaryThreadHandle)}
 	if res.Err != "" {
 		out.Err = errors.New(res.Err)
+	}
+	if res.ProcessCreationTime != "" {
+		out.ProcessCreationTime, err = time.Parse(time.RFC3339Nano, res.ProcessCreationTime)
+		if err != nil {
+			if out.PrimaryThread != 0 {
+				windows.CloseHandle(out.PrimaryThread)
+			}
+			if out.Process != 0 {
+				windows.CloseHandle(out.Process)
+			}
+			if helperProcess != 0 {
+				windows.CloseHandle(helperProcess)
+			}
+			return launchOutcome{Reason: "session_helper_failed", Err: fmt.Errorf("parse process creation time: %w", err)}
+		}
+	}
+	if p.Suspended && (out.Process == 0 || out.PrimaryThread == 0 || out.ProcessCreationTime.IsZero()) {
+		if out.PrimaryThread != 0 {
+			windows.CloseHandle(out.PrimaryThread)
+		}
+		if out.Process != 0 {
+			windows.CloseHandle(out.Process)
+		}
+		if helperProcess != 0 {
+			windows.CloseHandle(helperProcess)
+		}
+		return launchOutcome{Reason: "session_helper_failed", Err: errors.New("helper did not transfer suspended process ownership")}
+	}
+	if p.Suspended {
+		if err := json.NewEncoder(inFile).Encode(sessionLaunchAcknowledgement{Accepted: true}); err != nil {
+			if out.PrimaryThread != 0 {
+				windows.CloseHandle(out.PrimaryThread)
+			}
+			if out.Process != 0 {
+				windows.CloseHandle(out.Process)
+			}
+			if helperProcess != 0 {
+				windows.CloseHandle(helperProcess)
+			}
+			return launchOutcome{Reason: "session_helper_failed", Err: fmt.Errorf("acknowledge suspended ownership: %w", err)}
+		}
 	}
 	return out
 }
@@ -468,19 +663,76 @@ func MaybeRunSessionLaunchHelper() {
 		os.Exit(1)
 	}
 
-	out := inSessionLaunch(launchParams{
+	extraFlags := uint32(0)
+	retainThread := false
+	if p.Suspended {
+		extraFlags = windows.CREATE_SUSPENDED
+		retainThread = true
+	}
+	out := inSessionLaunchWithFlags(launchParams{
 		Username:    p.Username,
 		Password:    p.Password,
 		TargetPath:  p.TargetPath,
 		CommandLine: p.CommandLine,
 		SessionID:   p.SessionID,
-	})
+	}, extraFlags, retainThread)
 	res := sessionLaunchResult{PID: out.pid, Reason: out.reason}
 	if out.err != nil {
 		res.Err = out.err.Error()
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(res)
-	if out.reason != "" {
+	if out.reason == "" && p.Suspended {
+		processHandle, threadHandle, err := duplicateSuspendedHandlesToParent(p.ParentPID, out.proc, out.thread)
+		if err != nil {
+			_ = windows.TerminateProcess(out.proc, 1)
+			out.cleanup()
+			windows.CloseHandle(out.thread)
+			windows.CloseHandle(out.proc)
+			res.Reason = "session_helper_failed"
+			res.Err = "transfer suspended process ownership: " + err.Error()
+		} else {
+			res.ProcessHandle = uint64(processHandle)
+			res.PrimaryThreadHandle = uint64(threadHandle)
+			res.ProcessCreationTime = out.creationTime.UTC().Format(time.RFC3339Nano)
+			windows.CloseHandle(out.thread)
+			out.thread = 0
+		}
+	}
+	if res.Reason == "" && p.Suspended {
+		err := completeSuspendedHandoff(
+			func() error { return json.NewEncoder(os.Stdout).Encode(res) },
+			func() error {
+				var acknowledgement sessionLaunchAcknowledgement
+				if err := json.NewDecoder(os.Stdin).Decode(&acknowledgement); err != nil {
+					return fmt.Errorf("decode suspended ownership acknowledgement: %w", err)
+				}
+				if !acknowledgement.Accepted {
+					return errors.New("suspended ownership was not accepted")
+				}
+				return nil
+			},
+			func() {
+				_ = closeSuspendedHandlesInParent(p.ParentPID, windows.Handle(res.ProcessHandle), windows.Handle(res.PrimaryThreadHandle))
+				_ = windows.TerminateProcess(out.proc, 1)
+				out.cleanup()
+				windows.CloseHandle(out.thread)
+				windows.CloseHandle(out.proc)
+			},
+		)
+		if err != nil {
+			os.Exit(1)
+		}
+	} else if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+		if out.reason == "" {
+			_ = windows.TerminateProcess(out.proc, 1)
+			out.cleanup()
+			if out.thread != 0 {
+				windows.CloseHandle(out.thread)
+			}
+			windows.CloseHandle(out.proc)
+		}
+		os.Exit(1)
+	}
+	if res.Reason != "" {
 		os.Exit(1)
 	}
 
@@ -495,17 +747,74 @@ func MaybeRunSessionLaunchHelper() {
 	os.Exit(0)
 }
 
+func duplicateSuspendedHandlesToParent(parentPID uint32, process, thread windows.Handle) (windows.Handle, windows.Handle, error) {
+	if parentPID == 0 {
+		return 0, 0, errors.New("parent PID is required")
+	}
+	parent, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, parentPID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer windows.CloseHandle(parent)
+	var parentProcess windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), process, parent, &parentProcess, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+		return 0, 0, err
+	}
+	var parentThread windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), thread, parent, &parentThread, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+		var localCopy windows.Handle
+		if closeErr := windows.DuplicateHandle(parent, parentProcess, windows.CurrentProcess(), &localCopy, 0, false,
+			windows.DUPLICATE_SAME_ACCESS|windows.DUPLICATE_CLOSE_SOURCE); closeErr == nil && localCopy != 0 {
+			windows.CloseHandle(localCopy)
+		}
+		return 0, 0, err
+	}
+	return parentProcess, parentThread, nil
+}
+
+func closeSuspendedHandlesInParent(parentPID uint32, process, thread windows.Handle) error {
+	if parentPID == 0 {
+		return errors.New("parent PID is required")
+	}
+	parent, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, parentPID)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(parent)
+	var firstErr error
+	for _, remote := range []windows.Handle{thread, process} {
+		if remote == 0 {
+			continue
+		}
+		var local windows.Handle
+		err := windows.DuplicateHandle(parent, remote, windows.CurrentProcess(), &local, 0, false,
+			windows.DUPLICATE_SAME_ACCESS|windows.DUPLICATE_CLOSE_SOURCE)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if local != 0 {
+			windows.CloseHandle(local)
+		}
+	}
+	return firstErr
+}
+
 // inSessionOutcome carries the raw launch result plus a cleanup func the helper
 // runs once the launched process exits. proc and cleanup are only valid when
 // reason=="". cleanup revokes the desktop grant, unloads the profile, frees the
 // environment block, and closes the launch token — all of which must outlive
 // the launched process's UI, so ownership transfers to the caller.
 type inSessionOutcome struct {
-	pid     uint32
-	reason  string
-	err     error
-	proc    windows.Handle
-	cleanup func()
+	pid          uint32
+	reason       string
+	err          error
+	proc         windows.Handle
+	thread       windows.Handle
+	creationTime time.Time
+	cleanup      func()
 }
 
 // inSessionLaunch performs: LogonUser(user,pwd) → linked-token swap →
@@ -518,6 +827,10 @@ type inSessionOutcome struct {
 // a cleanup func; the caller owns their lifetime. On any step failure it
 // returns the matching Reason and leaks no handles.
 func inSessionLaunch(p launchParams) inSessionOutcome {
+	return inSessionLaunchWithFlags(p, 0, false)
+}
+
+func inSessionLaunchWithFlags(p launchParams, extraCreationFlags uint32, retainThread bool) inSessionOutcome {
 	// 1. LogonUser(user, ".", pwd, INTERACTIVE, DEFAULT) → primary token.
 	tok, err := logonUser(p.Username, ".", p.Password)
 	if err != nil {
@@ -625,7 +938,7 @@ func inSessionLaunch(p launchParams) inSessionOutcome {
 	// in the right session. Forcing a new console makes the window appear on
 	// winsta0\default in the user's session. GUI targets ignore it. (Found on
 	// VM: launch reported OK in session 3 but no visible window.)
-	creationFlags := uint32(windows.CREATE_NEW_CONSOLE)
+	creationFlags := uint32(windows.CREATE_NEW_CONSOLE) | extraCreationFlags
 	var envPtr *uint16
 	if envBlock != nil {
 		// A CreateEnvironmentBlock block is always Unicode.
@@ -638,7 +951,22 @@ func inSessionLaunch(p launchParams) inSessionOutcome {
 		destroyEnvironmentBlock(envBlock)
 		return inSessionOutcome{reason: "create_process_failed", err: err}
 	}
-	windows.CloseHandle(pi.Thread)
+	var creationTime time.Time
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(pi.Process, &created, &exited, &kernel, &user); err != nil {
+		windows.TerminateProcess(pi.Process, 1)
+		windows.CloseHandle(pi.Thread)
+		windows.CloseHandle(pi.Process)
+		unloadUserProfile(launchTok, hProfile)
+		destroyEnvironmentBlock(envBlock)
+		return inSessionOutcome{reason: "process_identity_failed", err: err}
+	}
+	creationTime = time.Unix(0, created.Nanoseconds()).UTC()
+	thread := pi.Thread
+	if !retainThread {
+		windows.CloseHandle(pi.Thread)
+		thread = 0
+	}
 
 	// Success: transfer ownership of the grant, profile, env block, and token to
 	// the caller, which holds them until the launched process exits.
@@ -650,7 +978,7 @@ func inSessionLaunch(p launchParams) inSessionOutcome {
 		unloadUserProfile(launchTok, hProfile)
 		windows.CloseHandle(windows.Handle(launchTok))
 	}
-	return inSessionOutcome{pid: pi.ProcessId, proc: pi.Process, cleanup: cleanup}
+	return inSessionOutcome{pid: pi.ProcessId, proc: pi.Process, thread: thread, creationTime: creationTime, cleanup: cleanup}
 }
 
 // loadUserProfile best-effort loads the account's profile hive for tok so the

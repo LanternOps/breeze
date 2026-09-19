@@ -4,6 +4,7 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanim
 import { useApprovalTheme, spacing, type } from '../../../theme';
 import { haptic } from '../../../lib/motion';
 import type { OrgRollup } from '../useSystemsData';
+import { orgRowSubtitle } from './orgRowCopy';
 
 interface Props {
   org: OrgRollup;
@@ -14,10 +15,7 @@ interface Props {
 
 export function OrgRow({ org, onPress, showDivider, dividerColor }: Props) {
   const theme = useApprovalTheme('dark');
-  const sub =
-    org.issueCount === 0
-      ? `${org.deviceCount} ${org.deviceCount === 1 ? 'device' : 'devices'}, healthy`
-      : `${org.deviceCount} ${org.deviceCount === 1 ? 'device' : 'devices'} · ${org.issueCount} ${org.issueCount === 1 ? 'issue' : 'issues'}`;
+  const sub = orgRowSubtitle(org);
 
   return (
     <Animated.View

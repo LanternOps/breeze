@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +14,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -32,6 +30,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
@@ -89,6 +88,20 @@ var (
 	helperRole       string
 	desktopContext   string
 )
+
+type pamStartupController interface {
+	SetStatePath(string)
+	ReconcilePAMLifetime(context.Context) []pamlifetime.Result
+}
+
+const pamStartupReconcileTimeout = 2 * time.Minute
+
+func preparePAMLifetimeStartup(ctx context.Context, controller pamStartupController, statePath string) []pamlifetime.Result {
+	controller.SetStatePath(statePath)
+	reconcileCtx, cancel := context.WithTimeout(ctx, pamStartupReconcileTimeout)
+	defer cancel()
+	return controller.ReconcilePAMLifetime(reconcileCtx)
+}
 
 var log = logging.L("main")
 
@@ -481,11 +494,49 @@ func shutdownAgent(comps *agentComponents) {
 
 	clock := newShutdownClock(shutdownBudget)
 
+	// Cancel supervision before publishing intent, but do not wait for any
+	// subsystem before telling the watchdog this is an intentional stop.
+	if comps.supervisorCancel != nil {
+		comps.supervisorCancel()
+	}
+
+	// Write stopping state so the watchdog knows shutdown is intentional.
+	statePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(statePath, &state.AgentState{
+		Status:    state.StatusStopping,
+		Reason:    state.ReasonUserStop,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write stopping state file", "error", err.Error())
+	}
+
+	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
+	if broker := comps.hb.SessionBroker(); broker != nil {
+		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
+			})
+		}
+	}
+
 	// The optional, platform/config-dependent component stops share a
 	// sub-budget so they cannot starve the ungated core teardown below.
 	components := clock.sub(componentStopBudget)
 
-	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
+	// Cancel the ETW LUA subscriber before other component waits so the kernel-side ETW
 	// session is closed before any later teardown can time out and
 	// orphan it. Otherwise Breeze-LUA-Discovery stays registered with
 	// the kernel and the next agent restart hits the
@@ -530,46 +581,11 @@ func shutdownAgent(comps *agentComponents) {
 		}
 	}
 
-	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
-	// is intentionally stopping. Otherwise the supervisor could race
-	// in-flight and re-start a watchdog the SCM is mid-stop on.
+	// Supervision was cancelled before publishing shutdown intent above.
 	if comps.supervisorCancel != nil {
-		comps.supervisorCancel()
 		if comps.supervisorDone != nil {
 			components.run("watchdog supervisor stop", componentStopStage, func() {
 				<-comps.supervisorDone
-			})
-		}
-	}
-
-	// Write stopping state so the watchdog knows shutdown is intentional.
-	statePath := state.PathInDir(config.ConfigDir())
-	if err := state.Write(statePath, &state.AgentState{
-		Status:    state.StatusStopping,
-		Reason:    state.ReasonUserStop,
-		PID:       os.Getpid(),
-		Version:   version,
-		Timestamp: time.Now(),
-	}); err != nil {
-		log.Warn("failed to write stopping state file", "error", err.Error())
-	}
-
-	// Notify the watchdog of intentional shutdown so it doesn't restart us.
-	//
-	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
-	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
-	// stopped reading its end can park this call for longer than the entire
-	// stop window on its own — the same class of unbounded step as the log
-	// shipper, and enough to exhaust the whole budget before a single core
-	// teardown stage starts. Abandoning it is safe: the stopping-state file
-	// written just above is the durable signal the watchdog reconciles
-	// against, and this notify is only the fast path.
-	if broker := comps.hb.SessionBroker(); broker != nil {
-		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
-				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-					Reason: state.ReasonUserStop,
-				})
 			})
 		}
 	}
@@ -888,6 +904,27 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
 
+	// Bare-metal recovery W04a: if the rebuild engine left a marker on this
+	// disk (i.e. this agent booted up as the RESULT of a bare-metal
+	// recovery), report it every heartbeat until the server acks the
+	// check-in — see heartbeat.LoadRecoveryMarker / SetRecoveryMarker.
+	if marker, err := heartbeat.LoadRecoveryMarker(config.GetDataDir()); err != nil {
+		log.Warn("recovery marker unreadable; bare-metal recovery will not auto-complete", "error", err.Error())
+	} else if marker != nil {
+		log.Info("recovery marker found; reporting bare-metal recovery check-in", "recoveryId", marker.RecoveryID)
+		hb.SetRecoveryMarker(marker)
+	}
+	if !cfg.SupportMode {
+		for _, result := range preparePAMLifetimeStartup(context.Background(), hb, startupStatePath) {
+			log.Info("PAM lifetime startup reconciliation evidence",
+				"actuationId", result.ActuationID,
+				"generation", result.Generation,
+				"state", result.State,
+				"failureCode", result.FailureCode,
+				"bootId", result.Evidence.BootID)
+		}
+	}
+
 	// Point the log shipper at the heartbeat's promoted-URL getter (#2463).
 	// This MUST happen before hb.Start(): the heartbeat is the only thing that
 	// can promote a backup URL, so binding first means there is no window in
@@ -1012,8 +1049,6 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			log.Warn("failed to write agent state file", "error", err.Error())
 		}
 
-		// Tell the heartbeat where the state file is so it can update after each heartbeat.
-		hb.SetStatePath(statePath)
 	}
 
 	// Mutual supervision: on Windows, when running as the SCM service this
@@ -1825,16 +1860,21 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// macOS/Linux.
 	detachHelperConsole()
 
-	// Log to file in the same logs folder as the main agent
-	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
-	os.MkdirAll(logDir, 0700)
+	// Log to file in the same logs folder as the main agent (e.g.
+	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
+	// run as the logged-in user and the shared directory is root-owned
+	// 0700 and re-hardened on every agent log open/rotation. There they
+	// get ~/Library/Logs/Breeze instead (#5877).
+	logDir, homeErr := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		logFileName = "desktop-helper.log"
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
 		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
 		if hasConsole() {
@@ -1906,6 +1946,13 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		defer logging.StopShipper()
 	}
 
+	// Always record where diagnostics are going; the pre-#5877 code fell
+	// back to stdout silently, so an unwritable directory looked like an
+	// empty log with no explanation anywhere (and under a macOS LaunchAgent
+	// or a CREATE_NO_WINDOW spawn, stdout goes nowhere at all). Emitted
+	// after the shipper is up so the warn still reaches Agent Logs.
+	logging.EmitLogFileOutcome(slog.Default(), logPath, openErr, mkdirErr, homeErr)
+
 	// Top-level panic recovery for the main goroutine of runHelperProcess.
 	// NOTE: recover() only catches panics in THIS goroutine. Panics in
 	// sub-goroutines (pion RTCP reader, capture loops, IPC dispatch in
@@ -1950,211 +1997,78 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	}()
 
 	// Reconnect loop: when the IPC socket disappears (e.g. agent self-update
-	// recreates it), retry with exponential backoff instead of exiting.
+	// recreates it), retry with exponential backoff instead of exiting. The
+	// loop itself lives in internal/userhelper so the standalone macOS
+	// breeze-desktop-helper binary runs the identical logic — it used to have
+	// its own single-shot copy that exited on the first IPC error (#4194).
 	//
-	// helperMinBackoff is intentionally conservative (30s) because most helper
+	// The 30s floor is intentionally conservative because most helper
 	// disconnects in production are caused by permanent identity/auth problems
 	// (binary path mismatch, SID lookup failure on headless Windows, etc.),
 	// not transient socket hiccups. See issue #387.
-	const (
-		helperMinBackoff      = 30 * time.Second
-		helperMaxBackoff      = 5 * time.Minute
-		helperStableThreshold = 60 * time.Second
-	)
+	sup := &userhelper.Supervisor{
+		Name: name,
+		Policy: userhelper.ReconnectPolicy{
+			MinBackoff:      30 * time.Second,
+			MaxBackoff:      5 * time.Minute,
+			StableThreshold: 60 * time.Second,
+			WarnLimit:       3,
+			WarnWindow:      5 * time.Minute,
+		},
+		NewClient: func() userhelper.SupervisedClient {
+			return userhelper.NewWithOptions(socketPath, role, binaryKind, context)
+		},
+		Log: log,
+	}
 
-	warnLimiter := newHelperWarnLimiter(3, 5*time.Minute)
-	backoff := helperMinBackoff
-	for {
-		client := userhelper.NewWithOptions(socketPath, role, binaryKind, context)
-
-		// Stop the current client when shutdown is signaled. The clientDone
-		// channel lets this goroutine exit when Run() returns on its own,
-		// preventing a goroutine leak per reconnect iteration.
-		clientDone := make(chan struct{})
-		go func() {
-			select {
-			case <-done:
-				log.Info("shutting down helper", "name", name)
-				client.Stop()
-			case <-clientDone:
-				// Run() returned on its own; nothing to do.
-			}
-		}()
-
-		err := client.Run()
-		close(clientDone)
-
-		// Capture the auth time BEFORE the client is garbage-collected. A
-		// zero value means the client never completed auth on this iteration.
-		authAt := client.AuthenticatedAt()
-
-		if err == nil {
-			// Clean exit (e.g. Stop() was called via signal)
+	res := sup.Run(done)
+	if res.Reason != userhelper.StopFatal {
+		if res.Err != nil {
+			log.Info("helper stopped after error", "name", name, "error", res.Err.Error())
+		} else {
 			log.Info("helper stopped", "name", name)
-			return
 		}
-
-		// Check if we were signaled to stop — don't retry after shutdown.
-		select {
-		case <-done:
-			log.Info("helper stopped after error", "name", name)
-			return
-		default:
-		}
-
-		// Fatal permanent rejection from the broker: exit with code 2 so
-		// the lifecycle manager knows not to respawn immediately. Sleep
-		// briefly to let the log shipper flush the exit reason.
-		//
-		// Exit code 2 semantics: signals to the lifecycle manager that
-		// this helper should not be respawned immediately — the rejection
-		// is permanent (binary hash mismatch, SID lookup failure, etc.).
-		var permErr *userhelper.PermanentRejectError
-		if errors.As(err, &permErr) {
-			if permErr.Code == "not_desired" {
-				// On-demand lifecycle: this helper's session/role is simply not
-				// leased right now. That is the normal state on an RDS host at
-				// rest — exit 0 so the logon scheduled task records success and
-				// does not retry-loop on every user logon.
-				log.Info("helper not currently desired by lifecycle; exiting clean",
-					"name", name, "reason", permErr.ReasonOr(err.Error()))
-				logging.StopShipper()
-				os.Exit(0)
-			}
-			log.Error("helper permanently rejected, exiting fatal",
-				"name", name,
-				"code", permErr.CodeOr("unknown"),
-				"reason", permErr.ReasonOr(err.Error()),
-			)
-			logging.StopShipper() // flush before os.Exit tears down goroutines
-			os.Exit(2)
-		}
-		if errors.Is(err, userhelper.ErrSIDLookupFailed) {
-			log.Error("helper permanently rejected, exiting fatal",
-				"name", name,
-				"code", "sid_lookup_failed",
-				"reason", err.Error(),
-			)
-			logging.StopShipper() // flush before os.Exit tears down goroutines
-			os.Exit(2)
-		}
-
-		// Only reset backoff if the connection was stably authenticated for
-		// >60s. The previous logic reset on wall-clock iteration duration
-		// which let the storm keep restarting from 2s after every rate limit
-		// window expired.
-		if !authAt.IsZero() && time.Since(authAt) > helperStableThreshold {
-			backoff = helperMinBackoff
-			warnLimiter.reset()
-		}
-
-		// Add jitter: [backoff, backoff + backoff/2) so concurrent helpers
-		// don't synchronise their reconnect attempts.
-		wait := backoff + time.Duration(rand.Int64N(int64(backoff/2)+1))
-
-		errMsg := err.Error()
-		if emit, suppressed := warnLimiter.shouldLog(errMsg, time.Now()); emit {
-			log.Warn("helper disconnected, reconnecting",
-				"name", name, "error", errMsg, "backoff", wait.String())
-		} else if suppressed > 0 {
-			log.Info("helper still disconnected, suppressing further warnings",
-				"name", name,
-				"error", errMsg,
-				"suppressed_count", suppressed,
-				"backoff", wait.String())
-		}
-
-		// Wait for backoff or shutdown signal.
-		select {
-		case <-time.After(wait):
-			backoff = min(backoff*2, helperMaxBackoff)
-		case <-done:
-			log.Info("helper stopped during reconnect backoff", "name", name)
-			return
-		}
-	}
-}
-
-// helperWarnLimiter rate-limits a repeating warning message. After `limit`
-// emissions of the same message within `window`, further WARN emissions are
-// suppressed; an INFO "still disconnected" summary is emitted every
-// infoInterval so ops can confirm the helper is still thrashing (not silently
-// stuck). Call reset() when the condition clears (e.g. connection has been
-// stably authenticated).
-type helperWarnLimiter struct {
-	mu                  sync.Mutex
-	limit               int
-	window              time.Duration
-	lastMsg             string
-	firstSeenAt         time.Time
-	count               int // total emissions (incl. suppressed) in this window
-	warnsEmitted        int // warn-level emissions in this window
-	suppressed          int // warnings suppressed since last info emission
-	suppressedSinceInfo int // count since last INFO — reset on each INFO emit
-	lastInfoEmit        time.Time
-}
-
-// infoInterval is the sub-window cadence for INFO summaries emitted while
-// WARN emissions are suppressed. Short enough to confirm liveliness during
-// log tail, long enough to avoid flooding.
-const infoInterval = 60 * time.Second
-
-func newHelperWarnLimiter(limit int, window time.Duration) *helperWarnLimiter {
-	return &helperWarnLimiter{limit: limit, window: window}
-}
-
-// shouldLog returns (emitWarn, suppressedCount). If emitWarn is true, the
-// caller should log a WARN. Otherwise, if suppressedCount > 0, the caller
-// should log a single INFO "still disconnected" line with that count.
-// now is passed in by the caller (typically time.Now()) so that tests can
-// control the clock without sleeping.
-func (h *helperWarnLimiter) shouldLog(msg string, now time.Time) (bool, int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if msg != h.lastMsg || now.Sub(h.firstSeenAt) > h.window {
-		// New message or window rolled over — reset counters.
-		h.lastMsg = msg
-		h.firstSeenAt = now
-		h.count = 1
-		h.warnsEmitted = 1
-		h.suppressed = 0
-		h.suppressedSinceInfo = 0
-		h.lastInfoEmit = time.Time{}
-		return true, 0
+		return
 	}
 
-	h.count++
-	if h.warnsEmitted < h.limit {
-		h.warnsEmitted++
-		return true, 0
+	// Fatal permanent rejection from the broker: exit with code 2 so
+	// the lifecycle manager knows not to respawn immediately.
+	//
+	// Exit code 2 semantics: signals to the lifecycle manager that
+	// this helper should not be respawned immediately — the rejection
+	// is permanent (binary hash mismatch, SID lookup failure, etc.).
+	var permErr *userhelper.PermanentRejectError
+	if errors.As(res.Err, &permErr) {
+		if permErr.Code == "not_desired" {
+			// On-demand lifecycle: this helper's session/role is simply not
+			// leased right now. That is the normal state on an RDS host at
+			// rest — exit 0 so the logon scheduled task records success and
+			// does not retry-loop on every user logon.
+			log.Info("helper not currently desired by lifecycle; exiting clean",
+				"name", name, "reason", permErr.ReasonOr(res.Err.Error()))
+			logging.StopShipper()
+			os.Exit(0)
+		}
+		log.Error("helper permanently rejected, exiting fatal",
+			"name", name,
+			"code", permErr.CodeOr("unknown"),
+			"reason", permErr.ReasonOr(res.Err.Error()),
+		)
+		logging.StopShipper() // flush before os.Exit tears down goroutines
+		os.Exit(2)
 	}
-
-	// Over the warn budget — suppress and maybe emit an INFO summary.
-	// Summaries fire every infoInterval (60s) so ops can see the helper is
-	// still thrashing; each summary reports only the count since the last INFO.
-	h.suppressed++
-	h.suppressedSinceInfo++
-	if h.lastInfoEmit.IsZero() || now.Sub(h.lastInfoEmit) >= infoInterval {
-		count := h.suppressedSinceInfo
-		h.suppressedSinceInfo = 0
-		h.lastInfoEmit = now
-		return false, count
+	// Not a *PermanentRejectError. Identify what it actually is rather than
+	// assuming — IsFatalHelperError decides the fatal set, and hardcoding a
+	// code here mislabels every future addition to it as a SID failure.
+	code := "unknown"
+	if errors.Is(res.Err, userhelper.ErrSIDLookupFailed) {
+		code = "sid_lookup_failed"
 	}
-	return false, 0
-}
-
-// reset clears limiter state so the next message starts a fresh window.
-// Call after a helper has been stably connected — the next disconnect is
-// a new event and deserves a full WARN.
-func (h *helperWarnLimiter) reset() {
-	h.mu.Lock()
-	h.lastMsg = ""
-	h.firstSeenAt = time.Time{}
-	h.count = 0
-	h.warnsEmitted = 0
-	h.suppressed = 0
-	h.suppressedSinceInfo = 0
-	h.lastInfoEmit = time.Time{}
-	h.mu.Unlock()
+	log.Error("helper permanently rejected, exiting fatal",
+		"name", name,
+		"code", code,
+		"reason", res.Err.Error(),
+	)
+	logging.StopShipper() // flush before os.Exit tears down goroutines
+	os.Exit(2)
 }

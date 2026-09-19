@@ -119,11 +119,14 @@ vi.mock('../db/schema', () => ({
     orgId: 'configurationPolicies.orgId',
     status: 'configurationPolicies.status',
   },
-  configPolicyFeatureLinks: {
-    id: 'configPolicyFeatureLinks.id',
-    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
-    featureType: 'configPolicyFeatureLinks.featureType',
-    featurePolicyId: 'configPolicyFeatureLinks.featurePolicyId',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'configPolicyEffectiveFeatureLinks.id',
+    configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId',
+    sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId',
+    inherited: 'configPolicyEffectiveFeatureLinks.inherited',
+    featureType: 'configPolicyEffectiveFeatureLinks.featureType',
+    featurePolicyId: 'configPolicyEffectiveFeatureLinks.featurePolicyId',
+    inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings',
   },
   configPolicyAssignments: {
     level: 'configPolicyAssignments.level',
@@ -158,6 +161,8 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
+    status: 'devices.status',
+    isEphemeral: 'devices.isEphemeral',
   },
   organizations: {
     id: 'organizations.id',
@@ -341,21 +346,25 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(1);
-    // TWO escapes, not one (#2822): the config-policy join, plus the single
-    // context that wraps the whole timezone fan-out (resolveDeviceTimezone's
-    // `partners` join is partner-axis and was silently resolving to UTC for
-    // org-scoped callers). Never 1 + N — see the two-device test below.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // ONE escape, down from two (#4673 W03). The config-policy join no longer
+    // escapes: `<table>_partner_wide_select` grants partner-wide rows to the
+    // caller's own context, so the only remaining system context is the single
+    // one wrapping the timezone fan-out (resolveDeviceTimezone's `partners`
+    // join is partner-AXIS, which no SELECT-only branch covers — see
+    // db/partnerAxisRead.ts and #2822). Never 1 + N — see the two-device test
+    // below.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     // Exact topology, asserted as a whole array rather than by index: a
     // `.slice(...).every(...)` goes vacuously true if a select is ever removed,
     // which would silently retire this guard.
-    // #0 org→partner lookup | #1 config-policy join (SYSTEM) | #2 org default
-    // destination | #3 device expansion | #4 the batch org lookup | #5 the ONE
-    // shared partners read (SYSTEM) | #6 the per-device site/org read.
-    // Everything except the two partner-axis reads is caller-scoped — device
-    // EXPANSION (#3) especially, since that is the read RLS must keep guarding.
-    expect(selectDepths).toEqual([0, 1, 0, 0, 0, 1, 0]);
+    // #0 org→partner lookup | #1 config-policy join (CALLER — W03) | #2 org
+    // default destination | #3 device expansion | #4 the batch org lookup |
+    // #5 the ONE shared partners read (SYSTEM) | #6 the per-device site/org
+    // read. Everything except the partner-AXIS read is caller-scoped — device
+    // EXPANSION (#3) especially, since that is the read RLS must keep guarding,
+    // and now the config-policy join (#1) too.
+    expect(selectDepths).toEqual([0, 0, 0, 0, 0, 1, 0]);
     expect(systemStats.maxDepth).toBe(1);
     // Context must be closed again once the read completes.
     expect(systemDepth.value).toBe(0);
@@ -421,23 +430,24 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(2);
-    // Still 2 with two devices — the count does not scale with N. Pre-fix this
-    // was 3 (1 policy join + 1 per device) and would keep climbing. The partner
-    // timezone is now resolved once for the whole batch, so there is also only
-    // ONE `partners` read rather than N identical ones.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // Still 1 with two devices — the count does not scale with N. It was 3
+    // (1 policy join + 1 per device) before the timezone batching, 2 after it,
+    // and 1 since #4673 W03 dropped the policy join's escape. The partner
+    // timezone is resolved once for the whole batch, so there is exactly ONE
+    // `partners` read rather than N identical ones.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     // The real assertion: never more than one system transaction — and
     // therefore never more than one extra pooled connection — at any instant.
     expect(systemStats.maxDepth).toBe(1);
-    // #0 org→partner | #1 policy join (SYSTEM) | #2 org default destination |
-    // #3 device expansion (CALLER — the read RLS must keep guarding) | #4 the
-    // batch org lookup | #5 the ONE shared partners read (SYSTEM) | #6,#7 the
-    // per-device site/org reads (CALLER).
+    // #0 org→partner | #1 policy join (CALLER — W03) | #2 org default
+    // destination | #3 device expansion (CALLER — the read RLS must keep
+    // guarding) | #4 the batch org lookup | #5 the ONE shared partners read
+    // (SYSTEM) | #6,#7 the per-device site/org reads (CALLER).
     //
     // The key property: exactly ONE depth-1 select in the timezone tail no
     // matter how many devices there are. Pre-fix this was one per device.
-    expect(selectDepths.slice(0, 4)).toEqual([0, 1, 0, 0]);
+    expect(selectDepths.slice(0, 4)).toEqual([0, 0, 0, 0]);
     expect(selectDepths.slice(4).filter((d) => d === 1)).toHaveLength(1);
     expect(systemDepth.value).toBe(0);
   });
@@ -471,7 +481,7 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
       )
       .mockReturnValueOnce(makeSelectChain([{ partnerId: 'partner-1' }]))
       .mockReturnValueOnce(makeSelectChain([]))
-      // the config-policy join (must be system-scoped)
+      // the config-policy join (runs in the CALLER's context since W03)
       .mockReturnValueOnce(
         makeSelectChain([
           {
@@ -500,15 +510,170 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
     const resolved = await resolveBackupConfigForDevice('device-1');
 
     expect(resolved).toMatchObject({ featureLinkId: 'feature-1', configId: 'config-1' });
-    // Two escapes: the policy join and resolveDeviceTimezone's partner-axis
-    // read (#2822), taken one after the other — never nested.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // ONE escape: resolveDeviceTimezone's partner-AXIS read (#2822). The policy
+    // join no longer takes one — #4673 W03 removed it once
+    // `<table>_partner_wide_select` made partner-wide rows legible to the
+    // caller's own context.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(systemStats.maxDepth).toBe(1);
-    // 0-2 device hierarchy (caller) | 3 policy join (system) | 4 timezone
+    // 0-2 device hierarchy (caller) | 3 policy join (CALLER — W03) | 4 timezone
     // device/org/site read (CALLER — RLS still selects the device) | 5 the
     // partner-axis read (system).
-    expect(selectDepths).toEqual([0, 0, 0, 1, 0, 1]);
+    expect(selectDepths).toEqual([0, 0, 0, 0, 0, 1]);
     expect(systemDepth.value).toBe(0);
   });
+});
+
+// A decommissioned device is a soft-deleted one (routes/devices/core.ts's
+// `DELETE /:id` only flips `status`) and an ephemeral device is a Quick Support
+// session box the reaper purges within 6h. Neither can accept a backup, yet
+// every fan-out branch used to sweep them into the assigned set: a device
+// decommissioned on 2026-08-08 kept getting a fresh `backup_jobs` row every day
+// at 04:00 UTC, each failing with `Agent not connected`, and a
+// `recovery_readiness` row scoring 0 that pinned the low-readiness alert
+// (#3968).
+describe('resolveAllBackupAssignedDevices excludes decommissioned and ephemeral devices (#3968)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    systemDepth.value = 0;
+    selectDepths.length = 0;
+    systemStats.maxDepth = 0;
+  });
+
+  /**
+   * Renders a captured predicate tree back into readable SQL-ish text,
+   * splicing each interpolated column sentinel into its `sql` template.
+   *
+   * Asserting on the rendered predicate — rather than on rows a hand-shaped
+   * mock filtered for us — is what makes these assertions discriminating: a
+   * mock can be taught to drop decommissioned rows all by itself, but only the
+   * real predicate can put the exclusion into the SQL Postgres runs. Delete the
+   * exclusion from the resolver and this text stops containing it.
+   */
+  function renderCondition(condition: unknown): string {
+    if (condition === null || condition === undefined) return '';
+    if (typeof condition !== 'object') return String(condition);
+
+    const node = condition as Record<string, any>;
+    if (node.op === 'sql') {
+      const strings: readonly string[] = node.strings ?? [];
+      const values: unknown[] = node.values ?? [];
+      return strings
+        .map((chunk, index) => chunk + (index < values.length ? renderCondition(values[index]) : ''))
+        .join('');
+    }
+    if (node.op === 'and') {
+      return ((node.conditions ?? []) as unknown[]).map(renderCondition).join(' AND ');
+    }
+    if (node.op === 'eq') return `${renderCondition(node.column)} = ${JSON.stringify(node.value)}`;
+    if (node.op === 'inArray') return `${renderCondition(node.column)} IN (…)`;
+    return JSON.stringify(node);
+  }
+
+  /**
+   * Runs the resolver for one assignment level and returns the predicate its
+   * device-expansion query handed to Drizzle. Every level resolves through its
+   * own switch branch, so each one needs its own capture — the whole point of
+   * #3968 is that a per-branch predicate is easy to miss on one branch.
+   */
+  async function captureDeviceExpansionPredicate(
+    assignmentLevel: string,
+    assignmentTargetId: string
+  ): Promise<string> {
+    const orgId = 'org-a';
+    const partnerId = 'partner-1';
+    let captured: unknown;
+
+    selectMock
+      // org → partnerId lookup
+      .mockReturnValueOnce(makeSelectChain([{ partnerId }]))
+      // feature links + settings + assignments
+      .mockReturnValueOnce(
+        makeSelectChain([
+          {
+            backupSettings: { schedule: { frequency: 'daily', time: '01:00' } },
+            featureLinkId: 'feature-1',
+            featurePolicyId: 'config-1',
+            profileSelections: null,
+            assignmentLevel,
+            assignmentTargetId,
+            assignmentPriority: 1,
+            assignmentCreatedAt: new Date('2026-04-01T00:00:00Z'),
+          },
+        ])
+      )
+      // org default destination lookup
+      .mockReturnValueOnce(makeSelectChain([]))
+      // the device expansion for this branch
+      .mockReturnValueOnce(
+        makeSelectChain((condition: unknown) => {
+          captured = condition;
+          // `device_group` selects `deviceId`, every other branch selects `id`.
+          return [{ id: 'device-live', deviceId: 'device-live' }];
+        })
+      )
+      .mockImplementation(() =>
+        makeSelectChain([
+          {
+            siteTimezone: null,
+            orgSettings: { timezone: 'UTC' },
+            partnerId,
+            timezone: 'UTC',
+            settings: {},
+          },
+        ])
+      );
+
+    const result = await resolveAllBackupAssignedDevices(orgId);
+
+    // Guard the guard: if the branch never resolved a device the predicate
+    // capture would be silently empty and every assertion below vacuous.
+    expect(result.map((entry) => entry.deviceId)).toEqual(['device-live']);
+    expect(captured).toBeDefined();
+
+    return renderCondition(captured);
+  }
+
+  // Table-driven over EVERY branch of the switch. The resolver has five
+  // assignment levels and the bug was that none of them filtered; a test that
+  // covered only `organization` would have gone green on a four-branch fix.
+  const branches: Array<{ level: string; targetId: string }> = [
+    { level: 'device', targetId: 'device-live' },
+    { level: 'device_group', targetId: 'group-1' },
+    { level: 'site', targetId: 'site-1' },
+    { level: 'organization', targetId: 'org-a' },
+    { level: 'partner', targetId: 'partner-1' },
+  ];
+
+  it.each(branches)(
+    'excludes decommissioned devices from the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toMatch(/devices\.status\s*(<>|!=)\s*'decommissioned'/);
+    }
+  );
+
+  it.each(branches)(
+    'excludes ephemeral Quick Support devices from the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toMatch(/devices\.isEphemeral\s*=\s*false/);
+    }
+  );
+
+  // The exclusion must never cost the tenancy predicate it sits beside: a
+  // partner-wide policy is visible to every org under the partner, so dropping
+  // the org re-tenanting would attribute another org's devices to this one.
+  it.each(branches)(
+    'keeps the org re-tenanting predicate on the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toContain('devices.orgId = "org-a"');
+    }
+  );
 });

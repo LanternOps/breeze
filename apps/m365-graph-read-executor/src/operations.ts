@@ -1,16 +1,22 @@
 import {
   completeConsentResultSchema,
+  isM365SyncAction,
+  m365SyncActionResponseSchema,
   readActionResultSchema,
   retestResultSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
   type ExecutorFailureCode,
+  type M365SyncActionResponse,
   type ReadActionRequest,
   type ReadActionResult,
   type RetestRequest,
   type RetestResult,
+  type SyncActionRequest,
 } from '@breeze/shared/m365';
+import type { ExecutorSyncConfig } from './config';
 import type { PinnedCertificateProvider } from './credentials/types';
+import { incrementSyncAction } from './metrics';
 import { GraphClientError, type MicrosoftGraphClient } from './microsoft/graphClient';
 import {
   MicrosoftIdentityFailure,
@@ -19,12 +25,16 @@ import {
 } from './microsoft/identity';
 import { executeGraphReadAction } from './microsoft/readActions';
 import { reconcileCustomerGraphRead } from './microsoft/reconcile';
+import { executeGraphSyncAction } from './microsoft/syncActions';
 import {
   createMicrosoftTokenClient,
   MicrosoftTokenClientError,
   type MicrosoftTokenClient,
   type OpaqueIdentityToken,
 } from './microsoft/tokenClient';
+import type { SigninLimiter } from './signinLimiter';
+import type { SigninEventsLimiter } from './signinEventsLimiter';
+import type { SyncContinuationCodec } from './syncContinuation';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -215,6 +225,13 @@ export async function readActionOperation(
   if (!CANONICAL_UUID.test(request.tenantId)) {
     return { success: false, errorCode: 'graph_response_invalid' };
   }
+  // The route already rejects these with 400 action_not_allowed; this keeps the
+  // narrowing honest and survives a future caller that bypasses the route.
+  if (isM365SyncAction(request.action)) {
+    // readActionOperation returns the INTERACTIVE failure shape, so this one
+    // keeps `errorCode` — it is a ReadActionResult, not a sync response.
+    return { success: false, errorCode: 'graph_response_invalid' };
+  }
   const credential = await fetchCredential(dependencies);
   if (typeof credential === 'string') {
     return { success: false, errorCode: credential === 'credential_unavailable' ? 'credential_unavailable' : 'application_token_invalid' };
@@ -243,11 +260,71 @@ export async function readActionOperation(
   }
 }
 
+export interface SyncOperationDependencies {
+  limits: ExecutorSyncConfig;
+  continuations: SyncContinuationCodec;
+  signinLimiter: SigninLimiter;
+  signinEventsLimiter: SigninEventsLimiter;
+}
+
+export async function syncActionOperation(
+  request: SyncActionRequest,
+  dependencies: ExecutorOperationDependencies & { sync: SyncOperationDependencies },
+): Promise<M365SyncActionResponse> {
+  const outcome = await runSyncAction(request, dependencies);
+  incrementSyncAction(request.action.type, outcome.success ? 'ok' : outcome.code);
+  return outcome;
+}
+
+async function runSyncAction(
+  request: SyncActionRequest,
+  dependencies: ExecutorOperationDependencies & { sync: SyncOperationDependencies },
+): Promise<M365SyncActionResponse> {
+  if (!CANONICAL_UUID.test(request.tenantId)) {
+    return { success: false, code: 'graph_response_invalid' };
+  }
+  const credential = await fetchCredential(dependencies);
+  if (typeof credential === 'string') {
+    return {
+      success: false,
+      code: credential === 'credential_unavailable' ? 'credential_unavailable' : 'application_token_invalid',
+    };
+  }
+  let tokenClient: MicrosoftTokenClient | undefined;
+  try {
+    try {
+      tokenClient = dependencies.createTokenClient(credential);
+    } catch {
+      return { success: false, code: 'credential_unavailable' };
+    }
+    let accessToken;
+    try {
+      accessToken = await tokenClient.acquireGraphAppToken({ tenantId: request.tenantId });
+    } catch {
+      return { success: false, code: 'application_token_invalid' };
+    }
+    return m365SyncActionResponseSchema.parse(await executeGraphSyncAction(request.action, {
+      accessToken,
+      graphClient: dependencies.graphClient,
+      tenantId: request.tenantId,
+      limits: dependencies.sync.limits,
+      continuations: dependencies.sync.continuations,
+      signinLimiter: dependencies.sync.signinLimiter,
+      signinEventsLimiter: dependencies.sync.signinEventsLimiter,
+    }));
+  } finally {
+    tokenClient = undefined;
+    credential.certificatePem = '';
+    credential.privateKeyPem = '';
+  }
+}
+
 export function createExecutorOperations(config: {
   clientId: string;
   callbackUrl: string;
   certificateProvider: PinnedCertificateProvider;
   graphClient: MicrosoftGraphClient;
+  sync: SyncOperationDependencies;
 }) {
   const dependencies: ExecutorOperationDependencies = {
     ...config,
@@ -262,5 +339,6 @@ export function createExecutorOperations(config: {
     completeConsent: (request: CompleteConsentRequest) => completeConsentOperation(request, dependencies),
     retest: (request: RetestRequest) => retestOperation(request, dependencies),
     readAction: (request: ReadActionRequest) => readActionOperation(request, dependencies),
+    syncAction: (request: SyncActionRequest) => syncActionOperation(request, { ...dependencies, sync: config.sync }),
   };
 }

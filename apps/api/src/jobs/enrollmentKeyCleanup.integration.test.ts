@@ -310,6 +310,48 @@ describe('enrollment-key cleanup sweep — live bootstrap token exemption (#2775
     }
   });
 
+  runDb('a live token from a superseded credential generation does not block the sweep', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ids = await createFixture(unique);
+    try {
+      const { keyId, tokenId } = await withSystemDbAccessContext(async () => {
+        const [key] = await db
+          .insert(enrollmentKeys)
+          .values({
+            orgId: ids.orgId,
+            siteId: ids.siteId,
+            name: 'rotated transient parent',
+            key: `sweep-rotated-key-${unique}`,
+            credentialGeneration: 2,
+            expiresAt: EXPIRED_PAST_CUTOFF,
+            maxUsage: 1,
+          })
+          .returning({ id: enrollmentKeys.id });
+        const [token] = await db
+          .insert(installerBootstrapTokens)
+          .values({
+            token: `sweep-rotated-token-${unique}`,
+            orgId: ids.orgId,
+            parentEnrollmentKeyId: key!.id,
+            parentCredentialGeneration: 1,
+            siteId: ids.siteId,
+            maxUsage: 25,
+            consumedCount: 0,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          })
+          .returning({ id: installerBootstrapTokens.id });
+        return { keyId: key!.id, tokenId: token!.id };
+      });
+
+      await runSweep();
+
+      expect(await keyRowExists(keyId)).toBe(false);
+      expect(await tokenRowExists(tokenId)).toBe(false);
+    } finally {
+      await cleanupFixture(ids);
+    }
+  });
+
   runDb('(b) an expired key whose token has itself expired is DELETED — liveness is a strict now() boundary', async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const ids = await createFixture(unique);

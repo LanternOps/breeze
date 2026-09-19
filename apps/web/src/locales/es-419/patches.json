@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Parche aprobado",
       "declined": "Parche rechazado",
+      "declinedAllRings": "Parche rechazado en todos los anillos de actualización",
       "deferred": "Parche diferido"
+    },
+    "allRings": {
+      "label": "Borrar todas las aprobaciones de anillos",
+      "description": "También revoca la aprobación de este parche en todos los demás anillos de actualización de este partner, no solo en el ámbito actual."
     },
     "confirm": {
       "title": "Confirmar la aprobación del parche",
@@ -243,7 +248,9 @@
       "critical": "Crítico",
       "important": "Importante",
       "moderate": "Moderado",
-      "low": "Bajo"
+      "low": "Bajo",
+      "unrated": "Sin calificar",
+      "unratedNote": "No se aprobará automáticamente"
     },
     "approval": {
       "pending": "Pendiente",
@@ -262,6 +269,7 @@
     "actions": {
       "deploy": "Desplegar",
       "review": "Revisar",
+      "unapprove": "Anular aprobación",
       "details": "Detalles",
       "approveCount": "Aprobar {{count}}",
       "declineCount": "Rechazar {{count}}",
@@ -429,6 +437,8 @@
       "allCategories": "Todas las categorias",
       "default": "Por defecto",
       "severityNote": "Las severidades aplican solo a las actualizaciones del sistema operativo. Las actualizaciones de apps de terceros se controlan con el interruptor de abajo — no se controlan por severidad.",
+      "unratedSeverityNote": "Los parches sin calificación (sin severidad asignada) quedan excluidos de esta selección de severidad y no se aprobarán automáticamente, incluso si se marcan todas las severidades, a menos que active el interruptor de abajo.",
+      "autoApproveUnratedLabel": "También aprobar automáticamente los parches sin calificación",
       "manualDefault": "Cada parche de este anillo necesita aprobación manual.",
       "manualCategory": "Los parches de esta categoría necesitan aprobación manual.",
       "noOverrides": "Todas las categorías siguen el valor predeterminado. Agregue una anulación para tratar uno de manera diferente."

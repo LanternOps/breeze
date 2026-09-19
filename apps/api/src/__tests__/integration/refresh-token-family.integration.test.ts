@@ -21,7 +21,7 @@ import { generate, generateSecret } from 'otplib';
 import { authRoutes } from '../../routes/auth';
 import { encryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
 import { users } from '../../db/schema';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 // Import setup to initialize database connection
@@ -52,11 +52,12 @@ function extractCookies(setCookieHeader: string): RefreshCookies | null {
 async function loginAndExtractCookies(
   app: Hono,
   email: string,
-  password: string
+  password: string,
+  binding: string
 ): Promise<RefreshCookies> {
   const res = await app.request('/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', cookie: binding },
     body: JSON.stringify({ email, password })
   });
   expect(res.status).toBe(200);
@@ -70,14 +71,19 @@ async function loginAndExtractCookies(
 
 async function refreshWithCookies(
   app: Hono,
-  cookies: RefreshCookies
+  cookies: RefreshCookies,
+  binding: string
 ): Promise<{ status: number; nextCookies: RefreshCookies | null }> {
   const res = await app.request('/auth/refresh', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-breeze-csrf': cookies.csrfHeaderValue,
-      Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}`
+      // /auth/refresh is a session-issuance path too — a successful
+      // login/refresh never rotates the binding (only a
+      // 428/rotation-required response does), so the same binding cookie
+      // captured at login remains valid across every refresh in a test.
+      Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}; ${binding}`
     },
     body: JSON.stringify({})
   });
@@ -91,6 +97,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
   let app: Hono;
   let testPartnerId: string;
   let prevGrace: string | undefined;
+  let binding: string;
 
   beforeEach(async () => {
     // These tests assert the STRICT reuse-detection contract: an immediate
@@ -104,6 +111,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     app.route('/auth', authRoutes);
     const partner = await createPartner();
     testPartnerId = partner.id;
+    binding = (await bootstrapAuthBinding()).cookie;
   });
 
   afterEach(() => {
@@ -124,11 +132,12 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const cookiesA = await loginAndExtractCookies(
       app,
       'family@example.com',
-      'FamilyPass123!'
+      'FamilyPass123!',
+      binding
     );
 
     // Step 2: legitimate first refresh → A revoked, cookie B issued
-    const r2 = await refreshWithCookies(app, cookiesA);
+    const r2 = await refreshWithCookies(app, cookiesA, binding);
     expect(r2.status).toBe(200);
     expect(r2.nextCookies).not.toBeNull();
     const cookiesB = r2.nextCookies!;
@@ -138,7 +147,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     //   - reject the replay (401)
     //   - mark the family as compromised — so subsequent refreshes from ANY
     //     derived token are dead, not just the replayed one.
-    const replay = await refreshWithCookies(app, cookiesA);
+    const replay = await refreshWithCookies(app, cookiesA, binding);
     expect(replay.status).toBe(401);
 
     // Step 4: legitimate user's "valid" cookie B is now ALSO dead because
@@ -146,7 +155,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     // family revocation (vs per-jti revocation) is active. Before Task 7
     // this would return 200 because cookie B's jti was never individually
     // revoked.
-    const followup = await refreshWithCookies(app, cookiesB);
+    const followup = await refreshWithCookies(app, cookiesB, binding);
     expect(followup.status).toBe(401);
   });
 
@@ -161,24 +170,25 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const cookiesA = await loginAndExtractCookies(
       app,
       'famrevoke@example.com',
-      'FamilyPass123!'
+      'FamilyPass123!',
+      binding
     );
 
     // Rotate twice — family is now A→B→C
-    const r2 = await refreshWithCookies(app, cookiesA);
+    const r2 = await refreshWithCookies(app, cookiesA, binding);
     expect(r2.status).toBe(200);
     const cookiesB = r2.nextCookies!;
 
-    const r3 = await refreshWithCookies(app, cookiesB);
+    const r3 = await refreshWithCookies(app, cookiesB, binding);
     expect(r3.status).toBe(200);
     const cookiesC = r3.nextCookies!;
 
     // Attacker holds cookie A. Replay triggers family-wide revocation.
-    const replay = await refreshWithCookies(app, cookiesA);
+    const replay = await refreshWithCookies(app, cookiesA, binding);
     expect(replay.status).toBe(401);
 
     // Cookie C — the freshest legit token — must also be dead.
-    const followup = await refreshWithCookies(app, cookiesC);
+    const followup = await refreshWithCookies(app, cookiesC, binding);
     expect(followup.status).toBe(401);
   });
 
@@ -211,10 +221,12 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
       })
       .where(eq(users.id, user.id));
 
-    // Step 1: /login → mfaRequired=true + tempToken
+    // Step 1: /login → mfaRequired=true + tempToken. The pending record's
+    // transitionId/browserGeneration is captured from THIS binding cookie, so
+    // /mfa/verify below must present the SAME one.
     const loginRes = await app.request('/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', cookie: binding },
       body: JSON.stringify({ email, password }),
     });
     expect(loginRes.status).toBe(200);
@@ -226,7 +238,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const totpCode = await generate({ secret: mfaSecret });
     const mfaRes = await app.request('/auth/mfa/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', cookie: binding },
       body: JSON.stringify({ tempToken: loginBody.tempToken, code: totpCode }),
     });
     expect(mfaRes.status).toBe(200);
@@ -235,7 +247,7 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     expect(cookiesA).not.toBeNull();
 
     // Step 3: rotate once → cookie B issued, A revoked
-    const r2 = await refreshWithCookies(app, cookiesA!);
+    const r2 = await refreshWithCookies(app, cookiesA!, binding);
     expect(r2.status).toBe(200);
     expect(r2.nextCookies).not.toBeNull();
     const cookiesB = r2.nextCookies!;
@@ -244,12 +256,12 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     // If /mfa/verify hadn't tagged the token with `fam`, this would only
     // revoke A's jti and B would survive — the exact bug this test guards
     // against.
-    const replay = await refreshWithCookies(app, cookiesA!);
+    const replay = await refreshWithCookies(app, cookiesA!, binding);
     expect(replay.status).toBe(401);
 
     // Step 5: B must now also be dead — proof that the MFA-minted token
     // carried a family id.
-    const followup = await refreshWithCookies(app, cookiesB);
+    const followup = await refreshWithCookies(app, cookiesB, binding);
     expect(followup.status).toBe(401);
   });
 
@@ -265,28 +277,30 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const cookiesFam1 = await loginAndExtractCookies(
       app,
       'twofam@example.com',
-      'FamilyPass123!'
+      'FamilyPass123!',
+      binding
     );
     const cookiesFam2 = await loginAndExtractCookies(
       app,
       'twofam@example.com',
-      'FamilyPass123!'
+      'FamilyPass123!',
+      binding
     );
 
     // Rotate family 1, then replay original → kills family 1.
-    const r1 = await refreshWithCookies(app, cookiesFam1);
+    const r1 = await refreshWithCookies(app, cookiesFam1, binding);
     expect(r1.status).toBe(200);
     const cookiesFam1B = r1.nextCookies!;
 
-    const replay = await refreshWithCookies(app, cookiesFam1);
+    const replay = await refreshWithCookies(app, cookiesFam1, binding);
     expect(replay.status).toBe(401);
 
     // Family 1's derived token is dead…
-    const dead = await refreshWithCookies(app, cookiesFam1B);
+    const dead = await refreshWithCookies(app, cookiesFam1B, binding);
     expect(dead.status).toBe(401);
 
     // …but family 2 must still be alive — separate /login = separate family.
-    const stillAlive = await refreshWithCookies(app, cookiesFam2);
+    const stillAlive = await refreshWithCookies(app, cookiesFam2, binding);
     expect(stillAlive.status).toBe(200);
   });
 });
@@ -295,6 +309,7 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
   let app: Hono;
   let testPartnerId: string;
   let prevGrace: string | undefined;
+  let binding: string;
 
   beforeEach(async () => {
     // Exercise the leeway path with a generous window so an immediate replay
@@ -305,6 +320,7 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
     app.route('/auth', authRoutes);
     const partner = await createPartner();
     testPartnerId = partner.id;
+    binding = (await bootstrapAuthBinding()).cookie;
   });
 
   afterEach(() => {
@@ -321,21 +337,21 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
     });
 
     // login → A
-    const cookiesA = await loginAndExtractCookies(app, 'leeway@example.com', 'FamilyPass123!');
+    const cookiesA = await loginAndExtractCookies(app, 'leeway@example.com', 'FamilyPass123!', binding);
 
     // rotate A → B (A revoked, grace marker dropped for A)
-    const r2 = await refreshWithCookies(app, cookiesA);
+    const r2 = await refreshWithCookies(app, cookiesA, binding);
     expect(r2.status).toBe(200);
     const cookiesB = r2.nextCookies!;
 
     // Replay A immediately (multi-tab / reload-mid-flight). Within the leeway
     // window this is a benign race: rejected (can't mint) but the family must
     // SURVIVE so the winning sibling's cookie B keeps working.
-    const replay = await refreshWithCookies(app, cookiesA);
+    const replay = await refreshWithCookies(app, cookiesA, binding);
     expect(replay.status).toBe(401);
 
     // The critical assertion: B is still alive — the family was NOT revoked.
-    const followup = await refreshWithCookies(app, cookiesB);
+    const followup = await refreshWithCookies(app, cookiesB, binding);
     expect(followup.status).toBe(200);
   });
 });

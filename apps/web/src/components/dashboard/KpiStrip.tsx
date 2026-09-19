@@ -15,7 +15,7 @@ interface Tile {
   subTone?: 'muted' | 'success' | 'warning' | 'destructive';
   icon: typeof Monitor;
   iconTone: string;
-  href: string;
+  href?: string;
 }
 
 const GRID_BY_COUNT: Record<number, string> = {
@@ -140,22 +140,22 @@ export default function KpiStrip({
       testId: 'dashboard-critical-card',
       label: t('dashboard.stats.critical'),
       value: criticalCount === null ? '—' : formatNumber(criticalCount),
-      sub: criticalCount === null ? t('dashboard.stats.loadFailed') : undefined,
+      sub: criticalCount === null && !alerts.unavailable ? t('dashboard.stats.loadFailed') : undefined,
       subTone: 'muted',
       icon: XCircle,
       iconTone: criticalCount !== null && criticalCount > 0 ? 'text-destructive' : 'text-muted-foreground',
-      href: '/alerts',
+      href: alerts.unavailable ? undefined : '/alerts',
     },
     {
       key: 'warnings',
       testId: 'dashboard-warnings-card',
       label: t('dashboard.stats.warnings'),
       value: warningCount === null ? '—' : formatNumber(warningCount),
-      sub: warningCount === null ? t('dashboard.stats.loadFailed') : undefined,
+      sub: warningCount === null && !alerts.unavailable ? t('dashboard.stats.loadFailed') : undefined,
       subTone: 'muted',
       icon: AlertTriangle,
       iconTone: warningCount !== null && warningCount > 0 ? 'text-warning-strong' : 'text-muted-foreground',
-      href: '/alerts',
+      href: alerts.unavailable ? undefined : '/alerts',
     },
   ];
 

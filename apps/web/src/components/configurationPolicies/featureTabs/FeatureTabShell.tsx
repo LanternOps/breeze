@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -49,6 +50,13 @@ export default function FeatureTabShell({
   children,
 }: FeatureTabShellProps) {
   useTranslation("policies");
+  // #5314: Revert to Parent and Remove both fire an irreversible
+  // DELETE .../features/:id that destroys this policy's override. The shell
+  // renders the footer for every feature tab, so guarding here covers all of
+  // them at once rather than per-tab.
+  const [pendingAction, setPendingAction] = useState<"revert" | "remove" | null>(
+    null,
+  );
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
   const badgeText = isInherited
     ? "Configured (inherited)"
@@ -118,7 +126,7 @@ export default function FeatureTabShell({
             {!isInherited && onRevert && (
               <button
                 type="button"
-                onClick={onRevert}
+                onClick={() => setPendingAction("revert")}
                 disabled={saving}
                 className="inline-flex items-center gap-2 rounded-md border border-blue-500/40 px-3 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-500/10 disabled:opacity-50"
               >
@@ -131,7 +139,7 @@ export default function FeatureTabShell({
             {!isInherited && !onRevert && isConfigured && onRemove && (
               <button
                 type="button"
-                onClick={onRemove}
+                onClick={() => setPendingAction("remove")}
                 disabled={saving}
                 className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
               >
@@ -157,6 +165,44 @@ export default function FeatureTabShell({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingAction === "revert"}
+        onClose={() => setPendingAction(null)}
+        onConfirm={() => {
+          setPendingAction(null);
+          onRevert?.();
+        }}
+        title={i18n.t(
+          "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmTitle",
+        )}
+        message={i18n.t(
+          "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
+          { feature: title },
+        )}
+        confirmLabel={i18n.t(
+          "policies:configurationPolicies.featureTabs.featureTabShell.revertToParent",
+        )}
+        confirmTestId="feature-tab-revert-confirm"
+      />
+
+      <ConfirmDialog
+        open={pendingAction === "remove"}
+        onClose={() => setPendingAction(null)}
+        onConfirm={() => {
+          setPendingAction(null);
+          onRemove?.();
+        }}
+        title={i18n.t(
+          "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmTitle",
+        )}
+        message={i18n.t(
+          "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
+          { feature: title },
+        )}
+        confirmLabel={i18n.t("common:actions.remove")}
+        confirmTestId="feature-tab-remove-confirm"
+      />
     </div>
   );
 }

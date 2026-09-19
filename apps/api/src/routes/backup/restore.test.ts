@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
+const authorizeResilienceResourcesMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 const authzState = vi.hoisted(() => ({
   allowedPermissions: new Set<string>(['*:*']),
@@ -114,7 +117,16 @@ vi.mock('../../services/backupMetrics', () => ({
   recordBackupDispatchFailure: vi.fn(),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 import { restoreRoutes } from './restore';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 describe('restore routes', () => {
   let app: Hono;
@@ -132,6 +144,7 @@ describe('restore routes', () => {
     permissionsState = undefined;
     authzState.allowedPermissions.clear();
     authzState.allowedPermissions.add('*:*');
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -153,6 +166,39 @@ describe('restore routes', () => {
     app.route('/', restoreRoutes);
   });
 
+  it('denies a source-site restore before reading snapshot metadata or creating side effects', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('authorizes cancel from restore-job lineage before reading or mutating the job', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/restore/restore-1/cancel', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+  });
+
   it('denies an explicit out-of-scope restore device filter for site-restricted users', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock.mockReturnValueOnce(chainMock([
@@ -162,7 +208,7 @@ describe('restore routes', () => {
     const res = await app.request('/restore?deviceId=device-out');
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
@@ -183,6 +229,45 @@ describe('restore routes', () => {
     expect((await res.json()).data).toHaveLength(1);
     expect(restoreChain.where).toHaveBeenCalled();
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("D17: site-scoped restore listing does not drop a job whose snapshot was retention-deleted (SET NULL)", async () => {
+    // restore_jobs.snapshot_id is ON DELETE SET NULL since 2026-10-15-140004,
+    // so a job can legitimately have snapshotId: null while its device stays
+    // very much in scope. Before the fix, the site-scoping predicate was a
+    // bare `exists (select 1 from backup_snapshots where ... )` keyed off
+    // restore_jobs.snapshot_id — with snapshot_id NULL, no row can ever
+    // satisfy that EXISTS (a NULL join key never matches), so the predicate
+    // silently excluded the job from every site-scoped listing regardless of
+    // whether its own device was allowed. The preceding
+    // `restoreJobs.deviceId IN allowedDeviceIds` condition already bounds the
+    // query correctly on its own, so the EXISTS clause must not re-narrow a
+    // null-snapshot row out.
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const allowedDevicesChain = chainMock([{ id: 'device-in', siteId: SITE_A }]);
+    const restoreChain = chainMock([
+      makeRestoreJob({ id: 'restore-in', deviceId: 'device-in', snapshotId: null }),
+    ]);
+    selectMock
+      .mockReturnValueOnce(allowedDevicesChain)
+      .mockReturnValueOnce(restoreChain);
+
+    const res = await app.request('/restore');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+
+    // Inspect the compiled WHERE predicate directly (the mock resolves
+    // whatever is queued regardless of the predicate, so asserting on the
+    // response body alone can't tell a correct query from a broken one that
+    // happens to be fed the "right" mocked rows) — this is the same
+    // PgDialect().sqlToQuery() technique used elsewhere in this repo to pin
+    // raw `sql` fragment text (see recoveryBootstrap.test.ts).
+    const whereArg = restoreChain.where.mock.calls[0]![0] as SQL;
+    const { sql: compiledSql } = new PgDialect().sqlToQuery(whereArg);
+    const normalized = compiledSql.toLowerCase();
+    expect(normalized).toContain('is null');
+    expect(normalized).toContain('or exists (');
   });
 
   it('keeps unrestricted restore list behavior unchanged', async () => {
@@ -286,6 +371,79 @@ describe('restore routes', () => {
       },
       { userId: 'user-1' }
     );
+  });
+
+  // D12: once backupResultPersistence.ts indexes the agent's stable
+  // originalPath (e.g. C:\assure\src\content\prefix\pick.txt) instead of the
+  // transient VSS shadow-copy device path, a selective restore's selectedPaths
+  // — which the agent also matches by originalPath — must exact-match
+  // backup_snapshot_files.source_path and succeed, instead of 400ing with
+  // "Selected path is not available in this snapshot".
+  it('accepts a selective restore selection matching the indexed originalPath', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(
+        chainMock([{ id: 'file-1', sourcePath: 'C:\\assure\\src\\content\\prefix\\pick.txt' }])
+      )
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+        status: 'pending',
+        targetPath: null,
+        startedAt: null,
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: null,
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      command: { id: 'command-1', status: 'sent' },
+    });
+    updateMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+        status: 'running',
+        targetPath: null,
+        startedAt: new Date('2026-04-01T00:00:00Z'),
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: 'command-1',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshotId: 'snap-db-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.commandId).toBe('command-1');
   });
 
   it('fails the restore request when no backup destination config can be resolved for the snapshot', async () => {

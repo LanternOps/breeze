@@ -5,7 +5,8 @@ vi.mock('../services/jwt', () => ({
 }));
 
 const limitMock = vi.fn();
-const updateWhereMock = vi.fn().mockResolvedValue(undefined);
+const updateReturningMock = vi.fn().mockResolvedValue([{ id: 'p-1' }]);
+const updateWhereMock = vi.fn(() => ({ returning: updateReturningMock }));
 const updateSetMock = vi.fn((_values: Record<string, unknown>) => ({ where: updateWhereMock }));
 const updateMock = vi.fn((_table: unknown) => ({ set: updateSetMock }));
 vi.mock('../db', () => ({
@@ -29,6 +30,7 @@ vi.mock('../db/schema', () => ({
   partners: {
     id: { name: 'id' },
     status: { name: 'status' },
+    trustState: { name: 'trust_state' },
     settings: { name: 'settings' },
     emailVerifiedAt: { name: 'email_verified_at' },
     paymentMethodAttachedAt: { name: 'payment_method_attached_at' },
@@ -43,7 +45,7 @@ import { verifyToken } from '../services/jwt';
 function makeApp() {
   const app = new Hono();
   app.use('*', partnerGuard);
-  app.get('/protected', (c) => c.json({ ok: true }));
+  app.get('/protected', (c) => c.json({ ok: true, trustState: c.get('trustState') }));
   return app;
 }
 
@@ -108,11 +110,12 @@ describe('partnerGuard — fail closed (SR-005)', () => {
 
   it('passes through when the partner exists and is active', async () => {
     vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
-    limitMock.mockResolvedValueOnce([{ status: 'active', settings: {} }]);
+    limitMock.mockResolvedValueOnce([{ status: 'active', trustState: 'probation', settings: {} }]);
     const res = await makeApp().request('/protected', {
       headers: { Authorization: 'Bearer partner-token' },
     });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, trustState: 'probation' });
   });
 });
 
@@ -123,7 +126,8 @@ describe('partnerGuard — fail closed (SR-005)', () => {
 describe('partnerGuard — activation reconciliation (#718)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    updateWhereMock.mockResolvedValue(undefined);
+    updateWhereMock.mockReturnValue({ returning: updateReturningMock });
+    updateReturningMock.mockResolvedValue([{ id: 'p-1' }]);
   });
 
   it('reconciles a stranded pending partner (email verified + payment attached) to active and lets the request through', async () => {

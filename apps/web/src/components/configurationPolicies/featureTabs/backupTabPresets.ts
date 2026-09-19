@@ -197,3 +197,72 @@ export const createExclusionGroups = (): ExclusionSuggestionGroup[] => [
     ],
   },
 ];
+
+// Whole-machine presets (bare-metal recovery W01, spec §5.1). Root-anchored
+// excludes (leading "/") only match from the selection root — see
+// agent/internal/backup/exclude.go. Pseudo/virtual filesystems, volatile
+// trees, and foreign mounts are excluded; everything else on the root
+// filesystem is captured so the rebuild engine can put it back.
+export const LINUX_WHOLE_MACHINE_EXCLUDES: string[] = [
+  "/proc/**",
+  "/sys/**",
+  "/dev/**",
+  "/run/**",
+  "/tmp/**",
+  "/var/tmp/**",
+  "/mnt/**",
+  "/media/**",
+  "/snap/**",
+  "/var/cache/apt/archives/**",
+  "/swapfile",
+  "/swap.img",
+  "**/lost+found/**",
+  // #5581: the agent's own live checkpoint journal and bare-metal rebuild
+  // scratch space. The journal file GROWS across the very run that is
+  // backing it up (a Record append per uploaded file) — capturing it is
+  // exactly the "manifest describes stale bytes" failure mode, and it is
+  // internal agent state, never something an operator asked to back up.
+  // Defense in depth alongside the agent's own hard-exclude of its
+  // resolved journal directory regardless of these presets (see
+  // agent/internal/backup/backup.go's collectBackupFilesFromPaths).
+  "/var/lib/breeze/backup-journal/**",
+  "/var/lib/breeze/rebuild/**",
+];
+
+export const WINDOWS_WHOLE_MACHINE_EXCLUDES: string[] = [
+  "/pagefile.sys",
+  "/hiberfil.sys",
+  "/swapfile.sys",
+  "/$Recycle.Bin/**",
+  "/System Volume Information/**",
+  "/Windows/Temp/**",
+  "/Windows/SoftwareDistribution/Download/**",
+  "**/AppData/Local/Temp/**",
+  // #5581 — see the matching Linux comment above.
+  "/ProgramData/Breeze/data/backup-journal/**",
+];
+
+export type WholeMachinePreset = {
+  id: "whole-machine-linux" | "whole-machine-windows";
+  title: string;
+  summary: string;
+  paths: string[];
+  excludes: string[];
+};
+
+export const createWholeMachinePresets = (): WholeMachinePreset[] => [
+  {
+    id: "whole-machine-linux",
+    title: i18n.t("backup:profiles.tmplWholeLinuxTitle"),
+    summary: i18n.t("backup:profiles.tmplWholeLinuxDesc"),
+    paths: ["/"],
+    excludes: LINUX_WHOLE_MACHINE_EXCLUDES,
+  },
+  {
+    id: "whole-machine-windows",
+    title: i18n.t("backup:profiles.tmplWholeWindowsTitle"),
+    summary: i18n.t("backup:profiles.tmplWholeWindowsDesc"),
+    paths: ["C:\\"],
+    excludes: WINDOWS_WHOLE_MACHINE_EXCLUDES,
+  },
+];

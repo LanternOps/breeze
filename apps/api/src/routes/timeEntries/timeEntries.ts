@@ -16,6 +16,7 @@ import {
   TimeEntryServiceError, type TimeEntryActor, type TimeEntryAuditMutation
 } from '../../services/timeEntryService';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { timeSuggestionRoutes } from './suggestions';
 
 export const timeEntriesApiRoutes = new Hono();
 
@@ -48,7 +49,7 @@ export function timeActorFrom(
   };
 }
 
-function timeEntryAuditCollector(c: Ctx): {
+export function timeEntryAuditCollector(c: Ctx): {
   actor: TimeEntryActor;
   mutations: TimeEntryAuditMutation[];
 } {
@@ -70,7 +71,7 @@ function safelyWriteTimeEntryAudit(
   }
 }
 
-function writeSimpleTimeEntryAudits(
+export function writeSimpleTimeEntryAudits(
   c: Parameters<typeof writeRouteAudit>[0],
   mutations: readonly TimeEntryAuditMutation[],
 ): void {
@@ -78,9 +79,11 @@ function writeSimpleTimeEntryAudits(
     safelyWriteTimeEntryAudit(c, {
       orgId: mutation.orgId,
       action: mutation.action,
-      resourceType: 'time_entry',
+      // W06 (#3900): a dismissal is not a time entry — filing it as one would
+      // point the audit row at an id that is a signal, not an entry.
+      resourceType: mutation.action.startsWith('time_suggestion') ? 'time_suggestion' : 'time_entry',
       resourceId: mutation.entryId,
-      details: { entryIds: [mutation.entryId], count: 1 },
+      details: { entryIds: [mutation.entryId], count: 1, ...(mutation.source ? { source: mutation.source } : {}) },
     });
   }
 }
@@ -116,13 +119,13 @@ function writeBulkTimeEntryAudits(
     safelyWriteTimeEntryAudit(c, {
       orgId: group.orgId,
       action: group.action,
-      resourceType: 'time_entry',
+      resourceType: group.action.startsWith('time_suggestion') ? 'time_suggestion' : 'time_entry',
       details: { entryIds: group.entryIds, count: group.entryIds.length },
     });
   }
 }
 
-function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TimeEntryServiceError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
@@ -130,6 +133,13 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
 }
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
+
+// W06 (#3900). Kept above the `/:id` registrations because Hono matches in
+// registration order. It is not load-bearing at TODAY's route shape (there is
+// no GET /:id, and `/suggestions/confirm` is two segments so no one-segment
+// `/:id` can match it) — it becomes load-bearing the moment a one-segment
+// GET/POST `/:id` is added. Keep the mount here rather than relying on that.
+timeEntriesApiRoutes.route('/suggestions', timeSuggestionRoutes);
 
 timeEntriesApiRoutes.get('/running', scopes, readPerm, async (c) => {
   const auth = c.get('auth');

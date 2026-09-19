@@ -194,14 +194,14 @@ describe('mintChildEnrollmentKey (fix round 3, #2776)', () => {
       partnerId: PARTNER_ID,
       orgId: ORG_ID,
       siteId: SITE_ID,
-      // no expiresInSeconds — falls back to CHILD_ENROLLMENT_KEY_TTL_MINUTES (1440)
+      // no expiresInSeconds — falls back to CHILD_ENROLLMENT_KEY_TTL_MINUTES (43200)
     });
     const after = Date.now();
 
     expect(result.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
     expect(result.expiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
     expect(getInserted().expiresAt.getTime()).toBe(result.expiresAt.getTime());
-    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
   });
 
   // Fix round 4 (#2776): the seconds -> minutes conversion used Math.ceil, which
@@ -304,7 +304,7 @@ describe('redeemShortCode (fix round 3, #2776)', () => {
     const inserted = getInserted();
     expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
     expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
-    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
   });
 
   it('does not shorten the invite child key TTL when the partner cap is above the default (no-op clamp)', async () => {
@@ -321,7 +321,7 @@ describe('redeemShortCode (fix round 3, #2776)', () => {
 
     expect(result).not.toBeNull();
     const inserted = getInserted();
-    expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
-    expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+    expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 43199 * 60 * 1000);
+    expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + 43201 * 60 * 1000);
   });
 });

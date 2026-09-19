@@ -438,7 +438,7 @@ export default function ComplianceTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "compliance",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "compliance");
@@ -452,7 +452,7 @@ export default function ComplianceTab({
     clearError();
     const result = await save(null, {
       featureType: "compliance",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "compliance");

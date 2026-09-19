@@ -93,6 +93,7 @@ vi.mock('../../middleware/auth', () => ({
       scope: 'partner',
       partnerId: 'p-1',
       orgId: null,
+      token: { aep: 1 },
       user: { id: 'u-1', email: 'user@example.test', name: 'Sample User' },
     });
     return next();
@@ -135,7 +136,7 @@ vi.mock('./ssoPolicy', () => ({
 
 import { passwordRoutes } from './password';
 import { db, withSystemDbAccessContext } from '../../db';
-import { invalidateAllUserSessions } from '../../services';
+import { invalidateAllUserSessions, rateLimiter, verifyPassword } from '../../services';
 import { writeAuthAudit } from './helpers';
 import { getPasswordResetEligibility } from '../../services/passwordResetEligibility';
 import { enqueuePasswordResetRequest } from '../../services/authEmailQueue';
@@ -164,7 +165,7 @@ const DEFAULT_EPOCH_ROW: EpochRow = { authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, 
 // `epochRow` from their `.returning(...)` call. Every update issued inside
 // the transaction (main password write, epoch advance, family revoke) is
 // captured so tests can assert all three land in the SAME transaction.
-function stubTransaction(epochRow: EpochRow = DEFAULT_EPOCH_ROW): Array<Record<string, unknown>> {
+function stubTransaction(epochRow: EpochRow | null = DEFAULT_EPOCH_ROW): Array<Record<string, unknown>> {
   const capturedUpdates: Array<Record<string, unknown>> = [];
   const txUpdate = vi.fn((_table: unknown) => ({
     set: (values: Record<string, unknown>) => {
@@ -172,7 +173,7 @@ function stubTransaction(epochRow: EpochRow = DEFAULT_EPOCH_ROW): Array<Record<s
       return {
         where: (..._args: unknown[]) => {
           const result = Promise.resolve(undefined) as Promise<undefined> & { returning?: (sel?: unknown) => Promise<EpochRow[]> };
-          result.returning = (_sel?: unknown) => Promise.resolve([epochRow]);
+          result.returning = (_sel?: unknown) => Promise.resolve(epochRow ? [epochRow] : []);
           return result;
         },
       };
@@ -259,16 +260,31 @@ describe('password reset eligibility (#719)', () => {
 
     it('enqueues for a known and an unknown address indistinguishably (structural + duration)', async () => {
       const ITER = 40;
-      const timeMany = async (email: string): Promise<number> => {
-        const start = performance.now();
-        for (let i = 0; i < ITER; i++) {
-          // eslint-disable-next-line no-await-in-loop
-          await postForgot({ email });
-        }
-        return performance.now() - start;
-      };
-      const knownMs = await timeMany('admin@msp.com');
-      const unknownMs = await timeMany('nobody@nowhere.test');
+      const KNOWN = 'admin@msp.com';
+      const UNKNOWN = 'nobody@nowhere.test';
+
+      // Untimed warm-up so neither timed batch pays JIT/module/mock start-up.
+      // Without it the FIRST batch ran ~6x slower than the second on a loaded
+      // CI runner and tripped the ratio bound below (merge-group run for
+      // #5302), which is an oracle for warm-up, not for address existence.
+      await postForgot({ email: KNOWN });
+      await postForgot({ email: UNKNOWN });
+      vi.mocked(enqueuePasswordResetRequest).mockClear();
+
+      // Interleave the two addresses so any drift during the run (GC, runner
+      // load) lands on both equally instead of on whichever batch went first.
+      let knownMs = 0;
+      let unknownMs = 0;
+      for (let i = 0; i < ITER; i++) {
+        let start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: KNOWN });
+        knownMs += performance.now() - start;
+        start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: UNKNOWN });
+        unknownMs += performance.now() - start;
+      }
 
       // Structural indistinguishability: identical enqueue count, and NONE of
       // the existence-dependent calls fired for either address.
@@ -434,6 +450,34 @@ describe('password reset eligibility (#719)', () => {
   });
 
   describe('POST /reset-password', () => {
+    it('rejects a reset whose generation changes while the replacement password is being hashed', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 5, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 5, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+      stubTransaction(null);
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid or expired reset token' });
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+      expect(writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'user.password.reset', result: 'success' }),
+      );
+    });
+
     it('allows reset completion for users in pending partners (#719)', async () => {
       const envelope = JSON.stringify({ userId: 'u-pending', passwordResetEpoch: 1, email: 'pending2@x.com' });
       getdelMock.mockResolvedValue(envelope);
@@ -650,6 +694,28 @@ describe('password reset eligibility (#719)', () => {
       vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: 'existing-hash' }]) as any);
     });
 
+    it('rejects a password change when a newer credential transition wins before commit', async () => {
+      stubTransaction(null);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Current password is incorrect',
+        message: 'Current password is incorrect',
+        code: 'invalid_credentials',
+      });
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+      expect(writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'user.password.change', result: 'success' }),
+      );
+    });
+
     it('advances auth_epoch + password_reset_epoch and revokes refresh families in one transaction, then runs post-commit cleanup', async () => {
       const capturedUpdates = stubTransaction({ authEpoch: 4, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 4 });
 
@@ -687,6 +753,159 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
+    });
+
+    // #4660 (follows #4470/#4651): the `currentPassword` the user typed into
+    // the request BODY is request data, not the credential that authenticates
+    // this request. Rejecting it must therefore never be a 401 — the web
+    // client's `fetchWithAuth` (apps/web/src/stores/auth.ts) hands any 401 to
+    // refresh-and-replay and then `handleSessionExpired`, so a single typo on
+    // the profile page signed the user out mid-flow. 401 stays reserved for a
+    // dead bearer. Clients branch on `code`, never on the message text.
+    it('answers a wrong current password with 400 + code invalid_credentials, not 401 (#4660)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'wrong-old-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Current password is incorrect',
+        message: 'Current password is incorrect',
+        code: 'invalid_credentials',
+      });
+      // The rejection is terminal: nothing was rotated or revoked.
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    });
+
+    // The other half of the #4660 contract: the SSO-only (no password hash)
+    // branch was ALREADY 400 and keeps its own distinct message, so moving the
+    // wrong-password branch to 400 does not create a new oracle here —
+    // `GET /auth/me` already publishes `hasPassword` (#4018).
+    it('still answers a passwordless account with its own 400 body (#4660)', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: null }]) as any);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'anything-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe('Password authentication is not available for this account');
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    // #4746: every sibling that verifies a body-supplied password is throttled
+    // (account deletion via its own `rateLimiter` call, the MFA/passkey/phone
+    // factor routes via `requireCurrentPasswordStepUp`). This route was the
+    // only one that ran a bare `verifyPassword`, so a stolen access token could
+    // brute-force the current password one argon2 verify per request and, on a
+    // hit, set a new one — takeover with no lockout. It now goes through the
+    // same shared step-up helper.
+    it('throttles current-password guessing and answers 429 BEFORE argon2 runs (#4746)', async () => {
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 5 * 60 * 1000),
+      } as never);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'guess-number-six-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(429);
+      const body = await res.json() as { error: string; message: string; retryAfter: number };
+      expect(body.error).toBe('Too many attempts. Please try again later.');
+      // `message` too: the profile form renders `data.message` and would
+      // otherwise show its generic "Failed to change password" fallback, hiding
+      // the throttle from the very user who needs to stop retrying.
+      expect(body.message).toBe('Too many attempts. Please try again later.');
+      expect(body.retryAfter).toBeGreaterThan(0);
+      // The whole point of the fix: the expensive verify is never reached on a
+      // throttled guess, so the limiter is a real cost ceiling rather than a
+      // response-shaping afterthought. Nothing is rotated either.
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    });
+
+    it('meters guesses in its own per-user bucket, 5 per 5 minutes (#4746)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'wrong-old-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      // A dedicated `pwd:change` prefix, so change-password guesses neither
+      // spend nor are shielded by the `mfa:pwd` budget the factor routes share.
+      expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(
+        expect.anything(),
+        'pwd:change:u-1',
+        5,
+        5 * 60,
+      );
+    });
+
+    // #4746: routing through the step-up helper gave this route a Redis
+    // dependency it did not have before (the old inline `verifyPassword` needed
+    // none), so it now fails CLOSED on an outage rather than verifying
+    // unthrottled. That is the right posture — an unavailable limiter must not
+    // silently become no limiter — but it is a new failure mode for this
+    // endpoint and needs its own guard.
+    it('fails closed with 503 when Redis is unavailable, without verifying the password (#4746)', async () => {
+      const { getRedis } = await import('../../services');
+      vi.mocked(getRedis).mockReturnValueOnce(null as never);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(503);
+      const body = await res.json() as { error: string; message: string };
+      // Both keys: the profile form reads `data.message` and does NOT fall back
+      // to `data.error` (unlike its siblings in that file), so an `error`-only
+      // body would render as the generic "Failed to change password" — an
+      // outage the user cannot tell apart from their own typo, and would retry
+      // as though it were one.
+      expect(body.error).toBe('Service temporarily unavailable');
+      expect(body.message).toBe('Service temporarily unavailable');
+      // Fail CLOSED: no verify, no rotation.
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('still accepts the correct password after a few wrong guesses under the limit (#4746)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const first = await postJson('/change-password', {
+        currentPassword: 'wrong-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+      const second = await postJson('/change-password', {
+        currentPassword: 'wrong-again-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+      const third = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(first.status).toBe(400);
+      expect(second.status).toBe(400);
+      // The limiter must not lock a legitimate user out of their own password
+      // change for two typos — the throttle only bites past the 5th attempt.
+      expect(third.status).toBe(200);
+      expect(vi.mocked(rateLimiter)).toHaveBeenCalledTimes(3);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -95,8 +95,8 @@
       "pattern": "\\*",
       "usable": true,
       "problem": null,
-      "divergence": "FOOTGUN. In path.Match/minimatch, '\\*' is an ESCAPED LITERAL star. Here the backslash folds to '/', giving '/*', which trims to '*' — a base-name glob matching EVERY file. A tech escaping a star to exclude a file literally named '*' instead excludes the entire backup: it succeeds and protects nothing. Syntactically legal, so we accept it (see the matching[] case).",
-      "note": "normalizes to '*' — excludes everything"
+      "divergence": "FOOTGUN (narrowed 2026-09-10 by root-anchoring, W01). In path.Match/minimatch, '\\*' is an ESCAPED LITERAL star. Here the backslash folds to '/*', which is now a ROOT-ANCHORED single-segment pattern (leading '/' anchors instead of being trimmed) — it matches any direct child of the selection root, not every file at every depth. A tech escaping a star to exclude a file literally named '*' still excludes more than intended, but no longer the entire backup.",
+      "note": "normalizes to an anchored '*' — excludes everything directly under the selection root"
     },
     {
       "pattern": "!important.doc",
@@ -123,7 +123,7 @@
     { "pattern": "///", "usable": false, "problem": "empty", "note": "separators only" },
     { "pattern": "\\", "usable": false, "problem": "empty", "note": "folds to '/', trims to empty" },
     { "pattern": "  *.tmp  ", "usable": true, "problem": null, "note": "surrounding whitespace trimmed" },
-    { "pattern": "/var/log/**", "usable": true, "problem": null, "note": "leading '/' trimmed" }
+    { "pattern": "/var/log/**", "usable": true, "problem": null, "note": "leading '/' root-anchors the pattern (W01, was: trimmed)" }
   ],
 
   "matching": [
@@ -336,17 +336,31 @@
       "expected": true
     },
     {
-      "note": "leading '/' is trimmed, so an absolute-looking pattern still matches at any depth",
+      "note": "leading '/' root-anchors the pattern (W01): an absolute-looking pattern now matches ONLY from the selection root, not at any depth",
       "patterns": ["/var/log/**"],
       "relPath": "srv/var/log/syslog",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "the anchored counterpart still matches from the root itself",
+      "patterns": ["/var/log/**"],
+      "relPath": "var/log/syslog",
       "caseInsensitive": false,
       "expected": true
     },
 
     {
-      "divergence": "'\\*' excludes EVERYTHING. The backup then succeeds and protects nothing — the same silent-empty-backup class the profiles schema already guards against for `volumes`.",
+      "divergence": "'\\*' now excludes only direct children of the selection root (W01 root-anchoring), not every file at every depth. Still a footgun for a tech who meant a literal '*' filename, but no longer excludes the entire backup.",
       "patterns": ["\\*"],
       "relPath": "a/b",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "the anchored '\\*' still matches a root-level entry",
+      "patterns": ["\\*"],
+      "relPath": "a",
       "caseInsensitive": false,
       "expected": true
     },

@@ -9,8 +9,13 @@ import {
   varchar,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
+import {
+  recoveryAuthorizationSubjectChecks,
+  recoveryAuthorizationSubjectColumns,
+} from './recoveryAuthorizationSubject';
 
 export const drPlans = pgTable(
   'dr_plans',
@@ -74,9 +79,14 @@ export const drExecutions = pgTable(
     initiatedBy: uuid('initiated_by').references(() => users.id),
     results: jsonb('results'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     planIdx: index('dr_executions_plan_idx').on(table.planId),
     orgIdx: index('dr_executions_org_idx').on(table.orgId),
+    authorizationClaimIdx: index('dr_executions_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('pending', 'running')`),
+    ...recoveryAuthorizationSubjectChecks('dr_executions', table),
   })
 );

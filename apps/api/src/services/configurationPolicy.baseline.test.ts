@@ -35,7 +35,7 @@ function selectChain(rows: unknown[]) {
       resolve(rows);
     },
   };
-  for (const m of ['from', 'where', 'innerJoin', 'orderBy', 'limit']) {
+  for (const m of ['from', 'where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) {
     chain[m] = () => chain;
   }
   return chain;

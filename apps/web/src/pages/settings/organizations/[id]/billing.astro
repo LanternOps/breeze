@@ -1,20 +1,8 @@
 ---
-import DashboardLayout from '../../../../layouts/DashboardLayout.astro';
-import OrgBillingSettings from '../../../../components/billing/OrgBillingSettings';
-
+// Standalone URL retired (M1) — the org settings page's own Billing tab is now
+// the single entry point (audit finding A2: "two URLs, no redirect between
+// them").
 const { id } = Astro.params;
-if (!id) return Astro.redirect('/settings/organizations');
+if (!id) return Astro.redirect('/organizations');
+return Astro.redirect(`/settings/organizations/${id}#billing`, 301);
 ---
-
-<DashboardLayout title="Organization Billing">
-  <div class="space-y-6">
-    <div>
-      <a href={`/settings/organizations/${id}`} class="text-xs text-muted-foreground hover:underline">← Organization settings</a>
-      <h1 class="text-xl font-semibold">Billing settings</h1>
-      <p class="mt-1 text-sm text-muted-foreground">
-        Tax identity and billing address used on this organization's invoices.
-      </p>
-    </div>
-    <OrgBillingSettings orgId={id} client:load />
-  </div>
-</DashboardLayout>

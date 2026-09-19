@@ -4,6 +4,7 @@
     "analytics": "Analitik",
     "approvals": "Onaylar",
     "denials": "Reddediliyor",
+    "proposals": "Komut Dosyası Önerileri",
     "failedToLoadData": "Veri yüklenemedi",
     "failedToLoadToolExecutions": "Araç uygulamaları yüklenemedi",
     "guardrails": "Korkuluklar",
@@ -16,6 +17,19 @@
     "value24h": "24 saat",
     "value30d": "30g",
     "value7d": "7g"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Komut Dosyası Önerileri",
+    "proposalsPerDay": "Günlük öneriler",
+    "reviewerDisagreements": "İnceleyici anlaşmazlıkları",
+    "humanRejectedAfterApprove": "Yapay zeka onayladıktan sonra insan reddetti",
+    "humanApprovedAfterReject": "Yapay zeka reddettikten sonra insan onayladı",
+    "unattendedRuns": "Gözetimsiz çalıştırmalar",
+    "laneState": "Gözetimsiz şerit",
+    "laneOpen": "Açık (tekrarlanan doğrulama hatalarından sonra duraklatıldı)",
+    "laneClosed": "Kapalı",
+    "laneNotConfigured": "Bu kuruluş için yapılandırılmadı",
+    "noData": "Bu dönemde komut dosyası önerisi yok"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "Hepsi",
@@ -1031,12 +1045,14 @@
       "loadWithStatus": "Kurallar yüklenemedi (HTTP {{status}})",
       "load": "Kurallar yüklenemedi",
       "updateRule": "Kural güncellenemedi",
-      "deleteRule": "Kural silinemedi"
+      "deleteRule": "Kural silinemedi",
+      "reapproveRule": "Kural yeniden onaylanamadı"
     },
     "toasts": {
       "defaultVerdictSet": "Varsayılan karar {{verdict}} olarak ayarlandı",
       "ruleToggled": "Kural \"{{name}}\" {{state}}",
-      "ruleDeleted": "\"{{name}}\" kuralı silindi"
+      "ruleDeleted": "\"{{name}}\" kuralı silindi",
+      "ruleReapproved": "\"{{name}}\" kuralı yeniden onaylandı — otomatik onay geri yüklendi"
     },
     "states": {
       "disabled": "devre dışı bırakıldı",
@@ -1044,7 +1060,8 @@
     },
     "description": "İlk önce yazılım politikaları değerlendirilir; izin verilenler listesi/engellenenler listesi eşleşmesi bu kurallardan önce karar verir. Daha sonra kurallar öncelik sırasına göre (önce en düşük) çalıştırılır; ilk maç belirler.",
     "actions": {
-      "addRule": "Kural ekle"
+      "addRule": "Kural ekle",
+      "reapprove": "Yeniden onayla"
     },
     "defaultVerdict": {
       "label": "Varsayılan karar",
@@ -1070,6 +1087,15 @@
       "title": "PAM kuralını sil",
       "message": "\"{{name}}\" kuralı silinsin mi? Yükseklik istekleri artık bununla eşleşmeyecek.",
       "confirm": "Kuralı sil"
+    },
+    "staleTierBadge": {
+      "label": "Eskimiş",
+      "tooltip": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez.",
+      "tooltipWithTiers": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez. Şu anda kullanılan seviyeler: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Otomatik onay askıya alındı",
+      "tooltip": "Bu kural yükseltmeden önce otomatik onay veriyordu. Bir yönetici yeniden onaylayana kadar artık insan onayı gerektirir."
     }
   },
   "pamPamSignerGroupsTab": {

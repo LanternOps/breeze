@@ -1,5 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  partnerTrustModeMock,
+  partnerIdForDeviceMock,
+  evaluateCapabilityMock,
+  unresolvedPartnerDecisionMock,
+} = vi.hoisted(() => ({
+  partnerTrustModeMock: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
+  partnerIdForDeviceMock: vi.fn(),
+  evaluateCapabilityMock: vi.fn(),
+  unresolvedPartnerDecisionMock: vi.fn(),
+}));
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
 // -------------------------------------------------------------------
@@ -32,6 +44,16 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/remoteSessionAuth', () => ({
   consumeWsTicket: vi.fn()
+}));
+
+vi.mock('../config/partnerTrustMode', () => ({
+  partnerTrustMode: partnerTrustModeMock,
+}));
+
+vi.mock('../services/partnerTrust', () => ({
+  partnerIdForDevice: partnerIdForDeviceMock,
+  evaluateCapability: evaluateCapabilityMock,
+  unresolvedPartnerDecision: unresolvedPartnerDecisionMock,
 }));
 
 vi.mock('./agentWs', () => ({
@@ -72,6 +94,7 @@ vi.mock('./remote/helpers', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
+import { evaluateCapability, partnerIdForDevice, unresolvedPartnerDecision } from '../services/partnerTrust';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleTerminalOutput,
@@ -225,6 +248,7 @@ describe('terminalWs', () => {
     // legitimately refuse replacement, so start each test from a clean map.
     __resetTerminalWsForTest();
     vi.clearAllMocks();
+    partnerTrustModeMock.mockReturnValue('off');
   });
 
   // ==========================================
@@ -503,6 +527,96 @@ describe('terminalWs', () => {
       expect(getActiveTerminalSession(SESSION_ID)).toBeDefined();
       expect(getActiveTerminalSessionCount()).toBeGreaterThanOrEqual(1);
       expect(getActiveTerminalSessionIds()).toContain(SESSION_ID);
+    });
+
+    it('refuses probation with close code 4403 before starting the terminal', async () => {
+      const { userId } = setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue('partner-1');
+      vi.mocked(evaluateCapability).mockResolvedValue({
+        allow: false,
+        code: 'TRUST_PROBATION',
+        capability: 'remote_control',
+        reason: 'Partner is in trust probation',
+      });
+      const handlers = captureWsHandlers(SESSION_ID, 'probation-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(ws.close).toHaveBeenCalledWith(4403, 'TRUST_PROBATION');
+      expect(evaluateCapability).toHaveBeenCalledWith('remote_control', {
+        partnerId: 'partner-1',
+        deviceId: DEVICE_ID,
+        userId,
+        detail: { stage: 'ticket', kind: 'terminal' },
+      });
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(getActiveTerminalSession(SESSION_ID)).toBeUndefined();
+    });
+
+    it('keeps trusted terminal upgrade behavior unchanged under enforce mode', async () => {
+      setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue('partner-1');
+      vi.mocked(evaluateCapability).mockResolvedValue({ allow: true });
+      const handlers = captureWsHandlers(SESSION_ID, 'trusted-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(sendCommandToAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'terminal_start' }),
+      );
+      expect(ws.close).not.toHaveBeenCalledWith(4403, expect.anything());
+    });
+
+    it('denies with TRUST_RESTRICTED when the device partner cannot be resolved under enforce', async () => {
+      setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({
+        allow: false,
+        code: 'TRUST_RESTRICTED',
+        capability: 'remote_control',
+        reason: 'partner_unresolved',
+      });
+      const handlers = captureWsHandlers(SESSION_ID, 'unresolved-partner-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(ws.close).toHaveBeenCalledWith(4403, 'TRUST_RESTRICTED');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('allows the terminal upgrade when the device partner cannot be resolved under shadow', async () => {
+      setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('shadow');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({ allow: true });
+      const handlers = captureWsHandlers(SESSION_ID, 'unresolved-partner-shadow-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(ws.close).not.toHaveBeenCalledWith(4403, expect.anything());
+      expect(sendCommandToAgent).toHaveBeenCalled();
+    });
+
+    it('does not resolve a partner when trust mode is off', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'mode-off-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(partnerIdForDevice).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).toHaveBeenCalled();
     });
 
     it('sends AGENT_SEND_FAILED when sendCommandToAgent fails', async () => {

@@ -55,7 +55,7 @@ func (c *LinuxCollector) CollectState(stagingDir string) (*SystemStateManifest, 
 	}
 
 	if len(manifest.Artifacts) == 0 {
-		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
+		return manifest, fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
 	}
 
 	hw, err := c.CollectHardwareProfile()

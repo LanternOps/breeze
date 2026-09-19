@@ -45,7 +45,10 @@ import {
   intersectSiteScopes,
   isSiteScopeSubset,
   normalizeSiteIds,
+  portalUserReportAuthority,
   persistedSiteScopeValues,
+  persistedSystemSiteScopeValues,
+  systemReportAuthority,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
   resolveLiveReportAuthority,
@@ -59,6 +62,7 @@ import {
   type ReportAction,
   type ReportExecutionAuthority,
   type SiteScopeV1,
+  type SystemReportExecutionAuthority,
 } from './siteScope';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 
@@ -103,6 +107,35 @@ function persisted(
     executionScopeUserId: USER_ID,
     executionScopeFingerprint: siteScopeFingerprint(scope),
     executionScopeCapturedAt: CAPTURED_AT,
+    executionScopePrincipalKind: 'user',
+    ...overrides,
+  };
+}
+
+/**
+ * A pre-P2-3 projection: the row physically predates
+ * `execution_scope_principal_kind`, or the SELECT simply omits it, so the key
+ * is ABSENT (not null). Decoding must keep today's behaviour exactly.
+ */
+function withoutPrincipalKind(
+  row: PersistedSiteScopeColumns,
+): PersistedSiteScopeColumns {
+  const { executionScopePrincipalKind: _omitted, ...rest } = row;
+  return rest as PersistedSiteScopeColumns;
+}
+
+/** Complete system-principal row: unrestricted, no acting user. */
+function systemPersisted(
+  overrides: Partial<PersistedSiteScopeColumns> = {},
+): PersistedSiteScopeColumns {
+  return {
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: null,
+    executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+    executionScopeCapturedAt: CAPTURED_AT,
+    executionScopePrincipalKind: 'system',
     ...overrides,
   };
 }
@@ -345,6 +378,7 @@ describe('persisted site-scope columns', () => {
         ? restricted(scope.siteIds)
         : scope;
     const authority: ReportExecutionAuthority = {
+      principalKind: 'user',
       scope,
       principalUserId: USER_ID,
       capturedAt: CAPTURED_AT,
@@ -358,6 +392,7 @@ describe('persisted site-scope columns', () => {
       executionScopeUserId: USER_ID,
       executionScopeFingerprint: authority.fingerprint,
       executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'user',
     });
   });
 
@@ -371,7 +406,25 @@ describe('persisted site-scope columns', () => {
           executionScopeUserId: null,
           executionScopeFingerprint: null,
           executionScopeCapturedAt: null,
+          executionScopePrincipalKind: null,
         },
+        ORG_A,
+      ),
+    ).toEqual(legacy());
+  });
+
+  it('decodes an all-null old-writer row whose projection omits the principal kind', () => {
+    expect(
+      decodeSiteScope(
+        withoutPrincipalKind({
+          executionScopeVersion: null,
+          executionScopeKind: null,
+          executionScopeSiteIds: null,
+          executionScopeUserId: null,
+          executionScopeFingerprint: null,
+          executionScopeCapturedAt: null,
+          executionScopePrincipalKind: null,
+        }),
         ORG_A,
       ),
     ).toEqual(legacy());
@@ -424,6 +477,11 @@ describe('persisted site-scope columns', () => {
     ['executionScopeUserId', USER_ID],
     ['executionScopeFingerprint', 'f'.repeat(64)],
     ['executionScopeCapturedAt', CAPTURED_AT],
+    // The all-NULL arm of reports_execution_scope_shape_chk requires
+    // execution_scope_principal_kind IS NULL too — a stamped principal with no
+    // scope at all is malformed, whichever principal it names.
+    ['executionScopePrincipalKind', 'system'],
+    ['executionScopePrincipalKind', 'user'],
   ] as const)('rejects an all-null row with only %s populated', (field, value) => {
     expect(() =>
       decodeSiteScope(
@@ -434,6 +492,7 @@ describe('persisted site-scope columns', () => {
           executionScopeUserId: null,
           executionScopeFingerprint: null,
           executionScopeCapturedAt: null,
+          executionScopePrincipalKind: null,
           [field]: value,
         },
         ORG_A,
@@ -507,6 +566,238 @@ describe('persisted site-scope columns', () => {
   });
 });
 
+describe('portal-user report execution principal', () => {
+  it('builds and persists an unrestricted authority without a staff user id', () => {
+    const authority = portalUserReportAuthority(ORG_A, CAPTURED_AT);
+
+    expect(authority).toEqual({
+      principalKind: 'portal_user',
+      scope: unrestricted(),
+      capturedAt: CAPTURED_AT,
+      fingerprint: siteScopeFingerprint(unrestricted()),
+    });
+    expect(authority).not.toHaveProperty('principalUserId');
+    expect(persistedSiteScopeValues(authority)).toEqual({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    });
+  });
+
+  it('decodes a persisted portal-user run as unrestricted', () => {
+    expect(decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toEqual(unrestricted());
+  });
+
+  it('rejects a restricted portal-user principal', () => {
+    expect(() => decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: [SITE_A],
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(restricted([SITE_A])),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toThrow(/invalid/i);
+  });
+
+  it('rejects a legacy_unscoped portal-user principal', () => {
+    expect(() => decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'legacy_unscoped',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(legacy()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toThrow(/invalid/i);
+  });
+
+  it('rejects a portal-user authority carrying a forged staff user id', () => {
+    expect(() => persistedSiteScopeValues({
+      ...portalUserReportAuthority(ORG_A, CAPTURED_AT),
+      principalUserId: USER_ID,
+    } as ReportExecutionAuthority)).toThrow(/portal|principal|user/i);
+  });
+});
+
+// ─── System report principal (P2-3, #4190) ───────────────────────────────────
+// A weekly AI narrative report is authored by the platform, not by a person.
+// Attributing it to a human forges provenance, so the system principal is a
+// SEPARATE authority type with no principalUserId at all.
+describe('system report execution principal', () => {
+  it('builds an unrestricted org-wide authority with a matching fingerprint', () => {
+    const authority = systemReportAuthority(ORG_A, CAPTURED_AT);
+
+    expect(authority).toEqual({
+      principalKind: 'system',
+      scope: { version: 1, kind: 'unrestricted', orgId: ORG_A },
+      fingerprint: siteScopeFingerprint(unrestricted()),
+      capturedAt: CAPTURED_AT,
+    });
+    expect(authority).not.toHaveProperty('principalUserId');
+  });
+
+  it('defaults capturedAt to now when the caller omits it', () => {
+    const before = Date.now();
+    const authority = systemReportAuthority(ORG_A);
+
+    expect(authority.capturedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(authority.capturedAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it.each([
+    ['an empty organization ID', () => systemReportAuthority('')],
+    [
+      'an invalid capture time',
+      () => systemReportAuthority(ORG_A, new Date(Number.NaN)),
+    ],
+  ])('rejects %s', (_name, build) => {
+    expect(build).toThrow(/invalid/i);
+  });
+
+  it('encodes the persisted columns with a NULL acting user', () => {
+    const authority = systemReportAuthority(ORG_A, CAPTURED_AT);
+
+    expect(persistedSystemSiteScopeValues(authority)).toEqual({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'system',
+    });
+  });
+
+  it.each([
+    {
+      name: 'a forged non-system principal kind',
+      authority: {
+        ...systemReportAuthority(ORG_A, CAPTURED_AT),
+        principalKind: 'user',
+      } as unknown as SystemReportExecutionAuthority,
+    },
+    {
+      name: 'a forged restricted scope',
+      authority: {
+        ...systemReportAuthority(ORG_A, CAPTURED_AT),
+        scope: { version: 1, kind: 'restricted', orgId: ORG_A, siteIds: [SITE_A] },
+      } as unknown as SystemReportExecutionAuthority,
+    },
+    {
+      name: 'a fingerprint for a different scope',
+      authority: {
+        ...systemReportAuthority(ORG_A, CAPTURED_AT),
+        fingerprint: siteScopeFingerprint(unrestricted(ORG_B)),
+      },
+    },
+    {
+      name: 'an invalid capture time',
+      authority: {
+        ...systemReportAuthority(ORG_A, CAPTURED_AT),
+        capturedAt: new Date(Number.NaN),
+      },
+    },
+  ])('refuses to encode $name', ({ authority }) => {
+    expect(() => persistedSystemSiteScopeValues(authority)).toThrow(
+      /invalid|partial|malformed/i,
+    );
+  });
+
+  it('decodes a complete system row as org-wide unrestricted', () => {
+    expect(decodeSiteScope(systemPersisted(), ORG_A)).toEqual(unrestricted());
+  });
+
+  it.each([
+    {
+      name: 'a system row that also names an acting user',
+      row: systemPersisted({ executionScopeUserId: USER_ID }),
+    },
+    {
+      name: 'a system row carrying a site array',
+      row: systemPersisted({ executionScopeSiteIds: [] }),
+    },
+    {
+      name: 'a restricted row claiming the system principal',
+      row: persisted({ executionScopePrincipalKind: 'system' }),
+    },
+    {
+      name: 'a legacy_unscoped row claiming the system principal',
+      row: persisted({
+        executionScopeKind: 'legacy_unscoped',
+        executionScopeSiteIds: null,
+        executionScopeFingerprint: siteScopeFingerprint(legacy()),
+        executionScopePrincipalKind: 'system',
+      }),
+    },
+    {
+      name: 'an unknown principal kind',
+      row: persisted({
+        executionScopePrincipalKind: 'robot' as 'user',
+      }),
+    },
+  ])('rejects $name', ({ row }) => {
+    expect(() => decodeSiteScope(row, ORG_A)).toThrow(
+      /partial|invalid|malformed/i,
+    );
+  });
+
+  it.each([
+    {
+      name: 'unrestricted',
+      row: persisted({
+        executionScopeKind: 'unrestricted',
+        executionScopeSiteIds: null,
+        executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      }),
+      expected: unrestricted(),
+    },
+    {
+      name: 'restricted',
+      row: persisted(),
+      expected: restricted([SITE_A]),
+    },
+    {
+      name: 'legacy_unscoped',
+      row: persisted({
+        executionScopeKind: 'legacy_unscoped',
+        executionScopeSiteIds: null,
+        executionScopeFingerprint: siteScopeFingerprint(legacy()),
+      }),
+      expected: legacy(),
+    },
+  ])(
+    'decodes a $name user row identically whether the principal kind is stamped or absent',
+    ({ row, expected }) => {
+      expect(decodeSiteScope(row, ORG_A)).toEqual(expected);
+      expect(decodeSiteScope(withoutPrincipalKind(row), ORG_A)).toEqual(expected);
+      expect(
+        decodeSiteScope({ ...row, executionScopePrincipalKind: null }, ORG_A),
+      ).toEqual(expected);
+    },
+  );
+
+  it('still requires an acting user when no principal kind is stamped', () => {
+    // The trap: a projection that omits execution_scope_principal_kind sees a
+    // system row as "unrestricted with a NULL user", which must NOT decode.
+    expect(() =>
+      decodeSiteScope(withoutPrincipalKind(systemPersisted()), ORG_A),
+    ).toThrow(/partial|invalid|malformed/i);
+  });
+});
+
 describe('report definition scope SQL predicates', () => {
   it.each([
     {
@@ -550,6 +841,27 @@ describe('report definition scope SQL predicates', () => {
         expect(rendered.params).toContain(siteId);
       }
     }
+  });
+
+  it('admits non-user principals in the unrestricted branch only', () => {
+    // Without this branch the download/list predicates drop every
+    // system-authored row (they require execution_scope_user_id NOT NULL),
+    // so an unrestricted reader would 404 on a report the platform authored.
+    const unrestrictedRendered = renderSql(
+      reportDefinitionScopeSqlPredicate(reports, unrestricted()),
+    );
+    expect(unrestrictedRendered.sql).toContain('execution_scope_principal_kind');
+    expect(unrestrictedRendered.params).toContain('system');
+    expect(unrestrictedRendered.params).toContain('portal_user');
+
+    // A site-restricted caller must never reach a system row: its branch is
+    // kind = 'restricted' only, which the shape CHECK forbids for 'system'.
+    const restrictedRendered = renderSql(
+      reportDefinitionScopeSqlPredicate(reports, restricted([SITE_A])),
+    );
+    expect(restrictedRendered.params).not.toContain('system');
+    expect(restrictedRendered.params).not.toContain('portal_user');
+    expect(restrictedRendered.params).toContain('user');
   });
 
   it('fails closed for a forced legacy live caller value', () => {
@@ -709,7 +1021,9 @@ describe('report run scope SQL predicates', () => {
     expect(rendered.params).not.toContain('legacy_unscoped');
     expect(rendered.sql.toLowerCase()).toContain('<@');
     expect(rendered.sql.toLowerCase()).toContain('is not null');
-    expect(rendered.sql.toLowerCase()).not.toContain(' or ');
+    expect(rendered.params).not.toContain('system');
+    expect(rendered.params).not.toContain('portal_user');
+    expect(rendered.params).toContain('user');
     expect(rendered.params).toContain(SITE_A);
     expect(rendered.params).not.toContain(SITE_B);
   });

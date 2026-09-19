@@ -5,6 +5,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { db } from '../../db';
 import { patchJobs, devices, organizations } from '../../db/schema';
 import {
@@ -209,6 +210,7 @@ patchJobRoutes.post(
     }
 
     const createdJobs: Array<{ jobId: string; orgId: string; deviceCount: number }> = [];
+    const enqueueFailures: Array<{ jobId: string; orgId: string; error: string }> = [];
 
     for (const [orgId, deviceIds] of orgGroups) {
       const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
@@ -246,9 +248,22 @@ patchJobRoutes.post(
         const delayMs = data.scheduledAt
           ? Math.max(0, new Date(data.scheduledAt).getTime() - Date.now())
           : 0;
-        enqueuePatchJob(job.id, delayMs || undefined).catch((err) =>
-          console.error(`[PatchJobs] Failed to enqueue job ${job.id}:`, err)
-        );
+        // #3945: this used to be fire-and-forget (`.catch(console.error)`),
+        // so the route always returned 200/201 with `createdJobs` populated
+        // even when nothing was actually queued to run — e.g. a wedged
+        // BullMQ job id that #3912 made `enqueuePatchJob` throw on instead of
+        // swallowing. The reconcile sweep deliberately skips a wedged id
+        // (see patchJobExecutor.ts), so there is no backstop: awaiting here
+        // and surfacing the failure in the response is the only place left
+        // that can report it.
+        try {
+          await enqueuePatchJob(job.id, delayMs || undefined);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[PatchJobs] Failed to enqueue job ${job.id}:`, err);
+          captureException(err, c);
+          enqueueFailures.push({ jobId: job.id, orgId, error: message });
+        }
       }
     }
 
@@ -268,11 +283,19 @@ patchJobRoutes.post(
         missingDeviceIds,
         inaccessibleDeviceIds,
         maintenanceSuppressedDeviceIds,
+        enqueueFailures,
       },
     });
 
+    // `success` reflects whether every created job actually got queued to
+    // run, not just whether the DB rows exist — a partial or total enqueue
+    // failure must not be reported as success (#3945). `enqueueFailures`
+    // (in the audit details above and the response body below) tells the
+    // caller exactly which jobs still need attention.
+    const success = enqueueFailures.length === 0;
+
     return c.json({
-      success: true,
+      success,
       configPolicyId,
       configPolicyName: policy.name,
       policyLocal: {
@@ -284,6 +307,7 @@ patchJobRoutes.post(
         approvalRing: buildApprovalRing(policyLocal.ring),
       },
       jobs: createdJobs,
+      enqueueFailures,
       totalDevices: devicePatchConfigs.length,
       skipped: {
         missingDeviceIds,

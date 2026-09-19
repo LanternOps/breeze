@@ -35,6 +35,7 @@ jobs:
           set -euo pipefail
           bash -n scripts/generate-manifest-key.sh
           bash -n scripts/download-verified-asset.sh
+          bash -n scripts/attest-macos-pkg.sh
           node --check scripts/verify-manifest.mjs
 
       - name: Verifier self-test

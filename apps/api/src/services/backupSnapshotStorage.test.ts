@@ -19,12 +19,21 @@ vi.mock('./recoveryMediaService', () => ({
 
 import {
   applyBackupSnapshotImmutability,
+  backupLayoutManifestKey,
+  backupSystemStateManifestKey,
   checkBackupProviderCapabilities,
   deleteBackupSnapshotArtifacts,
   deleteBackupObjectKeys,
   fetchBackupObjectText,
   listBackupObjectsUnderPrefix,
 } from './backupSnapshotStorage';
+
+describe('backupLayoutManifestKey', () => {
+  it('mirrors the agent constant: snapshots/<id>/layout.json', () => {
+    expect(backupLayoutManifestKey('snap-1')).toBe('snapshots/snap-1/layout.json');
+    expect(backupSystemStateManifestKey('snap-1')).toBe('snapshots/snap-1/system-state/manifest.json');
+  });
+});
 
 describe('backup snapshot storage', () => {
   beforeEach(() => {

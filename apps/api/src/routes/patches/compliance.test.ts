@@ -207,3 +207,69 @@ describe('patch compliance site scope', () => {
     expect(conditionText(getDeviceWhere())).not.toContain('devices.siteId');
   });
 });
+
+describe('patch compliance unrated summary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    permissionsState = undefined;
+  });
+
+  it('includes unratedSummary counting both NULL and \'unknown\' severity as unrated', async () => {
+    vi.mocked(db.select)
+      // org device IDs
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: DEVICE_ID }]),
+        }),
+      } as never)
+      // status counts
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+      } as never)
+      // device breakdown
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                groupBy: vi.fn().mockReturnValue({
+                  having: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue([]),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      } as never)
+      // severity counts: one NULL-severity outstanding row, one 'unknown'-severity
+      // row (1 installed + 1 outstanding) — both must coalesce into unratedSummary.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([
+                { severity: null, installed: 0, outstanding: 1 },
+                { severity: 'unknown', installed: 1, outstanding: 1 },
+              ]),
+            }),
+          }),
+        }),
+      } as never);
+
+    const res = await mountApp().request('/patches/compliance', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.unratedSummary).toEqual({ total: 3, patched: 1, pending: 2 });
+  });
+});

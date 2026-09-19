@@ -6,16 +6,64 @@ import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import {
+  HP_CMSL_EULA_ID,
+  readRecordedWarrantyHpCmslConsent,
+  warrantyHpCmslCollectionEffective,
+} from "@breeze/shared";
+
+/**
+ * `warranty` inline settings (#1320 alerting, #5511 W02 HP CMSL collection).
+ *
+ * `enabled` is EXPIRY ALERTING. `hpCmslEnabled` is DEVICE-SIDE COLLECTION.
+ * They are independent switches and neither implies the other.
+ *
+ * State holds the HP flag FLAT even though it is stored nested, so that the
+ * save payload has to rebuild `{ hpCmsl: { enabled } }` from scratch. That is
+ * deliberate: the server refuses a client-supplied `hpCmsl.consent` with a
+ * coded 400 and stamps its own from the authenticated session, and this tab
+ * reads that consent back in order to display it. With a nested settings
+ * object the read value would ride along on the next save and break every edit
+ * after the first; with a flat flag there is no path on which it can.
+ */
 type WarrantySettings = {
   enabled: boolean;
   warnDays: number;
   criticalDays: number;
+  hpCmslEnabled: boolean;
 };
+
 const defaults: WarrantySettings = {
   enabled: true,
   warnDays: 90,
   criticalDays: 30,
+  hpCmslEnabled: false,
 };
+
+function readSettings(
+  inlineSettings: Record<string, unknown> | null | undefined,
+): Partial<WarrantySettings> {
+  if (!inlineSettings) return {};
+  const out: Partial<WarrantySettings> = {};
+  if (typeof inlineSettings.enabled === "boolean") out.enabled = inlineSettings.enabled;
+  if (typeof inlineSettings.warnDays === "number") out.warnDays = inlineSettings.warnDays;
+  if (typeof inlineSettings.criticalDays === "number") out.criticalDays = inlineSettings.criticalDays;
+  const hpCmsl = inlineSettings.hpCmsl as { enabled?: unknown } | null | undefined;
+  out.hpCmslEnabled = !!hpCmsl && hpCmsl.enabled === true;
+  return out;
+}
+
+function toInlineSettings(settings: WarrantySettings) {
+  return {
+    enabled: settings.enabled,
+    warnDays: settings.warnDays,
+    criticalDays: settings.criticalDays,
+    // `consent` is deliberately absent — see the type doc above.
+    hpCmsl: { enabled: settings.hpCmslEnabled },
+  };
+}
+
 export default function WarrantyTab({
   policyId,
   existingLink,
@@ -29,27 +77,24 @@ export default function WarrantyTab({
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<WarrantySettings>(() => ({
     ...defaults,
-    ...(effectiveLink?.inlineSettings as Partial<WarrantySettings> | undefined),
+    ...readSettings(effectiveLink?.inlineSettings),
   }));
   useEffect(() => {
     const link = existingLink ?? parentLink;
-    if (link?.inlineSettings) {
-      setSettings((prev) => ({
-        ...prev,
-        ...(link.inlineSettings as Partial<WarrantySettings>),
-      }));
-    }
+    setSettings((prev) => ({ ...prev, ...readSettings(link?.inlineSettings) }));
   }, [existingLink, parentLink]);
+
   const update = <K extends keyof WarrantySettings>(
     key: K,
     value: WarrantySettings[K],
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
+
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "warranty",
-      featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
+      inlineSettings: toInlineSettings(settings),
     });
     if (result) onLinkChanged(result, "warranty");
   };
@@ -62,8 +107,8 @@ export default function WarrantyTab({
     clearError();
     const result = await save(null, {
       featureType: "warranty",
-      featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
+      inlineSettings: toInlineSettings(settings),
     });
     if (result) onLinkChanged(result, "warranty");
   };
@@ -72,6 +117,19 @@ export default function WarrantyTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "warranty");
   };
+
+  // The acceptance shown is the one on the link being edited — or, while this
+  // tab is still showing inherited state, the parent's. Both are real answers
+  // to "who accepted HP's licence for the policy in force here".
+  const recordedConsent = readRecordedWarrantyHpCmslConsent(effectiveLink?.inlineSettings);
+  const consentSuperseded = !!recordedConsent && recordedConsent.eulaId !== HP_CMSL_EULA_ID;
+
+  // Contract D5: resolution picks a WHOLE link, never a field-by-field merge.
+  // A child policy that does not collect REPLACES a collecting parent and
+  // revokes collection on every device it reaches. Say so before Save.
+  const parentCollects = warrantyHpCmslCollectionEffective(parentLink?.inlineSettings);
+  const showsInheritanceWarning = parentCollects && !settings.hpCmslEnabled;
+
   const meta = FEATURE_META.warranty;
   return (
     <FeatureTabShell
@@ -116,6 +174,9 @@ export default function WarrantyTab({
           </div>
           <button
             type="button"
+            role="switch"
+            aria-checked={settings.enabled}
+            data-testid="warranty-tab-alerts-toggle"
             onClick={() => update("enabled", !settings.enabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
@@ -173,6 +234,84 @@ export default function WarrantyTab({
               </p>
             </div>
           </div>
+        )}
+
+        {/* HP CMSL device-side collection (#5511 W02) */}
+        <div className="space-y-3 rounded-md border bg-background px-4 py-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.warrantyTab.collectHpWarrantyFromTheDevice",
+              )}
+            </p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.hpCmslEnabled}
+              data-testid="warranty-tab-hp-cmsl-toggle"
+              onClick={() => update("hpCmslEnabled", !settings.hpCmslEnabled)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.hpCmslEnabled ? "bg-emerald-500/80" : "bg-muted"}`}
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white transition ${settings.hpCmslEnabled ? "translate-x-5" : "translate-x-1"}`}
+              />
+            </button>
+          </div>
+
+          <p
+            data-testid="warranty-tab-hp-cmsl-consent"
+            className="text-xs text-muted-foreground"
+          >
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.warrantyTab.hpCmslConsentExplainer",
+            )}
+          </p>
+
+          {recordedConsent ? (
+            <p
+              data-testid="warranty-tab-hp-cmsl-acceptance"
+              className="text-xs text-muted-foreground"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.warrantyTab.hpCmslAcceptedByOn",
+                {
+                  user: recordedConsent.acceptedByUserId,
+                  date: formatDateTime(recordedConsent.acceptedAt),
+                },
+              )}
+            </p>
+          ) : (
+            <p
+              data-testid="warranty-tab-hp-cmsl-no-acceptance"
+              className="text-xs text-muted-foreground"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.warrantyTab.hpCmslNoAcceptanceRecordedYet",
+              )}
+            </p>
+          )}
+
+          {consentSuperseded && (
+            <p
+              data-testid="warranty-tab-hp-cmsl-superseded"
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.warrantyTab.hpCmslTermsChangedSaveAgain",
+              )}
+            </p>
+          )}
+        </div>
+
+        {showsInheritanceWarning && (
+          <p
+            data-testid="warranty-tab-inheritance-warning"
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs"
+          >
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.warrantyTab.hpCmslInheritanceReplacesTheWholeLink",
+            )}
+          </p>
         )}
       </div>
     </FeatureTabShell>

@@ -1,9 +1,53 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { SQL } from 'drizzle-orm';
+
+// expireUnusedRecoveryTokens (below) is the only export in this file that
+// touches the database — none of the pure-function tests above import '../db',
+// so mocking it here doesn't affect them. The mock lets us assert (D9): the
+// sweep is the housekeeping half of the PUBLIC, token-authenticated BMR
+// recovery routes (bmr.ts `bmrPublicRoutes`), which run with no request DB
+// context — there is no org known yet. Without withSystemDbAccessContext,
+// forced RLS makes every row invisible to the query and the UPDATE silently
+// affects 0 rows.
+const dbMocks = vi.hoisted(() => {
+  const insideSystemContext = { current: false };
+  const updateCallSawSystemContext: boolean[] = [];
+  const whereMock = vi.fn((_condition: unknown) => Promise.resolve());
+  const setMock = vi.fn((_values: Record<string, unknown>) => ({ where: whereMock }));
+  const updateMock = vi.fn(() => {
+    updateCallSawSystemContext.push(insideSystemContext.current);
+    return { set: setMock };
+  });
+  const withSystemDbAccessContextMock = vi.fn(async (fn: () => Promise<unknown>) => {
+    insideSystemContext.current = true;
+    try {
+      return await fn();
+    } finally {
+      insideSystemContext.current = false;
+    }
+  });
+  return {
+    insideSystemContext,
+    updateCallSawSystemContext,
+    updateMock,
+    setMock,
+    whereMock,
+    withSystemDbAccessContextMock,
+  };
+});
+
+vi.mock('../db', () => ({
+  db: { update: dbMocks.updateMock },
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContextMock,
+}));
+
 import {
   asNullableRecord,
   asRecord,
   buildRecoveryDownloadDescriptor,
   computeRecoveryDownloadExpiry,
+  expireUnusedRecoveryTokens,
   generateRecoveryToken,
   getStringValue,
   hashRecoveryToken,
@@ -341,5 +385,57 @@ describe('buildRecoveryDownloadDescriptor', () => {
     });
 
     expect(result.url).toBe('https://custom.example.com/api/v1/backup/bmr/recover/download');
+  });
+});
+
+// ── expireUnusedRecoveryTokens (D9) ─────────────────────────────────────────
+
+describe('expireUnusedRecoveryTokens', () => {
+  const dialect = new PgDialect();
+
+  beforeEach(() => {
+    dbMocks.updateMock.mockClear();
+    dbMocks.setMock.mockClear();
+    dbMocks.whereMock.mockClear();
+    dbMocks.updateCallSawSystemContext.length = 0;
+    dbMocks.insideSystemContext.current = false;
+    dbMocks.withSystemDbAccessContextMock.mockClear();
+  });
+
+  it('runs the UPDATE inside withSystemDbAccessContext', async () => {
+    await expireUnusedRecoveryTokens();
+
+    expect(dbMocks.withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(dbMocks.updateMock).toHaveBeenCalledTimes(1);
+    // The UPDATE must have executed WHILE inside the wrapper — not merely
+    // alongside it — which is what actually saves the sweep from running
+    // under forced RLS with no scope and no-op'ing on every row.
+    expect(dbMocks.updateCallSawSystemContext).toEqual([true]);
+  });
+
+  it('targets only unused tokens past expiry, leaving used/revoked/expired ones alone', async () => {
+    await expireUnusedRecoveryTokens();
+
+    const setArg = dbMocks.setMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg).toEqual({ status: 'expired' });
+
+    const whereArg = dbMocks.whereMock.mock.calls[0]![0] as SQL;
+    const { sql, params } = dialect.sqlToQuery(whereArg);
+
+    // Only tokens still 'active' or 'authenticated' are eligible — a token
+    // already 'used', 'revoked', or previously 'expired' must not be touched.
+    expect(sql).toContain('"recovery_tokens"."status" in');
+    expect(sql).toContain('"recovery_tokens"."expires_at" <');
+    expect(params).toEqual(expect.arrayContaining(['active', 'authenticated']));
+    expect(params).not.toContain('used');
+    expect(params).not.toContain('revoked');
+    // The expiry cutoff is bound as a real "now" timestamp, not a static or
+    // missing value — asserted as an ISO string close to test execution time
+    // (the pg-core `timestamp()` column serializes Date params to ISO text
+    // when compiling, as shown by the two status params above staying plain
+    // strings).
+    const cutoff = params.find((p) => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p));
+    expect(cutoff).toBeDefined();
+    expect(Math.abs(Date.now() - new Date(cutoff as string).getTime())).toBeLessThan(5_000);
   });
 });

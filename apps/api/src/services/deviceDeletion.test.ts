@@ -253,8 +253,114 @@ describe('deleteDeviceCascade lock ordering', () => {
 
     expect(statements[statements.length - 1]).toBe('__DELETE_DEVICES_ROW__');
   });
+
+  // #4371 fixup: agent_rollback_events and pam_actuation_results joined
+  // peripheral_policy_delivery_events under the SAME guarded escalation —
+  // all three have DELETE fully revoked from breeze_app (see
+  // DEVICE_CASCADE_AUDIT_ADMIN_TABLES in deviceDeletion.ts).
+  it.each([
+    'peripheral_policy_delivery_events',
+    'agent_rollback_events',
+    'pam_actuation_results',
+  ])('uses the guarded audit-retention role for append-only table %s', async (table) => {
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const rowDelete = statements.findIndex((statement) =>
+      statement.includes(table) && statement.includes('DELETE FROM')
+    );
+    expect(rowDelete, `no DELETE statement found for ${table}`).toBeGreaterThan(0);
+    expect(statements[rowDelete - 2]).toContain('SET LOCAL ROLE breeze_audit_admin');
+    expect(statements[rowDelete - 1]).toContain('breeze.allow_audit_retention');
+    expect(statements[rowDelete + 1]).toContain('RESET ROLE');
+  });
+
+  it('does NOT use the audit-admin escalation for ordinary device-cascade tables', async () => {
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    // automation_action_results and device_software_inventory_state keep
+    // DELETE granted to breeze_app (only TRUNCATE was revoked, and nothing
+    // deletes via TRUNCATE) — they must NOT be routed through the
+    // escalation, or the escalation set has silently over-grown.
+    for (const table of ['automation_action_results', 'device_software_inventory_state']) {
+      const rowDelete = statements.findIndex((statement) =>
+        statement.includes(table) && statement.includes('DELETE FROM')
+      );
+      expect(rowDelete, `no DELETE statement found for ${table}`).toBeGreaterThan(0);
+      expect(statements[rowDelete - 1]).not.toContain('breeze_audit_admin');
+      expect(statements[rowDelete - 1]).not.toContain('breeze.allow_audit_retention');
+    }
+  });
 });
 
+
+describe('deleteDeviceCascade link detach (#3952)', () => {
+  /** The UPDATE this cascade issues for one linked_device_id table. */
+  function detachStatementFor(statements: string[], table: string): string {
+    const match = statements.filter(
+      (s) => s.includes(table) && s.includes('linked_device_id')
+    );
+    // Exactly one, or the assertions below could be reading the wrong statement.
+    expect(match, `expected one detach UPDATE for ${table}`).toHaveLength(1);
+    return match[0]!;
+  }
+
+  it('clears link_source in the SAME statement that nulls discovered_assets.linked_device_id', async () => {
+    // #3952 — `discovered_assets_link_source_requires_link` (migration
+    // 2026-06-27-discovered-asset-link-source.sql) is
+    // CHECK (link_source IS NULL OR linked_device_id IS NOT NULL). An
+    // auto-linked asset therefore carries link_source='auto', and nulling
+    // linked_device_id ALONE leaves "a source without a link" — Postgres
+    // raises 23514 and the whole permanent-delete transaction rolls back as a
+    // 500. Both columns must be cleared, and in one statement: a second
+    // follow-up UPDATE would still leave the row constraint-violating at the
+    // moment the first one is applied.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = detachStatementFor(statements, 'discovered_assets');
+    expect(detach).toContain('link_source');
+  });
+
+  it('does not invent a link_source column on the other linked table', async () => {
+    // network_change_events also lives in DEVICE_LINKED_DEVICE_ID_TABLES but
+    // has no link_source column, so a fix that blanket-appended the assignment
+    // to every table in the loop would trade a 23514 for a 42703
+    // (undefined_column) — a 500 either way. This is the assertion that
+    // distinguishes "clear the columns this table actually has" from
+    // "clear link_source everywhere".
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = detachStatementFor(statements, 'network_change_events');
+    expect(detach).not.toContain('link_source');
+  });
+
+  it('detaches manual_assets with linked_device_id alone (#4622)', async () => {
+    // manual_assets joined DEVICE_LINKED_DEVICE_ID_TABLES in #4622. The rows
+    // are hand-entered inventory (serial, asset tag, assigned contact, notes)
+    // that must OUTLIVE the device, so the cascade detaches rather than
+    // deletes — and it declares no link-conditional CHECK constraint, so it
+    // has no DEVICE_LINK_DEPENDENT_COLUMNS entry and nothing else may be
+    // cleared alongside. The loop is data-driven, so this is cheap insurance
+    // that registration actually produces the statement.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = detachStatementFor(statements, 'manual_assets');
+    expect(detach).not.toContain('link_source');
+    expect(
+      statements.filter((s) => s.includes('manual_assets') && s.includes('delete')),
+      'manual_assets must be DETACHED, never deleted, by a device cascade',
+    ).toHaveLength(0);
+  });
+});
 
 describe('deleteDeviceCascade when the parent lock is not acquired', () => {
   it('reports rather than aborting when FOR UPDATE matches no row', async () => {

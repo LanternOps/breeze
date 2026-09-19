@@ -1,11 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { resendSendMock, createTransportMock, smtpSendMailMock, fetchMock } = vi.hoisted(() => ({
+const { resendSendMock, createTransportMock, smtpSendMailMock, fetchMock, captureExceptionMock } = vi.hoisted(() => ({
   resendSendMock: vi.fn(),
   createTransportMock: vi.fn(),
   smtpSendMailMock: vi.fn(),
-  fetchMock: vi.fn()
+  fetchMock: vi.fn(),
+  captureExceptionMock: vi.fn()
 }));
+
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock, captureMessage: vi.fn() }));
 
 vi.mock('resend', () => ({
   Resend: class MockResend {
@@ -38,6 +41,8 @@ function resetEmailEnv() {
   delete process.env.MAILGUN_DOMAIN;
   delete process.env.MAILGUN_BASE_URL;
   delete process.env.MAILGUN_FROM;
+  delete process.env.SMTP_TIMEOUT_MS;
+  delete process.env.MAILGUN_TIMEOUT_MS;
 }
 
 describe('email service', () => {
@@ -79,44 +84,12 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Test',
-      html: '<p>Hello</p>'
+      html: '<p>Hello</p>',
+      purpose: 'ops.alert'
     });
 
     expect(resendSendMock).toHaveBeenCalledTimes(1);
     expect(createTransportMock).not.toHaveBeenCalled();
-  });
-
-  describe('fromWithDisplayName', () => {
-    it('wraps the default address with a quoted display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
-        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
-    });
-
-    it('extracts the address when EMAIL_FROM already carries a display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'Breeze <noreply@example.com>';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
-        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
-    });
-
-    it('strips header-breaking characters from the display name', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('Evil"\r\nBcc: victim <x>'))
-        .toBe('"Evil Bcc: victim x" <noreply@example.com>');
-    });
-
-    it('falls back to the default sender when the name is empty after sanitizing', async () => {
-      process.env.RESEND_API_KEY = 're_test_123';
-      process.env.EMAIL_FROM = 'noreply@example.com';
-      const { getEmailService } = await import('./email');
-      expect(getEmailService()!.fromWithDisplayName('"<>"')).toBe('noreply@example.com');
-    });
   });
 
   it('uses SMTP when EMAIL_PROVIDER is smtp', async () => {
@@ -136,7 +109,8 @@ describe('email service', () => {
       to: ['user@example.com'],
       subject: 'SMTP Test',
       html: '<p>Hello SMTP</p>',
-      replyTo: 'help@example.com'
+      replyTo: 'help@example.com',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -144,6 +118,10 @@ describe('email service', () => {
       host: 'smtp.example.com',
       port: 465,
       secure: true,
+      // #3905 — the transport is bounded; see the deadlines describe block.
+      connectionTimeout: 30_000,
+      greetingTimeout: 30_000,
+      socketTimeout: 30_000,
       auth: {
         user: 'smtp-user',
         pass: 'smtp-pass'
@@ -171,7 +149,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto SMTP',
-      html: '<p>Auto SMTP</p>'
+      html: '<p>Auto SMTP</p>',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -215,7 +194,8 @@ describe('email service', () => {
       subject: 'Mailgun Test',
       html: '<p>Hello Mailgun</p>',
       text: 'Hello Mailgun',
-      replyTo: ['support@example.com', 'help@example.com']
+      replyTo: ['support@example.com', 'help@example.com'],
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -300,7 +280,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto Mailgun',
-      html: '<p>Auto Mailgun</p>'
+      html: '<p>Auto Mailgun</p>',
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -342,5 +323,288 @@ describe('buildInvoiceTemplate', () => {
     const t = buildInvoiceTemplate({ ...base, amountDueNow: '$10,000.00' });
     expect(t.html).not.toContain('Paid to date');
     expect(t.text).not.toContain('Paid to date');
+  });
+});
+
+// #3905 — the send transports had no client-side deadline at all. Nodemailer's
+// SMTP defaults let a silently-dropping mail server hold the socket for ten
+// minutes, and the Mailgun fetches passed no AbortSignal, so they could hang
+// forever. Both are now bounded, because a quote/invoice send that never
+// returns is a leaked worker (and, before the deferred-send fix, a leaked
+// pooled Postgres connection and a customer-facing row lock).
+describe('email transport deadlines (#3905)', () => {
+  const originalEnvSnapshot = { ...process.env };
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    process.env = { ...originalEnvSnapshot };
+    resetEmailEnv();
+    smtpSendMailMock.mockResolvedValue({ messageId: 'smtp-1' });
+    createTransportMock.mockReturnValue({ sendMail: smtpSendMailMock });
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: vi.fn().mockResolvedValue('ok') });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  function smtpEnv() {
+    process.env.EMAIL_PROVIDER = 'smtp';
+    process.env.SMTP_HOST = 'smtp.example.com';
+    process.env.SMTP_FROM = 'noreply@example.com';
+  }
+
+  function mailgunEnv() {
+    process.env.EMAIL_PROVIDER = 'mailgun';
+    process.env.MAILGUN_API_KEY = 'key-test';
+    process.env.MAILGUN_DOMAIN = 'mg.example.com';
+    process.env.MAILGUN_FROM = 'noreply@example.com';
+  }
+
+  it('bounds the SMTP transport with connection, greeting and socket deadlines', async () => {
+    smtpEnv();
+    const { getEmailService } = await import('./email');
+    expect(getEmailService()).not.toBeNull();
+
+    expect(createTransportMock).toHaveBeenCalledTimes(1);
+    const opts = createTransportMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts.connectionTimeout).toBe(30_000);
+    expect(opts.greetingTimeout).toBe(30_000);
+    expect(opts.socketTimeout).toBe(30_000);
+  });
+
+  it('honours SMTP_TIMEOUT_MS for all three SMTP deadlines', async () => {
+    smtpEnv();
+    process.env.SMTP_TIMEOUT_MS = '5000';
+    const { getEmailService } = await import('./email');
+    expect(getEmailService()).not.toBeNull();
+
+    const opts = createTransportMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts.connectionTimeout).toBe(5_000);
+    expect(opts.greetingTimeout).toBe(5_000);
+    expect(opts.socketTimeout).toBe(5_000);
+  });
+
+  it('rejects a non-numeric or out-of-range SMTP_TIMEOUT_MS instead of silently defaulting', async () => {
+    smtpEnv();
+    process.env.SMTP_TIMEOUT_MS = 'soon';
+    const { getEmailService } = await import('./email');
+    // getEmailService swallows a config error into a null service + warning;
+    // the point is that it does NOT boot with an unbounded transport.
+    expect(getEmailService()).toBeNull();
+    expect(createTransportMock).not.toHaveBeenCalled();
+  });
+
+  it('passes an AbortSignal on the Mailgun form-data (attachment) send', async () => {
+    mailgunEnv();
+    const { getEmailService } = await import('./email');
+    const service = getEmailService();
+    await service!.sendEmail({
+      to: 'user@example.com',
+      subject: 'Proposal',
+      html: '<p>hi</p>',
+      attachments: [{ filename: 'q.pdf', content: Buffer.from('pdf'), contentType: 'application/pdf' }],
+      purpose: 'ops.alert',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('passes an AbortSignal on the Mailgun urlencoded (no-attachment) send', async () => {
+    mailgunEnv();
+    const { getEmailService } = await import('./email');
+    const service = getEmailService();
+    await service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('reports a MALFORMED email env value to Sentry, because it silently disables all outbound mail', async () => {
+    // getEmailService caches `unavailable` for the life of the process, so a
+    // typo here stops password resets, invites, quotes and alerts alike with
+    // nothing but a log line. A typo is an incident.
+    smtpEnv();
+    process.env.SMTP_TIMEOUT_MS = '30s';
+    const { getEmailService } = await import('./email');
+
+    expect(getEmailService()).toBeNull();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toMatchObject({
+      name: 'EmailConfigValueError',
+      message: expect.stringContaining('SMTP_TIMEOUT_MS'),
+    });
+  });
+
+  it('does NOT report merely-unconfigured email to Sentry — self-hosting without email is supported', async () => {
+    // No provider env at all. This must stay log-only, or every self-hosted
+    // install that does not use email floods the operator's Sentry.
+    const { getEmailService } = await import('./email');
+
+    expect(getEmailService()).toBeNull();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a Mailgun timeout as a named, actionable error rather than a bare AbortError', async () => {
+    mailgunEnv();
+    process.env.MAILGUN_TIMEOUT_MS = '1000';
+    fetchMock.mockRejectedValue(
+      Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }),
+    );
+    const { getEmailService } = await import('./email');
+    const service = getEmailService();
+
+    await expect(
+      service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' }),
+    ).rejects.toThrow(/Mailgun request timed out after 1000ms/);
+  });
+});
+
+/**
+ * The partner lane, end-to-end through the REAL resolveSender and the REAL
+ * sendOnPartnerLane. Only the database lookup, the config reader, the cap and
+ * the provider registry are mocked — everything between `sendEmail` and the
+ * transport is production code, which is what makes the failure-semantics
+ * assertions below worth having.
+ */
+describe('email service — the partner lane (spec §8.3, §8.4)', () => {
+  const laneSend = vi.fn();
+  const lookup = vi.fn();
+  const cap = vi.fn();
+
+  vi.doMock('./emailDomains/config', () => ({
+    isPartnerLaneConfigured: () => true,
+    getEmailDomainsConfig: () => ({ dailySendCap: 0, partnerAllowlist: [] }),
+  }));
+  vi.doMock('./emailDomains/partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: lookup }));
+  vi.doMock('./emailDomains/sendCap', () => ({ tryCountPartnerLaneSend: cap }));
+  vi.doMock('./emailDomains/providerRegistry', () => ({
+    getEmailDomainProvider: () => ({ id: 'resend', verifiesByDns: true, send: laneSend }),
+  }));
+  vi.doMock('../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: vi.fn(async () => undefined) }));
+  vi.doMock('./opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true), isOpsAlertingConfigured: () => false }));
+
+  const PARTNER = '11111111-1111-1111-1111-111111111111';
+  const IDENTITY = {
+    ok: true as const, partnerName: 'Acme MSP', localPart: 'support', displayName: 'Acme Support',
+    replyTo: 'help@acme.test', domainId: 'd1', domain: 'mail.acme.test',
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    process.env = { ...originalEnv };
+    resetEmailEnv();
+    process.env.EMAIL_PROVIDER = 'resend';
+    process.env.RESEND_API_KEY = 're_test_123';
+    process.env.EMAIL_FROM = 'Breeze <no-reply@2breeze.app>';
+    resendSendMock.mockResolvedValue({ id: 'resend-1' });
+    laneSend.mockResolvedValue({ providerMessageId: 'partner-1' });
+    lookup.mockResolvedValue(IDENTITY);
+    cap.mockResolvedValue(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  async function service() {
+    const { getEmailService } = await import('./email');
+    return getEmailService()!;
+  }
+
+  const BASE = {
+    to: 'customer@example.test',
+    subject: 'Invoice INV-1',
+    html: '<p>hi</p>',
+  } as const;
+
+  it('sends a partner-lane purpose through the provider, not the platform transport', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(laneSend).toHaveBeenCalledTimes(1);
+    expect(resendSendMock).not.toHaveBeenCalled();
+    expect(laneSend.mock.calls[0]![0].from).toBe('"Acme Support" <support@mail.acme.test>');
+  });
+
+  it('applies the Reply-To precedence: call site, then identity, then none', async () => {
+    const svc = await service();
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, replyTo: 'accounts@acmemsp.example' });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBe('accounts@acmemsp.example');
+
+    laneSend.mockClear();
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBe('help@acme.test');
+
+    laneSend.mockClear();
+    lookup.mockResolvedValue({ ...IDENTITY, replyTo: null });
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    expect(laneSend.mock.calls[0]![0].replyTo).toBeUndefined();
+  });
+
+  it('a platform purpose never reaches the partner lane, whatever the registry says', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'auth.password_reset' });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+  });
+
+  it.each([
+    ['domain_unusable', '"Acme MSP via Breeze" <no-reply@2breeze.app>'],
+    ['lane_unavailable', '"Acme MSP via Breeze" <no-reply@2breeze.app>'],
+  ] as const)('falls back to the platform lane on %s, with the purpose fallback From', async (kind, expectedFrom) => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind }));
+    await (await service()).sendEmail({
+      ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP',
+      headers: { 'Message-ID': '<m@x>' },
+    });
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    const fallback = resendSendMock.mock.calls[0]![0];
+    expect(fallback.from).toBe(expectedFrom);
+    // Spec §8.4: the fallback carries NEITHER the outbound marker NOR any
+    // partner tag. A platform-lane message wearing X-Breeze-Outbound would be
+    // dropped by our own inbound pipeline if it ever came back.
+    expect(fallback.headers).toEqual({ 'Message-ID': '<m@x>' });
+    expect(fallback.headers['X-Breeze-Outbound']).toBeUndefined();
+  });
+
+  it('the fallback uses the CALL SITE Reply-To, not the identity default', async () => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind: 'domain_unusable' }));
+    await (await service()).sendEmail({ ...BASE, purpose: 'ticket.customer_notification', partnerId: PARTNER });
+    // help@acme.test is on the domain that just refused us; routing replies
+    // there would compound the failure.
+    expect(resendSendMock.mock.calls[0]![0].replyTo).toBeUndefined();
+  });
+
+  it.each(['message_rejected', 'ambiguous'] as const)('rethrows %s and NEVER touches the second lane', async (kind) => {
+    const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
+    laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind, detail: 'd' }));
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+      .rejects.toBeInstanceOf(PartnerLaneSendFailure);
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unknown exception from the adapter and never falls back', async () => {
+    laneSend.mockRejectedValue(new TypeError('adapter blew up'));
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+      .rejects.toThrow('adapter blew up');
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  it('a partner-lane purpose with partnerId: null is a plain platform send', async () => {
+    await (await service()).sendEmail({ ...BASE, purpose: 'report.delivery', partnerId: null });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('Breeze <no-reply@2breeze.app>');
+  });
+
+  it('an over-cap send goes out on the platform lane, exactly once', async () => {
+    cap.mockResolvedValue(false);
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP via Breeze" <no-reply@2breeze.app>');
   });
 });

@@ -98,6 +98,8 @@ var allCommandTypes = []string{
 
 	// handlers_autoupdate.go
 	tools.CmdSetAutoUpdate,
+	// handlers_rollback.go
+	tools.CmdAgentRollbackV1,
 
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,
@@ -113,6 +115,8 @@ var allCommandTypes = []string{
 
 	// handlers_peripheral.go init()
 	tools.CmdPeripheralPolicySync,
+	// handlers_peripheral_v2.go init()
+	tools.CmdPeripheralPolicySyncV2,
 
 	// handlers_uninstall.go init()
 	tools.CmdSelfUninstall,
@@ -129,6 +133,7 @@ var allCommandTypes = []string{
 
 	// handlers_actuate.go init() — PAM Track 5
 	tools.CmdActuateElevation,
+	tools.CmdPamApplyV2, tools.CmdPamCleanupV2,
 
 	// handlers_encryption.go init()
 	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,

@@ -114,7 +114,16 @@ export function DocumentWorkspace({
             header is pinned, so every vertical pixel here is stolen from the
             working canvas below — keep it short. */}
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          {/* min-w-52 (not min-w-0) on both the left group and the title cluster:
+              the header row is `back link · title · status pill · meta · actions`,
+              and with a zero floor flexbox shrank the TITLE first — at a 1280px
+              viewport the quote title input measured 102px against 208px of
+              content (#4937). A real floor makes each cluster's hypothetical main
+              size count toward line breaking, so the wrapping already designed
+              into these rows moves the actions (outer) and then the meta slot and
+              status pill (inner) onto their own lines instead of starving the
+              title. 13rem ≈ the title input's own content width. */}
+          <div className="flex min-w-52 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
             <a
               href={backHref}
               aria-label={t('shared.documentWorkspace.backAria', { label: backLabel.toLowerCase() })}
@@ -122,7 +131,7 @@ export function DocumentWorkspace({
             >
               <span aria-hidden="true">←</span> {backLabel}
             </a>
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-52 flex-1 flex-wrap items-center gap-2">
               {titleSlot ? (
                 <>
                   {/* The slot replaces the VISUAL heading (e.g. with an editable
@@ -144,7 +153,10 @@ export function DocumentWorkspace({
           {actions && (
             // Right-aligned cluster; the caller renders any disabled-reason hint on
             // its own full-basis line below the buttons (never inline between them).
-            <div className="flex items-center gap-2 flex-wrap justify-end">{actions}</div>
+            // `ml-auto` keeps it right-aligned when the identity side's width floor
+            // pushes it onto its own line — `justify-between` alone would leave a
+            // lone item on a wrapped line sitting at the start edge.
+            <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">{actions}</div>
           )}
         </div>
 

@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { getAnthropicClientForPartner } from '../llm/llmConfigResolver';
+import { getAnthropicClientForPartner, resolveWireModel } from '../llm/llmConfigResolver';
+import { maxOutputTokensForAiBudget } from '../aiBudgetReservations';
 
 /**
  * AI email -> ticket draft (spec Task 19, Outlook tech add-in).
@@ -21,7 +22,15 @@ export interface EmailDraftInput {
   threadContext?: string | null;
   model: string;
   partnerId: string | null;
+  /**
+   * Tenant axis for the LLM egress audit when this function has to resolve its
+   * own client (#3922). Callers that pass `client` have already attributed the
+   * call themselves.
+   */
+  orgId?: string | null;
   client?: Anthropic;
+  budgetCents?: number;
+  calculateCostCents?: (inputTokens: number, outputTokens: number) => number;
 }
 
 export interface EmailDraftResult {
@@ -78,6 +87,7 @@ export class EmailDraftFailedError extends Error {
     message: string,
     public readonly inputTokens: number,
     public readonly outputTokens: number,
+    public readonly providerOutcomeUnknown = false,
     options?: { cause?: unknown }
   ) {
     super(message, options);
@@ -86,8 +96,29 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
+  // `input.model` is the WIRE model when the caller supplies its own client
+  // (the caller already translated it via `resolveWireModel`). On the fallback
+  // path we resolve the client here, so we must translate it here too.
+  let client = input.client;
+  let wireModel = input.model;
+  if (!client) {
+    const llm = await getAnthropicClientForPartner(input.partnerId, {
+      surface: 'one_shot_email_draft',
+      orgId: input.orgId ?? null,
+    });
+    client = llm.client;
+    wireModel = resolveWireModel(llm.resolved, input.model).model;
+  }
   const userContent = buildUserContent(input);
+  const maxTokens = input.budgetCents === undefined
+    ? 1024
+    : maxOutputTokensForAiBudget({
+      prompt: `${SYSTEM_PROMPT}\n${userContent}`,
+      requestedMaxOutputTokens: 1024,
+      budgetCents: input.budgetCents / 2,
+      calculateCostCents: input.calculateCostCents
+        ?? (() => { throw new Error('Budgeted email draft requires pricing'); }),
+    });
   const attemptErrors: string[] = [];
   // Accumulated across attempts: a successful retry still reports (and the
   // route still meters) attempt 1's burned tokens, and the failure error below
@@ -95,21 +126,26 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
   let inTok = 0;
   let outTok = 0;
 
-  const fail = (cause?: unknown): never => {
+  const fail = (cause?: unknown, providerOutcomeUnknown = false): never => {
     throw new EmailDraftFailedError(
       `Failed to draft ticket from email: ${attemptErrors.join('; ')}`,
       inTok,
       outTok,
+      providerOutcomeUnknown,
       cause === undefined ? undefined : { cause }
     );
   };
+
+  if (maxTokens === null) {
+    return fail(new Error('Email draft prompt exceeds the reserved budget'));
+  }
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let resp;
     try {
       resp = await client.messages.create({
-        model: input.model,
-        max_tokens: 1024,
+        model: wireModel,
+        max_tokens: maxTokens,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: userContent }],
       });
@@ -117,7 +153,7 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
       // API/network error: same no-retry behavior as before (the pane has a
       // deterministic fallback), but wrapped so prior attempts' tokens meter.
       attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
-      return fail(err);
+      return fail(err, true);
     }
     inTok += resp.usage?.input_tokens ?? 0;
     outTok += resp.usage?.output_tokens ?? 0;

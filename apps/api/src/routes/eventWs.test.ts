@@ -7,13 +7,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null),
   resolveRedisUrl: vi.fn(() => 'redis://localhost:6379'),
+  REDIS_CLIENT_BASE_OPTIONS: { protocol: 2 },
 }));
 
 const schemaTables = vi.hoisted(() => ({
   users: { table: 'users' },
   organizationUsers: { table: 'organizationUsers' },
   partnerUsers: { table: 'partnerUsers' },
-  organizations: { table: 'organizations' },
+  organizations: { table: 'organizations', id: 'id', partnerId: 'partner_id', status: 'status', deletedAt: 'deleted_at' },
 }));
 
 type LiveUserRow = {
@@ -21,6 +22,7 @@ type LiveUserRow = {
   permissionsEpoch: number;
   partnerId: string;
   orgId: string | null;
+  isPlatformAdmin?: boolean;
 };
 
 let userStatusRow: LiveUserRow | undefined = {
@@ -74,6 +76,8 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn(() => ({
+          then: (resolve: (rows: Array<{ id: string }>) => unknown) =>
+            Promise.resolve(partnerOrganizationRows).then(resolve),
           limit: vi.fn(async () => {
             if (throwOnSelect) throw new Error('db down');
             if (table === schemaTables.users) return userStatusRow ? [userStatusRow] : [];
@@ -105,6 +109,12 @@ vi.mock('../services/eventDispatcher', () => {
     matchesEventType: vi.fn(),
   };
 });
+
+let blockedMobileDevice = false;
+vi.mock('../middleware/mobileDeviceBlocked', () => ({
+  getBoundMobileDeviceBlock: vi.fn(async () =>
+    blockedMobileDevice ? { reason: 'lost' } : null),
+}));
 
 // Mock auth middleware as a pass-through (tests inject auth context manually)
 vi.mock('../middleware/auth', () => ({
@@ -146,6 +156,7 @@ beforeEach(() => {
   setPartnerMembership({ roleId: 'partner-role-1', orgAccess: 'all', orgIds: null });
   partnerOrganizationRows = [{ id: 'org-1' }, { id: 'org-2' }, { id: 'org-3' }];
   setThrowOnSelect(false);
+  blockedMobileDevice = false;
 });
 
 // -------------------------------------------------------------------
@@ -183,8 +194,10 @@ describe('event WS mid-session revocation (handler interval)', () => {
     } as any;
   }
 
-  async function openConnection(ws: any) {
-    const { ticket } = await createEventWsTicket('user-1', 'org-1');
+  async function openConnection(ws: any, mobileDeviceId?: string) {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId,
+    });
     const handlers = createEventWsHandlers(ticket, { jitterMs: () => 0 });
     await handlers.onOpen(undefined, ws);
     return handlers;
@@ -215,6 +228,41 @@ describe('event WS mid-session revocation (handler interval)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('closes and unregisters when the bound mobile device becomes blocked mid-session', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws, 'mobile-install-1');
+      expect(dispatcher.register).toHaveBeenCalledWith('org-1', expect.anything());
+
+      blockedMobileDevice = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+      expect(dispatcher.unregister).toHaveBeenCalledWith('org-1', expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('denies a bound mobile device blocked between ticket mint and socket upgrade', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+    const ws = makeWs();
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId: 'mobile-install-1',
+    });
+    blockedMobileDevice = true;
+
+    await createEventWsHandlers(ticket).onOpen(undefined, ws);
+
+    expect(dispatcher.register).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalled();
   });
 
   it('retries one failed DB check shortly, then closes on the second failure', async () => {
@@ -330,6 +378,16 @@ describe('createEventWsTicket', () => {
     expect(result.expiresInSeconds).toBe(30);
   });
 
+  it('binds a signed mobile installation into a version-three ticket', async () => {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId: 'mobile-install-1',
+    });
+    await expect(consumeTicket(ticket)).resolves.toMatchObject({
+      version: 3,
+      mobileDeviceId: 'mobile-install-1',
+    });
+  });
+
   it('creates unique tickets on each call', async () => {
     const a = await createEventWsTicket('user-1', 'org-1');
     const b = await createEventWsTicket('user-1', 'org-1');
@@ -341,7 +399,7 @@ describe('createEventWsTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', ['org-1', 'org-2', 'org-3']);
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1', 'org-2', 'org-3'],
       permissionsEpoch: 7,
@@ -357,7 +415,7 @@ describe('createEventWsTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1', ['site-a', 'site-b']);
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1'],
       allowedSiteIds: ['site-a', 'site-b'],
@@ -476,7 +534,7 @@ describe('consumeTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1'],
       permissionsEpoch: 7,
@@ -511,7 +569,7 @@ describe('consumeTicket', () => {
 });
 
 describe('event ticket permission epoch compatibility', () => {
-  it('mints a version-two ticket with the current permission epoch and authority axes', async () => {
+  it('mints a version-three ticket with the current permission epoch and authority axes', async () => {
     setUserStatusRow({
       status: 'active',
       permissionsEpoch: 41,
@@ -523,7 +581,7 @@ describe('event ticket permission epoch compatibility', () => {
     const identity = await consumeTicket(ticket);
 
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       partnerId: 'partner-1',
       orgId: 'org-1',
@@ -551,7 +609,7 @@ describe('event ticket permission epoch compatibility', () => {
     const identity = await consumeTicket(ticket, 'compat');
 
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       permissionsEpoch: 12,
       allowedSiteIds: ['fresh-site'],
     });
@@ -595,6 +653,17 @@ describe('resolveLiveEventAuthorization', () => {
     await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
       ok: true,
       identity,
+    });
+  });
+
+  it('returns a distinct revocation reason for a blocked bound mobile device', async () => {
+    const identity = await mintIdentity();
+    const boundIdentity = { ...identity, mobileDeviceId: 'mobile-install-1' };
+    blockedMobileDevice = true;
+
+    await expect(resolveLiveEventAuthorization(boundIdentity)).resolves.toEqual({
+      ok: false,
+      reason: 'mobile_device_blocked',
     });
   });
 
@@ -687,6 +756,29 @@ describe('createEventWsTicketRoute', () => {
     expect(body.expiresInSeconds).toBe(30);
   });
 
+  it('copies only the signed mobile binding from auth into the ticket', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: 'org-xyz',
+        token: { mdid: 'signed-mobile-installation' },
+      } as any);
+      await next();
+    });
+    app.route('/events', createEventWsTicketRoute());
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    const body = await res.json();
+    await expect(consumeTicket(body.ticket)).resolves.toMatchObject({
+      version: 3,
+      mobileDeviceId: 'signed-mobile-installation',
+    });
+  });
+
   it('returns 401 when auth context is missing', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
@@ -713,6 +805,194 @@ describe('createEventWsTicketRoute', () => {
 
     const res = await app.request('/events/ws-ticket', { method: 'POST' });
     expect(res.status).toBe(400);
+  });
+
+  const selectedPartnerId = '11111111-1111-4111-8111-111111111111';
+  const selectedOrgIds = [
+    '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333',
+  ];
+
+  async function systemScopeApp() {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    setUserStatusRow({ orgId: null, isPlatformAdmin: true });
+    setPartnerMembership(undefined);
+    setOrganizationMembership(undefined);
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        partnerId: null,
+        scope: 'system',
+      } as any);
+      await next();
+    });
+    app.route('/events', createEventWsTicketRoute());
+    return app;
+  }
+
+  it('mints a system ticket bound to the selected org\'s partner when a system session targets one org', async () => {
+    const { db } = await import('../db');
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const { getRedis } = await import('../services/redis');
+    const setex = vi.fn().mockResolvedValue('OK');
+    const app = await systemScopeApp();
+    const orgId = selectedOrgIds[0]!;
+    partnerOrganizationRows = [{ id: orgId, partnerId: selectedPartnerId } as any];
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'single', orgId });
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.mocked(getRedis).mockReturnValue({ setex } as any);
+    try {
+      const res = await app.request(`/events/ws-ticket?orgId=${orgId}`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const identity = JSON.parse(setex.mock.calls[0]![2]);
+      expect(identity).toMatchObject({ system: true, partnerId: selectedPartnerId, allowedOrgIds: [orgId], orgId: null });
+      await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({ ok: true, identity });
+      for (const result of vi.mocked(db.select).mock.results) {
+        expect(result.value.from).not.toHaveBeenCalledWith(schemaTables.partnerUsers);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns 400 when a system session targets an org whose partner cannot be resolved', async () => {
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const app = await systemScopeApp();
+    partnerOrganizationRows = [];
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'single', orgId: selectedOrgIds[0]! });
+    const res = await app.request(`/events/ws-ticket?orgId=${selectedOrgIds[0]}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['active platform admin', null],
+    ['platform admin revoked after mint', 'membership_removed'],
+    ['allowed org belongs to another partner', 'membership_removed'],
+    ['user suspended after mint', 'user_inactive'],
+    ['permission epoch changed after mint', 'permission_epoch_mismatch'],
+  ] as const)('authorizes a system-scope ticket for %s', async (scenario, reason) => {
+    const { db } = await import('../db');
+    const { and, eq, inArray, isNull } = await import('drizzle-orm');
+    const { organizations } = await import('../db/schema');
+    const { getRedis } = await import('../services/redis');
+    const setex = vi.fn().mockResolvedValue('OK');
+    const app = await systemScopeApp();
+    partnerOrganizationRows = selectedOrgIds.map((id) => ({ id }));
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.mocked(getRedis).mockReturnValue({ setex } as any);
+    try {
+      const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ticket).toBeTruthy();
+      const query = vi.mocked(db.select).mock.results[0]!.value as any;
+      expect(query.from).toHaveBeenCalledWith(schemaTables.organizations);
+      expect(query.from.mock.results[0].value.where).toHaveBeenCalledWith(
+        and(
+          eq(organizations.partnerId, selectedPartnerId),
+          inArray(organizations.status, ['active', 'trial']),
+          isNull(organizations.deletedAt),
+        ),
+      );
+      const identity = JSON.parse(setex.mock.calls[0]![2]);
+      if (scenario === 'platform admin revoked after mint') {
+        setUserStatusRow({ orgId: null, isPlatformAdmin: false });
+      } else if (scenario === 'allowed org belongs to another partner') {
+        // The live partner-filtered query excludes the foreign organization.
+        partnerOrganizationRows = [{ id: selectedOrgIds[0]! }];
+      } else if (scenario === 'user suspended after mint') {
+        setUserStatusRow({ orgId: null, isPlatformAdmin: true, status: 'suspended' });
+      } else if (scenario === 'permission epoch changed after mint') {
+        setUserStatusRow({ orgId: null, isPlatformAdmin: true, permissionsEpoch: 8 });
+      }
+      const authorization = await resolveLiveEventAuthorization(identity);
+      expect(authorization).toEqual(reason ? { ok: false, reason } : { ok: true, identity });
+      expect(identity).toMatchObject({
+        version: 3,
+        system: true,
+        partnerId: selectedPartnerId,
+        allowedOrgIds: selectedOrgIds,
+        orgId: null,
+      });
+      if (scenario === 'active platform admin' || scenario === 'allowed org belongs to another partner') {
+        const orgQuery = vi.mocked(db.select).mock.results.at(-1)!.value as any;
+        expect(orgQuery.from).toHaveBeenCalledWith(schemaTables.organizations);
+        expect(orgQuery.from.mock.results[0].value.where).toHaveBeenCalledWith(and(
+          eq(organizations.partnerId, selectedPartnerId),
+          inArray(organizations.status, ['active', 'trial']),
+          isNull(organizations.deletedAt),
+        ));
+      }
+      // No membership rows exist; system authority must never depend on them.
+      for (const result of vi.mocked(db.select).mock.results) {
+        expect(result.value.from).not.toHaveBeenCalledWith(schemaTables.partnerUsers);
+        expect(result.value.from).not.toHaveBeenCalledWith(schemaTables.organizationUsers);
+      }
+      if (!reason) {
+        vi.mocked(getRedis).mockReturnValue({
+          get: vi.fn().mockResolvedValue(setex.mock.calls[0]![2]),
+          eval: vi.fn().mockResolvedValue(1),
+        } as any);
+        await expect(consumeTicket(body.ticket)).resolves.toEqual(identity);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      vi.mocked(getRedis).mockReturnValue(null);
+    }
+  });
+
+  it('refuses to mint system authority without live platform-admin status', async () => {
+    await systemScopeApp();
+    setUserStatusRow({ orgId: null, isPlatformAdmin: false });
+    await expect(createEventWsTicket('user-abc', selectedOrgIds, null, {
+      scope: 'system',
+      partnerId: 'partner-1',
+      orgId: null,
+    })).rejects.toThrow('Event WS authorization is unavailable');
+  });
+
+  it.each([
+    ['', 'partnerId is required for system scope'],
+    ['?partnerId=', 'partnerId is required for system scope'],
+    ['?partnerId=not-a-uuid', 'partnerId must be a UUID'],
+  ])('rejects invalid system partner selection %s before querying', async (query, error) => {
+    const { db } = await import('../db');
+    const app = await systemScopeApp();
+    const res = await app.request(`/events/ws-ticket${query}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects a system partner selection with no organizations', async () => {
+    const app = await systemScopeApp();
+    partnerOrganizationRows = [];
+    const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Organization context required — select an org first' });
+  });
+
+  it('ignores a foreign partner selection for a partner-scoped token', async () => {
+    const { Hono } = await import('hono');
+    const { db } = await import('../db');
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc' }, scope: 'partner', partnerId: 'partner-1', orgId: null,
+      } as any);
+      await next();
+    });
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'multiple', orgIds: ['org-1'] });
+    app.route('/events', createEventWsTicketRoute());
+    const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.select).toHaveBeenCalledTimes(1); // Mint's live-user check only.
+    const body = await res.json();
+    expect(await consumeTicket(body.ticket)).toMatchObject({ allowedOrgIds: ['org-1'], partnerId: 'partner-1' });
   });
 
   it('resolves orgId from query param for partner users', async () => {
@@ -747,7 +1027,7 @@ describe('createEventWsTicketRoute', () => {
 
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-from-query'],
     });
@@ -786,7 +1066,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-a', 'org-b'],
     });
@@ -831,7 +1111,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-a', 'org-b', 'org-c'],
     });
@@ -872,7 +1152,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-x'],
     });
@@ -924,7 +1204,7 @@ describe('createEventWsTicketRoute', () => {
 
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
     });
@@ -968,7 +1248,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
       allowedSiteIds: ['site-a'],
@@ -998,7 +1278,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
       allowedSiteIds: null,

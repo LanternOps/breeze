@@ -35,7 +35,7 @@ import { authRoutes } from '../../routes/auth';
 import { db, withSystemDbAccessContext } from '../../db';
 import { users, refreshTokenFamilies } from '../../db/schema';
 import { advanceUserEpochs, revokeAllRefreshFamilies } from '../../services/authLifecycle';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 interface RefreshCookies {
@@ -58,10 +58,15 @@ function extractCookies(setCookieHeader: string): RefreshCookies | null {
   return { refreshCookieValue, csrfCookieValue, csrfHeaderValue };
 }
 
-async function loginAndExtractCookies(app: Hono, email: string, password: string): Promise<RefreshCookies> {
+async function loginAndExtractCookies(
+  app: Hono,
+  email: string,
+  password: string,
+  binding: string,
+): Promise<RefreshCookies> {
   const res = await app.request('/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', cookie: binding },
     body: JSON.stringify({ email, password }),
   });
   expect(res.status).toBe(200);
@@ -73,14 +78,18 @@ async function loginAndExtractCookies(app: Hono, email: string, password: string
 
 async function refreshWithCookies(
   app: Hono,
-  cookies: RefreshCookies
+  cookies: RefreshCookies,
+  binding: string,
 ): Promise<{ status: number; nextCookies: RefreshCookies | null }> {
   const res = await app.request('/auth/refresh', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-breeze-csrf': cookies.csrfHeaderValue,
-      Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}`,
+      // /auth/refresh is a session-issuance path too — a successful login
+      // does not rotate the binding (only 428/rotation-required does), so the
+      // same binding cookie captured at login remains valid here.
+      Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}; ${binding}`,
     },
     body: JSON.stringify({}),
   });
@@ -98,18 +107,23 @@ async function findUserId(email: string): Promise<string> {
 describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () => {
   let app: Hono;
   let testPartnerId: string;
+  let binding: string;
 
   beforeEach(async () => {
     app = new Hono();
     app.route('/auth', authRoutes);
     const partner = await createPartner();
     testPartnerId = partner.id;
+    // A successful login/refresh never rotates the binding (only a
+    // 428/rotation-required response does), so one bootstrapped binding is
+    // reused across every issuance call within a test.
+    binding = (await bootstrapAuthBinding()).cookie;
   });
 
   it('rejects a refresh minted with the old auth_epoch once a committed advanceUserEpochs call bumps the live row, and mints no descendant', async () => {
     const email = 'epochgate@example.com';
     await createUser({ partnerId: testPartnerId, withMembership: true, email, password: 'EpochGatePass123!' });
-    const cookiesA = await loginAndExtractCookies(app, email, 'EpochGatePass123!');
+    const cookiesA = await loginAndExtractCookies(app, email, 'EpochGatePass123!', binding);
     const userId = await findUserId(email);
 
     const familiesBefore = await getTestDb()
@@ -123,7 +137,7 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
     // the family-revoked branch tested separately below.
     await withSystemDbAccessContext(() => db.transaction((tx) => advanceUserEpochs(tx, userId, { auth: true })));
 
-    const res = await refreshWithCookies(app, cookiesA);
+    const res = await refreshWithCookies(app, cookiesA, binding);
     expect(res.status).toBe(401);
     expect(res.nextCookies).toBeNull();
 
@@ -140,14 +154,14 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
   it('rejects a refresh once revokeAllRefreshFamilies has durably committed — exercised via the real getRefreshFamily Postgres read (no Redis sentinel involved)', async () => {
     const email = 'famgate@example.com';
     await createUser({ partnerId: testPartnerId, withMembership: true, email, password: 'FamGatePass123!' });
-    const cookiesA = await loginAndExtractCookies(app, email, 'FamGatePass123!');
+    const cookiesA = await loginAndExtractCookies(app, email, 'FamGatePass123!', binding);
     const userId = await findUserId(email);
 
     await withSystemDbAccessContext(() =>
       db.transaction((tx) => revokeAllRefreshFamilies(tx, userId, 'lifecycle-test-revoke'))
     );
 
-    const res = await refreshWithCookies(app, cookiesA);
+    const res = await refreshWithCookies(app, cookiesA, binding);
     expect(res.status).toBe(401);
     expect(res.nextCookies).toBeNull();
   });
@@ -155,7 +169,7 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
   it('rejects a refresh once the family has passed its absolute expiry — exercised via the real getRefreshFamily Postgres read', async () => {
     const email = 'absexpiry@example.com';
     await createUser({ partnerId: testPartnerId, withMembership: true, email, password: 'AbsExpiryPass123!' });
-    const cookiesA = await loginAndExtractCookies(app, email, 'AbsExpiryPass123!');
+    const cookiesA = await loginAndExtractCookies(app, email, 'AbsExpiryPass123!', binding);
     const userId = await findUserId(email);
 
     await getTestDb()
@@ -163,7 +177,7 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
       .set({ absoluteExpiresAt: new Date(Date.now() - 1000) })
       .where(eq(refreshTokenFamilies.userId, userId));
 
-    const res = await refreshWithCookies(app, cookiesA);
+    const res = await refreshWithCookies(app, cookiesA, binding);
     expect(res.status).toBe(401);
     expect(res.nextCookies).toBeNull();
   });
@@ -171,11 +185,14 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
   it('a true concurrent /refresh race on the same cookie yields exactly one winner; a subsequent durable revoke then blocks BOTH the winner\'s new cookie and the loser\'s stale one', async () => {
     const email = 'race@example.com';
     await createUser({ partnerId: testPartnerId, withMembership: true, email, password: 'RacePass123!' });
-    const cookiesA = await loginAndExtractCookies(app, email, 'RacePass123!');
+    const cookiesA = await loginAndExtractCookies(app, email, 'RacePass123!', binding);
 
     // Fire both requests without awaiting in between — real Redis's atomic
     // SET NX (revokeRefreshTokenJti) decides the winner, not test ordering.
-    const [r1, r2] = await Promise.all([refreshWithCookies(app, cookiesA), refreshWithCookies(app, cookiesA)]);
+    const [r1, r2] = await Promise.all([
+      refreshWithCookies(app, cookiesA, binding),
+      refreshWithCookies(app, cookiesA, binding),
+    ]);
 
     const statuses = [r1.status, r2.status].sort((a, b) => a - b);
     expect(statuses).toEqual([200, 401]);
@@ -187,10 +204,10 @@ describe('POST /refresh — real-DB epoch + durable family gates (Task 13)', () 
       db.transaction((tx) => revokeAllRefreshFamilies(tx, userId, 'post-race-revoke'))
     );
 
-    const followupWinner = await refreshWithCookies(app, winner.nextCookies!);
+    const followupWinner = await refreshWithCookies(app, winner.nextCookies!, binding);
     expect(followupWinner.status).toBe(401);
 
-    const followupLoser = await refreshWithCookies(app, cookiesA);
+    const followupLoser = await refreshWithCookies(app, cookiesA, binding);
     expect(followupLoser.status).toBe(401);
   });
 });

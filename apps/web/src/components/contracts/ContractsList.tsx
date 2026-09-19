@@ -8,10 +8,12 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import {
   listContracts,
+  listContractCurrencyMismatches,
   monthlyValue,
   CONTRACT_STATUS_ROLES,
   type ContractStatus,
   type ContractSummary,
+  type ContractCurrencyMismatchReport,
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate, sumByCurrency } from '../billing/invoiceTypes';
 import { StatusPill } from '../billing/shared/StatusPill';
@@ -236,12 +238,19 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
     const active = contracts.filter((c) => c.status === 'active');
-    const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
+    const estimated = active.filter((c) => c.estimatedPeriodValue != null && !c.estimateError);
+    const total = estimated.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
     // Per-currency so a mixed-currency book isn't summed under one wrong code.
     const byCurrency = sumByCurrency(
-      active.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
+      estimated.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
     );
-    return { total, count: active.length, byCurrency, ccy: contracts[0]?.currencyCode || 'USD' };
+    return {
+      total,
+      count: active.length,
+      excludedCount: active.length - estimated.length,
+      byCurrency,
+      ccy: estimated[0]?.currencyCode || active[0]?.currencyCode || contracts[0]?.currencyCode || 'USD',
+    };
   }, [contracts]);
 
   // '$12,300 + €4,100' across currencies. With one currency, label with the
@@ -292,6 +301,34 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     [bulk, loadContracts, filters, t],
   );
 
+  // Spec §6: the currency-mismatch report stops being a tab and becomes a banner
+  // here. The report endpoint is cursor-paged with no total, so the banner asks
+  // for one page and says "50+" when there is a next cursor rather than
+  // inventing a number. A failed probe renders nothing — this is an affordance,
+  // not data. Skipped inside the org-record embed, where `#tab=…` means nothing.
+  const [mismatches, setMismatches] = useState<{ count: number; more: boolean } | null>(null);
+  useEffect(() => {
+    if (lockedOrgId) return;
+    let cancelled = false;
+    // try/catch around the whole body: a synchronously-throwing (or stubbed)
+    // client must not produce an unhandled rejection from a decorative probe.
+    void (async () => {
+      try {
+        const res = await listContractCurrencyMismatches({ limit: 50 });
+        if (!res?.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: ContractCurrencyMismatchReport } | null;
+        // `items` is optional-chained too: a partial payload must not throw.
+        const items = body?.data?.items;
+        if (!cancelled && items?.length) {
+          setMismatches({ count: items.length, more: body?.data?.nextCursor != null });
+        }
+      } catch {
+        // no banner; this is an affordance, not data
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lockedOrgId]);
+
   if (forbidden) {
     return (
       <div className="space-y-6" data-testid="contracts-page">
@@ -324,6 +361,23 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         )}
       </div>
 
+      {mismatches && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+             data-testid="contracts-currency-mismatch-banner">
+          <span>
+            {mismatches.more
+              ? t('contracts.contractsList.currencyBanner.countPlus', { count: mismatches.count })
+              : t('contracts.contractsList.currencyBanner.count', { count: mismatches.count })}
+          </span>
+          {/* A plain hash link is enough: ContractsTabs' useHashState already
+              subscribes to hashchange, so this swaps the view with no navigation. */}
+          <a href="#tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
+             className="font-medium text-primary hover:underline">
+            {t('contracts.contractsList.currencyBanner.review')}
+          </a>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3" data-testid="contracts-filters">
         <input
@@ -353,7 +407,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       {!loading && !error && rows.length > 0 && (
         <StatCard
           label={t('contracts.contractsList.stats.estimatedMonthlyRecurring')}
-          value={mrrDisplay}
+          value={(
+            <span className="flex flex-wrap items-baseline gap-x-2">
+              <span>{mrrDisplay}</span>
+              {mrr.excludedCount > 0 && (
+                <span className="text-xs font-normal text-muted-foreground" data-testid="contracts-summary-excluded">
+                  {t('contracts.list.estimateExcluded', { count: mrr.excludedCount })}
+                </span>
+              )}
+            </span>
+          )}
           hint={t('contracts.contractsList.stats.activeContractCount', { count: mrr.count })}
           detail={<ApproximateMoneyLine byCurrency={mrr.byCurrency} testId="contracts-mrr-approx" />}
           className="inline-flex flex-col"
@@ -484,8 +547,15 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                               : t('contracts.shared.cadence.custom', { count: ctr.intervalMonths })}
                       </td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
+                      <td
+                        className="px-3 py-3 text-right tabular-nums"
+                        data-testid={`contract-estimate-${ctr.id}`}
+                        title={ctr.estimateError ? t('contracts.list.estimateUnavailable') : undefined}
+                      >
                         {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
+                        {ctr.estimateError && (
+                          <span className="sr-only">{t('contracts.list.estimateUnavailable')}</span>
+                        )}
                       </td>
                     </tr>
                   ))}

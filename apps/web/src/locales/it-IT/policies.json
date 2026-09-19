@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Questo criterio non ha un'organizzazione, quindi non è possibile elencare le destinazioni di assegnazione.",
       "failedToAddAssignment": "Impossibile aggiungere l'assegnazione",
       "failedToRemoveAssignment": "Impossibile rimuovere l'assegnazione",
+      "assignmentAdded": "Assegnazione aggiunta",
+      "assignmentRemoved": "Assegnazione rimossa",
       "roleFilter": "Filtro ruolo",
       "optional": "(facoltativo)",
       "noRestrictionAppliesToAllDeviceRoles": "Nessuna restrizione - si applica a tutti i ruoli dispositivo",
@@ -131,7 +133,10 @@
       "removing": "Rimozione...",
       "removeConfiguration": "Rimuovi configurazione",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "managedByYourMsp": "Gestito dal tuo MSP",
+      "inheritedByPolicies_one": "Ereditato da {{count}} criterio",
+      "inheritedByPolicies_other": "Ereditato da {{count}} criteri"
     },
     "configPolicyList": {
       "archived": "Archiviata",
@@ -150,7 +155,8 @@
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
       "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
-      "summary": "{{filtered}} di {{total}} criteri"
+      "summary": "{{filtered}} di {{total}} criteri",
+      "inheritsBadge": "Eredita"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Vuoi davvero eliminare",
       "thisWillAlsoRemoveAllFeatureLinks": "? Verranno rimossi anche tutti i collegamenti alle funzionalità e le assegnazioni. Questa azione non può essere annullata.",
       "delete": "delete",
-      "deleting": "Eliminazione..."
+      "deleting": "Eliminazione...",
+      "deleteBlockedByChildren": "Elimina prima i criteri che ereditano da questo:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Impossibile caricare le assegnazioni",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Elimina definitivamente i dispositivi rimossi",
+        "offKeepRemovedDevicesUntilDeletedManually": "Disattivato: i dispositivi rimossi vengono conservati finché non vengono eliminati manualmente.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "I dispositivi rimossi vengono eliminati definitivamente {{days}} giorni dopo la rimozione.",
+        "permanentlyDeleteRemovedDevicesAfter": "Elimina definitivamente i dispositivi rimossi dopo",
+        "days": "giorni",
+        "enterAWholeNumberOfDaysBetween": "Inserisci un numero intero di giorni compreso tra 1 e 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "L'eliminazione è irreversibile e distrugge lo storico",
+        "aDailyJobPermanentlyDeletesTheDevice": "Un processo giornaliero elimina definitivamente il record del dispositivo e tutto ciò che vi è collegato: avvisi, script, patch, log e inventario. I dispositivi con una disinstallazione dell'agente ancora in coda vengono saltati finché non viene completata. Vince il criterio più vicino, quindi un'organizzazione può disattivare questa opzione per escludersi da una finestra valida per tutte le organizzazioni."
+      },
       "eventLogTab": {
         "security": "Sicurezza",
         "hardware": "Hardware",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Sovrascrivi",
         "revertToParent": "Ripristina dal padre",
-        "saving": "Salvataggio..."
+        "saving": "Salvataggio...",
+        "revertConfirmTitle": "Ripristinare i criteri padre?",
+        "revertConfirmMessage": "Questa operazione elimina l'override {{feature}} di questo criterio. Le impostazioni vanno perse e vengono applicate quelle del criterio padre a tutti i dispositivi che usano questo criterio. Non può essere annullata.",
+        "removeConfirmTitle": "Rimuovere questa configurazione?",
+        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Distribuisci Breeze Assist sui dispositivi",
@@ -738,6 +759,8 @@
         "recurrence": "Ricorrenza",
         "startDateTime": "Data/ora di inizio",
         "theSpecificDateAndTimeForThis": "La data e l'ora specifiche per questa finestra di manutenzione una tantum.",
+        "startTime": "Ora di inizio",
+        "theTimeOfDayEachWindowOpensIn": "L'ora del giorno in cui si apre ogni finestra di manutenzione, nel fuso orario selezionato. Il valore predefinito è mezzanotte (00:00).",
         "durationHours": "Durata (ore)",
         "timezone": "Fuso orario",
         "notifyBeforeMinutes": "Notifica prima (minuti)",
@@ -812,6 +835,17 @@
         "openAlertsFeature": "Apri Avvisi",
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
+      "monitorsTab": {
+        "attachMonitor": "Collega un monitor",
+        "loadingMonitors": "Caricamento dei monitor…",
+        "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",
+        "selectAMonitorToAttach": "Seleziona un monitor da collegare…",
+        "noMonitorsAttached": "Nessun monitor ancora collegato a questa policy.",
+        "inherited": "Ereditato",
+        "overrideValue": "Valore di override",
+        "overridesLabel": "Override:",
+        "failedToLoadMonitors": "Impossibile caricare i monitor"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
         "theAgentObservesUACConsentPromptsAnd": "L'agent osserva i prompt di consenso UAC e li registra come richieste di elevazione per la revisione PAM. L'acquisizione è disattivata per impostazione predefinita: abilitala qui per includere l'ambito di un dispositivo in PAM.",
@@ -881,9 +915,20 @@
         "time": "Ora",
         "dayOfWeek": "Giorno della settimana",
         "dayOfMonth": "Giorno del mese",
+        "offlineDevices": "Dispositivi offline",
+        "offlineBehaviorQueue": "Metti in coda per i dispositivi offline",
+        "offlineBehaviorQueueDescription": "Viene eseguito al prossimo check-in, prima della successiva esecuzione pianificata.",
+        "offlineBehaviorSkip": "Ignora i dispositivi offline",
+        "offlineBehaviorSkipDescription": "I dispositivi offline al momento dell'esecuzione del processo vengono registrati come ignorati.",
         "rebootPolicy": "Criterio di riavvio",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Origine Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gestisci Windows Update esclusivamente tramite Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Disattiva il canale di installazione automatica nativo di Windows Update sull'endpoint, così gli aggiornamenti passano solo dagli anelli di approvazione di Breeze, evitando riavvii e patch inattesi fuori dalla pianificazione. Solo Windows; il percorso di scansione, approvazione e installazione di Breeze resta invariato. Quando l'opzione viene disabilitata, la configurazione precedente viene ripristinata correttamente senza modificare eventuali Criteri di gruppo amministrativi preesistenti.",
@@ -918,7 +963,8 @@
         "loadingPolicies": "Caricamento criteri...",
         "noExistingPoliciesFound": "Nessun criterio esistente trovato.",
         "selectAPolicy": "Seleziona un criterio...",
-        "clearSelection": "Cancella selezione"
+        "clearSelection": "Cancella selezione",
+        "allOrgs": "Tutte le org"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1140,7 +1186,21 @@
         "generateACriticalAlertWhenWarrantyExpires": "Genera un avviso critico quando la garanzia scade entro questo numero di giorni.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Raccogli la garanzia HP dal dispositivo",
+        "hpCmslConsentExplainer": "I dati di garanzia HP vengono letti sul dispositivo tramite la Client Management Script Library di HP. Selezionando questa casella si accetta la licenza HP per conto di questo cliente e HP può raccogliere informazioni tecniche dal dispositivo, incluso il suo indirizzo IP. Se resta deselezionata, i dispositivi HP mantengono lo stato di garanzia che hanno già.",
+        "hpCmslNoAcceptanceRecordedYet": "Nessuna accettazione registrata finora. Salvando con questa casella selezionata vengono registrati il tuo utente e l'ora del server.",
+        "hpCmslAcceptedByOn": "Accettato da {{user}} il {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP ha modificato le condizioni di licenza dopo questa accettazione. Salva di nuovo per accettare nuovamente.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Questo criterio sostituisce per intero le impostazioni di garanzia ereditate, senza alcuna unione campo per campo. Salvandolo con la raccolta sul dispositivo disattivata si interrompe la raccolta della garanzia HP su ogni dispositivo che raggiunge."
+      },
+      "rationale": {
+        "label": "Motivazione",
+        "edit": "Modifica motivazione",
+        "placeholder": "Perché esiste questo elemento…",
+        "save": "Salva",
+        "cancel": "Annulla",
+        "none": "Nessuna motivazione registrata."
       }
     }
   },
@@ -1275,6 +1335,8 @@
       "readyToDeployStandalone": "Pronto per la distribuzione."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Installazione automatica attivata",
+      "complianceCheckQueued": "Verifica di conformità in coda",
       "failedToLoadSoftwarePolicyData": "Impossibile caricare i dati del criterio software",
       "couldNotLoadLatestPolicyDetailsShowing": "Impossibile caricare i dettagli più recenti del criterio. Visualizzazione dei dati memorizzati nella cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Impossibile caricare i dettagli del criterio. Visualizzazione dei dati memorizzati nella cache.",
@@ -1314,7 +1376,19 @@
       "failedToUpdatePolicy": "Impossibile aggiornare il criterio",
       "failedToCreatePolicy": "Impossibile creare il criterio",
       "policyUpdated": "Criterio aggiornato correttamente",
-      "policyCreated": "Criterio creato correttamente"
+      "policyCreated": "Criterio creato correttamente",
+      "armInstallRequiresMfa": "L'attivazione dell'installazione automatica richiede l'autenticazione a più fattori. Completa la MFA, quindi riprova.",
+      "armInstallRequiresPermission": "L'attivazione dell'installazione automatica richiede l'autorizzazione devices.execute. Chiedi a un amministratore di concederla, quindi riprova.",
+      "installStatusPending": "Installazione in coda",
+      "installStatusInProgress": "Installazione in corso…",
+      "installStatusCompleted": "Installato",
+      "installStatusFailed": "Installazione non riuscita",
+      "installStatusGaveUp": "Rinuncia dopo ripetuti fallimenti",
+      "installStatusSkipped": "Saltato in questo passaggio",
+      "installSkippedNoCatalog": "Una regola obbligatoria non ha un elemento del catalogo collegato, quindi non c'è nulla da installare. Aggiungi un collegamento al catalogo nell'editor dei criteri per risolvere il problema.",
+      "installSkippedCapOrPlatform": "Non è un errore: è stato raggiunto il limite di installazioni per passaggio oppure la piattaforma di questo dispositivo non ha un metodo di installazione per il software. Potrebbe essere ritentato al passaggio successivo.",
+      "installAttempts": "{{count}} tentativo/i",
+      "installLastAttempt": "Ultimo tentativo di installazione: "
     },
     "deploymentList": {
       "running": "In esecuzione",
@@ -1352,7 +1426,9 @@
       "noDeploymentsYet": "Non è stata ancora creata alcuna distribuzione.",
       "failedToCancelDeployment": "Impossibile annullare la distribuzione",
       "deploymentCancelled": "Distribuzione annullata",
-      "pageOf": "Pagina {{page}} di {{pages}}"
+      "pageOf": "Pagina {{page}} di {{pages}}",
+      "policyOwned": "Gestito da criterio",
+      "policyOwnedTooltip": "Creato automaticamente dalla remediation di installazione automatica di un criterio software"
     },
     "deploymentProgress": {
       "queued": "In coda",
@@ -1536,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",
+      "manageAssignments": "Gestisci le assegnazioni delle policy di configurazione",
+      "gracePeriodHelp": "Applicato alla prossima verifica di conformità",
       "scope": "Ambito",
       "allOrganizations": "Tutte le organizzazioni",
       "partnerWideTemplate": "(template a livello di partner)",
@@ -1580,7 +1659,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "gracePeriod",
-      "saving": "Salvataggio..."
+      "saving": "Salvataggio...",
+      "catalogLink": "Elemento del catalogo collegato",
+      "catalogLinkNone": "Nessuno — non collegato",
+      "autoInstall": "Installa automaticamente il software mancante",
+      "autoInstallCatalogWarning": "{{count}} di {{total}} regola/e non hanno un elemento del catalogo collegato e verranno rilevate come mancanti ma mai installate.",
+      "dryRunLoading": "Verifica di quanti dispositivi saranno interessati...",
+      "dryRunResult": "Questo installerà il software mancante su circa {{count}} dispositivo/i.",
+      "dryRunUnavailable": "L'anteprima del numero di dispositivi non è ancora disponibile. L'attivazione avrà comunque effetto alla prossima verifica di conformità.",
+      "dryRunNewPolicy": "Questo è un nuovo criterio — l'impatto sui dispositivi non sarà noto fino alla prima verifica di conformità dopo il salvataggio.",
+      "catalogUnavailable": "Non è stato possibile caricare il catalogo software, quindi i selettori di collegamento al catalogo qui sotto sono vuoti. Non è la stessa cosa che non avere elementi nel catalogo: ricarica la pagina prima di dare per scontato che una regola non possa essere collegata."
     },
     "softwareCatalog": {
       "ready": "Pronto",
@@ -1626,20 +1714,6 @@
       "catalogTab": "Catalogo",
       "summaryCompleted7d": "Completate (7 gg)",
       "summaryFailed7d": "Non riuscite (7 gg)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Report conformità software",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analizza lo scostamento delle versioni software tra i dispositivi gestiti.",
-      "bulkUpdate": "Aggiornamento massivo",
-      "versionDriftAnalysis": "Analisi scostamento versioni",
-      "clickARowToSeeOutdatedDevices": "Fai clic su una riga per vedere i dispositivi non aggiornati.",
-      "software": "Software",
-      "expectedVersion": "Versione prevista",
-      "devicesOnVersion": "Dispositivi sulla versione",
-      "devicesOutdated": "Dispositivi non aggiornati",
-      "details": "Dettagli",
-      "outdatedDevices": "Dispositivi non aggiornati",
-      "hide": "Nascondi"
     },
     "softwareInventory": {
       "allowed": "Consentito",

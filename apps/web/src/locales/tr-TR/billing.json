@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Sabit ücret",
         "perDevice": "Cihaz başına",
+        "perDeviceRole": "Cihaz rolüne göre",
+        "perDeviceGroup": "Cihaz grubu başına",
         "perSeat": "Koltuk başına",
         "manual": "Manuel miktar"
+      },
+      "dynamicGroup": "dinamik",
+      "deletedGroup": "{{name}} (silinmiş grup)",
+      "coverage": {
+        "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
+        "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor.",
+        "uncoveredLead": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{included}} dahilden {{counted}}",
+        "includedOnly": "{{included}} dahil",
+        "overBilled": "{{included}} dahil · {{overage}} fazla (faturalandı)",
+        "overFlagged": "{{included}} dahil · {{overage}} fazla (işaretlendi)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{included}} dahilin {{overage}} üzerinde, faturalandırılmadı",
+        "billed": "{{description}} — {{included}} dahilin {{overage}} üzerinde, aşım tarifesinden faturalandı"
       },
       "transition": {
         "activate": "Etkinleştir",
@@ -31,7 +51,13 @@
         "cancel": "İptal"
       },
       "values": {
-        "auto": "otomatik"
+        "auto": "otomatik",
+        "groupDeleted": "grup silindi",
+        "siteDeleted": "konum silindi",
+        "siteDeletedNamed": "konum silindi: {{name}}"
+      },
+      "lineScope": {
+        "site": "Konum: {{name}}"
       }
     },
     "contractDetail": {
@@ -44,7 +70,8 @@
         "autoIssue": "Otomatik yayın",
         "renewal": "Yenileme",
         "estimatedPerPeriod": "Tah. / dönem",
-        "notes": "Notlar"
+        "notes": "Notlar",
+        "invoiceNote": "Fatura notu"
       },
       "values": {
         "noDrafts": "Hayır (taslaklar)"
@@ -67,6 +94,15 @@
         "period": "Dönem",
         "generated": "Oluşturuldu",
         "invoice": "Fatura",
+        "outcome": "Sonuç",
+        "outcomeAllBilled": "Tümü faturalandı",
+        "outcomeUncovered": "{{count}} kapsam dışı",
+        "outcomeFlagged": "{{count}} işaretlendi",
+        "outcomeNoDeviceLines": "Cihaz satırı yok",
+        "outcomeNotRecorded": "Kaydedilmedi",
+        "outcomeToggle": "Dönem sonucunu göster",
+        "outcomeDevicesEvaluated": "Değerlendirilen cihazlar: {{count}}",
+        "outcomeBilledOverage": "Faturalanan aşım: {{count}}",
         "empty": "Henüz fatura oluşturulmadı.",
         "viewInvoice": "Faturayı görüntüle"
       },
@@ -96,6 +132,8 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
+        "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },
@@ -110,7 +148,8 @@
         "confirm": "Taslağı sil"
       },
       "documents": {
-        "title": "Yürütülen belgeler",
+        "title": "İmzalı anlaşmalar",
+        "subtitle": "Teklifle birlikte kabul edildi ve müşterinin gördüğü şablon sürümüne sabitlendi.",
         "columns": {
           "template": "Şablon",
           "signer": "İmzalayan",
@@ -118,8 +157,8 @@
           "quote": "Alıntı"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Henüz yürütülmüş belge yok.",
-        "loadError": "Yürütülen belgeler yüklenemedi.",
+        "empty": "Henüz imzalı anlaşma yok.",
+        "loadError": "İmzalı anlaşmalar yüklenemedi.",
         "downloadError": "PDF indirilemedi.",
         "download": "PDF'yi indir",
         "preparing": "Hazırlanıyor…",
@@ -143,13 +182,22 @@
         "addLine": "Satır eklenemedi.",
         "removeLine": "Satır kaldırılamadı.",
         "activateContract": "Sözleşme etkinleştirilemedi.",
-        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin."
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin.",
+        "updateLine": "Satır güncellenemedi.",
+        "lineNotFound": "Bu satır artık mevcut değil. Sözleşmeyi yenileyin.",
+        "contractNotEditable": "Satırlar yalnızca taslak veya etkin sözleşmelerde düzenlenebilir.",
+        "siteNotInOrg": "Bu konum farklı bir kuruluşa ait.",
+        "groupNotInOrg": "Bu cihaz grubu farklı bir kuruluşa ait.",
+        "invalidLinePatch": "Bu değişiklikler bu satır türü için geçerli değil.",
+        "priceNotRepresentable": "Bu fiyatın {{currency}} için çok fazla ondalık basamağı var.",
+        "catalogItemNotFound": "Bu katalog öğesi bu sözleşmede kullanılamıyor."
       },
       "toast": {
         "contractCreated": "Sözleşme oluşturuldu",
         "lineAdded": "Satır eklendi",
         "lineRemoved": "Hat kaldırıldı",
-        "contractActivated": "Sözleşme etkinleştirildi"
+        "contractActivated": "Sözleşme etkinleştirildi",
+        "lineUpdated": "Satır güncellendi"
       },
       "schedule": {
         "title": "Program",
@@ -172,15 +220,16 @@
       },
       "content": {
         "title": "İçerik",
-        "notesOptional": "Notlar (isteğe bağlı)",
-        "termsOptional": "Şartlar (isteğe bağlı, faturada gösterilir)",
+        "notesOptional": "Notlar (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
+        "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
         "termsPlaceholder": "ör. Net 30. 30 gün önceden iptal edilmediği sürece otomatik olarak yenilenir."
       },
       "lines": {
         "unitPrice": "Birim fiyatı",
         "qty": "Adet",
         "tax": "Vergi",
-        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin."
+        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin.",
+        "edit": "Düzenle"
       },
       "addLine": {
         "integrationHint": "Entegrasyondan ekleme — bir satırı önceden doldurur.",
@@ -188,6 +237,20 @@
         "addFromPax8Catalog": "Pax8 kataloğundan ekle",
         "importFromTdSynnex": "TD SYNNEX'ten içe aktar",
         "lineType": "Hat türü",
+        "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
+        "allowanceHint": "Satır, daha az cihaz sayılsa bile her dönem dahil edilen miktarı faturalandırır.",
+        "includedQuantity": "Dahil edilen miktar",
+        "overageMode": "Dahil edilen miktarın üzeri",
+        "overageBill": "Fazlasını faturalandır",
+        "overageFlag": "Fazlasını incelemek üzere işaretle",
+        "overageUnitPrice": "Ek birim başına fiyat",
+        "allowanceRequired": "Dahil edilen bir miktar girin; fazlasını faturalandırıyorsanız bir fiyat da girin.",
+        "deviceRoles": "Cihaz rolleri (rolü bunlardan biri olan cihazlar faturalandırılır)",
+        "deviceRolesRequired": "En az bir rol seçin.",
+        "deviceGroup": "Cihaz grubu (üyeleri faturalandırılır; dinamik gruplar faturalama sırasında değerlendirilir)",
+        "selectGroup": "Bir grup seçin",
+        "deviceGroupRequired": "Bir grup seçin.",
+        "deviceGroupsLoadFailed": "Bu kuruluşun cihaz grupları yüklenemedi.",
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
@@ -207,6 +270,16 @@
         "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
         "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
         "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
+      },
+      "editLine": {
+        "save": "Satırı kaydet",
+        "cancel": "İptal",
+        "typeLocked": "Satır türü değiştirilemez. Satırı kaldırıp yenisini ekleyin.",
+        "priceFromCatalog": "Fiyat katalogdan gelir. Elle ayarlamak için katalog bağlantısını kaldırın.",
+        "refreshPrice": "Fiyatı katalogdan yenile",
+        "restoreCatalogLink": "Katalog bağlantısını geri yükle",
+        "unlinkNeedsPrice": "Katalog bağlantısını kaldırmak için birim fiyat ve vergi ayarını girin.",
+        "noChanges": "Henüz kaydedilecek bir şey yok."
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -240,7 +313,16 @@
       "newContract": "Yeni sözleşme",
       "doneEditing": "Düzenleme tamamlandı"
     },
+    "list": {
+      "estimateUnavailable": "Tahmin kullanılamıyor: bu sözleşmedeki bir cihaz grubu değerlendirilemedi",
+      "estimateExcluded": "Tahmini kullanılamayan {{count}} sözleşmeyi hariç tutar"
+    },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "countPlus": "{{count}}+ sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "review": "İncele"
+      },
       "title": "Sözleşmeler",
       "description": "Taslak faturaları belirli aralıklarla otomatik olarak oluşturan yinelenen anlaşmalar.",
       "newContract": "Yeni sözleşme",
@@ -322,8 +404,8 @@
     },
     "tabs": {
       "contracts": "Sözleşmeler",
-      "templates": "Şablonlar",
-      "documents": "Belgeler",
+      "templates": "Anlaşma şablonları",
+      "documents": "İmzalı anlaşmalar",
       "currencyMismatches": "Para birimi uyuşmazlıkları"
     },
     "currencyMismatches": {
@@ -384,16 +466,16 @@
       }
     },
     "templatesTab": {
-      "title": "Sözleşme şablonları",
-      "description": "Kabul edilen fiyat tekliflerine ekleyebileceğiniz yeniden kullanılabilir sözleşme belgeleri.",
-      "newTemplate": "Yeni şablon",
+      "title": "Anlaşma şablonları",
+      "description": "Çerçeve sözleşmeniz ve standart koşullarınız. Bir fiyat teklifine ekleyin; müşteri teklifle birlikte imzalasın. İmzalı kopya, o teklifin oluşturduğu sözleşmenin altında saklanır.",
+      "newTemplate": "Yeni anlaşma şablonu",
       "includeArchived": "Arşivlenenleri göster",
       "allOrgs": "Tüm kuruluşlar",
       "ownerOrg": "Organizasyon",
       "noVersions": "Henüz sürüm yok",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Arşiv",
-      "loadError": "Sözleşme şablonları yüklenemedi",
+      "loadError": "Anlaşma şablonları yüklenemedi",
       "createError": "Şablon oluşturulamadı",
       "created": "Şablon oluşturuldu",
       "archiveError": "Şablon arşivlenemedi",
@@ -409,11 +491,11 @@
         "archived": "Arşivlendi"
       },
       "empty": {
-        "title": "Henüz şablon yok",
-        "description": "Başlamak için ilk sözleşme şablonunuzu oluşturun."
+        "title": "Henüz anlaşma şablonu yok",
+        "description": "Çerçeve sözleşmenizi veya standart koşullarınızı bir kez ekleyin, ardından istediğiniz teklife dahil edin. Müşteriler kabul ederken imzalar."
       },
       "createDialog": {
-        "title": "Yeni sözleşme şablonu",
+        "title": "Yeni anlaşma şablonu",
         "name": "Ad",
         "namePlaceholder": "ör. Ana Hizmet Sözleşmesi",
         "description": "Açıklama",
@@ -427,18 +509,18 @@
         "orgRequired": "Kuruluşa ait şablon için bir kuruluş seçin.",
         "nameRequired": "Bir şablon adı girin.",
         "cancel": "İptal",
-        "create": "Şablon oluştur",
+        "create": "Anlaşma şablonu oluştur",
         "creating": "Oluşturuluyor…"
       }
     },
     "documentsTab": {
-      "title": "Belgeler",
-      "description": "Henüz bir sözleşmeye bağlanmamış, yürütülen sözleşme belgeleri.",
+      "title": "İmzalı anlaşmalar",
+      "description": "Henüz bir sözleşmeye bağlanmamış imzalı anlaşmalar. Her birini, ilgili olduğu sözleşmede görünmesi için bağlayın.",
       "empty": {
-        "title": "Eklenmemiş belge yok",
-        "description": "Yürütülen belgeler bir sözleşmeye bağlanana kadar burada görünür."
+        "title": "Bağlanmamış imzalı anlaşma yok",
+        "description": "İmzalı anlaşmalar bir sözleşmeye bağlanana kadar burada görünür."
       },
-      "loadError": "Belgeler yüklenemedi.",
+      "loadError": "İmzalı anlaşmalar yüklenemedi.",
       "columns": {
         "template": "Şablon",
         "signer": "İmzalayan",
@@ -460,8 +542,8 @@
         "confirm": "Bağlantı",
         "linking": "Bağlanıyor…"
       },
-      "linkSuccess": "Sözleşmeye bağlı belge.",
-      "linkError": "Belge bu sözleşmeye bağlanamadı."
+      "linkSuccess": "İmzalı anlaşma sözleşmeye bağlandı.",
+      "linkError": "İmzalı anlaşma bu sözleşmeye bağlanamadı."
     },
     "templateEditor": {
       "back": "Geri",
@@ -487,7 +569,7 @@
       "publish": "Yayınla",
       "publishDirtyHint": "Taslağınızı yayınlamadan önce kaydedin",
       "body": "Gövde",
-      "bodyAria": "Sözleşme şablonu metni",
+      "bodyAria": "Anlaşma şablonu metni",
       "preview": "Önizleme",
       "edit": "Düzenle",
       "saveDraft": "Taslağı kaydet",
@@ -504,12 +586,99 @@
       "publishError": "Sürüm yayınlanamadı",
       "publishSuccess": "Sürüm yayınlandı",
       "warnings": {
-        "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Sözleşme gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
+        "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Anlaşma gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
       }
     }
   },
+  "agreements": {
+    "tabs": {
+      "templates": "Anlaşma şablonları",
+      "signed": "İmzalı anlaşmalar"
+    },
+    "signedPage": {
+      "title": "İmzalı anlaşmalar",
+      "description": "Müşterilerinizin imzaladığı tüm anlaşmalar. Bir anlaşmayı, ilgili olduğu sözleşmede görünmesi için o sözleşmeye bağlayın.",
+      "unlinkedOnly": "Yalnızca bağlanmamışlar",
+      "empty": {
+        "title": "Henüz imzalı anlaşma yok",
+        "description": "Bir müşteri, anlaşma içeren bir fiyat teklifini kabul ettiğinde anlaşma imzalanmış olur."
+      },
+      "emptyUnlinked": {
+        "title": "Bağlanmamış imzalı anlaşma yok",
+        "description": "Her imzalı anlaşma zaten bir sözleşmenin altında saklanıyor."
+      },
+      "columns": {
+        "contract": "Sözleşme"
+      },
+      "viewContract": "Sözleşmeyi görüntüle",
+      "notLinked": "Bağlanmamış",
+      "rowSubtitle": "{{date}} tarihinde {{signer}} tarafından {{quoteNumber}} numaralı fiyat teklifiyle kabul edildi",
+      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı"
+    },
+    "templateEditor": {
+      "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
+      "usageUnavailable": "Kullanım bilgisi yok",
+      "backToTemplates": "Anlaşma şablonlarına dön",
+      "archiveConfirm": {
+        "title": "Bu anlaşma şablonu arşivlensin mi?",
+        "message": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
+        "messageUnknownUsage": "Bu şablonun nerede kullanıldığı denetlenemedi. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
+        "confirm": "Şablonu arşivle"
+      }
+    },
+    "contractPill": {
+      "under": "{{template}} v{{n}} kapsamında"
+    }
+  },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "iş istasyonları",
+        "server": "sunucular",
+        "printer": "yazıcılar",
+        "router": "yönlendiriciler",
+        "switch": "ağ anahtarları",
+        "firewall": "güvenlik duvarları",
+        "access_point": "erişim noktaları",
+        "phone": "telefonlar",
+        "iot": "IoT cihazları",
+        "camera": "kameralar",
+        "nas": "NAS cihazları"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Cihaz grubuna göre faturala",
+        "typeLabel": "Cihaz grubu",
+        "types": {
+          "per_device": "Cihaz başına",
+          "per_device_role": "Cihaz rolü başına",
+          "per_device_group": "Cihaz grubu başına",
+          "per_seat": "Kullanıcı başına"
+        },
+        "rolesLabel": "Cihaz rolleri",
+        "groupLabel": "Cihaz grubu",
+        "siteLabel": "Konum (isteğe bağlı)",
+        "allSites": "Tüm konumlar",
+        "quantityAuto": "Miktar otomatik olarak sayılır",
+        "autoSummary": "Otomatik miktar · {{count}} {{set}} · tahmini",
+        "driftChip": "sayı değişti: {{stored}} → {{live}}",
+        "refresh": "Sayıları yenile",
+        "estimateError": "Güncel cihaz sayısı denetlenemedi.",
+        "pickerError": "Cihaz grupları veya siteler yüklenemedi. Sayfayı yenileyip tekrar deneyin.",
+        "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin",
+        "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
+        "typeLocked": "Cihaz grubu, satır oluşturulduktan sonra değiştirilemez — satırı kaldırıp yeniden ekleyin.",
+        "allowanceGroupLabel": "Miktar limiti",
+        "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
+        "includedLabel": "Dahil miktar",
+        "overageModeLabel": "Dahil miktarın üstü",
+        "overageBill": "Her ek birimi faturala",
+        "overageFlag": "İnceleme için raporla",
+        "overagePriceLabel": "Aşım fiyatı",
+        "driftToast": "{{count}} satır artık güncel cihaz sayısıyla eşleşmiyor: {{lines}}",
+        "retargetToast": "{{count}} satır için bu kuruluşa ait cihaz grubu veya konum yeniden seçilmeli"
+      },
       "actions": {
         "addImage": "Resim ekle",
         "addLine": "Satır ekle",
@@ -557,7 +726,7 @@
       "addSection": {
         "captionPlaceholder": "Altyazı (isteğe bağlı)",
         "headingPlaceholder": "Başlık metni",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Bölüm ekle",
         "richTextPlaceholder": "Teklif metni…",
@@ -590,7 +759,7 @@
         "image": "Resim",
         "pricingTable": "Fiyatlandırma tablosu",
         "richText": "Zengin metin",
-        "contract": "Sözleşme",
+        "contract": "Anlaşma / koşullar",
         "table": "Tablo",
         "callout": "Çağrı kutusu"
       },
@@ -669,7 +838,7 @@
       "emptyBlocks": "Henüz içerik yok. Aşağıya bir başlık, zengin metin veya fiyat tablosu ekleyin.",
       "errors": {
         "addCatalogItem": "Katalog öğesi eklenemedi.",
-        "addContractSection": "Sözleşme bölümü eklenemedi",
+        "addContractSection": "Anlaşma bölümü eklenemedi",
         "addDistributorItem": "Dağıtıcı öğesi eklenemedi.",
         "addImageSection": "Resim bölümü eklenemedi.",
         "addLine": "Satır eklenemedi.",
@@ -684,7 +853,7 @@
         "importPax8Product": "Pax8 ürünü içe aktarılamadı.",
         "lineAddedCatalogSaveFailed": "Satır eklendi ancak kataloğa kaydedilemedi.",
         "lineNeedsNameOrDescription": "Bir satırın bir isme veya açıklamaya ihtiyacı vardır.",
-        "loadContractTemplates": "Sözleşme şablonları yüklenemedi",
+        "loadContractTemplates": "Anlaşma şablonları yüklenemedi",
         "moveLine": "Satır taşınamadı.",
         "quantityWholeGreaterThanZero": "0'dan büyük bir tam sayı miktarı girin.",
         "removeLine": "Satır kaldırılamadı.",
@@ -702,7 +871,9 @@
         "updateLine": "Hat güncellenemedi.",
         "updateSection": "Bölüm güncellenemedi.",
         "uploadImage": "Resim yüklenemedi.",
-        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
+        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
+        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -787,7 +958,7 @@
         "savedToCatalog": "Kataloğa kaydedildi",
         "sectionAdded": "Bölüm eklendi",
         "sectionRemoved": "Bölüm kaldırıldı",
-        "contractSectionAdded": "Sözleşme bölümü eklendi"
+        "contractSectionAdded": "Anlaşma bölümü eklendi"
       },
       "symbols": {
         "check": "✓",
@@ -833,8 +1004,9 @@
         "reshapedWarning": "Bu tablo {{columns}} sütun x {{rows}} satır sınırına sığmadığı için yeniden düzenlendi. Kaydetmek, kayıtlı tabloyu burada gördüğünüzle değiştirir."
       },
       "terms": {
-        "placeholder": "Ödeme koşulları, garanti hükümleri vb.",
-        "title": "Şartlar ve Koşullar"
+        "placeholder": "Ödeme koşulları, teslimat notları vb.",
+        "title": "Şartlar ve Koşullar (düz metin)",
+        "helper": "Yeniden kullanılabilir hukuki metinler için bir Anlaşma / koşullar bölümü ekleyin; müşteri bunu teklifle birlikte imzalar."
       },
       "tidyAll": {
         "complete": "{{count}} açıklama(lar)ın incelenmesi tamamlandı.",
@@ -853,10 +1025,10 @@
         "perYear": "/yıl"
       },
       "contract": {
-        "templateLabel": "Sözleşme şablonu",
+        "templateLabel": "Anlaşma şablonu",
         "templatePlaceholder": "Bir şablon seçin…",
-        "noTemplates": "Henüz sözleşme şablonu yok. Sözleşmeler → Şablonlar altında bir tane oluşturun.",
-        "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Eklemeden önce yayınlayın.",
+        "noTemplates": "Henüz anlaşma şablonu yok. Sözleşmeler → Anlaşma şablonları altında <templatesLink>bir tane oluşturun</templatesLink>.",
+        "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
@@ -865,7 +1037,7 @@
         "labelPlaceholder": "İsteğe bağlı etiket (örn. Ana Hizmet Sözleşmesi)",
         "variableRequired": "Bir değer girin",
         "variableUnresolved": "Bu değişken hala çözümlenmedi",
-        "untitledTemplate": "Sözleşme",
+        "untitledTemplate": "Anlaşma",
         "readOnlyHint": "Şablonu, sürümü veya değişkenleri değiştirmek için bu bölümü kaldırıp yeniden ekleyin.",
         "updateToVersion": "v{{version}} Güncellemesi",
         "saveVariables": "Değişkenleri kaydet",
@@ -882,7 +1054,7 @@
         "preparedForPlaceholder": "Müşteri adını geçersiz kılın",
         "showPreparedBy": "“Şirketiniz tarafından hazırlanan”ı göster",
         "imageLabel": "Kapak resmi",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "removeImage": "Resmi kaldır"
       },
       "ghost": {
@@ -1133,6 +1305,30 @@
         "untitled": "daha yeni bir sürüm"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Teklif para birimini değiştir",
+        "description": "Bu taslak teklif {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Teklifin satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "modeRepriceUnavailable": "Kullanılamaz — en az bir satır manuel veya paket olduğundan fiyat listesi onu yeniden fiyatlandıramaz. Bunun yerine tüm satırları kaldırın.",
+        "confirm": "Bunun teklifin para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Teklif para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Teklif para birimi değiştirilemedi."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
       "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
@@ -1164,11 +1360,21 @@
       "warehouses": "Depolar: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Tah.",
+        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
+        "setDevices": "cihazlar",
+        "setSeats": "kullanıcılar",
+        "setGroup": "“{{name}}” içindeki cihazlar",
+        "atSite": "{{site}} konumundaki {{set}}",
+        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
+        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+      },
       "additionalItems": "Ek öğeler",
       "contract": {
-        "download": "Sözleşmeyi indirin",
-        "previewTitle": "{{name}} sözleşme belgesi",
-        "unavailable": "Sözleşme dosyası mevcut değil",
+        "download": "Anlaşmayı indirin",
+        "previewTitle": "{{name}} anlaşması",
+        "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
       "draft": "Taslak",
@@ -1498,6 +1704,7 @@
       "messageLabel": "Mesaj (isteğe bağlı)",
       "messagePlaceholder": "Müşteri için kısa bir not ekleyin…",
       "includePdfLabel": "Fatura PDF’ini ekle",
+      "includeDeviceAppendixLabel": "Faturalanan cihazlar ekini dahil et",
       "signaturePreviewLabel": "İmzanız eklenecek:",
       "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
       "tooManyRecipients": "En fazla {{max}} adres.",
@@ -1553,6 +1760,29 @@
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Fatura para birimini değiştir",
+        "description": "Bu taslak fatura {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Faturanın satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun faturanın para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Fatura para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Fatura para birimi değiştirilemedi."
+      }
+    },
     "deposit": {
       "duePrefix": "Depozito",
       "dueSuffix": "ödenmesi gereken — {{total}} tutarından {{paid}} ödendi.",
@@ -1575,6 +1805,21 @@
       "tax": "Vergi",
       "total": "Toplam",
       "allHidden": "Tüm hatlar yalnızca dahilidir. Bunları görüntülemek için \"Maliyet ve marjı göster\" seçeneğini kullanın."
+    },
+    "devices": {
+      "title": "Faturalanan cihazlar",
+      "toggle": "Cihazlar ({{count}})",
+      "notRecorded": "Bu fatura için cihaz ayrıntısı kaydedilmedi.",
+      "hostname": "Ana bilgisayar adı",
+      "role": "Rol",
+      "countedAs": "Sayım türü",
+      "included": "Dahil",
+      "overage": "Aşım",
+      "removed": "Cihaz kaldırıldı",
+      "showing": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "flaggedHeading": "İşaretlendi, faturalanmadı",
+      "empty": "Bu satır için hiçbir cihaz sayılmadı.",
+      "loadError": "Cihaz listesi yüklenemedi."
     },
     "paymentMethods": {
       "cash": "Nakit",
@@ -1615,12 +1860,18 @@
       },
       "reverseError": "Ödeme geri alınamadı.",
       "reverseSuccess": "Ödeme geri alındı",
+      "reverseInQuickbooksToo": "Bu ödemeyi QuickBooks’ta da iptal edin",
       "sendLink": "Ödeme bağlantısını gönder",
       "setUp": "Kurulum",
       "shareLinkPrompt": "Bu ödeme bağlantısını müşterinizle paylaşın:",
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "QuickBooks aracılığıyla",
+      "inQuickbooks": "QuickBooks'ta",
+      "syncingToQuickbooks": "Eşitleniyor…",
+      "quickbooksSyncFailed": "QuickBooks eşitlemesi başarısız oldu",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {
@@ -1659,6 +1910,24 @@
       "confirm": "Bağlantıyı sıfırla",
       "success": "Bağlantı sıfırlandı — önceki bağlantılar artık çalışmıyor",
       "error": "Bağlantı sıfırlanamadı"
+    },
+    "accountingSync": {
+      "title": "QuickBooks eşitlemesi",
+      "status": {
+        "pending": "Henüz gönderilmedi",
+        "synced": "Eşitlendi",
+        "error": "Eşitleme başarısız",
+        "synced_with_tax_variance": "Vergi farkıyla eşitlendi"
+      },
+      "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
+      "docNumber": "QuickBooks belgesi {{docNumber}}",
+      "lastSynced": "Son eşitleme: {{when}}",
+      "syncing": "Eşitleniyor…",
+      "push": "QuickBooks'a gönder",
+      "pushed": "Fatura QuickBooks'a gönderildi.",
+      "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
+      "voidedHint": "Bu fatura iptal edildi — QuickBooks'a gönderilecek bir şey yok.",
+      "remoteDeletedHint": "Bu fatura QuickBooks'ta silindi. Yeniden göndermek bir kopya oluşturur — önce QuickBooks'ta çözün."
     }
   },
   "invoiceDocument": {
@@ -1718,7 +1987,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} atlandı{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Geçersiz",
-      "voidedVerb": "geçersiz kılındı"
+      "voidedVerb": "geçersiz kılındı",
+      "quickbooks": "QuickBooks'a gönder",
+      "quickbooksQueued": "{{enqueued}} kayıt QuickBooks kuyruğunda",
+      "quickbooksQueuedPartial": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı",
+      "quickbooksQueuedFailed": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
+      "quickbooksFailed": "QuickBooks gönderimi kuyruğa alınamadı. Yeniden deneyin."
     },
     "bulkDelete": {
       "message": "Seçilen {{count}} fatura(lar) silinsin mi? Yalnızca TASLAK faturalar silinecektir; bu geri alınamaz.",
@@ -1798,7 +2072,9 @@
       "total": "Toplam"
     },
     "title": "Faturalar",
-    "tryAgain": "Tekrar deneyin"
+    "tryAgain": "Tekrar deneyin",
+    "exportBillables": "Faturalandırılabilirleri dışa aktar",
+    "exportBillablesDialogTitle": "Faturalandırılabilirleri dışa aktar"
   },
   "orgBillingSettings": {
     "address": {
@@ -1897,6 +2173,8 @@
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
       "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "deviceAppendix": "Fatura PDF'lerine faturalanan cihazlar ekini dahil et",
+      "deviceAppendixHelp": "Her fatura satırında sayılan tüm cihazları listeleyen bir sayfa ekler. Varsayılan olarak kapalıdır; seçim fatura düzenlendiğinde dondurulur.",
       "documentPageSize": "Sayfa boyutu",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Letter",
@@ -1928,6 +2206,24 @@
     },
     "statusPill": {
       "prefix": "Durum:"
+    }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Varsayılanlar",
+    "documents": "Belgeler",
+    "connections": "Bağlantılar"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Muhasebe",
+      "description": "Stripe ve QuickBooks, Entegrasyonlar altında bağlanır — onları orada yönetin.",
+      "cta": "Muhasebe bağlantılarını yönet →"
+    },
+    "catalog": {
+      "title": "Katalog ve distribütörler",
+      "description": "Ürün Kataloğu ve distribütör bağlantıları (Pax8, TD SYNNEX) iki yerde bulunur — buradan geçiş yapın.",
+      "catalogCta": "Ürün Kataloğunu aç →",
+      "distributorsCta": "Distribütörleri aç →"
     }
   }
 }

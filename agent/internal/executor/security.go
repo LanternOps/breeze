@@ -156,24 +156,92 @@ func (v *SecurityValidator) initPatterns() {
 	}
 }
 
-// Validate checks the script content for dangerous patterns
+// Validate checks the script content for dangerous patterns, with no
+// acknowledgements. Equivalent to ValidateWithAcknowledgements(content, nil).
 func (v *SecurityValidator) Validate(content string) error {
+	return v.ValidateWithAcknowledgements(content, nil)
+}
+
+// ValidateWithAcknowledgements checks the script content for dangerous
+// patterns, allowing STRICT-level patterns whose description appears in
+// acknowledged (#5129).
+//
+// The two levels are deliberately asymmetric:
+//
+//   - BASIC patterns (`rm -rf /`, `Format-Volume`, fork bombs, block-device
+//     writes) are unconditional. There is no legitimate RMM use for them, so
+//     they are never acknowledgeable and no value of `acknowledged` can permit
+//     one. An acknowledgement naming a basic description is simply ignored.
+//   - STRICT patterns are risky-but-legitimate admin work — writing an HKLM
+//     value is one of the most common things an MSP tech does on Windows. The
+//     server dispatches the set of descriptions an admin explicitly signed off
+//     on for THIS script, and exactly those are allowed through.
+//
+// `acknowledged` carries DESCRIPTIONS, not a blanket "this script is
+// approved" flag. That is the whole point: an approval is scoped to the
+// specific risk it was granted for, so a later script edit that introduces a
+// different pattern is unacknowledged and still blocked, while the original
+// approval keeps working.
+//
+// A nil or empty set is the pre-#5129 behaviour exactly — fail closed. An
+// older API that does not send the field therefore cannot loosen a newer
+// agent.
+func (v *SecurityValidator) ValidateWithAcknowledgements(content string, acknowledged []string) error {
 	if v.level == SecurityLevelNone {
 		return nil
 	}
 
-	// Check each pattern
+	acknowledgedSet := newAcknowledgementSet(acknowledged)
+
+	// Check each pattern. Basic patterns are registered first, so a script
+	// that trips both levels always reports the unconditional one.
 	for _, p := range v.patterns {
 		if p.level > v.level {
 			continue
 		}
 
-		if p.regex.MatchString(content) {
-			return fmt.Errorf("potentially dangerous pattern detected: %s", p.description)
+		if !p.regex.MatchString(content) {
+			continue
 		}
+
+		if p.level == SecurityLevelBasic {
+			return fmt.Errorf(
+				"potentially dangerous pattern detected: %s. This pattern is blocked on every device and cannot be overridden; rewrite the script so it does not match",
+				p.description)
+		}
+
+		if _, ok := acknowledgedSet[p.description]; ok {
+			continue
+		}
+
+		return fmt.Errorf(
+			"potentially dangerous pattern detected: %s. If the script is meant to do this, open it in Breeze (Scripts → edit the script) and acknowledge %q under Security review, then run it again. For a one-off change on a single device use Remote Tools (Registry or Terminal) instead",
+			p.description, p.description)
 	}
 
 	return nil
+}
+
+// newAcknowledgementSet indexes the dispatched descriptions for lookup.
+//
+// Entries are trimmed because the value survives a JSON round trip and an
+// IPC hop, and losing a legitimate acknowledgement to stray whitespace is a
+// pure availability bug. Matching is otherwise EXACT — no case folding — so
+// an acknowledgement can only ever name a description the agent itself
+// produced.
+func newAcknowledgementSet(acknowledged []string) map[string]struct{} {
+	if len(acknowledged) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(acknowledged))
+	for _, description := range acknowledged {
+		trimmed := strings.TrimSpace(description)
+		if trimmed == "" {
+			continue
+		}
+		set[trimmed] = struct{}{}
+	}
+	return set
 }
 
 // ValidateWithDetails returns all matching dangerous patterns

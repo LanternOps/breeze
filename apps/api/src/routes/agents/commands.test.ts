@@ -24,6 +24,12 @@ const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
 });
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
+const consumePamReconciliationRateLimitMock = vi.fn().mockResolvedValue({
+  allowed: true,
+  remaining: 119,
+  resetAt: new Date('2026-08-26T12:01:00.000Z'),
+});
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -108,6 +114,15 @@ vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
 }));
 
+vi.mock('../../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('./helpers', () => ({
   handleSecurityCommandResult: vi.fn(),
   handleFilesystemAnalysisCommandResult: vi.fn(),
@@ -126,12 +141,22 @@ vi.mock('../../services/auditBaselineService', () => ({
 // mock existing proves the route skips the registry by intent rather than
 // because the handler happened to be missing.
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const pamRegistryHandlerMock = vi.fn().mockResolvedValue({ kind: 'pam', classification: 'applied' });
 const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
+    peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
+    pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
+    pam_cleanup_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
   },
+}));
+
+vi.mock('../../services/pamReconciliationRateLimit', () => ({
+  consumePamReconciliationRateLimit: (...args: unknown[]) =>
+    consumePamReconciliationRateLimitMock(...(args as [])),
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -168,6 +193,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
       });
@@ -260,6 +286,317 @@ describe('agent commands routes', () => {
       resolvedDeviceId: 'device-1',
       stdout: 'hello from the script',
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'hello from the script',
+    }));
+  });
+
+  // D20-D (REST twin): mssql_backup/hyperv_backup's FIRST reply can be a
+  // non-terminal queue-admission ack rather than the real outcome. Before
+  // this fix (mirroring the WS twin), a stray HTTP-polling agent's ack would
+  // terminalize the row and, once the command payload carries jobId (D20-E),
+  // would reach handleProviderBackedBackupResult and vacuously "complete" the
+  // backup job with no snapshot at all.
+  it.each(['mssql_backup', 'hyperv_backup'])(
+    'D20: a %s queue-ack over the HTTP path does not fire automation-terminal or the per-type handler',
+    async (commandType) => {
+      const command = {
+        id: commandId,
+        deviceId: 'device-1',
+        type: commandType,
+        status: 'sent',
+        payload: { jobId: '99999999-9999-4999-8999-999999999999', instance: 'MSSQLSERVER', database: 'AppDb' },
+      };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      const updateChain = chainMock([{ id: 'cmd-1' }]);
+      updateMock.mockReturnValueOnce(updateChain);
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+          result: { queued: true },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).success).toBe(true);
+
+      const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+      expect(setArg.status).toBe('completed');
+      expect((setArg.result as Record<string, unknown>).status).toBe('queue_ack');
+
+      expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'peripheral_policy_sync_v2',
+      status: 'sent',
+      payload: {},
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+
+    const protocolResult = {
+      schemaVersion: 2,
+      phase: 'clear_legacy',
+      revision: 1,
+      digest: `sha256:${'a'.repeat(64)}`,
+      outcome: 'applied',
+    };
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(peripheralV2RegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command,
+      commandId,
+      resolvedDeviceId: 'device-1',
+      result: expect.objectContaining({ result: protocolResult }),
+    }));
+  });
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches %s results to the shared handler over the HTTP path',
+    async (commandType) => {
+      const command = { id: commandId, deviceId: 'device-1', type: commandType, status: 'sent', payload: {} };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command, commandId, resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'accepts a valid supplemental %s result for a terminal row without rewriting it',
+    async (commandType) => {
+      const command = {
+        id: commandId,
+        deviceId: 'device-1',
+        type: commandType,
+        status: 'completed',
+        targetRole: 'agent',
+        payload: null,
+        result: { status: 'completed', result: { retained: true } },
+        completedAt: new Date('2026-08-25T12:00:00.000Z'),
+      };
+      const before = structuredClone(command);
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: commandType === 'pam_apply_v2' ? 'verified_active' : 'cleaned',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+      expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command,
+        commandId,
+        resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(command).toEqual(before);
+    },
+  );
+
+  it('preserves the terminal short circuit for malformed PAM results', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: { protocolVersion: 2 } }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits valid supplemental terminal PAM results by authenticated device', async () => {
+    consumePamReconciliationRateLimitMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date('2026-08-26T12:01:00.000Z'),
+    });
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a server-timeout PAM row as terminal supplemental evidence without rewriting it', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'failed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'timeout', retained: true },
+      completedAt: new Date('2026-08-25T12:00:00.000Z'),
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the terminal short circuit for non-PAM commands', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'script',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: 'late' }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(scriptRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns no acknowledgement when terminal PAM persistence throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    pamRegistryHandlerMock.mockRejectedValueOnce(new Error('PAM persistence unavailable'));
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('"protocolVersion":1');
+    expect(updateMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   // The other half of the contract: types this route already post-processes
@@ -326,6 +663,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         tenantDraining: true,
@@ -582,154 +920,8 @@ describe('agent commands routes', () => {
     expect(stored.result.stderr).toBe('stderr-pre [PRIVATE_KEY_REDACTED] stderr-post');
   });
 
-  it('redacts private-key blocks from the software-install deployment result path', async () => {
-    // sw-install commandId embeds deployment + device UUIDs; the device UUID
-    // must equal the authenticated agent's deviceId for the update to fire.
-    const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-    const deviceUuid = '33333333-3333-4333-8333-333333333333';
-    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-
-    const swApp = new Hono();
-    swApp.use('*', async (c, next) => {
-      c.set('agent', {
-        deviceId: deviceUuid,
-        agentId: 'agent-1',
-        orgId: 'org-1',
-        siteId: 'site-1',
-        role: 'agent',
-      });
-      await next();
-    });
-    swApp.route('/agents', commandsRoutes);
-
-    const updateChain = chainMock([]);
-    updateMock.mockReturnValueOnce(updateChain);
-
-    const res = await swApp.request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        commandId: swCommandId,
-        status: 'completed',
-        exitCode: 0,
-        stdout: `install-log ${PRIVATE_KEY_BLOCK} done`,
-        error: `install-error ${PRIVATE_KEY_BLOCK} boom`,
-      }),
-    });
-
-    expect(res.status).toBe(200);
-
-    // deployment_results is never queried via selectMock on this path.
-    expect(selectMock).not.toHaveBeenCalled();
-    const stored = updateChain.set.mock.calls[0][0];
-    expect(stored.output).toBe('install-log [PRIVATE_KEY_REDACTED] done');
-    expect(stored.errorMessage).toBe('install-error [PRIVATE_KEY_REDACTED] boom');
-
-    const serialized = JSON.stringify(stored);
-    expect(serialized).not.toContain('BEGIN PRIVATE KEY');
-    expect(serialized).not.toContain('MIIEvQ');
-    expect(serialized).not.toContain('BODYb64lineTwo');
-  });
-
-  // Retry race guard (this fix): a sw-install commandId's optional
-  // `-<attempt>` suffix must gate the deployment_results UPDATE on
-  // retryCount, so a late result from an attempt a retry already superseded
-  // is dropped instead of landing on the new attempt's fresh 'pending' row.
-  describe('sw-install attempt-suffix retry guard', () => {
-    const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-    const deviceUuid = '33333333-3333-4333-8333-333333333333';
-
-    function makeSwApp() {
-      const swApp = new Hono();
-      swApp.use('*', async (c, next) => {
-        c.set('agent', {
-          deviceId: deviceUuid,
-          agentId: 'agent-1',
-          orgId: 'org-1',
-          siteId: 'site-1',
-          role: 'agent',
-        });
-        await next();
-      });
-      swApp.route('/agents', commandsRoutes);
-      return swApp;
-    }
-
-    it('parses the attempt suffix and guards the UPDATE on retryCount', async () => {
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
-      const updateChain = chainMock([{ id: 'dr-1' }]);
-      updateMock.mockReturnValueOnce(updateChain);
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 2),
-        ),
-      );
-    });
-
-    it('drops (and logs) a late result whose attempt suffix no longer matches the row current retryCount', async () => {
-      // Attempt 1's command id delivers late after a retry bumped retryCount
-      // to 2 — the UPDATE's retryCount=1 condition matches zero real rows.
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-1`;
-      const updateChain = chainMock([]);
-      updateMock.mockReturnValueOnce(updateChain);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 1),
-        ),
-      );
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('attempt=1'));
-      warnSpy.mockRestore();
-    });
-
-    it('defaults to attempt 0 for a legacy commandId with no attempt suffix', async () => {
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-      const updateChain = chainMock([{ id: 'dr-1' }]);
-      updateMock.mockReturnValueOnce(updateChain);
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 0),
-        ),
-      );
-    });
-  });
-
-  // Offline-fallback path: the install command was queued as a device_commands
-  // row (UUID id), so the result flows through the UUID branch and must ALSO
-  // reconcile the matching deployment_results row via the payload deploymentId.
+  // Software-install results use the persisted command UUID and reconcile
+  // the matching deployment_results row via the payload deploymentId.
   describe('queued software_install result reconciliation', () => {
     const deploymentUuid = '44444444-4444-4444-8444-444444444444';
 
@@ -745,10 +937,8 @@ describe('agent commands routes', () => {
       };
     }
 
-    // Queued (offline-fallback) commands don't use the sw-install-<dep>-<device>-<attempt>
-    // id shape — the device_commands row carries a plain UUID — so the attempt
-    // number for the retry guard travels in the payload instead (written by
-    // buildAndDispatchSoftwareInstalls). This proves it threads through here too.
+    // The retry guard uses the attempt number written into the command payload
+    // by buildAndDispatchSoftwareInstalls.
     it('guards the deployment_results UPDATE on the payload retryCount for a queued result', async () => {
       selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow({
         payload: { deploymentId: deploymentUuid, downloadUrl: 'https://dl/pkg.exe', retryCount: 1 },
@@ -1026,14 +1216,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
    *   'tenant' — #2774 offboarding drain. The device itself is healthy, but the
    *              middleware derives the SAME `claimTypeAllowlist`.
    *
-   * The tenant case exists because this route's gates are deliberately driven
-   * by `claimTypeAllowlist` — the ONE derived value — and not by
-   * `deviceUninstallDraining`. That is a real behaviour change to the shipped
-   * #2774 path (see the LOW-2 section of the task-9 report): a `sw-install-…`
-   * result and a non-self_uninstall ack from an offboarding tenant's still-live
-   * machine are now refused too. It is intentional — a second, divergent notion
-   * of "draining" at this layer is exactly the drift the single derived value
-   * exists to prevent — so it is pinned by tests rather than left as prose.
+   * Both drain contexts must use the same claimTypeAllowlist gates.
    */
   function buildApp(opts: { drain: 'none' | 'device' | 'tenant'; deviceId?: string }): Hono {
     const drainContext =
@@ -1049,6 +1232,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
         deviceId: opts.deviceId ?? 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         ...drainContext,
@@ -1082,11 +1266,8 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
   }
 
   it('rejects a non-UUID command result while draining', async () => {
-    // `sw-install-<deployment>-<device>` has NO device_commands row: the
-    // handler writes deployment_results gated only on the embedded device UUID
-    // matching the authenticated device, so a command-TYPE allowlist cannot
-    // see it at all. A removed machine must not keep stamping deployment
-    // history for the org.
+    // Retired software-install IDs have no device_commands row and cannot
+    // satisfy the draining agent's command-type allowlist.
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);
@@ -1099,7 +1280,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('the SAME sw-install result still lands when NOT draining (proves the refusal is the drain gate)', async () => {
+  it('ignores retired software-install command IDs when not draining', async () => {
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);
@@ -1107,7 +1288,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     const res = await postResult(buildApp({ drain: 'none', deviceId: deviceUuid }), swCommandId);
 
     expect(res.status).toBe(200);
-    expect(updateMock).toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('rejects a result for a non-self_uninstall command while draining', async () => {
@@ -1184,10 +1365,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
   // away (`agent.deviceUninstallDraining && …`) with zero test failures.
 
   it('rejects a non-UUID (sw-install) command result during a TENANT drain too', async () => {
-    // #2774's machines are still live, but the `sw-install-…` branch is the same
-    // hole on the same route: it writes deployment_results with no
-    // device_commands row to consult, gated only on the embedded device UUID.
-    // An offboarding customer's fleet must stop feeding that too.
+    // Tenant drains reject non-persistent command IDs too.
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);

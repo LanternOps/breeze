@@ -51,6 +51,16 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 
 ---
 
+## Backup job fails with "backup helper exited unexpectedly"
+
+**Symptom:** A backup job that was running normally suddenly fails, with an error mentioning the backup helper exiting unexpectedly — most often on a small or busy device during a large backup.
+
+**Cause:** Under sustained load, the agent's internal health check can time out and trigger an agent restart, which also stops any backup helper process that was in progress.
+
+**Fix:** Re-run the backup — Breeze resumes from where it left off using its checkpoint journal instead of starting over. If this happens repeatedly on the same device, reduce load on it during the backup window or narrow the backup scope.
+
+---
+
 ## Snapshot browse returns empty
 
 **Symptom:** A snapshot exists but the file browser shows no contents.
@@ -68,6 +78,16 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 **Cause:** The target device wasn't explicitly specified in the restore wizard.
 
 **Fix:** When restoring, explicitly select the target device in the destination step. If omitted, the restore defaults to the snapshot's original device. Both devices must be in the same organization.
+
+---
+
+## Restore includes more files than I selected
+
+**Symptom:** A selective restore of one file also restores other, unrelated files that happen to share the start of the same name or path (for example, restoring `report.txt` also restores `report.txt.bak` and `report.txt2`).
+
+**Cause:** Selective restore currently matches a selected path as a text prefix rather than an exact path, so any file whose path starts with a selected path is included.
+
+**Fix:** This is a known issue with no workaround yet. For an in-place restore, avoid selecting individual files that have similarly-named siblings — restore to an alternate path instead and copy back only the file you intended.
 
 ---
 
@@ -166,6 +186,16 @@ Breeze does not create simulated verification records or silent pending restores
 **Cause:** The token may have expired, been used already, or was copied incorrectly.
 
 **Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). Tokens are single-use and time-limited. Ensure you copy the full token string without trailing whitespace.
+
+---
+
+## Generating bootable recovery media fails
+
+**Symptom:** Building bootable recovery media (ISO) or a recovery bundle for a token, from the **Recovery Bootstrap** tab, shows a **Failed** status.
+
+**Cause:** On some deployments, building recovery media runs out of temporary disk space on the server.
+
+**Fix:** Retry the request — transient load can also cause a failure. If it fails consistently, contact your Breeze administrator; the server's temporary storage may need to be increased. This affects both the ISO and the downloadable recovery bundle.
 
 <Aside type="tip">
   For persistent issues, check the device's diagnostic logs via the device detail page. Filter by the `backup` component to see agent-side backup logs.

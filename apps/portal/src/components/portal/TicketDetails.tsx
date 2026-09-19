@@ -4,7 +4,9 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
 import {
   portalApi,
+  portalAttachmentContentPath,
   type TicketComment,
+  type TicketCommentAttachment,
   type TicketDetails as TicketDetailsType,
   type TicketStatus,
 } from '@/lib/api';
@@ -12,6 +14,7 @@ import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
 import { ticketStatusLabel, ticketStatusTone } from './ticketMarks';
+import { TicketSlaBadge } from './TicketList';
 
 /** Activity copy derived from the ticket's own status. This component only ever
  *  sees the ticket record plus its public replies, so it must never assert that
@@ -42,6 +45,57 @@ interface TicketDetailsProps {
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
+}
+
+/**
+ * Render-only attachment strip under a public comment (W08 #3902). Images are
+ * plain <img> tags: the request is same-origin and the portal session cookie
+ * rides along, so no blob fetch is needed. Anything else is a download link.
+ */
+function CommentAttachments({
+  ticketId,
+  attachments,
+}: {
+  ticketId: string;
+  attachments?: TicketCommentAttachment[];
+}) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <ul className="mt-2.5 flex flex-wrap gap-2" data-testid="ticket-attachment-list">
+      {attachments.map((a) =>
+        a.contentType.startsWith('image/') ? (
+          <li key={a.id}>
+            <a
+              href={portalAttachmentContentPath(ticketId, a.id)}
+              target="_blank"
+              rel="noreferrer"
+              data-testid={`ticket-attachment-link-${a.id}`}
+            >
+              <img
+                src={portalAttachmentContentPath(ticketId, a.id)}
+                alt={a.originalFilename}
+                loading="lazy"
+                className="h-24 w-24 rounded border border-border/70 object-cover"
+                data-testid={`ticket-attachment-image-${a.id}`}
+              />
+            </a>
+          </li>
+        ) : (
+          <li key={a.id}>
+            <a
+              href={portalAttachmentContentPath(ticketId, a.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded border border-border/70 px-2.5 py-1.5 text-xs text-foreground hover:bg-muted"
+              data-testid={`ticket-attachment-file-${a.id}`}
+            >
+              {a.originalFilename}
+            </a>
+          </li>
+        ),
+      )}
+    </ul>
+  );
 }
 
 /** The reply box that closes the loop the create-form promises ("say so in the
@@ -192,7 +246,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
   const tone = ticketStatusTone(ticket.status);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="max-w-3xl">
       <div className="mb-6">
         <a
           href={withBase('/tickets')}
@@ -214,6 +268,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
           <StatusMark tone={tone}>
             {ticketStatusLabel(ticket.status)}
           </StatusMark>
+          <TicketSlaBadge sla={ticket.sla} testId="portal-ticket-sla-badge" />
           {/* Priority is context, not state: one mark per row. Urgent and high
               keep their tinted text; routine priorities stay muted. */}
           <span
@@ -261,12 +316,23 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
 
         {replies.length > 0 && (
           <ol className="mt-4 divide-y divide-border/70 border-y border-border/70">
-            {replies.map((c) => (
+            {replies.map((c) => {
+              // An email-authored comment is the CUSTOMER's only when the
+              // inbound sender resolved to a portal login. A technician's own
+              // reply linked through the Outlook add-in is stored with the same
+              // author_type 'email' and no sender, so keying this badge on
+              // author_type alone showed the customer their IT team's reply
+              // labelled "Customer email".
+              const isCustomerEmail = c.authorType === 'email' && c.senderPortalUserId != null;
+              return (
               <li key={c.id} className="py-4" data-testid="ticket-comment">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <span className="text-sm font-semibold text-foreground">
                     {c.authorName || 'Support'}
-                    {c.authorType !== 'portal' && (
+                    {isCustomerEmail && (
+                      <span className="ml-1.5 text-xs font-medium text-muted-foreground">Customer email</span>
+                    )}
+                    {c.authorType !== 'portal' && !isCustomerEmail && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Your IT team</span>
                     )}
                   </span>
@@ -275,8 +341,10 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
                 <div className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {c.content}
                 </div>
+                <CommentAttachments ticketId={ticket.id} attachments={c.attachments} />
               </li>
-            ))}
+              );
+            })}
           </ol>
         )}
 

@@ -12,13 +12,13 @@ export const thresholdHandler: ConditionHandler = {
 
     const metricName = normalizeMetricName(cond.metric);
     if (!metricName) {
-      return { passed: false, description: `Unknown metric: ${cond.metric}` };
+      return { passed: false, description: `Unknown metric: ${cond.metric}`, dataAvailable: false };
     }
 
     const metrics = await getRecentMetrics(deviceId, durationMinutes);
 
     if (metrics.length === 0) {
-      return { passed: false, description: `No metrics available for ${cond.metric}` };
+      return { passed: false, description: `No metrics available for ${cond.metric}`, dataAvailable: false };
     }
 
     // Average the window rather than requiring every sample to exceed. Strict
@@ -30,7 +30,7 @@ export const thresholdHandler: ConditionHandler = {
       .filter((v): v is number => typeof v === 'number');
 
     if (values.length === 0) {
-      return { passed: false, description: `No metrics available for ${cond.metric}` };
+      return { passed: false, description: `No metrics available for ${cond.metric}`, dataAvailable: false };
     }
 
     const average = values.reduce((sum, v) => sum + v, 0) / values.length;

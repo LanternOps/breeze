@@ -17,6 +17,13 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+const { schedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice,
+}));
+
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 1,
@@ -367,6 +374,10 @@ describe('groups routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.removed).toBe(true);
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'manual_membership_changed',
+      );
     });
 
     it('should reject removing device from a dynamic group', async () => {

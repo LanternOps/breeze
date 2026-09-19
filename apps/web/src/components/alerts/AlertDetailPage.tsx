@@ -16,8 +16,12 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
+import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import AlertDeviceInfo from './AlertDeviceInfo';
+import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
+import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
   formatAnomalyConfidence,
   formatAnomalyType,
@@ -25,6 +29,8 @@ import {
   normalizeMetricAnomalyContext,
   type MetricAnomalyAlertContext,
 } from './alertMlContext';
+import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 type Alert = {
   id: string;
@@ -34,8 +40,19 @@ type Alert = {
   status: AlertStatus;
   deviceId: string;
   deviceName: string;
+  /**
+   * The alert's OWN org. W08 (#5246): the delegate action targets this org,
+   * never the globally selected one — spec §5.1, "changing global
+   * organization context while drafting cannot retarget the task". The API
+   * has always returned it (the detail route spreads the whole alert row);
+   * it simply was not declared here before.
+   */
+  orgId: string;
   ruleId?: string;
   ruleName?: string;
+  // #5287 — the authored monitor behind a compiled rule, when this alert was
+  // raised by a rule compiled from a monitor definition.
+  monitorId?: string | null;
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
@@ -48,6 +65,9 @@ type Alert = {
   context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
   anomalyContext?: MetricAnomalyAlertContext | null;
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Null when the alert has no
+  // verdict yet (or the org has AI agents disabled).
+  aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
 type LinkedTicket = {
@@ -84,6 +104,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
   const [linkedError, setLinkedError] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
+  const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
   const fetchAlert = useCallback(async () => {
     try {
@@ -184,6 +205,20 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       await fetchAlert();
     } catch (err) {
       handleActionError(err, t('alertDetailPage.failedToResolveAlert'));
+      // 409 = another technician (or the auto-resolve sweep) won the
+      // compare-and-swap; the alert IS resolved, this request just didn't do it
+      // (#4094). runAction already toasted the server's reason, so a persistent
+      // red banner on top of it would frame a benign race as a broken page.
+      // Re-fetch instead, so the header shows the resolved state.
+      if (err instanceof ActionError && err.status === 409) {
+        // `fetchAlert` sets its own error state on failure, but a rejection here
+        // would escape this catch entirely (nothing wraps the recovery path) and
+        // become an unhandled rejection with no feedback for the second failure.
+        await fetchAlert().catch(() => {
+          setError(t('alertDetailPage.failedToFetchAlert'));
+        });
+        return;
+      }
       if (!(err instanceof ActionError && err.status === 401)) {
         setError(err instanceof Error ? err.message : t('alertDetailPage.failedToResolveAlert'));
       }
@@ -270,21 +305,51 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <StatusIcon className="h-3 w-3" />
                   {t(/* i18n-dynamic */ `alertDetailPage.status.${alert.status}`)}
                 </span>
+                {alert.aiVerdict && (
+                  <AlertVerdictBadge
+                    verdict={alert.aiVerdict}
+                    onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                  />
+                )}
               </div>
+              {alert.aiVerdict && (
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
+              )}
+              {alert.aiVerdict?.suggestedIntentId && (
+                <a
+                  href="/approvals"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  {t('alertVerdict.suggestionPending')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
             </div>
           </div>
 
           {/* Actions */}
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setTicketDialogOpen(true)}
-              className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
-              data-testid="alert-create-ticket"
-            >
-              <Ticket className="mr-2 inline-block h-4 w-4" />
-              {t('alertDetailPage.createTicket')}
-            </button>
+            {/* #5075 W04 — Service Management gate.
+                'off': the API refuses with a 409 (the backstop lives in
+                ticketService.createTicket), so this avoids offering a button
+                that cannot succeed.
+                'external': the API WOULD accept the create (it still writes the
+                Breeze-side shadow row), but the alert flow has no PSA-linking
+                step yet, so a ticket raised here would strand outside the
+                partner's system of record. Hidden until that ships — unlike the
+                org record's Tickets tab, which stays visible under external
+                because it lists those shadow rows. */}
+            {serviceManagementMode === 'native' && (
+              <button
+                type="button"
+                onClick={() => setTicketDialogOpen(true)}
+                className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+                data-testid="alert-create-ticket"
+              >
+                <Ticket className="mr-2 inline-block h-4 w-4" />
+                {t('alertDetailPage.createTicket')}
+              </button>
+            )}
             {alert.status === 'active' && (
               <button
                 type="button"
@@ -295,6 +360,20 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 <CheckCircle className="mr-2 inline-block h-4 w-4" />
                 {t('alertDetailPage.acknowledge')}
               </button>
+            )}
+            {/* W08 of #5205 (#5246). Hidden entirely unless the AI Operator
+                flags are on. Targets the ALERT's org and device, and cites
+                the alert as its source so the verification criterion gets a
+                recurrence signal (without one, the best achievable outcome is
+                `investigation_complete`, never `verified_resolved`). */}
+            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+              <DelegateToOperatorButton
+                orgId={alert.orgId}
+                deviceId={alert.deviceId}
+                deviceLabel={alert.deviceName}
+                source={{ kind: 'alert', id: alert.id }}
+                defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
+              />
             )}
             {(alert.status === 'active' || alert.status === 'acknowledged') && (
               <button
@@ -392,26 +471,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.deviceInformation')}</h3>
           <div className="space-y-3">
-            <div>
-              <p className="text-xs text-muted-foreground">{t('alertDetailPage.device')}</p>
-              <a
-                href={`/devices/${alert.deviceId}`}
-                className="flex items-center gap-1 text-sm font-medium hover:underline"
-              >
-                {alert.deviceName}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </div>
-            {alert.ruleName && (
-              <div>
-                <p className="text-xs text-muted-foreground">{t('alertDetailPage.alertRule')}</p>
-                <p className="text-sm font-medium">{alert.ruleName}</p>
-                <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
-                  {t('alertDetailPage.managedInConfigurationPolicies')}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            )}
+            <AlertDeviceInfo
+              deviceId={alert.deviceId}
+              deviceName={alert.deviceName}
+              ruleName={alert.ruleName}
+              monitorId={alert.monitorId}
+            />
           </div>
         </div>
 

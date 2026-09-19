@@ -49,6 +49,10 @@ Your tenant's MCP SSE endpoint is surfaced in two places in the dashboard so you
 
 Both cards resolve the URL from the tenant you're connecting to, so what's shown is what the AI client should use.
 
+<Aside type="note" title="Who can see and disconnect connected apps">
+  Since v0.112.0 the **Settings → Connected Apps** list needs the `connected_apps:read` permission, and disconnecting an app needs `connected_apps:manage` plus a multi-factor step-up. Both are held by Partner Admin and (after the upgrade) the built-in Org Admin only; grant them to any other role that manages OAuth/MCP clients in **Settings → Roles**. Managing connected apps also requires a partner-scope session with access to every organization.
+</Aside>
+
 ---
 
 ## Authentication
@@ -241,7 +245,8 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 | Tool | Tier | Description |
 |---|---|---|
-| `manage_policies` | 1/2/3 | Compliance policy lifecycle: list, get, compliance status/summary, evaluate, create, update, activate/deactivate, delete, remediate. |
+| `manage_configuration_policy` | 2/3 | Configuration policy lifecycle: activate/deactivate (Tier 2); create, update, delete (Tier 3). |
+| `configuration_policy_compliance` | 1 | Compliance status: org-wide summary across all configuration policies, or per-device status for one policy. |
 | `manage_deployments` | 1/2/3 | Staged software deployments: list, get, device status, create, start, pause, resume, cancel. |
 | `manage_patches` | 1/2/3 | Patch management. List and compliance are Tier 1. Scan, approve/decline/defer, and bulk approve are Tier 2. Install and rollback are Tier 3. |
 | `manage_groups` | 1/2/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
@@ -297,6 +302,10 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 <Aside type="note">
   The billing read tools (`list_invoices`, `get_invoice`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`) are deliberately classified Tier 2 even though they are read-only — financial data requires the `ai:write` scope, not just `ai:read`. In earlier releases these six tools appeared in the catalogue but every call failed; they work as of v0.89.0. `lookup_distributor_product` is Tier 2 for a different reason — it is read-only, but each call makes a billed outbound request to the TD SYNNEX distributor API, so it is gated on `ai:write` rather than plain `ai:read`. All ticketing and billing tools additionally require the matching role permission on the API key's creator (for example, issuing an invoice requires the invoices *send* grant, and contract lifecycle changes require the contracts *manage* grant).
+</Aside>
+
+<Aside type="tip">
+  **Why is drafting a quote Tier 2 even for a large deal, while creating an organization is Tier 3?** The tier boundary for money-authoring tools tracks reversibility and external commitment, not the dollar amount involved. `create_draft`, `add_manual_line`, `add_catalog_line`, and other draft/line edits on invoices, contracts, and quotes only mutate an internal, editable record nobody outside Breeze has seen — that's Tier 2 regardless of the draft's total. The step that actually commits externally — issuing or voiding an invoice, recording or voiding a payment, **sending** a quote to the customer, or transitioning a contract's lifecycle (activate/pause/resume/cancel) — is what exposes the change beyond Breeze, so that step is Tier 3 no matter how small the amount. `manage_organizations: create_org` being Tier 3 is unrelated: it's gated on tenant-structure mutation, a separate axis from financial size, not a stricter version of the same rule. This is a deliberate design decision (not an oversight) — a partner-configurable dollar-amount escalation threshold for drafting was proposed and explicitly deferred; see [issue #2551](https://github.com/LanternOps/breeze/issues/2551) for the analysis and decision record.
 </Aside>
 
 <Aside>
@@ -407,7 +416,8 @@ Each tool has its own sliding-window rate limit, enforced per user:
 | `manage_services` | 10 | 5 min |
 | `analyze_disk_usage` | 10 | 5 min |
 | `disk_cleanup` | 3 | 10 min |
-| `manage_policies` | 20 | 5 min |
+| `manage_configuration_policy` | 20 | 5 min |
+| `configuration_policy_compliance` | 30 | 5 min |
 | `manage_deployments` | 10 | 10 min |
 | `manage_patches` | 15 | 5 min |
 | `manage_groups` | 20 | 5 min |

@@ -34373,6 +34373,15 @@
   h3 { font-size: 0.9375rem; font-weight: 600; line-height: 1.3; }
   h4 { line-height: 1.3; }
 
+  /* Keyboard focus. Every interactive element gets a palette outline unless a
+     utility on the element (focus:ring-*, focus:outline-hidden) overrides it;
+     without this, buttons that carry no focus utility fell back to the browser
+     default, which several engines suppress after a pointer click. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
   /* Dark mode: slightly more line-height for readability */
   .dark body {
     line-height: 1.6;

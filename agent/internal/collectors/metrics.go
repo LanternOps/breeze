@@ -233,10 +233,10 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 
 	c.lastTime = now
 
-	// Process count
-	procs, err := process.Processes()
+	// Count the PID snapshot without allocating process objects or querying each process.
+	pids, err := process.Pids()
 	if err == nil {
-		metrics.ProcessCount = len(procs)
+		metrics.ProcessCount = len(pids)
 	}
 
 	return metrics, nil

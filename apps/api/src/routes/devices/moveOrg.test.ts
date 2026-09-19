@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   authMiddlewareMock,
@@ -8,15 +9,25 @@ const {
   requireMfaMock,
   siteDenied,
   guardMock,
+  pamGuardMock,
   captureExceptionMock,
+  schedulePeripheralPolicyDeviceMock,
+  propagateCancelledMock,
 } = vi.hoisted(() => ({
   guardMock: vi.fn(),
+  pamGuardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  propagateCancelledMock: vi.fn(),
+  schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
+}));
+
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -29,18 +40,66 @@ vi.mock('../../db', () => ({
   },
 }));
 
-vi.mock('../../middleware/auth', () => ({
-  authMiddleware: authMiddlewareMock,
-  requireScope: requireScopeMock,
-  requirePermission: requirePermissionMock,
-  requireMfa: requireMfaMock,
+// Device move-org step-up: requireInteractiveSession is the REAL middleware
+// (imported from the original module) so the machine-principal denial below
+// tests production code, not a stub. The other gates stay stubbed as before.
+vi.mock('../../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../middleware/auth')>();
+  return {
+    authMiddleware: authMiddlewareMock,
+    requireScope: requireScopeMock,
+    requirePermission: requirePermissionMock,
+    requireMfa: requireMfaMock,
+    requireInteractiveSession: actual.requireInteractiveSession,
+    isInteractiveUserSession: actual.isInteractiveUserSession,
+  };
+});
+
+// ENABLE_2FA is a module constant (routes/auth/schemas.ts); the established
+// way to flip it per test is a getter over hoisted state (precedent:
+// routes/devices/commands.test.ts).
+const { enable2faState } = vi.hoisted(() => ({ enable2faState: { value: true } }));
+vi.mock('../auth/schemas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auth/schemas')>();
+  return {
+    ...actual,
+    get ENABLE_2FA() {
+      return enable2faState.value;
+    },
+  };
+});
+
+// PARTIAL: moveOrgResourceDigest stays REAL so the binding assertion compares
+// against the production canonicalisation, not a stub.
+vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/mfaStepUpGrant')>();
+  return {
+    ...actual,
+    validateStepUpGrant: vi.fn(async () => true),
+    consumeStepUpGrant: vi.fn(async () => true),
+  };
+});
+
+// The actor FOR SHARE lock is unit-tested on its own
+// (services/stepUpActorAssurance.test.ts) and proved against real Postgres in
+// the integration suite; here it is a mock so its POSITION in the transaction
+// can be asserted without teaching the tx recorder about the users table.
+vi.mock('../../services/stepUpActorAssurance', () => ({
+  lockActorAssurance: vi.fn(async () => true),
 }));
 
-vi.mock('./helpers', () => ({
-  getDeviceWithOrgAndSiteCheck: vi.fn(),
-  SITE_ACCESS_DENIED: siteDenied,
-  stripSensitiveDeviceFields: (d: any) => d,
+vi.mock('../../services/authEpochs', () => ({
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
+
+vi.mock('./helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./helpers')>();
+  return {
+    ...actual,
+    getDeviceWithOrgAndSiteCheck: vi.fn(),
+    SITE_ACCESS_DENIED: siteDenied,
+  };
+});
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
@@ -58,6 +117,13 @@ vi.mock('../../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+// #5128 — the org flip cancels the device's queued work and must terminalise
+// the OWNING records (script_executions / deployment_results) in the SAME
+// transaction. Mocked at the seam so the route's wiring is assertable.
+vi.mock('../../services/commandCancelPropagation', () => ({
+  propagateCancelledDeviceCommands: propagateCancelledMock,
+}));
+
 // Task 13 (#3776): the locked currency guard is unit-tested on its own
 // (services/ticketMoveCurrencyGuard.test.ts); here it is a mock so the route's
 // sequencing, 409 mapping, and permission gate can be asserted in isolation.
@@ -68,6 +134,13 @@ vi.mock('../../services/ticketMoveCurrencyGuard', async () => {
   return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
 });
 
+vi.mock('../../services/pamDeviceMoveGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
+    '../../services/pamDeviceMoveGuard',
+  );
+  return { ...actual, assertPamDeviceOrgMoveAllowed: pamGuardMock };
+});
+
 vi.mock('../../extensions/tenancyRegistry', () => ({
   withExtensionDeviceCascade: (core: readonly string[]) => [...core],
   withExtensionDeviceOrgDenormalized: (core: readonly string[]) => [...core],
@@ -75,15 +148,22 @@ vi.mock('../../extensions/tenancyRegistry', () => ({
 }));
 
 import { db } from '../../db';
+import { auditLogs, ticketComments, ticketOutbox, tickets } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
+import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
+import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
+import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import {
+  ALERT_CHILD_ORG_REWRITE_TABLES,
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   getDeviceOrgMoveDeleteTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
@@ -106,6 +186,7 @@ const TARGET_ORG = '22222222-2222-4222-8222-222222222222';
 const SOURCE_SITE = '33333333-3333-4333-8333-333333333333';
 const TARGET_SITE = '44444444-4444-4444-8444-444444444444';
 const DEVICE_ID = '55555555-5555-4555-8555-555555555555';
+const GRANT_ID = '99999999-9999-4999-8999-999999999999';
 const OTHER_PARTNER_TARGET_ORG = '66666666-6666-4666-8666-666666666666';
 
 const SAMPLE_DEVICE = {
@@ -124,6 +205,8 @@ function setAuth(overrides: Partial<{
   canAccessOrg: (id: string) => boolean;
   /** Resolved permission set requirePermission stores on the context (auth.ts). */
   permissions: { resource: string; action: string }[];
+  principalKind: string;
+  sid: string | undefined;
 }> = {}) {
   authMiddlewareMock.mockImplementation((c: any, next: any) => {
     c.set('permissions', { permissions: overrides.permissions ?? [{ resource: '*', action: '*' }] });
@@ -135,7 +218,8 @@ function setAuth(overrides: Partial<{
       accessibleOrgIds: [SOURCE_ORG, TARGET_ORG],
       canAccessOrg: overrides.canAccessOrg ?? ((id: string) => id === SOURCE_ORG || id === TARGET_ORG),
       orgCondition: () => undefined,
-      token: {},
+      principal: { kind: overrides.principalKind ?? 'user_session' },
+      token: { mfa: true, aep: 1, mep: 1, sid: 'sid' in overrides ? overrides.sid : 'sid-1' },
     });
     return next();
   });
@@ -156,13 +240,41 @@ let currentOrgRows: Array<{ id: string; partnerId: string; name?: string; curren
  *  map by design, so the route must guard instead of `!`-asserting. */
 let barrierMissingOrgIds = new Set<string>();
 
+/**
+ * Per-test override for what a `tx.execute()` resolves to, keyed on the
+ * whitespace-collapsed statement text. `null` (the default) keeps the
+ * harness's empty-array answer. Needed by #4867: the alert-child re-stamp
+ * counts its `RETURNING` rows, so a test that asserts those counts has to
+ * hand the route something to count.
+ */
+let executeResultFor: ((stmtText: string) => unknown[] | null) | null = null;
+
+/**
+ * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
+ * cancel-on-move read) resolves to. Empty by default so the existing
+ * lock-order/audit tests are unaffected; the propagation tests set it.
+ */
+let pendingCommandRows: Array<{ id: string; type: string; payload: unknown }> = [];
+
+/** #5573 W02 — rows the deliverable-pin precondition finds. Empty (unpinned)
+ *  for every test but the one that asserts the 409. */
+let pinnedOccurrenceRows: Array<{ id: string }> = [];
+
+/** Collapse a captured statement to one line (multi-line `sql` templates keep
+ *  their source newlines in the harness's raw text). */
+const collapseStmt = (s: string) => s.replace(/\s+/g, ' ').trim();
+
 function rigOrgAndSiteSelects(opts: {
   orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
+  assigneeRow?: { id: string; partnerId: string; status: string; email: string };
 }) {
   currentOrgRows = opts.orgRows;
   let call = 0;
-  vi.mocked(db.select).mockImplementation(() => {
+  vi.mocked(db.select).mockImplementation((cols?: any) => {
+    if (cols?.email && opts.assigneeRow) {
+      return { from: () => ({ where: () => ({ limit: async () => [opts.assigneeRow] }) }) } as never;
+    }
     const idx = call++;
     if (idx === 0) {
       // organizations lookup uses `.from(organizations).where(...)` (no limit).
@@ -202,7 +314,19 @@ function sqlToText(q: any): string {
 
 const BOUND_TICKET_ID = '77777777-7777-4777-8777-777777777777';
 
-function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE }) {
+function rigTransactionSuccess(
+  updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
+  deviceUpdateError?: unknown,
+  ticketRow?: { id: string; orgId: string; partnerId: string; deviceId: string; assignedTo: string | null },
+) {
+  // Every `where(...)` predicate handed to a tx.update chain, in call order:
+  // [0] the devices flip, [1] the #5128 cancel-on-move sweep. Captured as the
+  // Drizzle condition object so it can be COMPILED — the only way to prove the
+  // self_uninstall exclusion is actually in the SQL.
+  const updateWheres: unknown[] = [];
+  const commandSelectWheres: unknown[] = [];
+  const pinSelectWheres: unknown[] = [];
+  let txHandle: unknown = null;
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
   // template — Drizzle exposes it as queryChunks[1].value) plus the full
@@ -211,32 +335,87 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
   const statements: string[] = [];
   const deviceUpdateSets: any[] = [];
   let barrierReads = 0;
+  const ticketWrites: Array<{ table: unknown; values: any }> = [];
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
     const tx = {
-      update: vi.fn().mockReturnValue({
+      update: vi.fn().mockImplementation((table: unknown) => {
+        if (table === tickets && ticketRow) {
+          return { set: (values: any) => ({ where: () => ({ returning: async () => {
+            statements.push('CLEAR ticket assignee');
+            ticketWrites.push({ table, values });
+            return [{ ...ticketRow, ...values }];
+          } }) }) };
+        }
+        statements.push('UPDATE devices');
+        return {
         set: vi.fn().mockImplementation((vals: any) => {
           deviceUpdateSets.push(vals);
           return {
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([updatedRow]),
+            where: vi.fn().mockImplementation((cond: any) => {
+              updateWheres.push(cond);
+              return {
+                returning: vi.fn().mockImplementation(() => deviceUpdateError
+                  ? Promise.reject(deviceUpdateError)
+                  : Promise.resolve([updatedRow])),
+              };
             }),
           };
         }),
+        };
       }),
+      insert: vi.fn((table: unknown) => ({ values: async (values: any) => {
+        ticketWrites.push({ table, values });
+      } })),
       execute: vi.fn().mockImplementation(async (sqlVal: any) => {
         const tableChunk = sqlVal?.queryChunks?.[1];
         if (tableChunk && typeof tableChunk.value === 'string') {
           updatedTables.push(tableChunk.value);
         }
-        statements.push(sqlToText(sqlVal));
-        return [];
+        const text = sqlToText(sqlVal);
+        statements.push(text);
+        return executeResultFor?.(collapseStmt(text)) ?? [];
       }),
       // #3776 — the ticket-id lookup feeding the currency guard
       // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
       // position so lock-order assertions can place it against the UPDATEs.
-      select: vi.fn().mockImplementation(() => ({
+      select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+        if (!cols && ticketRow) {
+          return { from: () => ({ where: () => ({ limit: async () => [ticketRow] }) }) };
+        }
+        // #5128 — the org flip now also reads the device's PENDING commands
+        // (id/type/payload) so their owning script_executions /
+        // deployment_results rows can be cancelled in the same transaction.
+        // This recorder is otherwise table-blind, so without this branch that
+        // read would be mis-recorded as the ticket-currency lookup and shift
+        // every lock-order assertion below.
+        if (cols && 'payload' in cols) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation((cond: any) => {
+                commandSelectWheres.push(cond);
+                statements.push(`SELECT device_commands.pending (after ${updatedTables.length} updates)`);
+                return Promise.resolve(pendingCommandRows);
+              }),
+            }),
+          };
+        }
+        return {
         from: vi.fn().mockReturnValue({
+          // #5573 W02 — the deliverable-pin precondition
+          // (assertDeviceTicketsNotPinnedToDeliverable) is the only read here
+          // that joins; answer it from its own queue, default unpinned.
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((cond: unknown) => {
+              pinSelectWheres.push(cond);
+              return {
+                limit: vi.fn(() => {
+                  statements.push(`SELECT deliverable pin (after ${updatedTables.length} updates)`);
+                  return Promise.resolve(pinnedOccurrenceRows);
+                }),
+              };
+            }),
+          }),
           where: vi.fn().mockImplementation(() => ({
             // Awaited directly => the ticket-id lookup feeding the currency guard.
             then: (res: any, rej: any) => {
@@ -256,23 +435,43 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
             })),
           })),
         }),
-      })),
+        };
+      }),
     };
+    txHandle = tx;
     await cb(tx);
     return updatedRow;
   });
-  return { updatedTables, statements, deviceUpdateSets };
+  return {
+    updatedTables,
+    statements,
+    deviceUpdateSets,
+    updateWheres,
+    commandSelectWheres,
+    ticketWrites,
+    pinSelectWheres,
+    tx: () => txHandle,
+  };
 }
 
 describe('POST /devices/:id/move-org', () => {
   let app: Hono;
 
   beforeEach(() => {
+    enable2faState.value = true;
     vi.clearAllMocks();
     barrierMissingOrgIds = new Set<string>();
+    executeResultFor = null;
+    pendingCommandRows = [];
+    pinnedOccurrenceRows = [];
     guardMock.mockReset();
     guardMock.mockResolvedValue(null);
+    pamGuardMock.mockReset();
+    pamGuardMock.mockResolvedValue(undefined);
     setAuth();
+    vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+    vi.mocked(consumeStepUpGrant).mockResolvedValue(true);
+    vi.mocked(lockActorAssurance).mockResolvedValue(true);
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
   });
@@ -287,6 +486,71 @@ describe('POST /devices/:id/move-org', () => {
       expect(registeredPermResources).toContain('devices:write');
       expect(registeredPermResources).toContain('organizations:write');
       expect(registeredMfaCallCount).toBeGreaterThan(0);
+      // requireInteractiveSession is not stubbed (see the auth mock), so its
+      // registration is proved behaviourally by the machine-principal case in
+      // the "step-up gate" describe below, not by a call count here.
+    });
+  });
+
+  // ── #5128 cancel-on-move ───────────────────────────────────────────────
+  describe('cancel-on-move (#5128)', () => {
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      return rigTransactionSuccess();
+    }
+
+    const move = () =>
+      app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+
+    it('both the SELECT and the cancel UPDATE exclude self_uninstall', async () => {
+      // Matches the decommission path in core.ts: the uninstall drain must
+      // still deliver. A device moved out of an org while its removal is queued
+      // still has to lose its agent — cancelling that row leaves a customer's
+      // machine managed by an MSP that no longer owns it.
+      const rig = rigMove();
+      expect((await move()).status).toBe(200);
+
+      const compiled = [rig.commandSelectWheres[0], rig.updateWheres[1]].map((cond) =>
+        new PgDialect().sqlToQuery(cond as never),
+      );
+      for (const { sql: text, params } of compiled) {
+        expect(params).toContain('self_uninstall');
+        // `<>` and not `=`: an equality would cancel ONLY the uninstall.
+        expect(text).toMatch(/"type"\s*<>/);
+        expect(params).toContain('pending');
+      }
+    });
+
+    it('propagates the SELECTED rows to the owning records on the SAME transaction', async () => {
+      pendingCommandRows = [
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ];
+      const rig = rigMove();
+
+      expect((await move()).status).toBe(200);
+
+      expect(propagateCancelledDeviceCommands).toHaveBeenCalledTimes(1);
+      const [subjects, completedAt, executor] = propagateCancelledMock.mock.calls[0]!;
+      expect(subjects).toEqual([
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ]);
+      expect(completedAt).toBeInstanceOf(Date);
+      // The transaction handle, not the ambient db: a rollback of the org flip
+      // must roll the owning records back with it.
+      expect(executor).toBe(rig.tx());
     });
   });
 
@@ -305,7 +569,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(200);
@@ -313,6 +577,10 @@ describe('POST /devices/:id/move-org', () => {
       expect(body.success).toBe(true);
       expect(body.device.orgId).toBe(TARGET_ORG);
       expect(body.device.siteId).toBe(TARGET_SITE);
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'device_org_changed',
+      );
 
       // devices.set() must include both orgId and siteId flips, and MUST
       // unlink the device from any multi-boot group (#2138) — the composite
@@ -340,16 +608,39 @@ describe('POST /devices/:id/move-org', () => {
       // This is the unit-test proxy for "RLS will read from the new org
       // only post-move": each row in those tables has its org_id rewritten
       // to the new org, so RLS in the OLD org no longer matches it.
-      // CUSTOM_ORG_REWRITE_TABLES (ticket_alert_links, time_entries,
-      // ticket_parts — no device_id column, each rewritten via a ticket_id
-      // or alert_id join) follow the generic org loop. The SITE loop runs
-      // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
+      // CUSTOM_ORG_REWRITE_TABLES (time_entries, ticket_parts,
+      // ticket_alert_links, ticket_outbox, ticket_attachments,
+      // ticket_email_links — no device_id column, each rewritten via a
+      // ticket_id or alert_id join) follow the generic org loop, and this
+      // spread is what pins the hand-written statements to that array's
+      // ORDER, which is the cross-axis lock order (#4657, #4743, #4643).
+      // ALERT_CHILD_ORG_REWRITE_TABLES (#4867 — the alert-axis children with
+      // no device_id) come next, pinned to their array's order the same way:
+      // group -> member -> verdict, matching the correlation job's own write
+      // order (services/alertCorrelationGroups.ts) so the two writers can't
+      // form an AB-BA, and because each later predicate reads the rows the
+      // group statement just re-stamped. The SITE loop runs last
+      // and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
-        ...getDeviceOrgDenormalizedTables(),
+        ...getDeviceOrgDenormalizedTables().filter(
+          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
+        ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
+        ...ALERT_CHILD_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
+      ]);
+      expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
+      // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
+      // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
+      // cascade_device_org_id() trigger, not this loop's app-role UPDATE —
+      // see the doc comment on DEVICE_ORG_FK_CASCADE_TABLES.
+      expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
+        'agent_health_observations',
+        'software_inventory_observations',
+        'agent_rollback_events',
+        'peripheral_policy_delivery_events',
       ]);
 
       expect(statements).toContain(
@@ -384,7 +675,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(200);
@@ -410,7 +701,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -429,6 +720,271 @@ describe('POST /devices/:id/move-org', () => {
       ]);
     });
 
+    it('rewrites ticket_attachments org_id via the tickets join inside the transaction (W08)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_attachments '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_attachments org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_attachments SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: attachments must come AFTER ticket_parts in this path so
+      // the device-move and ticket-move paths agree (moveOrg.ts:~311).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_parts')).toBeLessThan(idx('ticket_attachments'));
+    });
+
+    it('rewrites ticket_outbox org_id via the tickets join inside the transaction (#4743)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_outbox denormalizes org_id for RLS but has NO device_id
+      // column, so the generic getDeviceOrgDenormalizedTables() loop can't
+      // reach it. Without this dedicated rewrite, an unpublished outbox row
+      // for the moved device's ticket keeps routing to the OLD org's
+      // helpdesk agents after the move (same class as #4643).
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_outbox '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_outbox org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_outbox SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: ticket_outbox must come BEFORE ticket_attachments in this
+      // path, mirroring its position in TICKET_ORG_DENORMALIZED_TABLES
+      // (ticketService.ts) — '...ticket_alert_links', 'ticket_outbox',
+      // 'ticket_attachments'] — so the device-move and ticket-move paths
+      // agree on relative lock order (moveOrg.ts:~311).
+      const idx2 = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx2('ticket_outbox')).toBeLessThan(idx2('ticket_attachments'));
+    });
+
+    it('rewrites ticket_email_links org_id via the tickets join inside the transaction (#4643)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_email_links denormalizes org_id for RLS but has NO device_id
+      // column, so the generic getDeviceOrgDenormalizedTables() loop can't
+      // reach it. Without this dedicated rewrite, the moved device's ticket
+      // email-link rows stay under the OLD org's RLS after the move.
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_email_links '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_email_links org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_email_links SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: email_links must come AFTER ticket_attachments in this
+      // path so the device-move and ticket-move paths agree (moveOrg.ts:~311).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_attachments')).toBeLessThan(idx('ticket_email_links'));
+    });
+
+    it('rewrites ticket_checklist_items org_id via the tickets join inside the transaction (#5783 W01)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      // The PREDICATE is the point, not just the table name. List membership
+      // (moveOrg.coverage.test.ts) and statement ORDER are already asserted
+      // elsewhere and would both still pass if this UPDATE were "simplified" to
+      // `WHERE ticket_id IN (SELECT id FROM tickets WHERE org_id = ...)` — which
+      // would re-stamp EVERY checklist row in the source org instead of only the
+      // moved device's tickets. This assertion is the only thing that catches it.
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_checklist_items '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_checklist_items org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_checklist_items SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: appended last, after ticket_email_links, so this path and
+      // moveTicketOrg agree on the relative order (ticketOrgMoveLockOrder.ts).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_email_links')).toBeLessThan(idx('ticket_checklist_items'));
+    });
+
+    it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      // Agent-run history stays with the SOURCE org, so every FK pointing at a
+      // row that moves WITH the device must be severed. `ticket_id` is
+      // unreachable from the device-keyed detach: ticket-triggered runs carry
+      // a ticket_id with a NULL device_id, so they need their own statement
+      // keyed off the ticket's device_id.
+      // Collapse BEFORE filtering: the source formats these statements across
+      // two lines, so filtering on the raw text would silently yield [] if the
+      // template were ever reflowed to `UPDATE ai_agent_runs\n  SET ...`.
+      const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const runDetaches = statements
+        .map(collapse)
+        .filter((s) => s.startsWith('UPDATE ai_agent_runs '));
+      expect(
+        runDetaches,
+        `Expected the device-keyed run detach plus the ticket-keyed one.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        'UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, ' +
+          `anomaly_incident_id = NULL WHERE device_id = ${DEVICE_ID}::uuid`,
+        'UPDATE ai_agent_runs SET ticket_id = NULL ' +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+
+      // Position is pinned to mirror breeze_cascade_device_org_id()'s internal
+      // order, where it IS load-bearing. It is not load-bearing here: that
+      // trigger fires on the devices UPDATE and has already restamped
+      // tickets.org_id (and run this detach) before any of these statements is
+      // sent. Kept so the route stays correct on its own without the trigger.
+      const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ai_agent_runs SET ticket_id'));
+      const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      expect(detachIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsIdx).toBeGreaterThanOrEqual(0);
+      expect(detachIdx).toBeLessThan(ticketsIdx);
+    });
+
+    it('#3205 W07: severs the billing-evidence device pointer', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      const stmts = statements.map((s) => s.replace(/\s+/g, ' ').trim());
+      expect(stmts.some((s) => /UPDATE invoice_line_devices SET device_id = NULL/.test(s))).toBe(true);
+    });
+
+    it('nulls the reverse pointer ticket_comments.agent_run_id via the tickets join (#4644)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_comments has no org_id (child-via-parent tenancy through
+      // tickets), so a comment on a ticket bound to the moving device travels
+      // to the target org via the generic denormalized-table loop while the
+      // run it names stays with the SOURCE org — same reverse-pointer class as
+      // metric_anomaly_incidents above, keyed off the same tickets join the
+      // ai_agent_runs.ticket_id detach uses.
+      const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const rewrites = statements.map(collapse).filter((s) => s.startsWith('UPDATE ticket_comments '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_comments reverse-pointer detach.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        'UPDATE ticket_comments SET agent_run_id = NULL WHERE agent_run_id IS NOT NULL ' +
+          `AND ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+
+      // Not load-bearing (same reasoning as the ai_agent_runs.ticket_id detach
+      // above: the join key is tickets.device_id, untouched by the generic
+      // org_id loop), but placed alongside the other reverse pointers for
+      // readability — must run before the generic denormalized-table rewrite.
+      const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ticket_comments SET agent_run_id'));
+      const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      expect(detachIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsIdx).toBeGreaterThanOrEqual(0);
+      expect(detachIdx).toBeLessThan(ticketsIdx);
+    });
+
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({
@@ -443,7 +999,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -474,7 +1030,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -508,7 +1064,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(500);
@@ -524,12 +1080,455 @@ describe('POST /devices/:id/move-org', () => {
     });
   });
 
+  /**
+   * Alert-axis children with no device_id column (#4867).
+   *
+   * `alerts` IS in getDeviceOrgDenormalizedTables(), so the generic loop
+   * re-stamps it — but `alert_correlation_members`, `alert_correlation_groups`
+   * and `ai_alert_verdicts` denormalize `org_id` WITHOUT a `device_id` column,
+   * so neither that loop nor the DB-side breeze_cascade_device_org_id()
+   * trigger (which discovers tables BY their device_id column) can reach them.
+   * Left behind, they keep the SOURCE org's id while their alert reads the
+   * TARGET's — and every alert-facing reader pins these rows to the alert's
+   * own org (`hideAiNoiseCondition` / `correlationMetadataCondition` in
+   * routes/alerts/alerts.ts, `latestVerdictsForAlerts` /
+   * `latestVerdictForGroup` in services/aiAgents/alertVerdicts.ts), so the
+   * moved alert permanently loses its AI-noise suppression and correlation
+   * badge. Nothing regenerates them: the verdict scheduler is event-driven off
+   * `alert.triggered` and never re-scans existing alerts.
+   *
+   * These are statement-shape assertions against the mocked tx (the repo's
+   * unit-level proxy for "the rewrite happens in the same transaction"); that
+   * the predicates match the right ROWS against a real server is the
+   * integration suite's job.
+   */
+  describe('alert-axis children with no device_id (#4867)', () => {
+    async function moveDevice() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const rigged = rigTransactionSuccess();
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+      return rigged;
+    }
+
+    /** The one statement issued against `table`, collapsed to a single line. */
+    function onlyStatement(statements: string[], table: string): string {
+      const matches = statements.map(collapseStmt).filter((s) => s.startsWith(`UPDATE ${table} `));
+      expect(
+        matches.length,
+        `Expected exactly one ${table} org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toBe(1);
+      return matches[0]!;
+    }
+
+    it('re-stamps alert_correlation_members only for groups that actually moved — a member never travels apart from its group', async () => {
+      const { statements } = await moveDevice();
+
+      // #5005 post-merge review (split-brain): the gate is the GROUP's org_id
+      // after the group statement, NOT the member's own alert.
+      // correlationMetadataCondition (routes/alerts/alerts.ts) joins a member to
+      // its group and pins BOTH org_ids, so a member re-stamped to the target
+      // while its group was held back is visible to NEITHER org. Matching on
+      // `g.org_id = <target>` rather than on the group statement's RETURNING ids
+      // also heals a member the pre-fix code stranded under a group that is
+      // already in the target org.
+      expect(onlyStatement(statements, 'alert_correlation_members')).toBe(collapseStmt(`
+        UPDATE alert_correlation_members m SET org_id = ${TARGET_ORG}::uuid
+        WHERE m.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_groups g
+        WHERE g.id = m.group_id
+        AND g.org_id = ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m2
+        JOIN alerts a ON a.id = m2.alert_id
+        WHERE m2.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid))
+        RETURNING m.id
+      `));
+    });
+
+    it('re-stamps alert_correlation_groups only when EVERY member alert reached the target org and the (org_id, group_key) slot is free', async () => {
+      const { statements } = await moveDevice();
+
+      // Three guards, all load-bearing:
+      //  - `g.org_id IS DISTINCT FROM <target>` — never touch a group that is
+      //    already there (keeps the statement idempotent under a retry);
+      //  - the first EXISTS — the group must actually involve this device, so
+      //    an unrelated source-org group is never dragged along;
+      //  - NOT EXISTS over member alerts still outside the target org — a group
+      //    spanning several devices only travels once its LAST device does, so
+      //    it is never handed to an org that owns just part of it;
+      //  - NOT EXISTS over the target org's (org_id, group_key) — that pair is
+      //    `alert_correlation_groups_org_key_uq`, and the target org can
+      //    already hold the key because the correlation job mints it as
+      //    `root:<rootAlertId>` per org. Skipping beats a 23505 that would roll
+      //    the whole move back over derived state.
+      expect(onlyStatement(statements, 'alert_correlation_groups')).toBe(collapseStmt(`
+        UPDATE alert_correlation_groups g SET org_id = ${TARGET_ORG}::uuid
+        WHERE g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m
+        JOIN alerts a ON a.id = m.alert_id
+        WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid)
+        AND NOT EXISTS (
+        SELECT 1 FROM alert_correlation_members m2
+        JOIN alerts a2 ON a2.id = m2.alert_id
+        WHERE m2.group_id = g.id AND a2.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid)
+        AND NOT EXISTS (
+        SELECT 1 FROM alert_correlation_groups existing
+        WHERE existing.org_id = ${TARGET_ORG}::uuid AND existing.group_key = g.group_key)
+        RETURNING g.id
+      `));
+    });
+
+    it('re-stamps ai_alert_verdicts on BOTH legs — an alert-level verdict follows its alert, a group-level verdict follows its group', async () => {
+      const { statements } = await moveDevice();
+
+      // The OR is the point: a `duplicate_of_group` verdict is persisted with
+      // alert_id NULL and correlation_group_id set, so the alert leg alone
+      // never reaches it and every member alert of a moved group would keep
+      // its noise classification stranded in the source org. The group leg is
+      // narrowed to groups this device's alerts belong to, so it cannot
+      // re-stamp a verdict on some unrelated group that merely sits in the
+      // target org.
+      expect(onlyStatement(statements, 'ai_alert_verdicts')).toBe(collapseStmt(`
+        UPDATE ai_alert_verdicts SET org_id = ${TARGET_ORG}::uuid
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)
+        OR correlation_group_id IN (
+        SELECT g.id FROM alert_correlation_groups g
+        WHERE g.org_id = ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m
+        JOIN alerts a ON a.id = m.alert_id
+        WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid))
+        RETURNING id
+      `));
+    });
+
+    it('takes the GROUP before its MEMBERS (the correlation job\'s lock order), all after the generic alerts re-stamp', async () => {
+      const { statements } = await moveDevice();
+
+      const idx = (prefix: string) => {
+        const found = statements.map(collapseStmt).findIndex((s) => s.startsWith(prefix));
+        expect(found, `no statement starting with "${prefix}"`).toBeGreaterThanOrEqual(0);
+        return found;
+      };
+
+      // Load-bearing: the group guard reads `alerts.org_id` AS RE-STAMPED by
+      // the generic loop, so running earlier would see every moved alert still
+      // in the source org and hold every group back.
+      const alertsRestamp = idx('UPDATE alerts SET org_id');
+      expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(alertsRestamp);
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(alertsRestamp);
+      expect(idx('UPDATE ai_alert_verdicts ')).toBeGreaterThan(alertsRestamp);
+
+      // THE LOCK ORDER (#5005 review). services/alertCorrelationGroups.ts
+      // upserts the GROUP and then its MEMBERS on every correlation pass. A
+      // mover that took members first would be an AB-BA against a concurrent
+      // pass over the same group and lose one side to 40P01 — a 500 on an
+      // admin action. Same discipline as services/ticketOrgMoveLockOrder.ts.
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(idx('UPDATE alert_correlation_groups '));
+
+      // Load-bearing: the verdict's group leg selects groups already sitting in
+      // the TARGET org, which is only true of a group this move just re-stamped
+      // once the group statement has run.
+      expect(idx('UPDATE ai_alert_verdicts ')).toBeGreaterThan(idx('UPDATE alert_correlation_groups '));
+
+      // Extends — never reorders — the documented ticket-child lock order
+      // (services/ticketOrgMoveLockOrder.ts): the alert-axis statements all
+      // follow the last ticket-chain table.
+      expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(idx('UPDATE ticket_email_links '));
+    });
+
+    it('counts the groups it held back SPLIT BY CAUSE, and this device\'s memberships that stayed with them', async () => {
+      const { statements } = await moveDevice();
+
+      // A held group is one this device's alerts belong to that is still not in
+      // the target org after the re-stamp. The group UPDATE has already run, so
+      // it failed exactly one of its two skippable guards — it spans two orgs,
+      // or its (org_id, group_key) slot is occupied there. The two have
+      // different operator answers (#5005 review): spanning resolves itself when
+      // the last device moves, a key collision never does.
+      const held = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*) FILTER'));
+      expect(
+        held,
+        `Expected exactly one held-group count.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        collapseStmt(`
+          SELECT
+          count(*) FILTER (WHERE t.spans)::int AS held_spanning,
+          count(*) FILTER (WHERE NOT t.spans)::int AS held_key_collision
+          FROM (
+          SELECT EXISTS (
+          SELECT 1 FROM alert_correlation_members m2
+          JOIN alerts a2 ON a2.id = m2.alert_id
+          WHERE m2.group_id = g.id
+          AND a2.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid) AS spans
+          FROM alert_correlation_groups g
+          WHERE g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+          AND EXISTS (
+          SELECT 1 FROM alert_correlation_members m
+          JOIN alerts a ON a.id = m.alert_id
+          WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid)
+          ) t
+        `),
+      ]);
+
+      // The members that stayed behind WITH a held group — this device's alerts
+      // that moved without their correlation membership.
+      const heldMembers = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*)::int AS held_members'));
+      expect(
+        heldMembers,
+        `Expected exactly one held-member count.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        collapseStmt(`
+          SELECT count(*)::int AS held_members
+          FROM alert_correlation_members m
+          JOIN alerts a ON a.id = m.alert_id
+          JOIN alert_correlation_groups g ON g.id = m.group_id
+          WHERE a.device_id = ${DEVICE_ID}::uuid
+          AND g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        `),
+      ]);
+    });
+
+    it('records the alert-axis rewrite counts on BOTH audit rows', async () => {
+      executeResultFor = (text) => {
+        if (text.startsWith('UPDATE alert_correlation_members ')) return [{ id: 'm1' }, { id: 'm2' }];
+        if (text.startsWith('UPDATE alert_correlation_groups ')) return [{ id: 'g1' }];
+        if (text.startsWith('UPDATE ai_alert_verdicts ')) return [{ id: 'v1' }, { id: 'v2' }, { id: 'v3' }];
+        if (text.startsWith('SELECT count(*) FILTER')) return [{ held_spanning: 4, held_key_collision: 2 }];
+        if (text.startsWith('SELECT count(*)::int AS held_members')) return [{ held_members: 5 }];
+        return null;
+      };
+      await moveDevice();
+
+      const expected = {
+        correlationGroups: 1,
+        correlationGroupsHeldSpanning: 4,
+        correlationGroupsHeldKeyCollision: 2,
+        correlationMembers: 2,
+        correlationMembersHeld: 5,
+        alertVerdicts: 3,
+      };
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.details.alertChildRewrite).toEqual(expected);
+      }
+      // One row per org, as everywhere else in this route.
+      expect(auditRows.map((row) => row.orgId).sort()).toEqual([SOURCE_ORG, TARGET_ORG].sort());
+    });
+
+    it('omits the alert-axis counts when the device had no alert-axis rows', async () => {
+      await moveDevice();
+
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.details).not.toHaveProperty('alertChildRewrite');
+      }
+    });
+  });
+
+  describe('PAM ownership move guard', () => {
+    const postMove = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+    });
+
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+    }
+
+    it('runs after both organization SHARE locks and before the device update', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+      pamGuardMock.mockImplementation(async () => {
+        statements.push('PAM guard');
+      });
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      // #4596 — the transaction's unconditional leading statement is
+      // `SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk
+      // DEFERRED` (see moveOrg.ts, right after `db.transaction(async (tx) => {`).
+      // It takes no table locks and runs before anything else in the callback,
+      // so it always occupies index 0 regardless of the PAM guard/lock
+      // ordering asserted below — assert it explicitly rather than folding it
+      // into the positional slice.
+      expect(statements[0]).toBe(
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+      );
+      expect(statements.slice(1, 5)).toEqual([
+        'SELECT organizations FOR share (after 0 updates)',
+        'SELECT organizations FOR share (after 0 updates)',
+        'PAM guard',
+        // #5573 W02 — the deliverable-pin precondition is the cheapest of the
+        // preflight refusals and sits with them, before anything is written.
+        'SELECT deliverable pin (after 0 updates)',
+      ]);
+      // #3257 W05 — the custom-field re-home sits between the PAM guard and the
+      // device UPDATE, and its position is load-bearing in BOTH directions:
+      // after the org SHARE locks (it takes both orgs' partner-export locks and
+      // must not invert that hierarchy), and strictly BEFORE the org flip, since
+      // the flip's own trigger restamps the value rows and the coherence trigger
+      // would refuse them while they still name the source org's definition.
+      expect(collapseStmt(statements[5]!)).toContain(
+        'breeze_rehome_device_custom_field_values',
+      );
+      // #4622 — the manual-asset detach sits between the custom-field re-home
+      // and the device UPDATE, and that position is load-bearing:
+      // manual_assets_linked_device_org_fk ((linked_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE, so its check
+      // fires at the end of the `UPDATE devices SET org_id` statement below. A
+      // detach placed after the flip — or left to
+      // breeze_cascade_device_org_id(), which shares the after-row queue with
+      // that check and is ordered against it only by trigger name — arrives too
+      // late and the move aborts with 23503.
+      expect(collapseStmt(statements[6]!)).toContain(
+        'UPDATE manual_assets SET linked_device_id = NULL',
+      );
+      // #5329 (M365 tenant sync W02, spec §3.4) — the Intune link detach sits
+      // between the manual-asset detach and the device UPDATE for the same
+      // reason the one above does: m365_intune_devices_breeze_device_org_fk
+      // ((breeze_device_id, org_id) -> devices(id, org_id)) is DEFERRABLE
+      // INITIALLY IMMEDIATE, so its check fires at the end of the org flip
+      // below. There is no trigger-side mirror: breeze_device_child_orgid_tables()
+      // discovers by a column named `device_id` and this one is
+      // `breeze_device_id`, so the route statement is the ONLY thing standing
+      // between an Intune-linked device and a 23503 on every move.
+      const intuneDetach = collapseStmt(statements[7]!);
+      expect(intuneDetach).toContain(
+        'UPDATE m365_intune_devices SET breeze_device_id = NULL',
+      );
+      // Scoped to the SOURCE org, not just the device id.
+      expect(intuneDetach).toMatch(/AND org_id =/);
+      expect(statements[8]).toBe('UPDATE devices');
+      expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
+        deviceId: DEVICE_ID,
+        sourceOrgId: SOURCE_ORG,
+      });
+    });
+
+    it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      expect(statements[0]).toBe(
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+      );
+      expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
+    });
+
+    it('#5573 W02: refuses with 409 DELIVERABLE_TICKET_PINNED when a ticket on the device is a deliverable work item', async () => {
+      rigMove();
+      const { statements, updatedTables, pinSelectWheres } = rigTransactionSuccess();
+      pinnedOccurrenceRows = [{ id: 'occ-1' }];
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'DELIVERABLE_TICKET_PINNED' });
+      const pinQuery = new PgDialect().sqlToQuery(pinSelectWheres[0] as Parameters<PgDialect['sqlToQuery']>[0]);
+      expect(pinQuery.sql).toContain('"service_deliverable_occurrences"."org_id" =');
+      expect(pinQuery.params).toEqual([DEVICE_ID, SOURCE_ORG]);
+      // Nothing was written: the refusal precedes the org flip and every rewrite.
+      expect(updatedTables).toEqual([]);
+      expect(statements.some((s) => s === 'UPDATE devices')).toBe(false);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns a stable 409 for the typed preflight conflict and records only its stable code', async () => {
+      rigMove();
+      rigTransactionSuccess();
+      pamGuardMock.mockRejectedValue(new PamDeviceMoveBlockedError());
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({
+        orgId: SOURCE_ORG,
+        action: 'device.move_org.failed',
+        details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+      });
+    });
+
+    it('maps only the exact database trigger race to the stable 409', async () => {
+      rigMove();
+      rigTransactionSuccess(undefined, Object.assign(new Error('guard race'), {
+        code: '23514',
+        constraint_name: 'devices_pam_history_move_guard',
+      }));
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps unrelated 23514 errors on the generic failure path', async () => {
+      rigMove();
+      const unrelated = Object.assign(new Error('other check'), {
+        code: '23514',
+        constraint_name: 'some_other_constraint',
+      });
+      rigTransactionSuccess(undefined, unrelated);
+
+      const response = await postMove();
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
+      expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Multi-currency guard (#3776, Task 13) ────────────────────────────────
   describe('ticket currency guard', () => {
     const postBody = (extra: Record<string, unknown> = {}) => ({
       method: 'POST',
       headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, ...extra }),
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID, ...extra }),
     });
     const crossCurrencyOrgs = [
       { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha', currencyCode: 'USD' },
@@ -570,6 +1569,56 @@ describe('POST /devices/:id/move-org', () => {
       // Not accepted → no audit flag.
       const sourceAudit = vi.mocked(writeRouteAudit).mock.calls.find((c) => (c[1] as any).action === 'device.move_org.source')![1] as any;
       expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
+    });
+
+    it('rewrites ticket_alert_links AFTER ticket_parts, matching moveTicketOrg (#4657)', async () => {
+      // #4657: this path used to take ticket_alert_links BEFORE
+      // time_entries/ticket_parts while moveTicketOrg took it after, and the
+      // two select overlapping rows — a ticket_alert_links row joining ticket
+      // X to an alert on device D is reached by a device-move of D and by a
+      // concurrent moveTicketOrg(X). Opposite order = 40P01 on an admin
+      // action. Asserted on the real statement stream, not just the list, so
+      // moving the UPDATE without touching CUSTOM_ORG_REWRITE_TABLES is
+      // caught here rather than in production.
+      //
+      // The currency guard is mocked for this whole file, so its own
+      // `FOR UPDATE` selects never reach the statement stream — only four of
+      // the six hand-written UPDATEs are being ordered here (ticket_outbox's
+      // position relative to ticket_attachments, and ticket_email_links'
+      // position relative to ticket_attachments, are asserted separately
+      // below).
+      // Cross-currency orgs are used so the guard resolves rather than
+      // short-circuits, putting the statements in the same positions they
+      // occupy on a real move; the real guard's lock order is covered by
+      // ticketMoveCurrencyGuard.test.ts.
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      const { statements } = rigTransactionSuccess();
+      guardMock.mockResolvedValue({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(200);
+
+      const idx = (prefix: string) => statements.findIndex((s) => s.startsWith(prefix));
+      const timeEntriesIdx = idx('UPDATE time_entries ');
+      const partsIdx = idx('UPDATE ticket_parts ');
+      const linksIdx = idx('UPDATE ticket_alert_links ');
+      const attachmentsIdx = idx('UPDATE ticket_attachments ');
+
+      // Every index must be found first: findIndex returns -1 for a missing
+      // statement, and -1 would satisfy the `toBeLessThan` chain below while
+      // actually meaning the rewrite was deleted.
+      expect(timeEntriesIdx, 'the time_entries rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(partsIdx, 'the ticket_parts rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(linksIdx, 'the ticket_alert_links rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(attachmentsIdx, 'the ticket_attachments rewrite went missing').toBeGreaterThanOrEqual(0);
+
+      // Pairwise, matching the idiom already used for the tickets/time_entries
+      // ordering above: time_entries -> ticket_parts -> ticket_alert_links ->
+      // ticket_attachments, the same order moveTicketOrg uses (#4657).
+      expect(timeEntriesIdx, 'time_entries must precede ticket_parts').toBeLessThan(partsIdx);
+      expect(partsIdx, 'ticket_parts must precede ticket_alert_links (#4657)').toBeLessThan(linksIdx);
+      expect(linksIdx, 'ticket_alert_links must precede ticket_attachments').toBeLessThan(attachmentsIdx);
     });
 
     it('409s with code + details when the guard blocks — no Sentry capture, no failed-move audit, no WS disconnect', async () => {
@@ -646,7 +1695,7 @@ describe('POST /devices/:id/move-org', () => {
     const postBody = () => ({
       method: 'POST',
       headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
     });
     const orgRows = [
       { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha' },
@@ -688,7 +1737,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(404);
       expect(writeRouteAudit).not.toHaveBeenCalled();
@@ -700,7 +1749,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(403);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -723,7 +1772,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(403);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -744,9 +1793,78 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
+    });
+
+    it('clears and audits a partner-A assignee after moving tickets to partner B in the same transaction', async () => {
+      setAuth({ scope: 'system', canAccessOrg: () => true });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-A' },
+          { id: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-B' },
+        ],
+        siteRow: { id: TARGET_SITE },
+        assigneeRow: { id: 'tech-A', partnerId: 'partner-A', status: 'active', email: 'tech@example.com' },
+      });
+      executeResultFor = (stmt) => stmt.startsWith('UPDATE tickets SET org_id =')
+        ? [{ id: BOUND_TICKET_ID }] : null;
+      const { statements, ticketWrites } = rigTransactionSuccess(
+        { ...SAMPLE_DEVICE, orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE },
+        undefined,
+        { id: BOUND_TICKET_ID, orgId: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-B', deviceId: DEVICE_ID, assignedTo: 'tech-A' },
+      );
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+      expect(ticketWrites.find((write) => write.table === tickets)?.values).toEqual({ assignedTo: null, updatedAt: expect.any(Date) });
+      expect(ticketWrites).toContainEqual({ table: ticketComments, values: expect.objectContaining({
+        ticketId: BOUND_TICKET_ID, commentType: 'assignment', oldValue: 'tech-A', newValue: null,
+      }) });
+      expect(ticketWrites).toContainEqual({ table: ticketOutbox, values: expect.objectContaining({
+        orgId: OTHER_PARTNER_TARGET_ORG, ticketId: BOUND_TICKET_ID, eventType: 'ticket.assigned', payload: { assigneeId: null },
+      }) });
+      expect(ticketWrites).toContainEqual({ table: auditLogs, values: expect.objectContaining({
+        orgId: OTHER_PARTNER_TARGET_ORG, actorId: 'user-1', action: 'ticket.assign', resourceId: BOUND_TICKET_ID,
+        details: { from: 'tech-A', to: null, reason: 'assignee_no_longer_eligible' },
+      }) });
+      expect(statements.indexOf('CLEAR ticket assignee')).toBeGreaterThan(
+        statements.findIndex((s) => collapseStmt(s).startsWith('UPDATE tickets SET org_id =')),
+      );
+    });
+
+    it('restamps moved tickets from the live target partner and defers the composite FK', async () => {
+      setAuth({ scope: 'system', canAccessOrg: () => true });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-OTHER' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess({
+        ...SAMPLE_DEVICE, orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE,
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+      expect(statements.map(collapseStmt)).toContain(
+        `UPDATE tickets SET org_id = ${OTHER_PARTNER_TARGET_ORG}::uuid, partner_id = (SELECT partner_id FROM organizations WHERE id = ${OTHER_PARTNER_TARGET_ORG}::uuid) WHERE device_id = ${DEVICE_ID}::uuid RETURNING id`,
+      );
+      const deferIndex = statements.findIndex((s) => /SET CONSTRAINTS .*tickets_org_partner_fk.*DEFERRED/.test(s));
+      expect(deferIndex).toBeGreaterThanOrEqual(0);
+      expect(deferIndex).toBeLessThan(statements.indexOf('UPDATE devices'));
     });
 
     it('returns 400 when the target site does not belong to the target org', async () => {
@@ -762,7 +1880,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -774,7 +1892,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: SOURCE_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: SOURCE_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -784,9 +1902,173 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── device move-org step-up (spec 2026-09-18 W01) ────────────────────────
+  describe('step-up gate', () => {
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      return rigTransactionSuccess();
+    }
+    const move = (body: Record<string, unknown> = { orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }) =>
+      app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const expectedBinding = () => ({
+      userId: 'user-1',
+      operation: 'device_move_org',
+      authEpoch: 1,
+      mfaEpoch: 1,
+      sid: 'sid-1',
+      resourceDigest: moveOrgResourceDigest({ deviceId: DEVICE_ID, targetOrgId: TARGET_ORG, targetSiteId: TARGET_SITE, acceptCurrencyMismatch: false }),
+    });
+
+    it('runs with ENABLE_2FA true (precondition for every case below)', async () => {
+      const { ENABLE_2FA } = await import('../auth/schemas');
+      expect(ENABLE_2FA).toBe(true);
+    });
+
+    it.each([[true], [false]])('denies an api_key principal with ENABLE_2FA=%s before any lookup, with no state change', async (twoFactorOn) => {
+      enable2faState.value = twoFactorOn;
+      setAuth({ principalKind: 'api_key' });
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+      expect(getDeviceWithOrgAndSiteCheck).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies with no step-up grant after preflight, with no transaction and no failed-move audit', async () => {
+      rigMove();
+      const res = await move({ orgId: TARGET_ORG, siteId: TARGET_SITE });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies a stale or mismatched grant indistinguishably from a missing one', async () => {
+      rigMove();
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expectedBinding());
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('binds acceptCurrencyMismatch into the grant digest', async () => {
+      rigMove();
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+      await move({ orgId: TARGET_ORG, siteId: TARGET_SITE, acceptCurrencyMismatch: true, stepUpGrant: GRANT_ID });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expect.objectContaining({
+        resourceDigest: moveOrgResourceDigest({ deviceId: DEVICE_ID, targetOrgId: TARGET_ORG, targetSiteId: TARGET_SITE, acceptCurrencyMismatch: true }),
+      }));
+    });
+
+    it('answers 503 when the session carries no sid (cannot bind a grant)', async () => {
+      setAuth({ sid: undefined });
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(503);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when the live epochs cannot be read (cannot bind a grant)', async () => {
+      const { getUserEpochs } = await import('../../services/authEpochs');
+      vi.mocked(getUserEpochs).mockResolvedValueOnce(null);
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(503);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('moves with a valid grant: locks the actor, consumes with the exact binding BEFORE the org locks, and audits stepUp: grant', async () => {
+      const rig = rigMove();
+      // lockActorAssurance / consumeStepUpGrant are mocks that issue no SQL, so
+      // they write a marker into the SAME statement log the tx recorder uses —
+      // that makes their position against the org FOR SHARE barrier and the
+      // UPDATEs directly assertable.
+      vi.mocked(lockActorAssurance).mockImplementationOnce(async () => {
+        rig.statements.push('LOCK users FOR share (actor)');
+        return true;
+      });
+      vi.mocked(consumeStepUpGrant).mockImplementationOnce(async () => {
+        rig.statements.push('CONSUME step-up grant');
+        return true;
+      });
+      const res = await move();
+      expect(res.status).toBe(200);
+      expect(lockActorAssurance).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(lockActorAssurance).mock.calls[0]![0]).toBe(rig.tx());
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expectedBinding());
+
+      const actorLock = rig.statements.indexOf('LOCK users FOR share (actor)');
+      const consume = rig.statements.indexOf('CONSUME step-up grant');
+      const firstOrgShare = rig.statements.findIndex((s) => s.startsWith('SELECT organizations FOR share'));
+      const firstUpdate = rig.statements.findIndex((s) => s.startsWith('UPDATE'));
+      expect(actorLock).toBeGreaterThanOrEqual(0);
+      expect(firstOrgShare).toBeGreaterThanOrEqual(0);
+      expect(firstUpdate).toBeGreaterThanOrEqual(0);
+      // users(actor) -> grant consume -> organizations(asc) -> writes.
+      expect(actorLock).toBeLessThan(consume);
+      expect(consume).toBeLessThan(firstOrgShare);
+      expect(firstOrgShare).toBeLessThan(firstUpdate);
+
+      const details = vi.mocked(writeRouteAudit).mock.calls.find((c) => c[1].action === 'device.move_org.source')![1].details as Record<string, unknown>;
+      expect(details.stepUp).toBe('grant');
+    });
+
+    it('a grant burned by a racing request aborts the transaction with 403 and no failed-move audit or Sentry', async () => {
+      const rig = rigMove();
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(rig.statements.filter((s) => s.startsWith('UPDATE'))).toEqual([]);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('a lost actor lock (factor reset between validate and write) aborts the same way', async () => {
+      const rig = rigMove();
+      vi.mocked(lockActorAssurance).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(rig.statements.filter((s) => s.startsWith('UPDATE'))).toEqual([]);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('skips the grant requirement when ENABLE_2FA is off and records stepUp: disabled_2fa', async () => {
+      enable2faState.value = false;
+      rigMove();
+      const res = await move({ orgId: TARGET_ORG, siteId: TARGET_SITE });
+      expect(res.status).toBe(200);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(lockActorAssurance).not.toHaveBeenCalled();
+      const details = vi.mocked(writeRouteAudit).mock.calls.find((c) => c[1].action === 'device.move_org.target')![1].details as Record<string, unknown>;
+      expect(details.stepUp).toBe('disabled_2fa');
     });
   });
 });

@@ -188,7 +188,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { currentPassword: 'nope' }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       expect(consumeStepUpGrant).not.toHaveBeenCalled();
     });
 
@@ -296,14 +300,23 @@ describe('resolveEnrollmentStepUp', () => {
       expect(withSystemDbAccessContext).toHaveBeenCalledTimes(2);
     });
 
-    it('401s a grant that fails to validate (wrong session, bumped epoch, replay)', async () => {
+    it('401s a grant that fails to validate (wrong session, bumped epoch, replay) with the distinct expired-grant code, not the opaque invalid_credentials', async () => {
+      // #4050: by this point the caller has already committed to the SSO road
+      // (offered ssoReauthGrantId), so this failure gets its own stable code +
+      // a "start over" message instead of the road-selection oracle-safe
+      // "Invalid credentials" used above.
       queuePasswordlessNoFactor();
       consumeStepUpGrant.mockResolvedValue(false);
 
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
+      });
     });
 
     it('401s when neither proof is supplied', async () => {
@@ -340,7 +353,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
     });
   });
 
@@ -367,7 +384,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       // Refused BEFORE the grant is touched: a rejected enrollment must not
       // burn the caller's single-use grant.
       expect(consumeStepUpGrant).not.toHaveBeenCalled();

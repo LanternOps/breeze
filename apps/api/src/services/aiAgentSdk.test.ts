@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// #5645: every inline release hands the handler the released intent's decision
+// record (`approvalScope` + `decidedVia`) on the execution context — the same
+// bag the durable worker builds. The default mocked intent row below carries
+// this record, so the terminal return of a won release is asserted against it.
+const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
+const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
+import { checkTenantToolRateLimit } from './toolSources/guardrails';
+import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
+import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 
 // ============================================
 // Mocks
@@ -73,6 +84,14 @@ vi.mock('./aiGuardrails', () => ({
   checkGuardrails: vi.fn(),
   checkToolPermission: vi.fn(),
   checkToolRateLimit: vi.fn(),
+  checkPermissionRequirements: vi.fn(),
+}));
+
+// Real guardrailCheckForTenantTool/tenantToolPermissionRequirement (pure,
+// no side effects) — only checkTenantToolRateLimit (redis) is mocked.
+vi.mock('./toolSources/guardrails', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./toolSources/guardrails')>()),
+  checkTenantToolRateLimit: vi.fn(),
 }));
 
 const mockWriteAuditEvent = vi.fn();
@@ -93,6 +112,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     // tests below stub via checkGuardrails, not this map.
     file_operations: 1,
     get_device_details: 1,
+    // #4883: the handler behind script builder's `execute_script_on_device`.
+    run_script: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -129,6 +150,16 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — its
+// own contract (the intent_outbox row, the conditional task_outbox leg) is
+// pinned by taskOutbox.test.ts and the writer contract integration test, not
+// here. The real function reads `intentOutbox` from the `../db/schema/
+// actionIntents` mock below, which only stubs `actionIntents`.
+const mockPublishIntentTerminalOutbox = vi.fn((..._args: unknown[]) => Promise.resolve());
+vi.mock('./aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: (...args: unknown[]) => mockPublishIntentTerminalOutbox(...args),
+}));
+
 // Mocked as a collaborator (like intentService): the inline release path calls
 // this to re-prove the requester's authorization before executing. Also cuts
 // the real module's ../aiTools import chain (which would otherwise drag in
@@ -144,6 +175,13 @@ const mockRequiresDurableRelease = vi.fn((_name: string) => false);
 vi.mock('./actionIntents/durableRelease', () => ({
   requiresDurableRelease: (name: string) => mockRequiresDurableRelease(name),
   DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
+}));
+
+// W04 (#5612): the lane's restore-checkpoint release precondition, mocked so
+// its transitive scriptDispatch/schema imports never reach the partial
+// schema mock in this file.
+vi.mock('./actionIntents/laneCheckpoint', () => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
 }));
 
 vi.mock('./actionIntents/revalidateRelease', () => ({
@@ -185,6 +223,18 @@ vi.mock('../db/schema/actionIntents', () => ({
 // no DB/network surface, and asserting against the real value pins the
 // actual key resultSecrets.ts uses rather than a test-local guess.
 const mockCaptureException = vi.fn();
+// #4888 — PARTIAL mock: only the DB-reading resolver is stubbed, so the real
+// `describeScriptRunContext` still builds the sentence this file asserts on.
+// Mocking both would leave the approval prose untested from every angle.
+const mockResolveScriptRunContext = vi.fn();
+vi.mock('./scriptRunContextApproval', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./scriptRunContextApproval')>();
+  return {
+    ...actual,
+    resolveScriptRunContextForApproval: (...args: unknown[]) => mockResolveScriptRunContext(...args),
+  };
+});
+
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }));
@@ -259,8 +309,29 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
     toolUseIdQueue: ['tool-use-1'],
     auditSnapshot: null,
     allowedTools: undefined,
+    tenantTools: new Map(),
     ...overrides,
   } as any;
+}
+
+function makeTenantToolDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
+  return {
+    id: 'tool-1',
+    sourceId: 'source-1',
+    sourceName: 'Hudu',
+    sourceKind: 'mcp',
+    ownerRef: { orgId: 'org-1', partnerId: null },
+    qualifiedName: 'hudu__get_asset',
+    name: 'get_asset',
+    description: 'Get an asset',
+    inputSchema: { type: 'object' },
+    tier: 1,
+    revision: 'rev-1',
+    rateLimitPerMinute: 60,
+    validate: () => ({ success: true }),
+    definition: { name: 'hudu__get_asset', description: 'Get an asset', input_schema: { type: 'object' } },
+    ...overrides,
+  };
 }
 
 // Typed as the real snapshot so an omitted field is a COMPILE error rather
@@ -339,6 +410,25 @@ describe('runPreFlightChecks', () => {
     expect(mockCheckBudget).not.toHaveBeenCalled();
     expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
   });
+
+  // #3922 phase 2: a partner pinned to a catalog endpoint that the platform
+  // delists resolves as unavailable, and the turn must 503 rather than fall
+  // back to the platform key or to api.anthropic.com with the partner's key.
+  it.each(['provider_delisted', 'catalog_disabled', 'model_unverified'] as const)(
+    'returns the ai_unavailable 503 contract for catalog reason %s',
+    async (reason) => {
+      mockResolveLlmConfigForOrg.mockResolvedValue({
+        source: 'unavailable',
+        partnerId: 'partner-1',
+        reason,
+      });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+      expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+      expect(mockCheckBudget).not.toHaveBeenCalled();
+    },
+  );
 
   it('captures resolver failures and returns a generic retryable 503', async () => {
     const error = new Error('raw resolver failure');
@@ -428,6 +518,20 @@ describe('runPreFlightChecks', () => {
     mockGetSession.mockResolvedValue(makeSession({ status: 'closed' }));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Session is not active' });
+  });
+
+  it('words an already-expired session as expired, so routes map it to 410', async () => {
+    // This branch runs BEFORE the age checks below, so once eviction retires a
+    // row eagerly it becomes the common path for expired sessions. Collapsing
+    // it back to one string silently downgrades every evicted session from 410
+    // to 400, while the lazy age branches keep producing the right wording —
+    // which is exactly what makes the regression invisible.
+    mockGetSession.mockResolvedValue(makeSession({ status: 'expired' }));
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('expired'),
+    });
   });
 
   // --- Turn limit ---
@@ -584,21 +688,10 @@ describe('runPreFlightChecks', () => {
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth);
   });
 
-  // --- Remaining budget ---
+  // --- Durable budget handoff ---
 
-  it('returns remaining budget as maxBudgetUsd', async () => {
+  it('does not return an advisory remaining-budget snapshot', async () => {
     mockGetRemainingBudgetUsd.mockResolvedValue(42.5);
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.maxBudgetUsd).toBe(42.5);
-    }
-  });
-
-  it('sets maxBudgetUsd to undefined when remaining budget is null', async () => {
-    mockGetRemainingBudgetUsd.mockResolvedValue(null);
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
@@ -606,14 +699,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.maxBudgetUsd).toBeUndefined();
     }
-  });
-
-  it('returns error when getRemainingBudgetUsd throws', async () => {
-    mockGetRemainingBudgetUsd.mockRejectedValue(new Error('DB timeout'));
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({ ok: false, error: 'Unable to verify spending budget. Please try again later.' });
+    expect(mockGetRemainingBudgetUsd).not.toHaveBeenCalled();
   });
 
   // --- Successful result ---
@@ -631,7 +717,7 @@ describe('runPreFlightChecks', () => {
       expect(result.session).toEqual(session);
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
-      expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.maxBudgetUsd).toBeUndefined();
       expect(result.resolved).toEqual({
         source: 'platform',
         apiKey: 'platform-key',
@@ -673,6 +759,156 @@ describe('createSessionPreToolUse', () => {
       status: 'executing',
     }));
     expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  describe('Task A10: tenant (BYO MCP) tools', () => {
+    beforeEach(() => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
+      vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    });
+
+    it('a non-registered, non-tenant tool name is denied as Unknown tool', async () => {
+      const session = makeActiveSession();
+      const result = await createSessionPreToolUse(session)('not_a_real_tool', {});
+      expect(result).toEqual({ allowed: false, error: 'Unknown tool: not_a_real_tool' });
+    });
+
+    it('allows a tier-1 tenant tool after checkPermissionRequirements resolves null', async () => {
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', { id: 'a-1' });
+
+      expect(result).toEqual({ allowed: true, intentId: undefined, context: undefined });
+      expect(checkPermissionRequirements).toHaveBeenCalledWith(
+        session.auth,
+        [{ resource: 'external_tools', action: 'use' }],
+      );
+      expect(checkTenantToolRateLimit).toHaveBeenCalledWith(descriptor, session.auth.user.id);
+      // Never routed through the core-tool RBAC/rate-limit checks.
+      expect(checkToolPermission).not.toHaveBeenCalled();
+      expect(checkToolRateLimit).not.toHaveBeenCalled();
+    });
+
+    it('denies a tenant tool when checkPermissionRequirements returns a denial string', async () => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue('Insufficient permissions: requires external_tools.use');
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Insufficient permissions: requires external_tools.use' });
+    });
+
+    // Tool catalog W01 PR B (#5216), Task B4: a tier-3 tenant tool takes the
+    // durable action-intents flow, carrying the external binding so release
+    // revalidation can reload the exact row + revision the approver saw.
+    describe('tier-3 tenant tools route through action intents (PR B)', () => {
+      beforeEach(() => {
+        // Same release-path scaffolding as the 'Tier 3: durable action-intents
+        // backing' suite below (revalidation mocked ok; the inline
+        // release-win system read returns a non-null row).
+        mockCreateActionIntent.mockReset();
+        mockWaitForIntentDecision.mockReset();
+        mockTransitionIntent.mockReset();
+        mockRevalidateApprovedIntentForRelease.mockReset();
+        mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
+        const selectChain: Record<string, unknown> = {
+          from: vi.fn(() => selectChain),
+          where: vi.fn(() => selectChain),
+          limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+        };
+        vi.mocked(db.select).mockReturnValue(selectChain as any);
+      });
+
+      const tier3 = () => makeTenantToolDescriptor({
+        id: 'tool-3',
+        qualifiedName: 'hudu__create_asset',
+        name: 'create_asset',
+        tier: 3,
+        revision: 'rev-7',
+        sourceName: 'Hudu',
+      });
+
+      it('mints a chat intent with the externalTool binding and denies when the approver rejects', async () => {
+        const descriptor = tier3();
+        mockInsertReturning({ id: 'exec-ext-1' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ext-1', approvalRequestIds: ['appr-ext-1'] }));
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({
+          approvalMode: 'auto_approve',
+          tenantTools: new Map([[descriptor.qualifiedName, descriptor]]),
+        });
+
+        const result = await createSessionPreToolUse(session)('hudu__create_asset', { name: 'Printer 3' });
+
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+          toolName: 'hudu__create_asset',
+          input: { name: 'Printer 3' },
+          source: 'chat',
+          orgId: 'org-1',
+          reason: 'hudu__create_asset — external tool from Hudu',
+          externalTool: { toolSourceToolId: 'tool-3', revision: 'rev-7', sourceName: 'Hudu' },
+        }));
+        // Never the core classifier / RBAC for a qualified name.
+        expect(checkGuardrails).not.toHaveBeenCalled();
+        expect(checkToolPermission).not.toHaveBeenCalled();
+        expect(checkPermissionRequirements).toHaveBeenCalledWith(session.auth, [{ resource: 'external_tools', action: 'write' }]);
+        expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+          type: 'approval_required',
+          executionId: 'exec-ext-1',
+          approvalRequestId: 'appr-ext-1',
+          toolName: 'hudu__create_asset',
+          approvalScope: 'supervised',
+          intentBacked: true,
+        }));
+      });
+
+      it('allows the call once the intent is approved and the session wins the release CAS', async () => {
+        const descriptor = tier3();
+        mockInsertReturning({ id: 'exec-ext-2' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ext-2', approvalRequestIds: ['appr-ext-2'] }));
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({
+          approvalMode: 'per_step',
+          tenantTools: new Map([[descriptor.qualifiedName, descriptor]]),
+        });
+
+        const result = await createSessionPreToolUse(session)('hudu__create_asset', { name: 'Printer 3' });
+
+        expect(result).toEqual({ allowed: true, intentId: 'intent-ext-2', context: RELEASED_CONTEXT });
+        expect(mockTransitionIntent).toHaveBeenCalledWith(
+          'intent-ext-2', 'approved', 'executing',
+          expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+          { requireNotExpired: 'release' },
+        );
+        expect(mockRevalidateApprovedIntentForRelease).toHaveBeenCalled();
+      });
+
+      it('never passes externalTool for a core tool', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+        } as any);
+        mockInsertReturning({ id: 'exec-core' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-core', approvalRequestIds: ['appr-core'] }));
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({ approvalMode: 'per_step', tenantTools: new Map([[tier3().qualifiedName, tier3()]]) });
+
+        await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+        const input = mockCreateActionIntent.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(input.toolName).toBe('execute_command');
+        expect(input).not.toHaveProperty('externalTool');
+      });
+    });
   });
 
   describe('#3130: read-only Tier 2 auto-executes under per_step', () => {
@@ -870,7 +1106,7 @@ describe('createSessionPreToolUse', () => {
       const selectChain: Record<string, unknown> = {
         from: vi.fn(() => selectChain),
         where: vi.fn(() => selectChain),
-        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
       };
       vi.mocked(db.select).mockReturnValue(selectChain as any);
     });
@@ -913,6 +1149,89 @@ describe('createSessionPreToolUse', () => {
       // The old direct approval_requests bridge + push are gone — createActionIntent owns both now.
       expect(mockGetUserPushTokens).not.toHaveBeenCalled();
       expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    });
+
+    /**
+     * #4888 — the approval an assistant-chosen run context has to clear.
+     *
+     * Allowing the model to pick `runAs` is a privilege decision, and the
+     * condition attached to allowing it is that the human deciding the
+     * approval is told which context the run will use. These pin BOTH carriers
+     * of that fact, because they reach different surfaces: the structured
+     * `scriptRunContext` drives the web card's visible row, and the sentence
+     * folded into `description` is what the durable intent stores as its
+     * `reason` — i.e. what the /approvals queue and the mobile push show.
+     */
+    it('names the SYSTEM run context on the approval card and in the intent reason', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Run script abcd1234... on 1 device(s)',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+      mockInsertReturning({ id: 'exec-rc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-rc', approvalRequestIds: ['appr-rc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('run_script', {
+        scriptId: 'abcd1234-0000-0000-0000-000000000000',
+        deviceIds: ['d-1'],
+        runAs: 'system',
+      });
+
+      // The prose an approver reads on the queue / push must say SYSTEM, and
+      // must say it is an override — "runs as SYSTEM" alone does not tell a
+      // reviewer that this script normally runs as the logged-in user.
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toMatch(/SYSTEM/);
+      expect(intentArgs.reason).toMatch(/overriding the script's saved default/i);
+
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.description).toMatch(/SYSTEM/);
+      expect(published.scriptRunContext).toEqual({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+    });
+
+    it('leaves a non-script tool\'s approval untouched — no run-context sentence, no structured field', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue(null);
+      mockInsertReturning({ id: 'exec-nc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-nc', approvalRequestIds: ['appr-nc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toBe('Execute command');
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.scriptRunContext ?? null).toBeNull();
     });
 
     it('four-eyes: publishes NO selfApprovalRequestId when the requester holds no approval row', async () => {
@@ -997,7 +1316,7 @@ describe('createSessionPreToolUse', () => {
       // The tier-3 branch now threads the created intent id back on the
       // terminal return (Task 6) — this is what lets postToolUse seal
       // against the right intent without relying solely on the WeakMap.
-      expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
+      expect(result).toEqual({ allowed: true, intentId: 'intent-2', context: RELEASED_CONTEXT });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
@@ -1020,9 +1339,14 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
 
+      // #5107: losing the CAS is the worker executing an APPROVED action, not
+      // a failure — the decision carries the handoff marker so the tool result
+      // is published with isError:false instead of painting "FAILED" in the
+      // chat the user just approved from.
       expect(result).toEqual({
         allowed: false,
-        error: 'This action is already being completed by the approval worker; it will not run twice.',
+        error: APPROVED_EXECUTING_MESSAGE,
+        handoff: 'approved_executing',
       });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
@@ -1131,7 +1455,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1141,6 +1465,121 @@ describe('createSessionPreToolUse', () => {
         executedAt: expect.any(Date),
         result: expect.objectContaining({ status: 'completed' }),
       }));
+      // #5205 W05 (#5210): the CAS win must also publish the terminal outbox
+      // event, with taskId always null here (this file never threads a task
+      // context through createActionIntent).
+      expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+        expect.anything(),
+        { id: 'intent-6', orgId: 'org-1', taskId: null },
+        'intent_completed',
+      );
+    });
+
+    // ---------------------------------------------------------------------
+    // #5232: a LOST executing -> terminal CAS after the tool already ran.
+    // `transitionIntent` returns false and never throws, so before this the
+    // inline path executed a real side effect and then discarded its result
+    // with no log line, no Sentry event and no audit row — strictly more
+    // silent than jobs/intentReleaseWorker.ts, which handles the same race.
+    // ---------------------------------------------------------------------
+    async function runInlineTier3WithCasOutcome(opts: {
+      intentId: string;
+      execId: string;
+      casWon: boolean;
+    }) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: opts.execId });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: opts.intentId, approvalRequestIds: ['appr-cas'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // The approved -> executing release CAS must WIN, otherwise the session
+      // never runs the tool and there is no post-execution race to test.
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const pre = await createSessionPreToolUse(session)('execute_command', {});
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
+
+      // Only the TERMINAL CAS loses.
+      mockTransitionIntent.mockClear();
+      mockWriteAuditEvent.mockClear();
+      mockCaptureException.mockClear();
+      mockTransitionIntent.mockResolvedValue(opts.casWon);
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        {},
+        JSON.stringify({ status: 'completed' }),
+        false,
+        10,
+      );
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith(
+        opts.intentId,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+      return mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'action_intent.executed',
+      );
+    }
+
+    it('records a CAS-lost marker + Sentry event when the terminal CAS loses after the tool ran (#5232)', async () => {
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-lost',
+        execId: 'exec-cas-lost',
+        casWon: false,
+      });
+
+      // The side effect already happened and cannot be undone — but the
+      // intent now carries someone else's terminal state, so the result this
+      // execution produced is recorded nowhere. That must be loud.
+      expect(marker).toBeDefined();
+      expect(marker![1]).toMatchObject({
+        orgId: 'org-1',
+        resourceType: 'action_intent',
+        resourceId: 'intent-cas-lost',
+        result: 'failure',
+        details: expect.objectContaining({
+          actionName: 'execute_command',
+          source: 'chat',
+          errorCode: 'execution_cas_lost',
+          intendedStatus: 'completed',
+          // Pins WHICH of the five call sites lost — a copy-pasted label
+          // would make the marker untriageable.
+          casLabel: 'ai_sdk_inline_completion',
+          executed: true,
+        }),
+      });
+      expect(mockCaptureException).toHaveBeenCalled();
+      // The Sentry tag must be the snake_case `cas_label` (allowlisted in
+      // services/sentry.ts); a camelCase key is voided by the scrubber.
+      expect(mockCaptureException.mock.calls[0]?.[2]).toEqual({
+        cas_label: 'ai_sdk_inline_completion',
+      });
+    });
+
+    it('writes NO CAS-lost marker when the terminal CAS wins (#5232)', async () => {
+      // Discriminating control: without it, a helper that unconditionally
+      // wrote the marker would satisfy the test above.
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-won',
+        execId: 'exec-cas-won',
+        casWon: true,
+      });
+
+      expect(marker).toBeUndefined();
+      expect(mockCaptureException).not.toHaveBeenCalled();
     });
 
     // ---------------------------------------------------------------------
@@ -1177,7 +1616,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
       const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
-      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       await createSessionPostToolUse(session)(
         'execute_command',
@@ -1273,7 +1712,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1589,6 +2028,113 @@ describe('createSessionPreToolUse', () => {
       toolName: 'take_screenshot',
       status: 'executing',
     }));
+  });
+
+  // #4883: script builder exposes `execute_script_on_device` but dispatches to
+  // the `run_script` handler. The session allowlist only ever holds the exposed
+  // MCP name, so the gate must be told which name the session actually granted
+  // — checking the handler name denied every Script Builder test run before
+  // tier/approval logic ran at all.
+  describe('#4883: tools exposed under a different name than their handler', () => {
+    const SCRIPT_BUILDER_ALLOWLIST = ['mcp__script_builder__execute_script_on_device'];
+
+    it('allows the call when the EXPOSED MCP name is on the allowlist', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Run script on device',
+      } as any);
+      const values = mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({ allowed: true });
+      // Only the allowlist check moved to the exposed name. Tier, RBAC and the
+      // audit row still describe the capability that actually runs.
+      // Third arg is the proposal guardrail context — undefined for a library run.
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' }, undefined);
+      expect(checkToolPermission).toHaveBeenCalledWith(
+        'run_script',
+        { scriptId: 'script-1' },
+        session.auth,
+      );
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        toolName: 'run_script',
+        status: 'executing',
+      }));
+    });
+
+    it('does not widen the allowlist — the bare handler name alone is still denied', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)('run_script', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'run_script' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // The exposed name is AUTHORITATIVE. A session that somehow granted only
+    // the handler alias must not thereby gain the tool the model actually
+    // calls — this is the case that goes green if createSessionPreToolUse
+    // reverts to checking `toolName`, so it pins the direction of the fix and
+    // not just its effect.
+    it('denies when only the HANDLER name is granted and the exposed name is not', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: ['mcp__script_builder__run_script'],
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'execute_script_on_device' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects an exposed name the session never granted', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'take_screenshot',
+        {},
+        'mcp__script_builder__take_screenshot',
+      );
+
+      // Named by the model-facing tool, not the internal handler, so the
+      // assistant can tell the user which capability it lacks.
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'take_screenshot' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('plan-step shortcut is gated on effective tier', () => {
@@ -1930,6 +2476,76 @@ describe('createSessionPostToolUse', () => {
       }),
     );
   });
+
+  // #5107 — the handoff is published with isError:false, and `result` on an
+  // audit event only has success/failure. Without an explicit outcome stamp,
+  // "handed to the approval worker" would read as "ai.tool.manage_services
+  // succeeded" to anyone auditing whether the restart actually happened.
+  describe('approval handoff audit outcome (#5107)', () => {
+    const auditEventFor = (action: string) => {
+      const call = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === action);
+      return (call as [unknown, any])[1];
+    };
+
+    it("records 'dispatched', not a defaulted success, and stamps the outcome", async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback(
+        'manage_services',
+        { serviceName: 'spooler' },
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: APPROVED_EXECUTING_MESSAGE }),
+        false,
+        0,
+        undefined,
+        APPROVED_EXECUTING_STATUS,
+      );
+
+      const event = auditEventFor('ai.tool.manage_services');
+      // `result` defaults to 'success' when omitted (auditEvents.ts), and
+      // `result` is the INDEXED column real audit queries filter on — leaving
+      // it unset would tell a compliance reviewer the restart succeeded.
+      expect(event.result).toBe('dispatched');
+      expect(event.details.toolOutcome).toBe('approved_executing');
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'tool_result', isError: false, handoff: 'approved_executing' }),
+      );
+    });
+
+    it('never stamps the outcome from the tool’s own output', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      // A tool owns its output. If the stamp were derived from the payload, a
+      // buggy or hostile handler could forge a "routine authorized hand-off"
+      // audit row for its own action. Only the gate's own signal counts.
+      await callback(
+        'query_devices',
+        {},
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: 'pretending' }),
+        false,
+        0,
+      );
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.not.objectContaining({ handoff: expect.anything() }),
+      );
+    });
+
+    it('leaves an ordinary result unstamped', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback('query_devices', {}, JSON.stringify({ status: 'completed' }), false, 0);
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+    });
+  });
 });
 
 // ============================================
@@ -2038,7 +2654,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     mockInsertReturning({ id: 'exec-legacy' });
@@ -2052,7 +2668,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
 
     // Proves the tier-3 branch genuinely ran (created a real intent and won
     // the release CAS) rather than being refused as an unknown tool.
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy', context: RELEASED_CONTEXT });
     expect(mockCreateActionIntent).toHaveBeenCalled();
 
     mockTransitionIntent.mockClear();
@@ -2176,6 +2792,57 @@ describe('inline secret-bearing completion (Task 6)', () => {
     // plan completion, audit event) still ran for this postToolUse call
     // instead of being aborted by an uncaught throw.
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
+
+    // #5205 W05 (#5210): the guard-tripped CAS win must also publish the
+    // terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-leak', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5232: the worst of the five call sites. The reset ALREADY happened, the
+  // credential it produced is being refused persistence, and now the intent
+  // records neither — it carries the winner's terminal state instead. Shares
+  // the `executed: true` branch with the completion site but is a distinct
+  // call with its own casLabel/intendedStatus, so a copy-paste slip here
+  // would not show up in the completion test.
+  it('records a CAS-lost marker for the plaintext-guard site when its CAS loses after the tool ran (#5232)', async () => {
+    mockTransitionIntent.mockResolvedValue(false);
+    const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+
+    await createSessionPostToolUse(session)(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-leak-cas-lost', sealedResult: { temporaryPassword: 'hunter2-plaintext' } },
+    );
+
+    const marker = mockWriteAuditEvent.mock.calls.find(
+      (c) => (c[1] as any)?.action === 'action_intent.executed',
+    );
+    expect(marker).toBeDefined();
+    expect(marker![1]).toMatchObject({
+      resourceId: 'intent-leak-cas-lost',
+      result: 'failure',
+      details: expect.objectContaining({
+        actionName: 'm365_reset_password',
+        errorCode: 'execution_cas_lost',
+        intendedStatus: 'failed',
+        casLabel: 'ai_sdk_inline_plaintext_guard',
+        executed: true,
+      }),
+    });
+    // Two captures: the guard trip itself, and the lost CAS on top of it.
+    // Neither may swallow the other.
+    expect(
+      mockCaptureException.mock.calls.some((c) => (c[2] as any)?.cas_label === 'ai_sdk_inline_plaintext_guard'),
+    ).toBe(true);
+    // The guarded plaintext must never ride along into the marker.
+    expect(JSON.stringify(marker![1])).not.toContain('hunter2-plaintext');
   });
 
   describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (deliberately out of scope for the plan-step fix below — PAM/helper sessions use their own elevation governance, not durable action-intents; see design doc docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md §1.5)', () => {
@@ -2472,7 +3139,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({
@@ -2501,7 +3168,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv' });
+    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
       type: 'plan_step_start',
@@ -2541,6 +3208,12 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     // Not executed inline...
     expect(result).toEqual(expect.objectContaining({ allowed: false }));
+    // ...but NOT reported as a failure (#5107): the human approved and the
+    // worker is running it, so the decision carries the handoff marker that
+    // makes the tool result publish with isError:false.
+    expect(result).toEqual(
+      expect.objectContaining({ handoff: 'approved_executing', error: APPROVED_EXECUTING_MESSAGE }),
+    );
     // ...and critically, the CAS was never even attempted, so the worker's
     // claim is still available and the intent is not stranded in `executing`.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
@@ -2601,7 +3274,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     expect(result).toEqual({
       allowed: false,
-      error: 'This action is already being completed by the approval worker; it will not run twice.',
+      error: APPROVED_EXECUTING_MESSAGE,
+      handoff: 'approved_executing',
     });
     expect(session.currentPlanStepIndex).toBe(0);
   });
@@ -2640,6 +3314,139 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'plan_step_start' }),
     );
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5326: a pre-execution terminal-CAS loss (this one on the revalidation
+  // -failure path) used to be a bare console.warn — invisible to Prometheus.
+  // It now bumps breeze_action_intents_total{outcome="cas_lost"} so contention
+  // on the pre-execution terminalization paths is countable and alertable.
+  it('bumps the cas_lost action-intent metric when a PRE-EXECUTION terminal CAS loses (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-lost' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-lost',
+          approvalRequestIds: ['appr-plan-revalidate-cas-lost'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // Wins the approved -> executing release CAS; LOSES the terminal
+      // executing -> failed CAS that the revalidation failure drives.
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+      expect(onEvent).toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+      // Discriminating control: the tool never ran, so this must NOT be
+      // counted as an execution.
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'executed');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
+  // Guard for the metric call itself: a throw out of the metrics layer must
+  // not unwind into the caller's outer catch and replace the specific
+  // revalidation diagnosis with a generic execution_error.
+  it('keeps the specific revalidation error when the cas_lost metric recorder throws (#5326)', async () => {
+    setActionIntentMetricsRecorder({
+      onEvent: () => {
+        throw new Error('prom registry exploded');
+      },
+    });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-metric-throws' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-metric-throws',
+          approvalRequestIds: ['appr-plan-metric-throws'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
+  // Control for the test above: when the terminal CAS WINS there is no
+  // contention to report, so nothing may be counted as cas_lost.
+  it('does NOT bump cas_lost when the pre-execution terminal CAS wins (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-won' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-won',
+          approvalRequestIds: ['appr-plan-revalidate-cas-won'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
   });
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1): the
@@ -2703,6 +3510,74 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       'failed',
       { errorCode: 'content_changed' },
     );
+    // #5205 W05 (#5210): same CAS win must publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-digest-mismatch', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5232, `executed: false` branch. The other half of `reportLostTerminalCas`:
+  // a CAS lost BEFORE the tool ran is the mutual exclusion working, not a lost
+  // outcome — nothing executed, so there is no result to strand and no reason
+  // to duplicate an audit row the winner already wrote. Without this test the
+  // "quiet on the pre-execution path" decision (which mirrors
+  // intentReleaseWorker.ts's failIntent) is unproven, and a regression that
+  // started marking these would look identical to the real thing.
+  it('does NOT write a CAS-lost marker or capture when the digest-mismatch CAS loses BEFORE the tool ran (#5232)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-digest-cas-lost' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-digest-cas-lost', approvalRequestIds: ['appr-digest-cas-lost'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    // The approved -> executing release CAS WINS; only the terminal
+    // executing -> failed:content_changed CAS loses.
+    mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-digest-cas-lost',
+          boundArgumentDigest: 'digest',
+          actionName: 'execute_command',
+          arguments: { command: 'whoami' },
+          effectDigest: 'stored-digest-abc',
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockComputeEffectDigest.mockResolvedValueOnce({ digest: 'recomputed-digest-xyz' });
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    // Still refuses to execute — losing the terminal CAS must not turn a
+    // content_changed stop into an allowed run.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'The referenced content changed after approval; it was not executed.',
+    });
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-digest-cas-lost',
+      'executing',
+      'failed',
+      { errorCode: 'content_changed' },
+    );
+    // No side effect happened, so no marker and no Sentry event.
+    expect(
+      mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'action_intent.executed'),
+    ).toBeUndefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    // A lost CAS means the winner owns the outbox row too.
+    expect(mockPublishIntentTerminalOutbox).not.toHaveBeenCalled();
   });
 
   // The mirror image: a stored NULL effect digest (supervised intents never
@@ -2732,6 +3607,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: null,
+          approvalScope: 'supervised',
+          decidedVia: 'session_tap',
         },
       ]),
     };
@@ -2744,12 +3621,17 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-digest-null' });
+    // #5645: the inline release, like the durable worker, ALWAYS hands the
+    // handler the released intent's decision record (approval_method is
+    // derived from it) — but nothing was verified, so no verified material.
+    expect(result).toEqual({
+      allowed: true,
+      intentId: 'intent-plan-digest-null',
+      context: { releaseDecision: { approvalScope: 'supervised', decidedVia: 'session_tap' } },
+    });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(mockComputeEffectDigest).not.toHaveBeenCalled();
-    // Nothing was verified, so nothing is handed to the handler — the
-    // no-context path must stay byte-identical for every unpinned tool call.
-    expect((result as { context?: unknown }).context).toBeUndefined();
+    expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript).toBeUndefined();
     // No content_changed CAS — only the approved -> executing CAS ran.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -2787,6 +3669,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: 'stored-digest-abc',
+          approvalScope: 'four_eyes',
+          decidedVia: 'webauthn_platform',
         },
       ]),
     };
@@ -2813,6 +3697,9 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // resolved, so a re-read cannot masquerade as the verified one.
     expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
       .toBe(verifiedRunScript);
+    // #5645: the decision record rides ALONGSIDE the verified material.
+    expect((result as { context?: { releaseDecision?: unknown } }).context?.releaseDecision)
+      .toEqual({ approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' });
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the
@@ -2844,7 +3731,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // Step 0: effective tier 3 — goes through the durable intent, wins the
     // release CAS, and is authorized. The index must land on 1.
     const first = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0' });
+    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     // Step 1: effective tier 2, non-secret — eligible for the plan shortcut.
@@ -2896,7 +3783,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     });
 
     const preResult = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     mockTransitionIntent.mockClear();
@@ -2952,7 +3839,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({
@@ -3136,6 +4023,13 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     });
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-task3-revalidate', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------
@@ -3232,6 +4126,14 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     );
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the self-heal CAS win must also publish the
+    // terminal outbox event — without this, a stranded-intent self-heal
+    // would silently never wake anything watching for the outcome.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-selfheal', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------

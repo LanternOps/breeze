@@ -6,14 +6,25 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
   },
+  // #5784 W04: vulnerability_management's shared loader elevates the GLOBAL CVE
+  // catalog read out of the request's org context, so the parameterized arms
+  // below reach these two. They pass the callback straight through — the site
+  // scope under test is bound by the DEVICE query, not by the context helper.
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 import { db } from '../db';
 import type { ReportExecutionAuthority } from './siteScope';
 import {
+  assertReportExecutionPreflight,
+  generateDeviceInventoryReport,
   generateReport,
+  StoredArtifactOnlyReportError,
   type ReportType,
 } from './reportGenerationService';
+import { reportTypeEnum } from '../db/schema/reports';
+import { organizations } from '../db/schema';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -28,7 +39,26 @@ const REPORT_TYPES: readonly ReportType[] = [
   'performance',
   'executive_summary',
   'security_compliance_posture',
+  'hardware_lifecycle',
+  'threat_detection_review',
+  'endpoint_management_review',
+  'vulnerability_management',
+  'identity_access_review',
 ];
+/**
+ * #5784 W06. `identity_access_review` is org-wide by construction: M365 identity
+ * data has no site dimension, so a RESTRICTED authority is refused outright
+ * (OD-8 = A) and the generator reads nothing at all. It therefore cannot bind a
+ * site predicate, and the site-binding matrix below excludes it — with a
+ * dedicated assertion in its place, so the exclusion is proven, not assumed.
+ */
+const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
+  .filter((type) => type !== 'identity_access_review');
+/** Every `ReportType` that is NOT generated on demand. P2-3 added the first
+ *  one: a weekly AI narrative's artifact is written once by the agent run and
+ *  only ever read back — there is no query that could reproduce it. Fleet
+ *  Designer W01 (#5651) added the second, same shape. */
+const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
 
 const capturedWhere: SQL[] = [];
 
@@ -57,12 +87,22 @@ function authority(
   orgId = ORG_ID,
 ): ReportExecutionAuthority {
   return {
+    principalKind: 'user',
     scope: kind === 'restricted'
       ? { version: 1, kind, orgId, siteIds }
       : { version: 1, kind, orgId },
     principalUserId: USER_ID,
     capturedAt: new Date('2026-07-25T12:00:00.000Z'),
     fingerprint: kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64),
+  };
+}
+
+function portalAuthority(): ReportExecutionAuthority {
+  return {
+    principalKind: 'portal_user',
+    scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
+    capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+    fingerprint: 'f'.repeat(64),
   };
 }
 
@@ -127,7 +167,98 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
-  it.each(REPORT_TYPES)(
+  // #5784 W04. This arm must NOT be the bare `emptyRowsReport()` the other
+  // row-shaped types get: a summary-less result falls through buildReportPdf's
+  // arm to renderGenericReport, whose "No data available for the selected
+  // filters." is indistinguishable from "we checked every device and found
+  // none". Nothing was queried, so the counts are UNMEASURED, and the artifact
+  // has to say which of the two happened.
+  it('vulnerability_management returns a shaped, unmeasured summary for restricted-empty, not a bare empty result', async () => {
+    const result = await generateReport(
+      'vulnerability_management',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as {
+      open?: { critical: number | null; knownExploited: number | null };
+      dataGaps?: string[];
+      closedThisPeriod?: { count: number | null };
+    };
+    expect(summary).toBeTruthy();
+    expect(summary.open?.critical).toBeNull();
+    expect(summary.open?.knownExploited).toBeNull();
+    expect(summary.closedThisPeriod?.count).toBeNull();
+    expect(summary.dataGaps?.join(' ')).toMatch(/no sites in scope/i);
+  });
+
+  it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
+    'allows portal-user authority for %s',
+    async (type) => {
+      await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+        .resolves.toBeDefined();
+    },
+  );
+
+  it.each([
+    'device_inventory',
+    'software_inventory',
+    'alert_summary',
+    'compliance',
+    'performance',
+    'ai_org_narrative',
+  ] as const)('rejects portal-user authority for %s before querying', async (type) => {
+    await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+      .rejects.toThrow(/portal|authority|report type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects portal-user authority at a non-canonical generator entry point', async () => {
+    await expect(
+      generateDeviceInventoryReport(ORG_ID, {}, portalAuthority()),
+    ).rejects.toThrow(/portal|authority|report type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
+    'allows portal-user authority through the shared preflight for %s',
+    (type) => {
+      expect(() => assertReportExecutionPreflight(
+        ORG_ID,
+        {},
+        portalAuthority(),
+        type,
+      )).not.toThrow();
+    },
+  );
+
+  it('identity_access_review refuses a restricted authority instead of binding a site scope', async () => {
+    const result = await generateReport(
+      'identity_access_review',
+      ORG_ID,
+      {},
+      authority('restricted', [SITE_A]),
+    );
+
+    // OD-8 = A: an org-wide identity view served to a site-restricted technician
+    // would be a scope escalation, so the answer is the empty-but-shaped result
+    // and NOTHING IDENTITY-SHAPED is read. The one permitted read is the org's
+    // own display name (#6100) — an evidence PDF must name its customer — so
+    // the guard is "exactly one select, against organizations, keyed by org id",
+    // not "no select at all".
+    expect(result.rows).toEqual([]);
+    expect(result.rowCount).toBe(0);
+    expect(renderedParams()).not.toContain(SITE_A);
+    expect(db.select).toHaveBeenCalledTimes(1);
+    const chain = vi.mocked(db.select).mock.results[0]!.value as any;
+    expect(chain.from).toHaveBeenCalledTimes(1);
+    expect(chain.from).toHaveBeenCalledWith(organizations);
+    expect(renderedParams()).toEqual([ORG_ID]);
+  });
+
+  it.each(SITE_SCOPED_REPORT_TYPES)(
     '%s binds the exact restricted site scope and never Site B',
     async (type) => {
       await generateReport(
@@ -143,6 +274,33 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
+  // #5784 W03. The generic `emptyRowsReport()` shape carries NO summary, and
+  // buildReportPdf's endpoint-management arm is guarded on the summary being
+  // present — so that shape degrades the artifact to renderGenericReport's
+  // one-line "No data available for the selected filters". A technician with no
+  // permitted sites must be told that, not shown a blank all-clear.
+  it('endpoint_management_review returns a SHAPED zero-safe summary, not a bare empty result', async () => {
+    const result = await generateReport(
+      'endpoint_management_review',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as Record<string, unknown> | undefined;
+    expect(summary).toBeTruthy();
+    expect(summary).toMatchObject({
+      enrolment: {
+        intuneDevices: null, breezeDevices: null, breezeWithoutIntune: null, intuneWithoutBreezeLink: null,
+      },
+      compliance: { byState: null },
+    });
+    expect(Array.isArray(summary?.rows)).toBe(true);
+    expect(summary?.historyCaveat).toBeTruthy();
+    expect(summary?.dataGaps).toEqual([expect.stringMatching(/No sites are in scope/)]);
+  });
+
   it.each(REPORT_TYPES)(
     '%s preserves unrestricted generation without a site predicate',
     async (type) => {
@@ -157,4 +315,101 @@ describe('generateReport mandatory execution authority', () => {
       expect(renderedParams()).not.toContain(SITE_B);
     },
   );
+});
+
+/**
+ * P2-3 (#4190) — `ai_org_narrative` is a STORED artifact, not a generated one.
+ * Its `report_runs` row is written once, inside the agent run's transaction
+ * (`persistNarrativeReport`), from a model-authored narrative that no query
+ * could reproduce. Every generation entry point must therefore refuse it
+ * rather than fall through to a `never` check whose message ("Invalid report
+ * type") would read as a bug in the type union.
+ */
+describe('stored-artifact-only report types (P2-3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedWhere.length = 0;
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it.each(STORED_ARTIFACT_ONLY_TYPES)(
+    '%s is refused by the dispatch switch before any query runs',
+    async (type) => {
+      await expect(
+        generateReport(type, ORG_ID, {}, authority('unrestricted')),
+      ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(STORED_ARTIFACT_ONLY_TYPES)(
+    '%s is refused by the ZERO-SAFE branch too, which the dispatch switch never reaches',
+    async (type) => {
+      // A restricted-empty authority short-circuits into `zeroSafeReport`
+      // before the dispatch switch — a second exhaustive switch, and the one
+      // that would otherwise hand back a plausible-looking empty report for a
+      // document that exists.
+      await expect(
+        generateReport(type, ORG_ID, {}, authority('restricted', [])),
+      ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it('carries the stable code routes map to 409', async () => {
+    const error = await generateReport('ai_org_narrative', ORG_ID, {}, authority('unrestricted'))
+      .catch((e: unknown) => e as StoredArtifactOnlyReportError);
+
+    expect(error).toBeInstanceOf(StoredArtifactOnlyReportError);
+    expect((error as StoredArtifactOnlyReportError).code).toBe('stored_artifact_only');
+  });
+
+  it('the API-local ReportType union covers exactly the DB enum, with no type unaccounted for', () => {
+    // Drift guard: `reportGenerationService.ts` keeps its own union rather than
+    // deriving from the pgEnum, and a value added to one and not the other is
+    // a `never`-check failure at a call site far from either file.
+    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES].sort())
+      .toEqual([...reportTypeEnum.enumValues].sort());
+  });
+});
+
+describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it('refuses a system authority for a type outside the managed evidence registry, before any query', async () => {
+    const { generateManagedEvidenceReport } = await import('./reportGenerationService');
+    await expect(
+      generateManagedEvidenceReport('device_inventory' as never, ORG_ID, {}, undefined),
+    ).rejects.toThrow(/not a managed evidence type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses a system authority whose scope is not org-wide unrestricted', () => {
+    expect(() => assertReportExecutionPreflight(ORG_ID, {}, {
+      principalKind: 'system',
+      // A restricted scope can never be stamped on an org-wide managed result.
+      scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [] },
+      fingerprint: 'x',
+      capturedAt: new Date(),
+    } as never, 'device_inventory')).toThrow(/unrestricted/i);
+  });
+
+  it('mints a system authority that is org-wide unrestricted with a matching fingerprint', async () => {
+    const { systemReportAuthorityFor, siteScopeFingerprint } = await import('./siteScope');
+    const got = systemReportAuthorityFor(ORG_ID);
+    expect(got.principalKind).toBe('system');
+    expect(got.scope).toEqual({ version: 1, kind: 'unrestricted', orgId: ORG_ID });
+    expect(got.fingerprint).toBe(siteScopeFingerprint(got.scope));
+    // The preflight accepts exactly this shape.
+    expect(() => assertReportExecutionPreflight(ORG_ID, {}, got as never, 'device_inventory')).not.toThrow();
+  });
+
+  it('leaves the ordinary user path unchanged: a user authority with an empty restricted scope still reaches the zero-safe shape', async () => {
+    const result = await generateReport('device_inventory', ORG_ID, {}, authority('restricted', []));
+    expect(result.rowCount).toBe(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,12 @@ import { fetchWithAuth } from './auth';
 export interface Features {
   billing: boolean;
   support: boolean;
+  aiOperatorTasks: boolean;
+  aiAgentsSweepAct: boolean;
+  /** Tool catalog W01 (#5216): the server's TOOL_SOURCES_ENABLED kill switch.
+   *  Off ⇒ every /tool-sources route answers 404, so the nav item and pages
+   *  must be hidden rather than linking to a dead surface. */
+  toolSources: boolean;
 }
 
 export interface CfAccessLoginConfig {
@@ -28,7 +34,12 @@ interface FeaturesState {
   load: () => Promise<void>;
 }
 
-const DEFAULT_FEATURES: Features = { billing: false, support: false };
+// aiOperatorTasks default CLOSED: this gates a write action that starts
+// autonomous remediation on a customer machine, and the underlying server
+// flags are off by default (decision D2). An unreachable or older /config
+// (missing the field) must hide the "Delegate to Operator" button, never
+// show it.
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -63,6 +74,12 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
         features: {
           billing: !!data.features?.billing,
           support: !!data.features?.support,
+          aiOperatorTasks: !!data.features?.aiOperatorTasks,
+          aiAgentsSweepAct: data.features?.aiAgentsSweepAct === true,
+          // Default CLOSED, like aiOperatorTasks: an older or unreachable
+          // /config must hide a surface that authors credentials reaching
+          // customer systems, never flash it.
+          toolSources: !!data.features?.toolSources,
         },
         cfAccessLogin: {
           enabled: !!data.cfAccessLogin?.enabled,
@@ -101,6 +118,20 @@ export function useRegistrationGate(): { enabled: boolean; loaded: boolean } {
   return { enabled, loaded };
 }
 
+// useAiOperatorTasksGate ensures the runtime /config is loaded and reports
+// whether the "Delegate to Operator" action should be shown. `loaded` lets
+// callers distinguish "not yet known" from "known disabled" so they can avoid
+// flashing the button before the answer arrives (W08 of #5205, #5246).
+export function useAiOperatorTasksGate(): { enabled: boolean; loaded: boolean } {
+  const enabled = useFeaturesStore((s) => s.features.aiOperatorTasks);
+  const loaded = useFeaturesStore((s) => s.loaded);
+  const load = useFeaturesStore((s) => s.load);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return { enabled, loaded };
+}
+
 // Whether software package file uploads are possible (S3 storage configured on
 // the server). Defaults open until /config says otherwise — see
 // DEFAULT_SOFTWARE_PACKAGES above. Pass `active: false` to defer the /config
@@ -115,5 +146,18 @@ export function usePackageUploadsGate(active = true): {
   useEffect(() => {
     if (active) void load();
   }, [active, load]);
+  return { enabled, loaded };
+}
+
+// useToolSourcesGate ensures the runtime /config is loaded and reports whether
+// the Tool Sources surface exists on this deployment (#5216 W01). `loaded`
+// lets callers distinguish "not yet known" from "known disabled".
+export function useToolSourcesGate(): { enabled: boolean; loaded: boolean } {
+  const enabled = useFeaturesStore((s) => s.features.toolSources);
+  const loaded = useFeaturesStore((s) => s.loaded);
+  const load = useFeaturesStore((s) => s.load);
+  useEffect(() => {
+    void load();
+  }, [load]);
   return { enabled, loaded };
 }

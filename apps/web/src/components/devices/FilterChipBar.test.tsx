@@ -100,6 +100,15 @@ describe('FilterChipBar', () => {
     }
   });
 
+  it('catalog exposes deviceFunction as a core enum over the shared SSOT keys (Fleet Designer W02)', () => {
+    const field = V2_FILTER_FIELDS.find(f => f.key === 'deviceFunction');
+    expect(field).toBeDefined();
+    expect(field!.category).toBe('core');
+    expect(field!.type).toBe('enum');
+    expect(field!.enumValues).toContain('file_server');
+    expect(field!.enumValues?.[field!.enumValues.length - 1]).toBe('unknown');
+  });
+
   // ---- Spec 4.1 — Org picker renders names ----
   it('org picker renders names not UUIDs', () => {
     const orgs = [
@@ -252,6 +261,13 @@ describe('FilterChipBar', () => {
     expect(onChange).toHaveBeenCalled();
     const next = onChange.mock.calls[0][0] as FilterConditionGroup;
     expect(next.conditions).toHaveLength(1);
+  });
+
+  it('sentence builder renders the group picker for a groupId row', () => {
+    const groups = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Domain Controllers' }];
+    const value: FilterConditionGroup = { operator: 'AND', conditions: [{ field: 'groupId', operator: 'in', value: [] }] };
+    render(<FilterSentenceBuilder value={value} onChange={vi.fn()} groups={groups} />);
+    expect(screen.getByTestId('filter-group-picker')).toBeDefined();
   });
 
   // ---- Spec 4.12 — keyboard ----

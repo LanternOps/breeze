@@ -19,15 +19,27 @@
  *    the real signup transaction.
  *
  * Constructing the required-policy condition:
- *   `partnerCreate.ts` seeds new "Partner Admin" roles with force_mfa = false.
- *   So these tests install a BEFORE INSERT trigger for the duration of one test
- *   to produce, explicitly, the row state a corrected seed would produce — a
- *   force_mfa admin role, or a partner whose security settings require MFA.
+ *   Role axis — `createPartner()` stores force_mfa = true on the tenant
+ *   Partner Admin row itself (RMM-QA-164): exercised on the REAL row.
+ *   Settings axis — since 2026-09-18 `createPartner()` also writes
+ *   `security.requireMfa = true` (applyNewPartnerDefaultSettings, spec
+ *   docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md):
+ *   ALSO exercised on the real row, no trigger.
+ *   The kill-switch control below is the only case that still needs a
+ *   BEFORE INSERT trigger — it must produce a tenant where NOTHING requires
+ *   MFA, which the real creation path can no longer mint, so it injects
+ *   `requireMfa:false` and turns the role force off
+ *   (MFA_FORCE_FOR_PARTNER_ADMIN is read at call time, config/env.ts).
+ *
+ * ENABLE_2FA is set to 'true' before the dynamic imports on purpose: with
+ * it off, login/verify short-circuit to mfa: true and every `mfa: false`
+ * assertion here would be vacuous (verifier concern 4).
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { getTestDb, getTestRedis } from './setup';
+import { bootstrapAuthBinding } from './db-utils';
 
 import './setup';
 
@@ -76,8 +88,7 @@ async function attachTrigger(name: string, table: string): Promise<void> {
 
 async function dropTriggers(): Promise<void> {
   const db = getTestDb();
-  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_role_force_mfa ON roles'));
-  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_partner_require_mfa ON partners'));
+  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_partner_no_require_mfa ON partners'));
 }
 
 function emailFor(companyName: string): string {
@@ -116,9 +127,16 @@ async function parkAndVerify(companyName: string): Promise<MintedRegistration> {
     signupUserAgent: 'integration-signup/1.0',
   });
 
+  // /auth/verify-email mints the auto-login session, so it now requires a
+  // durable session-binding cookie the way a real browser client would send.
+  const binding = await bootstrapAuthBinding();
   const res = await app.request('/auth/verify-email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'user-agent': 'mail-scanner/9.9 (link-prefetch)' },
+    headers: {
+      'content-type': 'application/json',
+      'user-agent': 'mail-scanner/9.9 (link-prefetch)',
+      cookie: binding.cookie,
+    },
     body: JSON.stringify({ token: rawToken }),
   });
   const body = await res.json();
@@ -196,58 +214,75 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     expect(rows[0]?.p_verified).not.toBeNull();
   });
 
-  it('does NOT mint mfa=true when the new admin role forces MFA (role axis)', async () => {
-    await installTrigger(
-      'breeze_test_role_force_mfa',
-      `IF NEW.scope::text = 'partner' AND NEW.name = 'Partner Admin' THEN NEW.force_mfa := true; END IF;`,
-    );
-    await attachTrigger('breeze_test_role_force_mfa', 'roles');
-
+  it('stores force_mfa=true on the real createPartner row and does NOT mint mfa=true (role axis, no trigger — RMM-QA-164)', async () => {
     const { status, body, accessClaims } = await parkAndVerify('ForceMfaCo');
     expect(status).toBe(200);
 
     const db = getTestDb();
-    const forced = await db.execute(sql`
-      SELECT r.force_mfa FROM roles r
-      JOIN partners p ON p.id = r.partner_id
-      WHERE p.id = ${body.partner.id} AND r.name = 'Partner Admin'
+    const stored = await db.execute(sql`
+      SELECT r.force_mfa, r.is_system FROM roles r
+      WHERE r.partner_id = ${body.partner.id} AND r.name = 'Partner Admin'
     `);
-    expect(forced[0]?.force_mfa).toBe(true);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.is_system).toBe(true);
+    expect(stored[0]?.force_mfa).toBe(true);
 
     // The user holds NO factor and policy REQUIRES one → no MFA claim, and the
     // response must push them into enrollment.
     expect(body.user.mfaEnabled).toBe(false);
     expect(accessClaims.mfa).toBe(false);
+    expect(accessClaims.mfa_src).toBeUndefined();
     expect(body.mfaEnrollmentRequired).toBe(true);
     expect(body.enrollUrl).toBe('/auth/mfa/setup');
   });
 
-  it('does NOT mint mfa=true when the new partner settings require MFA (settings axis)', async () => {
-    await installTrigger(
-      'breeze_test_partner_require_mfa',
-      `NEW.settings := COALESCE(NEW.settings, '{}'::jsonb) || '{"security":{"requireMfa":true}}'::jsonb;`,
-    );
-    await attachTrigger('breeze_test_partner_require_mfa', 'partners');
-
+  it('stores security.requireMfa=true on the real createPartner row and does NOT mint mfa=true (settings axis, no trigger — spec 2026-09-18 D1)', async () => {
     const { status, body, accessClaims } = await parkAndVerify('RequireMfaCo');
     expect(status).toBe(200);
 
     const db = getTestDb();
     const rows = await db.execute(sql`
-      SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa
+      SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa,
+             settings -> 'ticketing' -> 'inbound' ->> 'enabled' AS inbound_enabled
       FROM partners WHERE id = ${body.partner.id}
     `);
     expect(rows[0]?.require_mfa).toBe('true');
+    // The other new-partner default still lands alongside it.
+    expect(rows[0]?.inbound_enabled).toBe('false');
 
     expect(accessClaims.mfa).toBe(false);
     expect(body.mfaEnrollmentRequired).toBe(true);
   });
 
-  it('still mints mfa=true when nothing requires MFA (control — proves the assertions above are not vacuous)', async () => {
-    const { status, accessClaims, body } = await parkAndVerify('NoPolicyCo');
-    expect(status).toBe(200);
-    expect(accessClaims.mfa).toBe(true);
-    expect(body.mfaEnrollmentRequired).toBe(false);
+  it('still mints mfa=true when NOTHING requires MFA (control — settings opted out by trigger + kill switch off)', async () => {
+    // Since 2026-09-18 the real creation path writes requireMfa=true, so a
+    // tenant where nothing requires MFA cannot be produced by createPartner
+    // alone. Invert the trigger: strip the settings axis, and turn the role
+    // axis off through the documented relief valve (mfaForcePartnerAdmin()
+    // reads the env at call time, so no re-import is needed). If this control
+    // ever mints mfa=false, the assertions above have stopped depending on the
+    // stored flags and are vacuous.
+    await installTrigger(
+      'breeze_test_partner_no_require_mfa',
+      `NEW.settings := COALESCE(NEW.settings, '{}'::jsonb) || '{"security":{"requireMfa":false}}'::jsonb;`,
+    );
+    await attachTrigger('breeze_test_partner_no_require_mfa', 'partners');
+
+    const previous = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+    process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+    try {
+      const { status, accessClaims, body } = await parkAndVerify('KillSwitchCo');
+      expect(status).toBe(200);
+      const rows = await getTestDb().execute(sql`
+        SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa
+        FROM partners WHERE id = ${body.partner.id}
+      `);
+      expect(rows[0]?.require_mfa).toBe('false');
+      expect(accessClaims.mfa).toBe(true);
+      expect(body.mfaEnrollmentRequired).toBe(false);
+    } finally {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = previous;
+    }
   });
 
   it('a second click on the same token is a no-op — one winner, generic 400 on the loser', async () => {
@@ -263,16 +298,17 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
       signupUserAgent: 'integration-signup/1.0',
     });
 
+    const binding = await bootstrapAuthBinding();
     const first = await app.request('/auth/verify-email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({ token: rawToken }),
     });
     expect(first.status).toBe(200);
 
     const second = await app.request('/auth/verify-email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({ token: rawToken }),
     });
     expect(second.status).toBe(400);

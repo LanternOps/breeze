@@ -42,6 +42,9 @@
       "unknownPermission": "Bilinmeyen izin (rol {{appRoleId}})",
       "grantsVerifiedAt": "İzinler doğrulandı"
     },
+    "upgrade": {
+      "banner": "Koşullu Erişim, Güvenli Puan ve yönetici rolü görünürlüğü için yeni Microsoft 365 izinleri gereklidir. Bunları bir Genel Yönetici onaylamalıdır."
+    },
     "actions": {
       "connect": "Bağlan",
       "reconsent": "Yeniden onay ver",
@@ -53,7 +56,32 @@
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
-      "disconnectSucceeded": "Breeze bağlantısı kesildi."
+      "disconnectSucceeded": "Breeze bağlantısı kesildi.",
+      "approveNewPermissions": "Yeni izinleri onayla",
+      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı.",
+      "syncNow": "Şimdi eşitle",
+      "syncFailed": "Kiracı eşitlemesi istenemedi.",
+      "syncSucceeded": "Kiracı eşitlemesi istendi."
+    },
+    "sync": {
+      "lastSynced": "Son eşitleme {{relative}}",
+      "counts": "{{users}} kullanıcı · {{devices}} cihaz",
+      "never": "Henüz eşitlenmedi",
+      "chips": {
+        "partial": "{{domain}}: kısmi",
+        "needsConsent": "{{domain}}: onay gerekiyor",
+        "throttled": "{{domain}}: kısıtlandı",
+        "error": "{{domain}}: hata",
+        "unlicensed": "Oturum açma etkinliği Entra ID P1 gerektirir"
+      },
+      "domains": {
+        "users": "Kullanıcılar",
+        "signin_activity": "Oturum açma etkinliği",
+        "intune_devices": "Intune cihazları",
+        "ca_policies": "Koşullu Erişim",
+        "skus": "Lisanslar",
+        "secure_score": "Güvenlik Puanı"
+      }
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",
@@ -708,7 +736,53 @@
     "customerFailedCount_one": "{{count}} müşterisi içe aktarılamadı",
     "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu"
   },
+  "quickbooksMapping": {
+    "mappingTitle": "Müşteri ve ürün eşleme",
+    "customers": "Müşteriler",
+    "items": "Ürünler",
+    "loadMappings": "Eşlemeleri yükle",
+    "refreshMappings": "Eşlemeleri yenile",
+    "suggestedMatch": "Önerilen eşleşme",
+    "ambiguousMatch": "Belirsiz eşleşme",
+    "noMatch": "Eşleşme yok",
+    "linkedMatch": "Bağlandı",
+    "confirmed": "Onaylandı",
+    "createNew": "Yeni oluştur",
+    "unlink": "Bağlantıyı kaldır",
+    "syncNow": "Şimdi senkronize et",
+    "notSynced": "Eşitlenmedi",
+    "notSyncedHint": "Breeze'de onaylandı, henüz QuickBooks'a gönderilmedi",
+    "inQuickbooks": "QuickBooks'ta",
+    "syncFailed": "Eşitleme başarısız",
+    "incomeAccount": "Gelir hesabı",
+    "incomeAccountRequired": "QuickBooks'ta ürün oluşturmadan veya senkronize etmeden önce varsayılan bir gelir hesabı belirleyin.",
+    "saveIncomeAccount": "Gelir hesabını kaydet",
+    "mappingSaved": "Eşleme kaydedildi.",
+    "entitySynced": "QuickBooks ile senkronize edildi.",
+    "confirmMatch": "Eşleşmeyi onayla",
+    "noProposals": "Henüz eşlenecek kayıt yok. Başlamak için eşlemeleri yükleyin.",
+    "failedToLoadMappings": "QuickBooks eşlemeleri yüklenemedi.",
+    "failedToLoadIncomeAccounts": "Gelir hesapları yüklenemedi.",
+    "failedToSaveMapping": "Eşleme kaydedilemedi.",
+    "failedToSyncEntity": "QuickBooks ile senkronize edilemedi.",
+    "failedToSaveIncomeAccount": "Gelir hesabı kaydedilemedi.",
+    "incomeAccountSaved": "Gelir hesabı kaydedildi.",
+    "searchPlaceholder": "QuickBooks'ta ara",
+    "searching": "Aranıyor…",
+    "noCandidates": "Bu arama için QuickBooks'ta eşleşme yok.",
+    "failedToSearchCandidates": "QuickBooks'ta arama yapılamadı.",
+    "syncedWithTaxVariance": "Vergi farkıyla eşitlendi"
+  },
   "quickbooksIntegration": {
+    "owedTitle": "Bekleyen QuickBooks işlemleri",
+    "owedLoadError": "Bekleyen işlemler yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+    "owedCount": "Bekleyen işlemler: {{total}}",
+    "owedEmpty": "Bekleyen işlem yok",
+    "owedDelete": "Ödemeyi sil",
+    "owedPush": "Ödemeyi gönder",
+    "owedViewInvoice": "Faturayı görüntüle",
+    "owedInvoiceUnavailable": "Fatura kullanılamıyor",
+    "owedAge": "Bekleme süresi: {{minutes}} dk",
     "quickbooksConnected": "QuickBooks bağlandı.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks bağlantısı başarısız oldu. Lütfen tekrar deneyin.",
     "failedToStartTheQuickBooksConnection": "QuickBooks bağlantısı başlatılamadı.",
@@ -734,7 +808,30 @@
     "reconnectQuickBooks": "QuickBooks'u Yeniden Bağlayın",
     "connectToQuickBooks": "QuickBooks'a bağlanın",
     "automaticOnIssue": "Otomatik sorun var",
-    "manual": "Kılavuz"
+    "manual": "Kılavuz",
+    "refreshSettings": "Ayarları yenile",
+    "settingsRefreshed": "QuickBooks ayarları yenilendi.",
+    "failedToRefreshSettings": "QuickBooks ayarları yenilenemedi.",
+    "homeCurrency": "Ana para birimi",
+    "multiCurrency": "Çoklu para birimi",
+    "multiCurrencyUnknown": "Bilinmiyor — kontrol için ayarları yenileyin",
+    "pullPayments": "Ödeme eşitleme",
+    "pullPaymentsDescription": "QuickBooks'ta kaydedilen ödemeleri Breeze faturalarına geri çekin.",
+    "pullPaymentsEnabled": "Ödemeler QuickBooks'tan eşitlenecek",
+    "pullPaymentsDisabled": "Ödemeler artık QuickBooks'tan eşitlenmeyecek",
+    "failedToUpdatePullPayments": "Ödeme eşitleme ayarı güncellenemedi.",
+    "pushPayments": "Ödeme gönderimi",
+    "pushPaymentsDescription": "Breeze'de kaydedilen ödemeleri QuickBooks'a gönder ve iptal edildiklerinde oradan kaldır.",
+    "pushPaymentsEnabled": "Ödemeler QuickBooks'a gönderilecek",
+    "pushPaymentsDisabled": "Ödemeler artık QuickBooks'a gönderilmeyecek",
+    "failedToUpdatePushPayments": "Ödeme gönderimi ayarı güncellenemedi.",
+    "lastPaymentSync": "Son ödeme eşitlemesi",
+    "never": "Hiçbir zaman",
+    "syncNow": "Şimdi eşitle",
+    "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
+    "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
+    "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı — şimdi eşitlemek için Ödeme eşitleme veya Ödeme gönderimi seçeneğini açın.",
+    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
   },
   "securityIntegration": {
     "notConfigured": "Yapılandırılmadı ",
@@ -814,7 +911,11 @@
     "couldNotRefresh": "Stripe hesap bilgileri yenilenemedi.",
     "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
     "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
-    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur."
+    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur.",
+    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin.",
+    "revocationCredentialUnavailable": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi çünkü bunları oluşturan Stripe anahtarı artık kullanılamıyor. Bu bağlantılar Stripe üzerinde hâlâ ödenebilir olabilir — Stripe panonuzdan iptal edin ve faturaları yeniden düzenleyin.",
+    "revocationChargedRepair": "{{count}} çevrimiçi ödeme bağlantısı, Breeze Stripe'tan iptal etmesini istedikten sonra ödendi. Para gerçek — bu ödemeleri mutabık kılın (ve fatura başka bir yolla zaten kapatıldıysa iade edin).",
+    "revocationBlocked": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi — Stripe, kayıtlı anahtarla yapılan isteği reddetti. Yeniden denemek için çalışan bir Stripe anahtarı kaydedin veya bağlantıları Stripe panonuzdan iptal edin."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",

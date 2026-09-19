@@ -88,6 +88,17 @@ func TestBackupResultToCommandResultKeepsBodyOnFailure(t *testing.T) {
 	}
 }
 
+// D20-B: the success path used to run the helper's already-JSON stdout back
+// through tools.NewSuccessResult, which json.Marshal's it a SECOND time. A
+// queue-admission ack the helper sends as the 16-byte text `{"queued":true}`
+// was therefore forwarded as the 24-byte text `"{\"queued\":true}"` — valid
+// JSON, but a JSON STRING, not an object. The server's single JSON.parse of
+// that (routes/backup/mssql.ts, hyperv.ts) yields a plain string, which is
+// exactly the "expected object, received string" 500 proven live against
+// agent 0.112.5 (D20). Stdout must now carry the helper's JSON text VERBATIM,
+// matching the failure path's raw-text encoding — the two branches no longer
+// need different encodings once the server (apps/api's parseAgentJsonStdout)
+// tolerates a double-encoded body from an old agent on its own.
 func TestBackupResultToCommandResultSuccessUnchanged(t *testing.T) {
 	body := `{"status":"completed"}`
 
@@ -100,24 +111,40 @@ func TestBackupResultToCommandResultSuccessUnchanged(t *testing.T) {
 	if got.Status != "completed" {
 		t.Fatalf("expected completed, got %q", got.Status)
 	}
-	if got.Stdout != encodeStdout(t, body) {
-		t.Errorf("success body encoding changed: got %q", got.Stdout)
+	if got.Stdout != body {
+		t.Errorf("success body must be raw JSON text, not double-encoded: got %q, want %q", got.Stdout, body)
 	}
 	if got.Error != "" {
 		t.Errorf("success must carry no error, got %q", got.Error)
 	}
+	// Pin the invariant the server depends on: exactly one parse yields an object.
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got.Stdout), &decoded); err != nil {
+		t.Fatalf("one parse of the success stdout must yield an object: %v", err)
+	}
 }
 
-// The SUCCESS path runs the helper's stdout through json.Marshal
-// (tools.NewSuccessResult), so its wire value is a JSON string literal rather
-// than raw object text. That asymmetry with the failure path is deliberate —
-// see backupResultToCommandResult — so pin it rather than hard-coding escaped
-// literals in the assertion.
-func encodeStdout(t *testing.T, raw string) string {
-	t.Helper()
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("marshal stdout: %v", err)
+// D20-B: a queue-admission/started ack must survive the same hop without
+// gaining a layer of encoding — this is the exact shape
+// agent/cmd/breeze-backup/main.go sends for QueueAsync admission and for the
+// legacy Async started ack.
+func TestBackupResultToCommandResultQueuedAckNotDoubleEncoded(t *testing.T) {
+	ack := `{"queued":true}`
+
+	got := backupResultToCommandResult(backupipc.BackupCommandResult{
+		Success:    true,
+		Stdout:     ack,
+		DurationMs: 1,
+	})
+
+	if got.Stdout != ack {
+		t.Fatalf("queued ack stdout must be raw JSON text: got %q, want %q", got.Stdout, ack)
 	}
-	return string(encoded)
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got.Stdout), &decoded); err != nil {
+		t.Fatalf("one parse of the ack stdout must yield an object: %v", err)
+	}
+	if decoded["queued"] != true {
+		t.Errorf("queued marker lost: %v", decoded)
+	}
 }

@@ -281,6 +281,7 @@ func (s *Shipper) shipLoop() {
 					batch = append(batch, entry)
 					if len(batch) >= defaultMaxBatchSize {
 						s.shipBatch(batch)
+						clear(batch)
 						batch = batch[:0]
 					}
 				default:
@@ -296,12 +297,16 @@ func (s *Shipper) shipLoop() {
 			batch = append(batch, entry)
 			if len(batch) >= defaultMaxBatchSize {
 				s.shipBatch(batch)
+				// Release strings and field maps before reusing the backing array.
+				// shipBatch has finished; any re-buffered entries are value copies.
+				clear(batch)
 				batch = batch[:0]
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
 				s.shipBatch(batch)
+				clear(batch)
 				batch = batch[:0]
 			}
 		}

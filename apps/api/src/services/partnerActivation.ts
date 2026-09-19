@@ -1,6 +1,18 @@
-import { sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { partners } from '../db/schema';
+import {
+  organizationUsers,
+  organizations,
+  partners,
+  partnerUsers,
+  users,
+} from '../db/schema';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+  type Tx as AuthLifecycleTransaction,
+} from './authLifecycle';
 
 /**
  * Partner activation reconciliation (issue #718).
@@ -151,8 +163,8 @@ export async function activatePartnerRow(
   tx: Pick<typeof db, 'update'>,
   partnerId: string,
   now: Date = new Date(),
-): Promise<void> {
-  await tx
+): Promise<boolean> {
+  const activated = await tx
     .update(partners)
     .set({
       status: 'active' as const,
@@ -168,5 +180,78 @@ export async function activatePartnerRow(
       )`,
       updatedAt: now,
     })
-    .where(sql`${partners.id} = ${partnerId} AND ${partners.status} = 'pending'`);
+    .where(sql`${partners.id} = ${partnerId} AND ${partners.status} = 'pending'`)
+    .returning({ id: partners.id });
+  return activated.length === 1;
+}
+
+export interface PartnerActivationEpochSnapshot {
+  userId: string;
+  authEpoch: number;
+  mfaEpoch: number;
+}
+
+/**
+ * Activate a pending tenant without allowing a session minted against its
+ * inactive state to become live after the status flip. Guarded callers already
+ * own the browser-transition lock; legacy callers begin at the user locks.
+ * The helper follows the remaining global order: users, refresh families,
+ * then the route-specific partner row.
+ */
+export async function activatePendingPartnerAndInvalidateSessions(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+  now: Date = new Date(),
+): Promise<Readonly<{
+  activated: boolean;
+  epochs: PartnerActivationEpochSnapshot[];
+}>> {
+  const orgRows = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, partnerId));
+  const partnerMemberships = await tx
+    .select({ userId: partnerUsers.userId })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.partnerId, partnerId));
+  const orgIds = orgRows.map((row) => row.id);
+  const orgMemberships = orgIds.length === 0
+    ? []
+    : await tx
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(inArray(organizationUsers.orgId, orgIds));
+  const userIds = [...new Set([
+    ...partnerMemberships.map((row) => row.userId),
+    ...orgMemberships.map((row) => row.userId),
+  ])].sort();
+
+  if (userIds.length > 0) {
+    const lockedUsers = await tx
+      .select({ id: users.id, authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch })
+      .from(users)
+      .where(inArray(users.id, userIds))
+      .orderBy(users.id)
+      .for('update');
+    if (lockedUsers.length !== userIds.length) {
+      throw new Error('Failed to lock every partner user for activation');
+    }
+
+    await lockActiveRefreshFamiliesForUsers(tx, userIds);
+  }
+
+  if (!(await activatePartnerRow(tx, partnerId, now))) {
+    return { activated: false, epochs: [] };
+  }
+
+  const epochs: PartnerActivationEpochSnapshot[] = [];
+  for (const userId of userIds) {
+    const next = await advanceUserEpochs(tx, userId, { auth: true });
+    epochs.push({ userId, authEpoch: next.authEpoch, mfaEpoch: next.mfaEpoch });
+  }
+  for (const userId of userIds) {
+    await revokeAllRefreshFamilies(tx, userId, 'partner-activated');
+  }
+
+  return { activated: true, epochs };
 }

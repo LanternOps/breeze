@@ -122,6 +122,20 @@ describe('quoteMath (shared)', () => {
   });
 
   describe('deposit math', () => {
+    it('ignores a zero-value recurring device set for acceptance and percent-deposit math', () => {
+      const lines = [
+        line({ unitPrice: '1000.00', taxable: true }),
+        line({ quantity: '0.00', unitPrice: '40.00', recurrence: 'monthly' }),
+      ];
+      const withoutDeviceSet = computeQuoteTotals([lines[0]!], 0.1, { type: 'percent', percent: 30 });
+      const withDeviceSet = computeQuoteTotals(lines, 0.1, { type: 'percent', percent: 30 });
+
+      expect(withDeviceSet.dueOnAcceptanceTotal).toBe(withoutDeviceSet.dueOnAcceptanceTotal);
+      expect(withDeviceSet.depositDueTotal).toBe(withoutDeviceSet.depositDueTotal);
+      expect(validateQuoteDeposit(lines, 0.1, { type: 'percent', percent: 30 }))
+        .toEqual({ ok: true, depositDueTotal: '330.00' });
+    });
+
     it('percent deposit = percent of dueOnAcceptanceTotal (one-time + one-time tax)', () => {
       const lines = [
         line({ unitPrice: '1000.00', taxable: true }),

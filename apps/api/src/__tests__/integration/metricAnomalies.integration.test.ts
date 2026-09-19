@@ -1,11 +1,14 @@
 import './setup';
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { withSystemDbAccessContext } from '../../db';
 import { alerts, devices, metricAnomalies, metricRollups, organizations } from '../../db/schema';
-import { detectMetricAnomaliesRange } from '../../services/metricAnomalies';
+import {
+  METRIC_ANOMALY_LOCK_NAMESPACE,
+  detectMetricAnomaliesRange,
+} from '../../services/metricAnomalies';
 import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -88,8 +91,12 @@ function bucketAt(base: Date, offsetBuckets: number): Date {
   return new Date(base.getTime() + offsetBuckets * RAW_BUCKET_SECONDS * 1000);
 }
 
+// No outer context (#5283): detectMetricAnomaliesRange opens its own
+// system-scoped transaction per stage. Wrapping it here would collapse them
+// back into one ambient transaction and stop this suite exercising the shape
+// that actually ships.
 async function runDetection(orgId: string, from: Date, to: Date): Promise<void> {
-  await withSystemDbAccessContext(() => detectMetricAnomaliesRange({ orgId, from, to }));
+  await detectMetricAnomaliesRange({ orgId, from, to });
 }
 
 async function selectAnomalies(orgId: string, deviceId: string) {
@@ -397,5 +404,155 @@ describe('metric anomalies integration', () => {
     expect(all).toHaveLength(2);
     expect(all.every((a) => a.linkedAlertId === first.alertId)).toBe(true);
     expect(all.every((a) => a.status === 'promoted')).toBe(true);
+  });
+});
+
+// #5283: the production incident was overlapping runs of the same
+// metric_rollups baseline query, one parked in a `Lock` wait for 29+ minutes
+// while another executed. Advisory-lock behaviour cannot be proven with a
+// mocked db — whether a second run BLOCKS or returns is decided by Postgres —
+// so the guard gets a real-database proof here.
+describe('metric anomaly overlap guard (#5283)', () => {
+  let orgA: string;
+  let orgB: string;
+
+  beforeEach(async () => {
+    const partner = await createPartner();
+    orgA = (await createOrganization({ partnerId: partner.id, name: 'Lock Guard Org A' })).id;
+    orgB = (await createOrganization({ partnerId: partner.id, name: 'Lock Guard Org B' })).id;
+    await enableAnomalies(orgA);
+    await enableAnomalies(orgB);
+  });
+
+  const from = new Date('2026-06-18T18:00:00.000Z');
+  const to = new Date('2026-06-18T18:15:00.000Z');
+
+  /**
+   * Hold the org's detection lock on a SEPARATE connection for the duration of
+   * `body`, exactly as an in-flight run would. Advisory locks are scoped to a
+   * session/transaction, not to a role, so this genuinely contends with the
+   * app-pool connection the detector runs on.
+   */
+  async function whileOrgLockHeld<T>(orgId: string, body: () => Promise<T>): Promise<T> {
+    let captured: T;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(${METRIC_ANOMALY_LOCK_NAMESPACE}, hashtext(${orgId}))`,
+      );
+      captured = await body();
+    });
+    return captured!;
+  }
+
+  it('skips the run instead of queueing behind an in-flight run for the same org', async () => {
+    const startedAt = Date.now();
+    const result = await whileOrgLockHeld(orgA, () => detectMetricAnomaliesRange({ orgId: orgA, from, to }));
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result).toMatchObject({ skipped: true, skippedReason: 'locked', statements: 0 });
+    // Stops at the first stage: every later stage takes the same org key.
+    expect(result.stages.map((stage) => `${stage.stage}:${stage.outcome}`)).toEqual(['baseline:locked']);
+    // The load-bearing assertion. `pg_try_advisory_xact_lock` returns rather
+    // than waiting, so the contended run gives its pooled connection straight
+    // back. A blocking acquisition would sit here until the holder commits —
+    // which is precisely the 29-minute hold from the incident.
+    expect(elapsedMs).toBeLessThan(5_000);
+  });
+
+  it('positive control: an unrelated org is not serialised by another org\'s lock', async () => {
+    // Proves the previous test's skip is caused by the ORG key and not by some
+    // blanket refusal — without this, a detector that always reported `locked`
+    // would pass the test above.
+    const result = await whileOrgLockHeld(orgA, () => detectMetricAnomaliesRange({ orgId: orgB, from, to }));
+
+    expect(result.skipped).toBe(false);
+    expect(result.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+    ]);
+  });
+
+  it('releases the lock at the end of every stage, so the next run is unblocked', async () => {
+    // Each stage commits its own transaction (#5283), so nothing is still held
+    // when the run returns. A session-level lock, or one stage leaking its
+    // transaction, would make this second run report `locked`.
+    const first = await detectMetricAnomaliesRange({ orgId: orgA, from, to });
+    const second = await detectMetricAnomaliesRange({ orgId: orgA, from, to });
+
+    expect(first.skipped).toBe(false);
+    expect(second.skipped).toBe(false);
+    expect(second.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+    ]);
+
+    // And no advisory lock survives the run on the app pool.
+    const held = await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_locks
+      WHERE locktype = 'advisory' AND classid = ${METRIC_ANOMALY_LOCK_NAMESPACE}
+    `);
+    expect((held as unknown as Array<{ n: number }>)[0]?.n).toBe(0);
+  });
+
+  it('commits each detection stage separately rather than in one long-lived transaction', async () => {
+    // The compounding in the incident came from all four statements sharing one
+    // transaction: run N+1 waited on run N's *transactionid* for the whole run,
+    // not for the single statement it actually conflicted with.
+    //
+    // Postgres only assigns a transaction id to a transaction that WRITES, so
+    // this counts xids consumed across a run seeded to write in two different
+    // stages (baseline, then the incident collapse). Separate transactions
+    // consume one xid each; a single shared transaction would consume one for
+    // both. `txid_current()` also assigns one per probe, so:
+    //   separate stages -> >= 2 writes + 1 probe = 3
+    //   one shared      ->    1 write  + 1 probe = 2
+    const site = (await createSite({ orgId: orgA, name: 'Txn Split Site' })).id;
+    const device = await insertDevice({ orgId: orgA, siteId: site, hostname: 'txn-split-device' });
+    const anchor = new Date('2026-06-18T18:00:00.000Z');
+    for (let i = 0; i < MIN_BASELINE_BUCKETS + 2; i++) {
+      await insertRollup({
+        orgId: orgA,
+        deviceId: device,
+        sourceTable: 'device_metrics',
+        metricType: 'cpu',
+        metricName: 'cpu_percent',
+        bucketStart: bucketAt(anchor, -(6 + i)),
+        avgValue: 10,
+      });
+    }
+    await insertRollup({
+      orgId: orgA,
+      deviceId: device,
+      sourceTable: 'device_metrics',
+      metricType: 'cpu',
+      metricName: 'cpu_percent',
+      bucketStart: anchor,
+      avgValue: 99,
+    });
+
+    const readTxid = async (): Promise<number> => {
+      const rows = await getTestDb().execute(sql`SELECT txid_current()::text AS "txid"`);
+      return Number((rows as unknown as Array<{ txid: string }>)[0]!.txid);
+    };
+
+    const before = await readTxid();
+    const result = await detectMetricAnomaliesRange({ orgId: orgA, from: anchor, to: bucketAt(anchor, 1) });
+    const after = await readTxid();
+
+    // Guard against a vacuous pass: if the seed stopped producing writes the
+    // xid delta would collapse for the RIGHT reason and hide a real regression.
+    expect(result.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+    ]);
+    expect(await selectAnomaliesByType(orgA, device, 'spike')).toHaveLength(1);
+
+    expect(after - before).toBeGreaterThanOrEqual(3);
   });
 });

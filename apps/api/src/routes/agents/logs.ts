@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
 import { db } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
-import { redactLogFields, redactLogMessage } from '../../services/logRedaction';
+import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
 
 export const logsRoutes = new Hono();
@@ -24,6 +24,28 @@ export const logsRoutes = new Hono();
 //     to ~200 logs/min/agent, which is 5-10x the realistic steady-state rate.
 const LOG_BATCH_MAX_BODY_BYTES = 256 * 1024;
 const LOG_BATCH_TOO_LARGE = 'Log batch too large (max 256KB gzipped)';
+// Match the event-log ingest boundary: modest positive clock skew is useful
+// event evidence, but an agent must not place records arbitrarily far into the
+// future. Receipt time remains the authoritative lifecycle/recency clock.
+const MAX_AGENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
+
+/**
+ * Remove the two server-authored clamp-provenance keys from redacted agent
+ * fields.
+ *
+ * `redactAgentLogFields` redacts *values* but preserves unknown *keys*
+ * verbatim, so without this an agent could ship `timestampClamped: true` /
+ * `originalTimestamp: <anything>` on an ordinary in-window row and forge
+ * provenance the server never wrote. Both keys are stripped unconditionally
+ * here; only the clamp branch in the ingest handler re-adds them.
+ */
+function stripClampProvenance(fields: unknown): unknown {
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return fields;
+  const copy = { ...(fields as Record<string, unknown>) };
+  delete copy.timestampClamped;
+  delete copy.originalTimestamp;
+  return copy;
+}
 
 const agentLogEntrySchema = z.object({
   timestamp: z.string().datetime({ offset: true }),
@@ -106,16 +128,36 @@ logsRoutes.post(
     return c.json({ received: 0 }, 200);
   }
 
-  const rows = data.logs.map((log: any) => ({
-    deviceId: device.id,
-    orgId: device.orgId,
-    timestamp: new Date(log.timestamp),
-    level: log.level,
-    component: log.component,
-    message: redactLogMessage(log.message),
-    fields: log.fields ? redactLogFields(log.fields) : null,
-    agentVersion: log.agentVersion || null,
-  }));
+  const receivedAt = new Date();
+  let timestampClampedCount = 0;
+  const rows = data.logs.map((log: any) => {
+    const reportedTimestamp = new Date(log.timestamp);
+    const timestampClamped = reportedTimestamp.getTime()
+      > receivedAt.getTime() + MAX_AGENT_LOG_FUTURE_SKEW_MS;
+    if (timestampClamped) timestampClampedCount++;
+    const redactedFields = log.fields
+      ? stripClampProvenance(redactAgentLogFields(log.fields))
+      : null;
+
+    return {
+      deviceId: device.id,
+      orgId: device.orgId,
+      timestamp: timestampClamped ? receivedAt : reportedTimestamp,
+      level: log.level,
+      component: log.component,
+      // Ingest and every read path share one rule set — see redactAgentLogRow (#3109).
+      message: redactAgentLogMessage(log.message),
+      fields: timestampClamped
+        ? {
+            ...(redactedFields || {}),
+            // Server-authored keys; the agent's own copies were stripped above.
+            originalTimestamp: log.timestamp,
+            timestampClamped: true,
+          }
+        : redactedFields,
+      agentVersion: log.agentVersion || null,
+    };
+  });
 
   let inserted = 0;
   try {
@@ -144,6 +186,7 @@ logsRoutes.post(
     details: {
       submittedCount: data.logs.length,
       insertedCount: inserted,
+      ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
       ...(partialFailure > 0 ? { partialFailure } : {}),
     },
   });

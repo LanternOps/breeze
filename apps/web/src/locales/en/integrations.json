@@ -42,6 +42,9 @@
       "unknownPermission": "Unknown permission (role {{appRoleId}})",
       "grantsVerifiedAt": "Permissions verified"
     },
+    "upgrade": {
+      "banner": "New Microsoft 365 permissions are required for Conditional Access, Secure Score, and admin role visibility. A Global Administrator must approve them."
+    },
     "actions": {
       "connect": "Connect",
       "reconsent": "Re-consent",
@@ -53,7 +56,32 @@
       "retestSucceeded": "Connection retest completed.",
       "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
       "disconnectFailed": "The connection could not be disconnected.",
-      "disconnectSucceeded": "Breeze connection disconnected."
+      "disconnectSucceeded": "Breeze connection disconnected.",
+      "approveNewPermissions": "Approve new permissions",
+      "upgradeFailed": "Approval for the new permissions could not be started.",
+      "syncNow": "Sync now",
+      "syncFailed": "Tenant sync could not be requested.",
+      "syncSucceeded": "Tenant sync requested."
+    },
+    "sync": {
+      "lastSynced": "Last synced {{relative}}",
+      "counts": "{{users}} users · {{devices}} devices",
+      "never": "Not synced yet",
+      "chips": {
+        "partial": "{{domain}}: partial",
+        "needsConsent": "{{domain}}: needs consent",
+        "throttled": "{{domain}}: throttled",
+        "error": "{{domain}}: error",
+        "unlicensed": "Sign-in activity needs Entra ID P1"
+      },
+      "domains": {
+        "users": "Users",
+        "signin_activity": "Sign-in activity",
+        "intune_devices": "Intune devices",
+        "ca_policies": "Conditional Access",
+        "skus": "Licenses",
+        "secure_score": "Secure Score"
+      }
     },
     "errors": {
       "consent_expired": "The consent session expired. Start consent again.",
@@ -708,7 +736,53 @@
     "customerFailedCount_one": "{{count}} customer failed to import",
     "customerFailedCount_other": "{{count}} customers failed to import"
   },
+  "quickbooksMapping": {
+    "mappingTitle": "Customer and item mapping",
+    "customers": "Customers",
+    "items": "Items",
+    "loadMappings": "Load mappings",
+    "refreshMappings": "Refresh mappings",
+    "suggestedMatch": "Suggested match",
+    "ambiguousMatch": "Ambiguous match",
+    "noMatch": "No match",
+    "linkedMatch": "Linked",
+    "confirmed": "Confirmed",
+    "createNew": "Create new",
+    "unlink": "Unlink",
+    "syncNow": "Sync now",
+    "notSynced": "Not synced",
+    "notSyncedHint": "Confirmed in Breeze, not sent to QuickBooks yet",
+    "inQuickbooks": "In QuickBooks",
+    "syncFailed": "Sync failed",
+    "incomeAccount": "Income account",
+    "incomeAccountRequired": "Set a default income account before creating or syncing items in QuickBooks.",
+    "saveIncomeAccount": "Save income account",
+    "mappingSaved": "Mapping saved.",
+    "entitySynced": "Synced with QuickBooks.",
+    "confirmMatch": "Confirm match",
+    "noProposals": "No records to map yet. Load mappings to get started.",
+    "failedToLoadMappings": "Failed to load QuickBooks mappings.",
+    "failedToLoadIncomeAccounts": "Failed to load income accounts.",
+    "failedToSaveMapping": "Failed to save mapping.",
+    "failedToSyncEntity": "Failed to sync with QuickBooks.",
+    "failedToSaveIncomeAccount": "Failed to save income account.",
+    "incomeAccountSaved": "Income account saved.",
+    "searchPlaceholder": "Search QuickBooks",
+    "searching": "Searching…",
+    "noCandidates": "No QuickBooks matches for that search.",
+    "failedToSearchCandidates": "Failed to search QuickBooks.",
+    "syncedWithTaxVariance": "Synced with tax difference"
+  },
   "quickbooksIntegration": {
+    "owedTitle": "Owed QuickBooks operations",
+    "owedLoadError": "Could not load owed operations. Reload the page to try again.",
+    "owedCount": "Pending operations: {{total}}",
+    "owedEmpty": "No owed operations",
+    "owedDelete": "Delete payment",
+    "owedPush": "Push payment",
+    "owedViewInvoice": "View invoice",
+    "owedInvoiceUnavailable": "Invoice unavailable",
+    "owedAge": "Age: {{minutes}} min",
     "quickbooksConnected": "QuickBooks connected.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks connection failed. Please try again.",
     "failedToStartTheQuickBooksConnection": "Failed to start the QuickBooks connection.",
@@ -734,7 +808,30 @@
     "reconnectQuickBooks": "Reconnect QuickBooks",
     "connectToQuickBooks": "Connect to QuickBooks",
     "automaticOnIssue": "Automatic on issue",
-    "manual": "Manual"
+    "manual": "Manual",
+    "refreshSettings": "Refresh settings",
+    "settingsRefreshed": "QuickBooks settings refreshed.",
+    "failedToRefreshSettings": "Failed to refresh QuickBooks settings.",
+    "homeCurrency": "Home currency",
+    "multiCurrency": "Multi-currency",
+    "multiCurrencyUnknown": "Unknown — refresh settings to check",
+    "pullPayments": "Payment sync",
+    "pullPaymentsDescription": "Pull payments recorded in QuickBooks back into Breeze invoices.",
+    "pullPaymentsEnabled": "Payments will sync from QuickBooks",
+    "pullPaymentsDisabled": "Payments will no longer sync from QuickBooks",
+    "failedToUpdatePullPayments": "Failed to update the payment sync setting.",
+    "pushPayments": "Payment push",
+    "pushPaymentsDescription": "Send payments recorded in Breeze to QuickBooks, and remove them there when they are voided.",
+    "pushPaymentsEnabled": "Payments will be sent to QuickBooks",
+    "pushPaymentsDisabled": "Payments will no longer be sent to QuickBooks",
+    "failedToUpdatePushPayments": "Failed to update the payment push setting.",
+    "lastPaymentSync": "Last payment sync",
+    "never": "Never",
+    "syncNow": "Sync now",
+    "syncNowQueued": "Payment sync queued.",
+    "syncNowNotQueued": "Payment sync could not be queued. Try again shortly.",
+    "syncNowPullDisabled": "Payment sync is turned off for this connection — turn on Payment sync or Payment push to sync now.",
+    "failedToSyncNow": "Failed to start a payment sync."
   },
   "securityIntegration": {
     "notConfigured": "Not configured ",
@@ -814,7 +911,11 @@
     "couldNotRefresh": "Could not refresh Stripe account details.",
     "notCached": "Currency not cached yet — refresh to fetch it from Stripe.",
     "staleCache": "Stripe could not be reached — showing the last cached account details.",
-    "reconnectRequired": "Your stored Stripe key (•••• {{last4}}) no longer works: {{reason}} Paste a new key to reconnect; online payments fail until you do."
+    "reconnectRequired": "Your stored Stripe key (•••• {{last4}}) no longer works: {{reason}} Paste a new key to reconnect; online payments fail until you do.",
+    "reconciliationError": "Payment reversal reconciliation is not running: {{reason}} Replace the Stripe key with one that can read Events.",
+    "revocationCredentialUnavailable": "{{count}} online payment link(s) could not be cancelled because the Stripe key that created them is no longer available. Those links may still be payable on Stripe — cancel them in your Stripe dashboard and reissue the invoices.",
+    "revocationChargedRepair": "{{count}} online payment link(s) were paid after Breeze asked Stripe to cancel them. The money is real — reconcile those payments (and refund if the invoice was already settled another way).",
+    "revocationBlocked": "{{count}} online payment link(s) could not be cancelled — Stripe rejected the request with the key on file. Save a working Stripe key to retry them, or cancel the links in your Stripe dashboard."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Failed to save site mappings.",

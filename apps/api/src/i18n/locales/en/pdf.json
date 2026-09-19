@@ -1,0 +1,37 @@
+{
+  "invoice": {
+    "title": "INVOICE",
+    "from": "FROM",
+    "billTo": "BILL TO",
+    "issued": "Issued: {{date}}",
+    "due": "Due: {{date}}",
+    "description": "DESCRIPTION",
+    "qty": "QTY",
+    "tax": "TAX",
+    "amount": "AMOUNT",
+    "subtotal": "Subtotal",
+    "taxLabel": "Tax",
+    "taxWithRate": "Tax ({{rate}}%)",
+    "total": "Total",
+    "balanceDue": "Balance due",
+    "amountPaid": "Amount paid",
+    "depositDue": "Deposit due",
+    "ticketWork": "Ticket work",
+    "payOnline": "Pay online:"
+  },
+  "quote": {
+    "title": "QUOTE",
+    "from": "FROM",
+    "billTo": "BILL TO",
+    "issued": "Issued: {{date}}",
+    "validUntil": "Valid until: {{date}}",
+    "description": "DESCRIPTION",
+    "qty": "QTY",
+    "amount": "AMOUNT",
+    "subtotal": "Subtotal",
+    "taxLabel": "Tax",
+    "taxWithRate": "Tax ({{rate}}%)",
+    "total": "Total",
+    "viewOnline": "View online:"
+  }
+}

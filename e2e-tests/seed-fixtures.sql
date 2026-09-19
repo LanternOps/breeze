@@ -22,6 +22,7 @@ DECLARE
   v_org_id UUID;
   v_site_id UUID;
   v_user_id UUID;
+  v_portal_user_id UUID;
   v_macos_device_id  UUID := '42fc7de0-48f5-48f2-846b-6dd95924baf9';
   v_windows_device_id UUID := 'e65460f3-413c-4599-a9a6-90ee71bbc4ff';
   v_baseline_win UUID;
@@ -32,7 +33,11 @@ DECLARE
   v_patch_moderate UUID;
   v_vuln_critical UUID;
 BEGIN
-  SELECT id INTO v_org_id FROM organizations LIMIT 1;
+  SELECT o.id INTO v_org_id
+  FROM organizations o
+  WHERE EXISTS (SELECT 1 FROM sites s WHERE s.org_id = o.id)
+  ORDER BY o.created_at
+  LIMIT 1;
   IF v_org_id IS NULL THEN
     RAISE NOTICE 'No organization found — run autoMigrate seed first.';
     RETURN;
@@ -59,14 +64,189 @@ BEGIN
   END IF;
 
   -- ───────────────────────────────────────────────────────────────────
-  -- Devices
+  -- Customer portal visibility + report self-service
+  -- Password hash generated with apps/api/src/services/password.ts for
+  -- E2E_PORTAL_PASSWORD's default, PortalTest123!; plaintext is never stored.
   -- ───────────────────────────────────────────────────────────────────
-  INSERT INTO devices (id, org_id, site_id, agent_id, hostname, display_name, os_type, os_version, architecture, agent_version, status, last_seen_at)
+  SELECT id INTO v_portal_user_id
+  FROM portal_users
+  WHERE org_id = v_org_id AND email = 'portal@breeze.local'
+  ORDER BY created_at
+  LIMIT 1;
+
+  IF v_portal_user_id IS NULL THEN
+    INSERT INTO portal_users (
+      org_id,
+      email,
+      name,
+      password_hash,
+      auth_method,
+      status
+    ) VALUES (
+      v_org_id,
+      'portal@breeze.local',
+      'E2E Portal Customer',
+      '$argon2id$v=19$m=65536,p=4,t=3$q5hKTRQYCXO6bbaMerNeMA$khldmE+NStz0U5xbEZGHFtSp7MVJ8eVmiGMZ0gAj5oE',
+      'password',
+      'active'
+    )
+    RETURNING id INTO v_portal_user_id;
+  ELSE
+    UPDATE portal_users
+    SET name = 'E2E Portal Customer',
+        password_hash = '$argon2id$v=19$m=65536,p=4,t=3$q5hKTRQYCXO6bbaMerNeMA$khldmE+NStz0U5xbEZGHFtSp7MVJ8eVmiGMZ0gAj5oE',
+        auth_method = 'password',
+        status = 'active',
+        updated_at = NOW()
+    WHERE id = v_portal_user_id;
+  END IF;
+
+  -- enable_dashboard is opt-in (column default false), so the Dashboard nav
+  -- entry and /dashboard page only exist for this org because it is set here.
+  -- enable_self_service stays false on purpose: portal-visibility.spec.ts
+  -- asserts the Devices nav entry is absent, which is the fail-open flag's
+  -- only negative case. (Note for portal-lifecycle.spec.ts: this means the
+  -- lifecycle plan table's device row link cannot be click-through-tested
+  -- end to end against this org without breaking that negative case — the
+  -- spec asserts the link's href instead. A second self-service-enabled org
+  -- fixture would be needed for full click-through coverage.)
+  -- enable_lifecycle is this wave's own flag (2026-10-16-181500), read
+  -- alongside enable_reports by /reports/lifecycle's narrower mount.
+  INSERT INTO portal_branding (
+    org_id,
+    enable_dashboard,
+    enable_reports,
+    enable_lifecycle,
+    enable_self_service
+  ) VALUES (
+    v_org_id,
+    true,
+    true,
+    true,
+    false
+  )
+  ON CONFLICT (org_id) DO UPDATE
+    SET enable_dashboard = EXCLUDED.enable_dashboard,
+        enable_reports = EXCLUDED.enable_reports,
+        enable_lifecycle = EXCLUDED.enable_lifecycle,
+        enable_self_service = EXCLUDED.enable_self_service,
+        updated_at = NOW();
+
+  IF v_user_id IS NOT NULL THEN
+    INSERT INTO reports (
+      org_id,
+      name,
+      type,
+      config,
+      schedule,
+      format,
+      created_by,
+      execution_scope_version,
+      execution_scope_kind,
+      execution_scope_site_ids,
+      execution_scope_user_id,
+      execution_scope_fingerprint,
+      execution_scope_captured_at,
+      execution_scope_principal_kind,
+      portal_self_service
+    ) VALUES
+      (
+        v_org_id,
+        'Customer portal — Executive summary',
+        'executive_summary',
+        '{"dateRange":{"preset":"last_30_days"},"filters":{"siteIds":[]}}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
+        NOW(),
+        'user',
+        true
+      ),
+      (
+        v_org_id,
+        'Customer portal — Security & compliance posture',
+        'security_compliance_posture',
+        '{"dateRange":{"preset":"last_30_days"},"sites":[],"windowDays":30,"minPasswordLength":8,"maxLocalAdmins":2,"maxAvDefinitionsAgeDays":7,"maxSecurityStatusAgeDays":30,"includeCis":true,"backupRequired":true}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
+        NOW(),
+        'user',
+        true
+      ),
+      (
+        v_org_id,
+        'Customer portal — Hardware lifecycle',
+        'hardware_lifecycle',
+        '{}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
+        NOW(),
+        'user',
+        true
+      )
+    ON CONFLICT (org_id, type) WHERE portal_self_service = true
+    DO UPDATE SET
+      name = EXCLUDED.name,
+      config = EXCLUDED.config,
+      format = EXCLUDED.format,
+      execution_scope_version = EXCLUDED.execution_scope_version,
+      execution_scope_kind = EXCLUDED.execution_scope_kind,
+      execution_scope_site_ids = EXCLUDED.execution_scope_site_ids,
+      execution_scope_user_id = EXCLUDED.execution_scope_user_id,
+      execution_scope_fingerprint = EXCLUDED.execution_scope_fingerprint,
+      execution_scope_captured_at = EXCLUDED.execution_scope_captured_at,
+      execution_scope_principal_kind = EXCLUDED.execution_scope_principal_kind,
+      updated_at = NOW();
+  END IF;
+
+  -- ───────────────────────────────────────────────────────────────────
+  -- Devices
+  -- Purchase dates give portal-lifecycle.spec.ts a lifecycle-plan-eligible
+  -- row for each device (the report computes replaceBy from purchase_date +
+  -- the default replace-age; nothing else in the e2e suite reads these).
+  -- ───────────────────────────────────────────────────────────────────
+  INSERT INTO devices (id, org_id, site_id, agent_id, hostname, display_name, os_type, os_version, architecture, agent_version, status, last_seen_at, purchase_date, purchase_date_source)
   VALUES
-    (v_macos_device_id,   v_org_id, v_site_id, 'e2e-macos-agent',   'e2e-macos.local',   'E2E macOS Test Device',   'macos',   '14.5',         'arm64', '0.63.0', 'online', NOW()),
-    (v_windows_device_id, v_org_id, v_site_id, 'e2e-windows-agent', 'e2e-windows.local', 'E2E Windows Test Device', 'windows', '11.0.22631',   'amd64', '0.63.0', 'online', NOW())
+    (v_macos_device_id,   v_org_id, v_site_id, 'e2e-macos-agent',   'e2e-macos.local',   'E2E macOS Test Device',   'macos',   '14.5',         'arm64', '0.63.0', 'online', NOW(), '2019-04-01', 'manual'),
+    (v_windows_device_id, v_org_id, v_site_id, 'e2e-windows-agent', 'e2e-windows.local', 'E2E Windows Test Device', 'windows', '11.0.22631',   'amd64', '0.63.0', 'online', NOW(), '2023-01-15', 'vendor')
   ON CONFLICT (id) DO UPDATE
-    SET status = 'online', last_seen_at = NOW(), updated_at = NOW();
+    SET status = 'online', last_seen_at = NOW(), updated_at = NOW(),
+        purchase_date = EXCLUDED.purchase_date, purchase_date_source = EXCLUDED.purchase_date_source;
 
   -- ───────────────────────────────────────────────────────────────────
   -- Device groups
@@ -222,6 +402,24 @@ BEGIN
   UPDATE device_vulnerabilities
     SET status = 'open', accepted_by = NULL, accepted_until = NULL, resolved_at = NULL, mitigation_note = NULL
     WHERE device_id = v_windows_device_id AND vulnerability_id = v_vuln_critical;
+
+  -- ───────────────────────────────────────────────────────────────────
+  -- AI budget alert event (#4388 W03): one fired monthly 80% rung for the
+  -- current UTC calendar month so the AI usage settings page
+  -- (/settings/ai-usage) renders `ai-budget-fired-rungs`. period_key
+  -- computed the same way as aiCostTracker.ts getUsageSummary() (UTC
+  -- `YYYY-MM`) so it's found by the same query. Mirrored in
+  -- apps/api/src/db/seedE2eFixtures.ts.
+  -- ───────────────────────────────────────────────────────────────────
+  INSERT INTO ai_budget_alert_events (org_id, period, period_key, threshold_pct, cap_cents, used_cents, billing_source, delivered_at, recipient_count)
+  SELECT v_org_id, 'monthly', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM'), 80, 10000, 8500, 'platform', NOW(), 1
+  WHERE NOT EXISTS (
+    SELECT 1 FROM ai_budget_alert_events
+    WHERE org_id = v_org_id
+      AND period = 'monthly'
+      AND period_key = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM')
+      AND threshold_pct = 80
+  );
 
   RAISE NOTICE 'E2E fixtures seeded for org %', v_org_id;
 END $$;

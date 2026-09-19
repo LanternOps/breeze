@@ -10,7 +10,7 @@ import {
 } from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
-import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
+import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
 import { insertEmailAuthoredComment } from './emailComments';
 import { captureException, captureMessage } from '../sentry';
@@ -19,6 +19,7 @@ import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
+import { ownOutboundReason } from './loopPrevention';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -133,6 +134,8 @@ export interface ProcessInboundEmailDependencies {
    * (rather than in mutable module state) makes concurrent workers independent.
    */
   afterMailboxGenerationLock?: () => Promise<void>;
+  /** Test-only observation point after a subject-token matcher pins the ticket. */
+  afterTicketMatchLock?: (ticketId: string) => Promise<void>;
 }
 
 export async function processInboundEmail(
@@ -199,6 +202,24 @@ export async function processInboundEmail(
     const inboundDomain = inboundDomainOrNull();
     if (inboundDomain && senderDomain(n.from) === inboundDomain.toLowerCase()) {
       await logInbound(n, partnerId, 'ignored', null, `self-loop: sender is inbound domain ${inboundDomain}`);
+      return;
+    }
+
+    // (1d) OUR OWN OUTBOUND, LOOPING BACK (spec §8.5). The self-loop rule above
+    // keys on the SENDER being on TICKETS_INBOUND_DOMAIN, which a partner-lane
+    // message is not: its From is the partner's own domain. So a notification
+    // that comes back — a contact address forwarding to the partner's support
+    // mailbox, which forwards into Breeze — would sail past it and open a
+    // ticket from our own mail.
+    //
+    // Two message-level signals instead of a sender guess: the X-Breeze-Outbound
+    // header every partner-lane message carries, and a Message-ID that
+    // outboundThreading.ts minted. Both are about the MESSAGE, so a technician
+    // writing in from the partner's support address is unaffected — which is
+    // the case suppressing by sending domain would have broken.
+    const ownOutbound = ownOutboundReason(n, inboundDomain);
+    if (ownOutbound) {
+      await logInbound(n, partnerId, 'ignored', null, `own outbound mail: ${ownOutbound}`);
       return;
     }
 
@@ -333,6 +354,7 @@ export async function processInboundEmail(
     const senderResolver = createSenderResolver(n.from, partnerId);
     const matched = await findTicketInPartner(n, partnerId, senderResolver);
     if (matched) {
+      await dependencies.afterTicketMatchLock?.(matched.id);
       // GUARD (spec §6 layer 2): never act across partners. A partner-scoped match query
       // should already make this impossible, but re-assert before ANY write and throw
       // (-> failed) rather than risk a silent cross-tenant append. `findTicketInPartner`
@@ -384,7 +406,10 @@ export async function processInboundEmail(
     // which is what prevents a thread from forking into N tickets (FIX 2).
     const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber);
+      await dependencies.afterTicketMatchLock?.(closedOriginal.id);
+      // No requester and NO acknowledgement: a reply to a closed ticket spawns a
+      // linked ticket, it is not a fresh submission (spec §5).
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -394,8 +419,19 @@ export async function processInboundEmail(
     // broader domain mapping).
     const sender = await senderResolver.portalUser();
     if (sender) {
-      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
-      await logCreated(n, partnerId, t);
+      // A portal LOGIN. createTicket derives the person from its contact_id —
+      // the inbound path must not resolve a second candidate by address.
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
+      // A login with no contact_id yields a ticket attributed to nobody. Not an
+      // error (the ticket is right, the login's data is incomplete) — a note,
+      // so the gap is visible instead of only showing up as a customer who
+      // cannot see their own ticket in the portal.
+      await logCreated(
+        n,
+        partnerId,
+        t,
+        sender.contactId ? undefined : `requester not linked: portal login ${n.from} has no contact`
+      );
       return;
     }
 
@@ -405,11 +441,23 @@ export async function processInboundEmail(
     // above, so a forged From: @customer.com can't file into the customer's org.
     const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
-      const submittedBy = domainMatch.autoCreateContact
-        ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
-        : undefined;
-      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
-      await logCreated(n, partnerId, t);
+      // `autoCreateContact` is the partner's "onboard people from this domain"
+      // switch. When it is on the sender is an ACCEPTED known sender — which is
+      // what the acknowledgement is gated on — even when the address resolves to
+      // several contacts (a shared mailbox) and no single person can be named.
+      let requester: EmailTicketRequester = null;
+      let requesterNote: string | undefined;
+      const autoresponse = domainMatch.autoCreateContact;
+      if (domainMatch.autoCreateContact) {
+        const resolved = await resolveEmailRequester(domainMatch.orgId, n.from, n.fromName ?? null);
+        if (resolved.kind === 'contact') {
+          requester = { kind: 'contact', contactId: resolved.contactId };
+        } else {
+          requesterNote = unlinkedRequesterNote(resolved.reason, n.from);
+        }
+      }
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
+      await logCreated(n, partnerId, t, requesterNote);
       return;
     }
 
@@ -429,7 +477,9 @@ export async function processInboundEmail(
     // 'triage' — auto-create in the partner's default triage org (only when one
     // is configured; otherwise fall through to quarantine).
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
+      // Unknown sender: no requester and no acknowledgement (we would be
+      // replying to an address the partner never vetted).
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -454,7 +504,7 @@ export async function processInboundEmail(
 // binding, #3643) and the unmatched fallthrough so both reuse the same
 // partner-scoped queries instead of issuing duplicates.
 function createSenderResolver(from: string, partnerId: string): SenderResolver {
-  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null } | null> | undefined;
+  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> | undefined;
   let domainOrgPromise: Promise<{ orgId: string; autoCreateContact: boolean } | null> | undefined;
 
   return {
@@ -472,25 +522,54 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
 // Terminal audit row for a create-path result. `lostClaimTo` is normally null;
 // when set, the row names the ticket that already owned this message-id so the
 // duplicate is reconcilable without reading Sentry (see `warnLostClaim`).
+//
+// `note` (#3258 W03) is the second kind of thing this column carries: an
+// operator-facing observation about a ticket that was nonetheless created
+// correctly — today, why its requester could not be resolved to a person.
+// `ticket_email_inbound.error` is the only durable place that answer can live,
+// and both notes are joined rather than one shadowing the other.
 async function logCreated(
   n: NormalizedInboundEmail,
   partnerId: string,
-  result: { id: string; lostClaimTo: string | null }
+  result: { id: string; lostClaimTo: string | null },
+  note?: string
 ): Promise<void> {
-  await logInbound(
-    n,
-    partnerId,
-    'created',
-    result.id,
-    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : undefined
-  );
+  const notes = [
+    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : null,
+    note ?? null,
+  ].filter((v): v is string => v !== null);
+  await logInbound(n, partnerId, 'created', result.id, notes.length ? notes.join('; ') : undefined);
+}
+
+/**
+ * Operator-facing note for a ticket whose requester could not be pinned to a
+ * person (#3258 W03). Named reasons, not a generic "unresolved": each one has a
+ * different remedy (de-duplicate the shared address; fix the malformed sender;
+ * link the login to a contact), and the audit row is the only place an operator
+ * can read it back.
+ */
+function unlinkedRequesterNote(
+  reason: 'unusable-address' | 'shared-mailbox' | 'vanished',
+  address: string
+): string {
+  switch (reason) {
+    case 'shared-mailbox':
+      // Deliberately not a count: the probe uses limit(2) precisely because
+      // "one or more than one" is the whole decision, and a second COUNT query
+      // on a cold path would buy an exact number nothing acts on.
+      return `requester not linked: several contacts share ${address}`;
+    case 'vanished':
+      return `requester not linked: the contact for ${address} was deleted mid-resolve`;
+    case 'unusable-address':
+      return 'requester not linked: the From address is empty';
+  }
 }
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
-async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null } | null> {
+async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> {
   const rows = await db
-    .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name })
+    .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, contactId: portalUsers.contactId })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
     .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
@@ -521,13 +600,29 @@ function senderDomain(addr: string): string {
   return at >= 0 ? a.slice(at + 1) : '';
 }
 
+/**
+ * Who filed an inbound-email ticket (#3258 W03). Two genuinely different
+ * things, so a discriminated union rather than one nullable id:
+ *  - 'portal'  — a known portal LOGIN; createTicket derives the person from
+ *                that login's contact_id.
+ *  - 'contact' — a person with no login, which is the ordinary email case.
+ * `null` means nobody could be named: an unknown sender routed to triage, a
+ * closed-continuation, or a shared mailbox that matched several contacts. The
+ * ticket still carries the submitter name/email snapshot from the message.
+ */
+export type EmailTicketRequester =
+  | { kind: 'portal'; portalUserId: string }
+  | { kind: 'contact'; contactId: string }
+  | null;
+
 async function createFromEmail(
   n: NormalizedInboundEmail,
   partnerId: string,
   orgId: string,
   carryThreadKey: string | null,
   priorNumber: string | null,
-  submittedBy?: string
+  requester: EmailTicketRequester,
+  autoresponse: boolean
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -546,7 +641,8 @@ async function createFromEmail(
       source: 'email',
       submitterEmail: n.from,
       submitterName: n.fromName,
-      submittedBy
+      submittedBy: requester?.kind === 'portal' ? requester.portalUserId : undefined,
+      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined
     },
     SYSTEM_ACTOR
   );
@@ -608,12 +704,25 @@ async function createFromEmail(
     .where(eq(tickets.id, ticket.id));
 
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
-  // The known-sender create call passes `submittedBy` and a null `priorNumber`; the
-  // closed-continuation call passes `priorNumber` (and no `submittedBy`). Gating on
-  // `submittedBy && !priorNumber` therefore fires the autoresponder exactly once on
-  // the fresh known-sender path and NEVER on the quarantine path (which never calls
-  // createFromEmail) or the closed-continuation path (spec §5).
-  if (submittedBy && !priorNumber) {
+  //
+  // This used to be gated on `submittedBy && !priorNumber`, reading the presence
+  // of a requester as a PROXY for "we accepted a known sender". #3258 W03 broke
+  // that proxy: a shared mailbox is an accepted known sender that resolves to no
+  // single person, and would have silently stopped being acknowledged. The
+  // decision is therefore computed at each call site and passed in. The table it
+  // must reproduce, unchanged:
+  //
+  //   known portal-user sender, fresh          -> true
+  //   mapped domain, autoCreateContact true    -> true  (INCLUDING ambiguous)
+  //   mapped domain, autoCreateContact false   -> false
+  //   closed-continuation (carries priorNumber)-> false
+  //   triage org (unknown sender)              -> false
+  //   quarantine / drop                        -> never reaches createFromEmail
+  //
+  // `!priorNumber` is kept as well: it is the structural half of the gate (a
+  // continuation is never a fresh submission) and belongs to this function, not
+  // to the caller's accept decision.
+  if (autoresponse && !priorNumber) {
     // Read the PERSISTED subject (token-stripped by createTicket) + internalNumber.
     // Never use raw n.subject — it may still carry the [T-...] token.
     const persisted = await db
@@ -693,6 +802,13 @@ async function appendInboundComment(
     authorName,
     content: n.text
   });
+  // This stamp is also the optimistic move fence. The subject-token matcher
+  // holds the ticket row lock through this write; a concurrent cross-org move
+  // that observed the pre-comment ticket must fail its exact row-version CAS
+  // instead of carrying a newly authorized source-org reply into the target.
+  await db.update(tickets)
+    .set({ updatedAt: new Date() })
+    .where(and(eq(tickets.id, ticketId), eq(tickets.partnerId, partnerId)));
   return commentId;
 }
 

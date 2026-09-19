@@ -1,14 +1,22 @@
+import type { RemediationTrigger } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db } from '../db';
-import { devices, organizations, scriptExecutions, scripts, sites } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
+import type { ScriptProposalRow } from '../db/schema/scriptProposals';
+import type { ScriptApprovalMethod } from '@breeze/shared';
+import { sha256Content } from './scriptVersions';
+import type { ProposalDispatchSnapshot } from './scriptProposals/dispatchSnapshot';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
-import { queueCommand } from './commandQueue';
+import { CommandTypes, queueCommand } from './commandQueue';
+import { aiOriginColumns } from './aiOriginColumns';
+import type { AiOriginRef } from '@breeze/shared';
+import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   toAgentCommandFrame,
@@ -16,6 +24,8 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { createAuditLogAsync } from './auditService';
+import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
   describeVariableFailure,
   resolveForOrg,
@@ -46,16 +56,46 @@ import {
  * build → sensitive-field encryption at enqueue → queueCommand (audit +
  * dispatch metrics) → claim / JIT-decrypt / WS send / release.
  *
- * Callers own: auth, site permissions, maintenance windows, batching, and
- * any caller-specific status bookkeeping (e.g. automation's 'queued' state).
+ * Maintenance windows are OWNED HERE (#4919). They used to be "the caller's
+ * job", and three of the four callers never did it — an assistant-, automation-
+ * or auto-migration-initiated script ran on a device where the identical
+ * human-initiated run would have been suppressed. The gate now lives on this
+ * seam so every path inherits it, and it is fail-closed: `bypassMaintenanceWindow`
+ * is the only way past it and no caller sets it today.
+ *
+ * Callers own: auth, site permissions, batching, and any caller-specific
+ * status bookkeeping (e.g. automation's 'queued' state).
  * Inserts run in the caller's ambient DB context — request paths stay under
  * RLS; system-context callers must validate ownership before calling.
  */
+// Matches the fallback actor id commandQueue.ts uses for a non-user dispatch
+// (commandQueue.ts's own system-actor literal) — kept as a local literal
+// rather than importing that module's internal, since this file already
+// avoids depending on commandQueue for anything but queueCommand/CommandTypes.
+const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+
 export type ScriptDispatchSource =
   | { kind: 'saved'; script: typeof scripts.$inferSelect; automationRunId?: string | null }
-  | { kind: 'raw'; content: string; language: string; provenance: string };
+  | { kind: 'raw'; content: string; language: string; provenance: string }
+  // AI-authored, reviewed, immutable content. NOT a hidden library script
+  // (spec D11): a phantom `scripts` row created only to satisfy the FK would
+  // contradict D5's "promotion is an explicit human action after a verified
+  // run" and would pollute the library with one-offs.
+  | { kind: 'proposal'; proposal: ScriptProposalRow; snapshot: ProposalDispatchSnapshot };
+
+/** Written onto the execution row so "who authorised this, and on what evidence" survives erasure. */
+export interface ScriptDispatchProvenance {
+  scriptVersionId?: string | null;
+  reviewId?: string | null;
+  approvedBy?: string | null;
+  approvalMethod?: ScriptApprovalMethod | null;
+  reviewRiskTier?: string | null;
+  reviewSummary?: string | null;
+}
 
 export type DispatchScriptInput = {
+  /** Recorded cause; independent of triggerType. */
+  trigger?: RemediationTrigger;
   // `hostname`, `siteId`, and `customFields` are carried for #3409 PR3's
   // sourced parameters: a `deviceCustomField` binding reads `customFields`
   // and the `builtin` source reads device/site/org properties. Nothing in
@@ -71,19 +111,61 @@ export type DispatchScriptInput = {
   >;
   source: ScriptDispatchSource;
   parameters?: Record<string, unknown>;
-  triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';
+  // 'monitor' (#5291 W04): a diagnostic run dispatched by monitorScriptWorker
+  // for a `script` monitor's own probe.
+  triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation' | 'monitor';
   triggeredBy?: string | null;
   createdBy?: string | null;
   runAs?: 'system' | 'user' | 'elevated';
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
-  requireOnline?: boolean;
+  /**
+   * #5291 W04 — the `script` monitor this dispatch is a probe for. Stamped
+   * onto `script_executions.monitor_id` so the scriptMonitor condition
+   * handler can find its own run history. Set only by monitorScriptWorker
+   * (paired with `triggerType: 'monitor'`); every other caller leaves it
+   * unset and the row gets NULL.
+   */
+  monitorId?: string;
+  /**
+   * #5128 — explicit offline policy. Omit to take the registry default for
+   * `script` (queue, standard TTL), which is what manual Run Script has always
+   * done in practice.
+   */
+  offlinePolicy?: OfflinePolicy;
+  /** AI script authoring: review/approval evidence stamped on the execution row. */
+  provenance?: ScriptDispatchProvenance;
   // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
   // see tenantVariableResolution.ts. Required only when `source.kind ===
   // 'saved'` and the script content actually contains a {{var.*}} token; the
   // common token-free path never needs one.
   variableScope?: TenantVariableScope;
+  /**
+   * #4919 — skip the device maintenance-window gate for this dispatch.
+   *
+   * NO caller sets this today, and the default (`false`) is what makes every
+   * path at least as strict as the human `POST /scripts/:id/execute` path has
+   * always been. It exists so a future per-automation "ignore maintenance
+   * windows" option has a seam to land on that is an explicit, greppable
+   * opt-in rather than a fourth path that quietly never checked.
+   */
+  bypassMaintenanceWindow?: boolean;
+  /**
+   * #5022 W01 — who DECIDED this run, when an AI surface did. Stamped onto
+   * BOTH the `script_executions` row and the `device_commands` row this
+   * dispatch queues. Do not hand-thread it: AI callers go through
+   * `services/aiDispatch.ts`, whose signatures make it mandatory.
+   */
+  aiOrigin?: AiOriginRef;
+  /**
+   * #5022 W01 — the AGENT principal's own id (an `ai_agents.id`), used as the
+   * audit row's `actor_id` when `aiOrigin.kind === 'ai_agent'`. Supplied by the
+   * AI dispatch adapter from `auth.user.id`; `audit_logs.actor_id` has no FK to
+   * `users`, so an agent id is a legal value there (unlike
+   * `device_commands.created_by`).
+   */
+  principalActorId?: string | null;
 };
 
 export type DispatchScriptResult =
@@ -92,6 +174,12 @@ export type DispatchScriptResult =
       commandId: string;
       executionId: string | null;
       delivered: boolean;
+      /**
+       * #5128 — the instant after which the command expires undelivered. For a
+       * queued (offline) dispatch this is the honest answer to "how long will
+       * this wait?"; the UI copy renders it as the expiry date.
+       */
+      deliverBy: Date | null;
       // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to
@@ -116,12 +204,39 @@ export type DispatchScriptResult =
       // action is validated without consulting the referenced script's
       // definitions and so literally cannot pre-validate against a binding.
       ignoredParameters: string[];
+      // The run context this dispatch RESOLVED to — `input.runAs` when the
+      // caller overrode it, otherwise the saved script default (#4888). One
+      // source of truth for every caller that has to report or echo what
+      // actually ran: recomputing `input.runAs ?? script.runAs` at the call
+      // site is how a UI ends up disagreeing with the payload it sent.
+      runAs: 'system' | 'user' | 'elevated';
+      /** The Windows session a `runAs: 'user'` dispatch was pinned to, if any. */
+      targetSessionId: number | null;
     }
   | {
       ok: false;
       code:
         | 'device_decommissioned'
         | 'device_offline'
+        // #4919 — an active maintenance window with `suppressScripts`. The
+        // operator's own schedule: every caller records this as a SKIP, keeps
+        // the run green, and does not retry now.
+        | 'maintenance_suppressed'
+        // #4919 — the maintenance check could not be EVALUATED (the config
+        // resolve threw). We still refuse — fail-closed — but this is a fault
+        // in a safety dependency, not a policy decision, and it must not be
+        // reported as a scheduled skip.
+        //
+        // It is a separate code rather than a field on `maintenance_suppressed`
+        // BECAUSE of how callers are written: each one tests
+        // `code === 'maintenance_suppressed'` for its skip branch and lets
+        // everything else fall through to its existing failure handling. A
+        // caller that never learns this code therefore treats it as a failure
+        // — which is the correct, conservative outcome. Folding both into one
+        // code had the opposite failure mode: a fleet-wide maintenance-check
+        // outage rendered as green automation runs with zero on-failure
+        // notifications.
+        | 'maintenance_check_failed'
         | 'os_mismatch'
         | 'org_mismatch'
         | 'insert_failed'
@@ -182,7 +297,31 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
-  if (input.requireOnline) {
+  // #4919 — before the liveness read and before any row is written. Ordered
+  // ahead of the offline gate deliberately: "we would not have run this
+  // anyway" is the more useful answer than "the device is offline", and it
+  // stays the reported reason whatever the device's status happens to be.
+  if (!input.bypassMaintenanceWindow) {
+    const maintenance = await checkScriptMaintenanceSuppression(device.id);
+    if (maintenance.suppressed) {
+      // The gate's `reason` is carried through as the CODE, not flattened into
+      // free text: callers branch on `code` and never parse `error`, so a
+      // discriminator that survives only in the message reaches no decision.
+      return {
+        ok: false,
+        code: maintenance.reason === 'check_failed' ? 'maintenance_check_failed' : 'maintenance_suppressed',
+        error: maintenance.message,
+      };
+    }
+  }
+
+  const offlinePolicy: OfflinePolicy =
+    input.offlinePolicy ?? defaultOfflinePolicy(CommandTypes.SCRIPT);
+  // A `reject` row is only created against a device we just observed online, so
+  // it gets the short race grace rather than a queue window.
+  const deliverBy = deliverByFor(offlinePolicy);
+
+  if (offlinePolicy.kind === 'reject') {
     // Re-read live status rather than trusting `device.status` (the caller's
     // snapshot). Automation fleet runs snapshot every target device ONCE at
     // run start (automationRuntime.ts:1712/2269) and can dispatch minutes
@@ -191,7 +330,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // (commandQueue.ts:650), which re-selected `devices.status` fresh on
     // every dispatch — a deleted test once pinned the opposite contract
     // ("must NOT pre-filter on it") for this codepath, which this restores.
-    // Only requireOnline gets the extra query: manual/route dispatch
+    // Only a `reject` policy gets the extra query: manual/route dispatch
     // deliberately queues offline devices, so no live read runs for it.
     const [liveDevice] = await db
       .select({ status: devices.status })
@@ -223,11 +362,42 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   }
 
   const parameters = input.parameters ?? {};
-  const language = source.kind === 'saved' ? source.script.language : source.language;
-  let content = source.kind === 'saved' ? source.script.content : source.content;
-  const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
-  const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
-  const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+  // The payload SHAPE is identical for every source kind — handlers_script.go
+  // receives the same fields, so the Go agent is untouched by proposals.
+  const language = source.kind === 'saved' ? source.script.language
+    : source.kind === 'proposal' ? source.proposal.language
+      : source.language;
+  let content = source.kind === 'saved' ? source.script.content
+    : source.kind === 'proposal' ? source.proposal.content
+      : source.content;
+  const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs
+    : source.kind === 'proposal' ? source.proposal.runAs
+      : 'system');
+  const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds
+    : source.kind === 'proposal' ? source.proposal.timeoutSeconds
+      : 300);
+  const payloadScriptId = source.kind === 'saved' ? source.script.id
+    : source.kind === 'proposal' ? `proposal:${source.proposal.id}`
+      : source.provenance;
+  // #5129 — the agent STRICT-pattern descriptions a human acknowledged on the
+  // script record. Server-decided and delivered over the authenticated command
+  // channel; the agent never supplies it.
+  //
+  // A `raw` source has no script record and therefore no acknowledgement, so
+  // ad-hoc content (the automation `execute_command` action, remediation
+  // suggestions) keeps the pre-#5129 behaviour exactly: any Strict match is
+  // refused on the device. That is deliberate — there is no human decision on
+  // file for content that exists only for the duration of one dispatch.
+  //
+  // W03 (#5612): a `proposal` source carries the set the APPROVER ticked on
+  // the card, resolved server-side as (submitted ∩ strict_hits) at decide time
+  // (services/approvals/strictAcknowledgement.ts) and persisted on
+  // script_proposals.acknowledged_patterns. Same wire field, so the Go agent
+  // is unchanged.
+  const acknowledgedSecurityPatterns =
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? [])
+    : source.kind === 'proposal' ? (source.proposal.acknowledgedPatterns ?? [])
+    : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so
@@ -332,18 +502,96 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
+  // #3826 Wave 4A Task 3: agent principals reach dispatch through the SAME
+  // handlers humans use (an `ai_agent` AuthContext's `auth.user.id` is the
+  // agent's `ai_agents.id`, not a `users.id` — see
+  // services/aiAgents/agentAuthContext.ts). Both `triggeredBy` (inserted
+  // below into `script_executions.triggered_by`, FK -> users.id,
+  // schema/scripts.ts:126) and `createdBy` (forwarded to queueCommand, whose
+  // `device_commands.created_by` is the SAME FK shape) would otherwise die on
+  // a 23503 the first time an agent-released run reaches here. Mirrors the
+  // shipped `commandQueue.ts:855-889` probe precedent: one indexed PK lookup
+  // on whichever id is present, run inside `withSystemDbAccessContext` (same
+  // as the precedent) since `users` is an RLS-forced dual-axis table and a
+  // contextless read DENIES rather than bypassing — any id that isn't a
+  // users row degrades to NULL on both columns rather than aborting the
+  // dispatch.
+  //
+  // Single probe for both columns: every real caller passes the SAME id for
+  // triggeredBy and createdBy (or supplies only one — automation's raw
+  // command action has no execution row and so no triggeredBy at all), so
+  // one lookup on whichever is present settles both writes. `createdBy` is
+  // preferred as the probe candidate since it is the one that always reaches
+  // queueCommand.
+  //
+  // #4299: the probe must ESCAPE the caller's context before opening the
+  // system one. `withDbAccessContext` short-circuits when a store already
+  // exists, so `withSystemDbAccessContext` on its own is a no-op inside a
+  // request — the "system" probe silently inherits the caller's scope. Under
+  // the org-scoped, user-less context `dbAccessContextFromAuth` builds for an
+  // `ai_agent` principal, a partner-level human (`users.org_id IS NULL`)
+  // matches NO branch of the RLS SELECT policy on `users` (partner access is
+  // not granted to an org-scoped caller, the org branch is skipped on a NULL
+  // `org_id`, and `breeze_current_user_id()` is null), so the probe reads zero
+  // rows and degrades a REAL human to NULL on both columns. This path is
+  // FK-safe, so that damage is silent — no 23503, just attribution quietly
+  // lost. `runOutsideDbContext` clears both stores, which is what lets the
+  // nested `withSystemDbAccessContext` open a genuinely fresh system-scoped
+  // transaction. Mirrors the fix shipped for `resolveCommandCreatedBy` in
+  // commandQueue.ts (#4292); note the directly-imported `runOutsideDbContext`
+  // is used, never `db.runOutsideDbContext` (the `db` proxy delegates to the
+  // active transaction, which has no such method).
+  const actorCandidateId = input.createdBy ?? input.triggeredBy ?? null;
+  const actorIsRealUser = actorCandidateId
+    ? await runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          const [userRow] = await db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.id, actorCandidateId))
+            .limit(1);
+          return Boolean(userRow);
+        }),
+      )
+    : true;
+  const safeTriggeredBy = actorIsRealUser ? input.triggeredBy ?? null : null;
+  const safeCreatedBy = actorIsRealUser ? input.createdBy ?? null : null;
+  // Attribution for a degraded id survives in the execution record's
+  // `parameters` sidecar (below) — never on the users-FK column itself.
+  const degradedActorId = actorIsRealUser ? null : actorCandidateId;
+  if (degradedActorId) {
+    // #5022 W01: the mirror of `resolveCommandCreatedBy`'s degrade warning.
+    // The probe is right to degrade (these columns are users FKs), but the
+    // drop used to be observable only in the `$actor` sidecar inside the
+    // execution's `parameters` jsonb. Log it once so a lane that loses the
+    // sidecar too is visible in Postgres/app logs rather than only in a row
+    // nobody reads.
+    const hasAiOrigin = Boolean(input.aiOrigin);
+    console.warn('[scriptDispatch] triggered_by/created_by degraded to NULL: actor is not a users row', {
+      degradedActorId,
+      deviceId: device.id,
+      hasAiOrigin,
+      aiInitiatorKind: input.aiOrigin?.kind ?? null,
+    });
+    // `hasAiOrigin: false` means this is NOT the expected ai_agent/synthetic-
+    // principal degrade — mirrors resolveCommandCreatedBy's own branch in
+    // commandQueue.ts. A plain user id that does not resolve to a users row
+    // is anomalous enough to want triage, not just a log line.
+    if (!hasAiOrigin) {
+      captureException(
+        new Error('[scriptDispatch] triggered_by/created_by degraded to NULL for a non-AI dispatch: candidate actor id does not resolve to a users row'),
+      );
+    }
+  }
+
   let executionId: string | null = null;
-  if (source.kind === 'saved') {
-    // Child rows always take the DEVICE's org (partner-wide fan-out rule).
+  if (source.kind === 'saved' || source.kind === 'proposal') {
     const [execution] = await db
       .insert(scriptExecutions)
-      .values({
-        scriptId: source.script.id,
-        deviceId: device.id,
-        orgId: device.orgId,
-        triggeredBy: input.triggeredBy ?? null,
-        triggerType: input.triggerType ?? 'manual',
-        ...(source.automationRunId ? { automationRunId: source.automationRunId } : {}),
+      .values(buildExecutionValues({
+        device,
+        source,
+        runAs,
         // #3409 PR3 P4: the CALLER's raw parameters, never the resolved map.
         // A resolved bound value must not be persisted — in PR4 that would
         // mean writing a resolved SECRET into execution history, exactly the
@@ -352,9 +600,15 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // (`{key, source, variableId?, ownerScope?, version?}`), so history
         // can answer "which variable fed this run" without carrying what it
         // was worth.
-        parameters: buildExecutionParameters(parameters, parameterBindings),
-        status: 'pending',
-      })
+        parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
+        triggerType: input.triggerType,
+        trigger: input.trigger,
+        safeTriggeredBy,
+        targetSessionId: input.targetSessionId ?? null,
+        provenance: input.provenance,
+        aiOrigin: input.aiOrigin,
+        monitorId: input.monitorId,
+      }) as typeof scriptExecutions.$inferInsert)
       .returning({ id: scriptExecutions.id });
     if (!execution) {
       return { ok: false, code: 'insert_failed', error: 'Failed to create execution' };
@@ -437,11 +691,35 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(hasSecrets ? { secretEnv } : {}),
       timeoutSeconds,
       runAs,
+      // #5129. Omitted when empty so the wire stays identical to pre-#5129 for
+      // every script that acknowledges nothing — and an absent key is what the
+      // agent already treats as fail-closed.
+      ...(acknowledgedSecurityPatterns.length > 0 ? { acknowledgedSecurityPatterns } : {}),
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
-    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined, {
+    command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
       commandId: reservedCommandId,
+      // #5128: the DELIVERY deadline. Before this, a script queued for an
+      // offline laptop was reaped after ~10 min by its own 300 s EXECUTION
+      // timeout, even though the UI promised "the run will wait until it
+      // reconnects".
+      deliverBy,
+      submittedOrgId: device.orgId,
+      // #5022 W01: the script's own command row carries the origin too, so a
+      // reader of device_commands alone can still answer "who decided this" --
+      // but NOT a second audit row, ONLY when the `ai.script.executed` write
+      // below will actually fire. That write is gated on `executionId`
+      // (`source.kind === 'saved' || 'proposal'`); a `source.kind === 'raw'`
+      // dispatch never gets an execution row, so suppressing here
+      // unconditionally would leave it with ZERO `ai.` audit rows, breaking
+      // the one-`ai.`-row-per-mutation invariant W02's Overview count
+      // depends on. Fall back to commandQueue's own `ai.command.executed`
+      // write for that case by only suppressing when we know the other write
+      // will happen.
+      ...(input.aiOrigin
+        ? { aiOrigin: input.aiOrigin, suppressAiCommandAudit: Boolean(executionId) }
+        : {}),
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -465,7 +743,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     if (claimed) {
       // #3409 PR4c-2: the immediate-send path claims the command itself and
       // hands it straight to the WS, bypassing
-      // `decryptClaimedCommandsForDelivery` — so the claim-time gate has to
+      // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to
       // run HERE too, or a device whose agent lost the capability between the
       // preflight above and this claim would receive the script with the
       // credential unset. Only the secret-bearing path pays for it.
@@ -561,13 +839,82 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
+  // #5022 / W05: an AI-authored (proposal-backed) run writes its own audit
+  // row here, sourced ONLY from the same `provenance` snapshot that
+  // `buildExecutionValues` just wrote onto this execution's
+  // approval_method/review_risk_tier/review_summary columns above (line
+  // ~855) — never a live join to script_proposals, and deliberately not a
+  // re-read of script_executions either (that would just re-fetch the same
+  // values this function already holds, and would collide with every
+  // existing proposal-dispatch test's own `db.select` mock). This is why the
+  // device activity feed that reads this row back (W05 Task 3) survives
+  // erasure of the source proposal. Fire-and-forget like every other
+  // createAuditLogAsync caller: a lost audit row must never fail the dispatch
+  // that already succeeded.
+  // #5022 W01: the gate is widened from "proposal-backed" to "proposal-backed
+  // OR AI-initiated", so an AI-run LIBRARY script is audited too -- the case
+  // that made an assistant-run saved script indistinguishable from a human one
+  // on the device page.
+  if (executionId && (source.kind === 'proposal' || input.aiOrigin)) {
+    // Actor type and id BOTH derive from the AUTHENTICATED PRINCIPAL, never
+    // from authorship. (#5022 W01: the previous version read actorType off
+    // source.proposal.authorKind while actorId came from the invoker, so an
+    // AI-AUTHORED script hand-run by a human wrote actor_type='ai_agent'
+    // against a HUMAN user id.) Authorship is a separate fact and now lives in
+    // `details.authorKind`.
+    const principalIsAgent = input.aiOrigin?.kind === 'ai_agent';
+    const auditActorType = principalIsAgent ? ('ai_agent' as const) : ('user' as const);
+    const auditActorId = principalIsAgent
+      ? (input.principalActorId ?? SYSTEM_ACTOR_ID)
+      : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
+    void createAuditLogAsync({
+      trigger: input.trigger,
+      orgId: device.orgId,
+      actorType: auditActorType,
+      actorId: auditActorId,
+      action: 'ai.script.executed',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      initiatedBy: 'ai',
+      result: 'dispatched',
+      details: {
+        executionId,
+        commandId: command.id,
+        proposalId: source.kind === 'proposal' ? source.proposal.id : null,
+        sourceKind: source.kind === 'proposal' ? 'proposal' : 'library',
+        // Authorship — who WROTE the script — kept, but as its own field
+        // rather than laundered into actor_type.
+        authorKind: source.kind === 'proposal' ? source.proposal.authorKind : null,
+        // `resourceId` is already device.id (what the events feed's resource
+        // arm indexes); `deviceId` is set as well so the feed's details arm can
+        // also find it.
+        deviceId: device.id,
+        ...aiOriginColumns(input.aiOrigin),
+        approvalMethod: input.provenance?.approvalMethod ?? null,
+        reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
+        reviewSummary: input.provenance?.reviewSummary ?? null,
+      },
+    });
+  }
+
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
+
+// #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade
+// above. Same rationale as EXECUTION_PARAMETER_BINDINGS_KEY (no migration, no
+// new column) — `$` can never start a real parameter name, so this can never
+// collide with caller-supplied data. Written ONLY when the probe actually
+// degraded an id, so a real-user dispatch never gains this key.
+const EXECUTION_PARAMETER_ACTOR_KEY = '$actor';
 
 /**
  * The value written to `script_executions.parameters` — the caller's raw
  * parameters, plus the binding descriptors under a reserved `$bindings` key
- * when there are any (#3409 PR3 P4).
+ * when there are any (#3409 PR3 P4), plus a reserved `$actor` key when the
+ * users-FK probe above degraded `triggeredBy`/`createdBy` to NULL (#3826 Wave
+ * 4A Task 3) — attribution for the agent that actually ran this survives here
+ * instead of on the users-FK column.
  *
  * The descriptors ride INSIDE the existing jsonb rather than in a new sibling
  * column because PR3 ships no migration: `script_executions` carries an
@@ -576,15 +923,107 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
  * bugs on five times), and a `jsonb` column would land in `excludedOpen`
  * anyway. `$` can never start a parameter name
  * (`SCRIPT_PARAMETER_KEY_PATTERN`), so the reserved key cannot collide with a
- * real one; when there are no bindings the stored value is byte-identical to
- * what PR2 wrote.
+ * real one; when there are no bindings and no degraded actor, the stored
+ * value is byte-identical to what PR2 wrote.
  */
+/**
+ * The `script_executions` values for one dispatch.
+ *
+ * Snapshot columns (`language`, `timeout_seconds`, `content_digest`) are
+ * written for BOTH kinds, not just proposals. That is the whole point of the
+ * change: the stale reaper INNER JOINed `scripts` for `timeout_seconds`
+ * (staleCommandReaper.ts), so a parentless row was previously impossible.
+ * Filling the snapshot for library runs too means the readers can stop joining
+ * altogether instead of carrying two code paths forever.
+ */
+function buildExecutionValues(input: {
+  device: { id: string; orgId: string };
+  source: ScriptDispatchSource;
+  runAs: 'system' | 'user' | 'elevated';
+  /** Already shaped by buildExecutionParameters (raw caller map + sidecar). */
+  parameters?: unknown;
+  triggerType?: DispatchScriptInput['triggerType'];
+  trigger?: RemediationTrigger;
+  safeTriggeredBy?: string | null;
+  targetSessionId?: number | null;
+  provenance?: ScriptDispatchProvenance;
+  aiOrigin?: AiOriginRef;
+  monitorId?: string;
+}): Record<string, unknown> {
+  const { device, source, provenance } = input;
+  const isProposal = source.kind === 'proposal';
+  const script = source.kind === 'saved' ? source.script : null;
+  // The head version id for a library run, so the execution says exactly
+  // which immutable definition ran (W01a cut it). Resolved as a subquery on
+  // the row's own `scripts.version` (the same predicate as headScriptVersion)
+  // rather than a second round trip before the insert.
+  const headVersionId = script
+    ? sql`(SELECT sv.id FROM script_versions sv WHERE sv.script_id = ${script.id} AND sv.version = ${script.version ?? null})`
+    : null;
+
+  return {
+    sourceKind: isProposal ? 'proposal' : 'library',
+    scriptId: script?.id ?? null,
+    proposalId: isProposal ? source.proposal.id : null,
+    // Child rows always take the DEVICE's org (partner-wide fan-out rule).
+    deviceId: device.id,
+    orgId: device.orgId,
+    triggeredBy: input.safeTriggeredBy ?? null,
+    triggerType: input.triggerType ?? 'manual',
+    triggerKind: input.trigger?.kind ?? null,
+    triggerRefId: input.trigger?.refId ?? null,
+    triggerKey: input.trigger?.key ?? null,
+    // #5291 W04 — the `script` monitor this run is a probe for, or NULL for
+    // every non-monitor dispatch.
+    monitorId: input.monitorId ?? null,
+    ...(source.kind === 'saved' && source.automationRunId
+      ? { automationRunId: source.automationRunId }
+      : {}),
+    // A proposal has no parameter contract (its digest pins literal content),
+    // so nothing is ever persisted for it.
+    parameters: isProposal ? null : (input.parameters ?? null),
+    // #4888 — stamp the RESOLVED run context onto the execution row so
+    // history can answer "SYSTEM or the logged-in user?" without reading
+    // the (sanitised, independently reaped) command payload.
+    runAs: input.runAs,
+    targetSessionId: input.targetSessionId ?? null,
+    status: 'pending',
+    // --- snapshot ---
+    language: isProposal ? source.proposal.language : script!.language,
+    timeoutSeconds: isProposal ? source.proposal.timeoutSeconds : script!.timeoutSeconds,
+    contentDigest: isProposal ? source.proposal.contentDigest : sha256Content(script!.content),
+    // --- provenance ---
+    scriptVersionId: provenance?.scriptVersionId ?? headVersionId,
+    reviewId: provenance?.reviewId ?? null,
+    approvedBy: provenance?.approvedBy ?? null,
+    approvalMethod: provenance?.approvalMethod ?? null,
+    reviewRiskTier: provenance?.reviewRiskTier ?? null,
+    reviewSummary: provenance?.reviewSummary?.slice(0, 600) ?? null,
+    // --- AI origin attribution (#5022 W01) ---
+    // Always all three keys, explicitly NULL when absent: an omitted key would
+    // be dropped by Drizzle, which is "unattributed by omission".
+    ...aiOriginColumns(input.aiOrigin),
+  };
+}
+
+export const __testOnly = { buildExecutionValues };
+
 function buildExecutionParameters(
   callerParameters: Record<string, unknown>,
   bindings: ScriptParameterBindingDescriptor[],
+  degradedActorId: string | null,
 ): Record<string, unknown> {
-  if (bindings.length === 0) return callerParameters;
-  return { ...callerParameters, [EXECUTION_PARAMETER_BINDINGS_KEY]: bindings };
+  let result = callerParameters;
+  if (bindings.length > 0) {
+    result = { ...result, [EXECUTION_PARAMETER_BINDINGS_KEY]: bindings };
+  }
+  if (degradedActorId) {
+    result = {
+      ...result,
+      [EXECUTION_PARAMETER_ACTOR_KEY]: { actorType: 'ai_agent', actorId: degradedActorId },
+    };
+  }
+  return result;
 }
 
 /**

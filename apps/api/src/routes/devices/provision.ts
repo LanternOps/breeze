@@ -1,10 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { db } from '../../db';
-import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { devices, organizations, sites, partners, provisionCredentialHandles } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { devices, organizations, sites, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
   requireMfa,
@@ -18,12 +17,18 @@ import { captureException } from '../../services/sentry';
 import { provisionDeviceSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from '../agents/helpers';
 import { getActiveTrustKeyset } from '../../services/manifestSigning';
-import { stripSensitiveDeviceFields } from './helpers';
+import { projectPublicDevice } from './helpers';
 import {
   PROVISION_HANDLE_TOKEN_PATTERN,
   generateProvisionHandleToken,
   provisionHandleExpiresAt,
 } from '../../services/provisionCredentialHandle';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
+import {
+  admitPartnerDeviceCapacity,
+  PartnerDeviceCapacityError,
+  type PartnerDeviceCapacityResult,
+} from '../../services/partnerDeviceCapacity';
 
 export const provisionRoutes = new Hono();
 
@@ -153,42 +158,13 @@ provisionRoutes.post(
     // lgtm[js/insufficient-password-hash]
     const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
 
-    // ----------- partner device-limit check, then insert -----------
-    //
-    // The cap check runs BEFORE the insert transaction opens, not inside it.
-    //
-    // WHY IT MOVED (#2822): the `partners` read must run in a SYSTEM context.
-    // Inside `db.transaction` that meant `runOutsideDbContext` opening a SECOND
-    // pooled connection while the insert transaction still held the first
-    // (runOutsideDbContext does not close the outer transaction). Hoisting it
-    // out removes the double-hold entirely — nothing between the org lookup and
-    // the cap check writes anything, so there is nothing to keep in the
-    // transaction.
-    //
-    // WHY IT NEEDS THE SYSTEM CONTEXT AT ALL: this route is
-    // requireScope('organization','partner','system'), and for an ORG-scoped
-    // caller accessiblePartnerIds = [], so under the request's own RLS context
-    //   - the `partners` read returned zero rows, `maxDevices` collapsed to
-    //     null, and the whole cap block was skipped — an org admin could
-    //     provision past the partner's max_devices without limit, while the
-    //     identical call from a partner admin was capped;
-    //   - the `partnerOrgIds` subquery over `organizations` only saw the
-    //     caller's own accessible orgs, so even once a cap resolved, the fleet
-    //     count under-reported and the cap under-enforced.
-    // (enrollment.ts has always been correct here because it runs its whole
-    // flow inside withSystemDbAccessContext.)
-    //
-    // The org row itself is still read under the CALLER'S context, so RLS
-    // decides which org is legible; `org.partnerId` therefore comes from a row
-    // the caller could already see and cannot be aimed at a foreign partner.
-    //
-    // NOT TOCTOU-SAFE, and never was: the count takes no lock, so two
-    // concurrent provisions at the cap boundary can both observe
-    // `activeCount === maxDevices - 1` and both insert. That race predates this
-    // change (separate requests are separate transactions under READ COMMITTED
-    // regardless of where the count runs); moving the check out of the insert
-    // transaction does not widen it. Enforcing it strictly would need a lock on
-    // the partner row or a DB-level constraint — tracked, not solved here.
+    // ----------- partner device-limit admission + insert -----------
+    // Partner rows are RLS partner-axis data, so an organization request cannot
+    // perform this admission in its request transaction. The target org and
+    // site were resolved under caller authority above; the short system-context
+    // transaction below re-validates org -> partner, locks that exact partner,
+    // re-reads its cap, counts the whole partner fleet, and inserts before
+    // releasing the lock. Enrollment uses the same primitive and lock key.
     const [targetOrg] = await db
       .select({ id: organizations.id, partnerId: organizations.partnerId })
       .from(organizations)
@@ -200,95 +176,54 @@ provisionRoutes.post(
     }
 
     const orgPartnerId = targetOrg.partnerId;
-    const deviceLimit = orgPartnerId
-      ? await readWithPartnerAxisVisibility(async () => {
-        const [partner] = await db
-          .select({ maxDevices: partners.maxDevices })
-          .from(partners)
-          .where(eq(partners.id, orgPartnerId))
-          .limit(1);
-        const maxDevices = partner?.maxDevices ?? null;
-        if (maxDevices == null) return null;
-
-        const partnerOrgIds = db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, orgPartnerId));
-        const [countResult] = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(devices)
-          .where(
-            and(
-              sql`${devices.orgId} IN (${partnerOrgIds})`,
-              ne(devices.status, 'decommissioned'),
-              // Quick Support devices are not licensed endpoints — they live in
-              // the hidden per-partner support org for the length of one
-              // session and are purged by the reaper. Must match the identical
-              // exclusion in agents/enrollment.ts, or the two paths would
-              // enforce the same cap against different fleet counts.
-              eq(devices.isEphemeral, false),
-            ),
-          );
-        return { maxDevices, activeCount: Number(countResult?.count ?? 0) };
-      })
-      : null;
-
-    if (deviceLimit && deviceLimit.activeCount >= deviceLimit.maxDevices) {
-      return c.json(
-        {
-          error: 'Device limit reached',
-          code: 'DEVICE_LIMIT_REACHED',
-          currentDevices: deviceLimit.activeCount,
-          maxDevices: deviceLimit.maxDevices,
-        },
-        403,
-      );
-    }
-
     let device: typeof devices.$inferSelect | undefined;
+    let deviceLimit: PartnerDeviceCapacityResult | null = null;
     try {
-      device = await db.transaction(async (tx) => {
-        const [inserted] = await tx
-          .insert(devices)
-          .values({
+      const result = await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => db.transaction(async (tx) => {
+          const admission = await admitPartnerDeviceCapacity(tx, {
             orgId: data.orgId,
-            siteId: data.siteId,
-            agentId,
-            agentTokenHash: tokenHash,
-            watchdogTokenHash,
-            helperTokenHash,
-            hostname: data.hostname,
-            displayName: data.displayName,
-            osType: data.osType,
-            // Sentinel values for fields the agent will populate on first
-            // heartbeat. `'0.0.0'` is semver-safe (localeCompare orders it
-            // BELOW any real version, so policyEvaluationService.ts:542
-            // compliance checks correctly fail rather than silently pass —
-            // unlike `'pending'` which would compare as >= "10"). Future
-            // direction is to make these columns nullable in a follow-up PR
-            // that also widens the ~5 downstream type consumers
-            // (policyEvaluationService, securityPosture, helper, etc.).
-            osVersion: '0.0.0',
-            architecture: 'unknown',
-            agentVersion: '0.0.0',
-            tokenIssuedAt,
-            watchdogTokenIssuedAt: tokenIssuedAt,
-            helperTokenIssuedAt: tokenIssuedAt,
-            deviceRole: 'unknown',
-            deviceRoleSource: 'auto',
-            status: 'pending',
-            tags: [],
-          })
-          .returning();
+            expectedPartnerId: orgPartnerId,
+          });
+          if (!admission.allowed) return { admission, inserted: undefined };
 
-        if (!inserted) {
-          throw new Error('Failed to insert provisioned device');
-        }
-        return inserted;
-      });
+          const [inserted] = await tx
+            .insert(devices)
+            .values({
+              orgId: data.orgId,
+              siteId: data.siteId,
+              agentId,
+              agentTokenHash: tokenHash,
+              watchdogTokenHash,
+              helperTokenHash,
+              hostname: data.hostname,
+              displayName: data.displayName,
+              osType: data.osType,
+              osVersion: '0.0.0',
+              architecture: 'unknown',
+              agentVersion: '0.0.0',
+              tokenIssuedAt,
+              watchdogTokenIssuedAt: tokenIssuedAt,
+              helperTokenIssuedAt: tokenIssuedAt,
+              deviceRole: 'unknown',
+              deviceRoleSource: 'auto',
+              status: 'pending',
+              tags: [],
+            })
+            .returning();
+          if (!inserted) {
+            throw new Error('Failed to insert provisioned device');
+          }
+          return { admission, inserted };
+        }),
+        'devices.provision.capacity',
+      ));
+      deviceLimit = result.admission;
+      device = result.inserted;
     } catch (err) {
-      // The cap check no longer throws through here — it returns 403 directly
-      // above — so anything reaching this catch is a genuine insert failure.
+      if (err instanceof PartnerDeviceCapacityError) {
+        return c.json({ error: 'Device admission state changed; retry' }, 409);
+      }
       // Route it to Sentry as well as stdout: a DB fault here (including pool
       // exhaustion from the partner-axis escape) is otherwise invisible outside
       // the droplet's logs.
@@ -296,6 +231,28 @@ provisionRoutes.post(
       captureException(err instanceof Error ? err : new Error(String(err)));
       return c.json({ error: 'Failed to provision device' }, 500);
     }
+
+    if (!deviceLimit?.allowed) {
+      return c.json({
+        error: 'Device limit reached',
+        code: 'DEVICE_LIMIT_REACHED',
+        currentDevices: deviceLimit.activeCount,
+        maxDevices: deviceLimit.maxDevices,
+      }, 403);
+    }
+    if (!device) return c.json({ error: 'Failed to provision device' }, 500);
+
+    // #4630 — evaluate the new device against every dynamic group in its org
+    // immediately, so a group filtering on hostname/site (already correct at
+    // insert) doesn't have to wait for a heartbeat that would never report a
+    // diff for those fields. Enqueue only, never awaited: the evaluation must
+    // not run on this request's still-open withDbAccessContext transaction.
+    void requestDeviceGroupReevaluation({
+      deviceId: device.id,
+      orgId: data.orgId,
+      eventType: 'device.created',
+      reason: 'device_provisioned',
+    });
 
     // ----------- mTLS cert + manifest trust keys for the config blob -----------
     const mtlsCert = await issueMtlsCertForDevice(device.id, data.orgId);
@@ -364,7 +321,7 @@ provisionRoutes.post(
     return c.json(
       {
         success: true,
-        device: stripSensitiveDeviceFields(device),
+        device: projectPublicDevice(device),
         credentials: {
           fetch_url: `/api/v1/devices/provision/fetch/${handleToken}`,
           fetch_token: handleToken,
@@ -463,4 +420,3 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
 
   return c.json({ success: true, config: row.credentials }, 200);
 });
-

@@ -4,7 +4,10 @@
  *
  * Migration under test: 2026-07-01-notification-rails-partner-ownership.sql,
  * covering notification_channels, notification_routing_rules, and
- * escalation_policies. alert_notifications stay alert-join (the firing
+ * escalation_policies — plus the SELECT-only own-partner read branch added to
+ * all three by
+ * 2026-10-10-120000-notification-maintenance-partner-wide-select.sql
+ * (#4956, #4957, #4958). alert_notifications stay alert-join (the firing
  * device's org) and are unchanged.
  *
  * Same dual-axis contract-test blindspot as the sibling suites: this
@@ -101,13 +104,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An org-scoped session. `currentPartnerId` defaults to NULL, which is NOT the
+ * shape a real org token has: `buildDbAccessContext` (middleware/auth.ts) sets
+ * it from the token's partnerId, and the `<rail>_partner_wide_select` policies
+ * key on exactly that GUC. Pass the partner id when the test is about what an
+ * org token can actually read. `accessiblePartnerIds` stays empty either way —
+ * an org token never passes `breeze_has_partner_access`, which is what keeps
+ * the read branch read-only.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -145,6 +158,9 @@ const RAIL_CASES = [
       }).returning({ id: notificationChannels.id, orgId: notificationChannels.orgId, partnerId: notificationChannels.partnerId }),
     selectById: (id: string) =>
       db.select({ id: notificationChannels.id }).from(notificationChannels).where(eq(notificationChannels.id, id)),
+    updateName: (id: string) =>
+      db.update(notificationChannels).set({ name: 'HIJACKED' }).where(eq(notificationChannels.id, id))
+        .returning({ id: notificationChannels.id }),
     track: createdChannels,
   },
   {
@@ -160,6 +176,9 @@ const RAIL_CASES = [
       }).returning({ id: notificationRoutingRules.id, orgId: notificationRoutingRules.orgId, partnerId: notificationRoutingRules.partnerId }),
     selectById: (id: string) =>
       db.select({ id: notificationRoutingRules.id }).from(notificationRoutingRules).where(eq(notificationRoutingRules.id, id)),
+    updateName: (id: string) =>
+      db.update(notificationRoutingRules).set({ name: 'HIJACKED' }).where(eq(notificationRoutingRules.id, id))
+        .returning({ id: notificationRoutingRules.id }),
     track: createdRules,
   },
   {
@@ -172,6 +191,9 @@ const RAIL_CASES = [
       }).returning({ id: escalationPolicies.id, orgId: escalationPolicies.orgId, partnerId: escalationPolicies.partnerId }),
     selectById: (id: string) =>
       db.select({ id: escalationPolicies.id }).from(escalationPolicies).where(eq(escalationPolicies.id, id)),
+    updateName: (id: string) =>
+      db.update(escalationPolicies).set({ name: 'HIJACKED' }).where(eq(escalationPolicies.id, id))
+        .returning({ id: escalationPolicies.id }),
     track: createdPolicies,
   },
 ] as const;
@@ -203,7 +225,16 @@ describe.each(RAIL_CASES)('$label RLS — dual-axis (2026-07-01 migration)', (ra
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('an org-scope caller cannot see a partner-wide row; org-owned rows keep the original shape', async () => {
+  // This used to assert org scope could NOT see a partner-wide rail row — but
+  // the fixture never set `currentPartnerId`, so it was asserting the NULL-GUC
+  // shape and passed for the wrong reason. The `<rail>_partner_wide_select`
+  // policies (2026-10-10-120000-notification-maintenance-partner-wide-select
+  // .sql, #4956/#4957/#4958) now grant an org token a SELECT-only view of its
+  // OWN partner's partner-wide rails. Org tokens still never pass
+  // `breeze_has_partner_access`, so every WRITE path is exactly as strict as
+  // before. Exhaustive per-table proof (incl. cross-partner and NULL-GUC
+  // controls): notificationMaintenancePartnerWideSelect.integration.test.ts.
+  it('an org-scope caller can READ (not write) its partner’s partner-wide row; org-owned rows keep the original shape', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
 
@@ -212,10 +243,15 @@ describe.each(RAIL_CASES)('$label RLS — dual-axis (2026-07-01 migration)', (ra
     );
     rail.track.push(partnerRows[0]!.id);
 
-    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () => rail.selectById(partnerRows[0]!.id));
-    expect(visibleToOrg).toEqual([]);
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () => rail.selectById(partnerRows[0]!.id));
+    expect(visibleToOrg.map((r) => r.id)).toEqual([partnerRows[0]!.id]);
 
-    const orgRows = await withDbAccessContext(orgContext(org.id), () =>
+    // FOR SELECT only — RLS filters the write's target rows silently, so the
+    // row COUNT is the assertion that has teeth.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () => rail.updateName(partnerRows[0]!.id));
+    expect(updated).toEqual([]);
+
+    const orgRows = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       rail.insert({ orgId: org.id, partnerId: null }),
     );
     rail.track.push(orgRows[0]!.id);

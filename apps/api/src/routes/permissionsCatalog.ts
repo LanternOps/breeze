@@ -12,6 +12,7 @@ permissionsCatalogRoutes.use('*', authMiddleware);
 const RESOURCE_LABELS: Record<string, string> = {
   backup: 'Backup & Recovery',
   devices: 'Devices',
+  agent_rollback: 'Agent Rollback',
   scripts: 'Scripts',
   alerts: 'Alerts',
   tickets: 'Tickets',
@@ -19,6 +20,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   time_entries: 'Time Entries',
   users: 'Users',
   organizations: 'Organizations',
+  connected_apps: 'Connected Applications',
   sites: 'Sites',
   automations: 'Automations',
   remote: 'Remote Access',
@@ -29,18 +31,28 @@ const RESOURCE_LABELS: Record<string, string> = {
   quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts',
+  documents: 'Organization Documents',
+  agreements: 'Agreements',
   sso: 'Single Sign-On',
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
   ai_sessions: 'AI Sessions',
   ai_agents: 'AI Agents',
   approvals: 'Approvals',
-  variables: 'Variables'
+  variables: 'Variables',
+  pam: 'Privileged Access',
+  accounting: 'Accounting',
+  workspace: 'Workspace',
+  // Tool catalog (#5216): registering external MCP tool sources, and calling
+  // the tools they expose from AI surfaces.
+  tool_sources: 'External Tool Sources',
+  external_tools: 'External Tools'
 };
 
 const ACTION_LABELS: Record<string, string> = {
   read: 'Read',
   write: 'Write',
+  cross_site_restore: 'Cross-Site Restore',
   delete: 'Delete',
   execute: 'Execute',
   acknowledge: 'Acknowledge',
@@ -53,7 +65,12 @@ const ACTION_LABELS: Record<string, string> = {
   admin: 'Administer',
   accept_risk: 'Accept Risk',
   read_all: 'Read All',
-  decide: 'Decide'
+  decide: 'Decide',
+  create: 'Create',
+  approve: 'Approve',
+  manage_policy: 'Manage policy',
+  credentials: 'Manage Credentials',
+  use: 'Use'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

@@ -19,6 +19,7 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
+const captureSubjectMock = vi.fn();
 
 vi.mock('../../db', () => ({
   db: {
@@ -56,6 +57,10 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../../services/recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: (...args: unknown[]) => captureSubjectMock(...args),
 }));
 
 const queueAddMock = vi.fn().mockResolvedValue(undefined);
@@ -99,6 +104,14 @@ describe('c2c items routes', () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
     mfaGate.deny = false;
+    captureSubjectMock.mockResolvedValue({
+      authorizationPrincipalKind: 'user_session',
+      authorizationPrincipalId: 'user-123',
+      authorizationGrantRevision: 'rev-1',
+      authorizationState: 'pending',
+      authorizationDenialCode: null,
+      authorizationCheckedAt: null,
+    });
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/c2c', c2cItemsRoutes);
@@ -154,5 +167,36 @@ describe('c2c items routes', () => {
     });
     expect(insertMock).not.toHaveBeenCalled();
     expect(queueAddMock).not.toHaveBeenCalled();
+  });
+
+  it('persists restore kind and the live request subject before enqueue', async () => {
+    const itemId = '11111111-1111-4111-8111-111111111111';
+    const insertChain = chainMock([{
+      id: '44444444-4444-4444-8444-444444444444',
+      status: 'pending',
+      createdAt: new Date('2026-08-24T12:00:00.000Z'),
+    }]);
+    selectMock.mockReturnValueOnce(chainMock([{ id: itemId, configId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }]));
+    insertMock.mockReturnValueOnce(insertChain);
+
+    const response = await app.request('/c2c/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ itemIds: [itemId] }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(captureSubjectMock).toHaveBeenCalledWith(
+      authState,
+      ORG_ID,
+      expect.objectContaining({ operation: 'c2c_restore', requiredAiTool: 'restore_c2c_items' }),
+    );
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({
+      operationKind: 'restore',
+      authorizationPrincipalKind: 'user_session',
+      authorizationPrincipalId: 'user-123',
+      authorizationGrantRevision: 'rev-1',
+    }));
+    expect(queueAddMock).toHaveBeenCalledOnce();
   });
 });

@@ -22,7 +22,7 @@ function chain(result: unknown) {
   const c: Record<string, unknown> = {};
   for (const m of [
     'from', 'where', 'limit', 'values', 'returning',
-    'onConflictDoUpdate', 'onConflictDoNothing', 'innerJoin', 'leftJoin',
+    'onConflictDoUpdate', 'onConflictDoNothing', 'innerJoin', 'leftJoin', 'for',
   ]) {
   c[m] = vi.fn((payload?: unknown) => {
     if (m === 'values') insertPayloads.push(payload);
@@ -58,12 +58,13 @@ vi.mock('../db', () => ({
     select: vi.fn((projection?: Record<string, unknown>) => {
       dbCallDepths.push(contextDepth);
       if (projection === undefined) return chain([INTEGRATION_ROW]);
+      if ('id' in projection) return chain([{ id: INTEGRATION_ROW.id }]);
       if ('linkId' in projection) return chain(observationRows);
       return chain([]);
     }),
     update: vi.fn(() => {
       dbCallDepths.push(contextDepth);
-      return chain(undefined);
+      return chain([{ id: INTEGRATION_ROW.id }]);
     }),
     insert: vi.fn(() => {
       dbCallDepths.push(contextDepth);
@@ -223,7 +224,7 @@ describe('pax8SyncService — DB context boundaries (#1697)', () => {
     (dbm.db.update as unknown as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(() => {
         dbCallDepths.push(contextDepth);
-        return chain(undefined);
+        return chain([{ id: INTEGRATION_ROW.id }]);
       })
       .mockImplementationOnce(() => {
         throw new Error('pool exhausted');

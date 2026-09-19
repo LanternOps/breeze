@@ -41,13 +41,14 @@
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  AgentRunVerdict,
   AiAgentKind,
-  AiAgentMode,
   AiAgentPolicy,
-  AiAgentPolicySnapshot,
-  AiAgentRecipients,
-  AiAgentTriggerKind,
+  AiAgentRunProfile,
+  AiSweepKind,
+  FleetDesignOutcomeRefs,
 } from '@breeze/shared';
+import { AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -57,34 +58,135 @@ import {
 } from '../../db';
 // Direct module imports, not the schema barrel — see the same note in runService.
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
-import { alerts } from '../../db/schema/alerts';
+import { alertCorrelationGroups, alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
+import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
+import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
 import {
+  markAiBudgetReservationIndeterminate,
+  reserveAiBudget,
+} from '../aiBudgetReservations';
+import {
   checkAgentGuardrails,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
-import { createNotification } from '../userNotifications';
+import type { ToolExecutionContext } from '../toolExecutionContext';
+import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
-import { resolveEffectiveAgentSystem } from './effectivePolicy';
-import { resolveRecipientUserIds } from './recipients';
+import { resolveActOperation, type ActTarget } from './actManifest';
+import {
+  revalidateActExecution,
+  type ActAssetPin,
+  type ActReservationState,
+} from './actRevalidation';
+import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
+import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
+import { resolveEffectiveAgentSystem, type ResolvedAgent } from './effectivePolicy';
+import { agentRunMatchesResourceScope, hasAgentResourceScope } from './runResourceScope';
+import { loadTicketContext, type TicketRunContext } from './ticketContext';
+import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
+import { getCachedAiKillStateSnapshot, readAiKillState } from '../aiKillState';
+import {
+  closeAgentRunSession,
+  completeToolExecution,
+  createAgentRunSession,
+  reconcileHungExecutions,
+  startToolExecution,
+} from './executionLedger';
+import { deliverRunFinishedNotifications } from './runFinishedNotify';
 import { transitionRunStatus } from './runService';
+// jobs/, not services/ — the durable retry lane for a notify failure (Task 6,
+// #3826). BullMQ-touching but harmless to import here: `enqueueAgentNotifyRetry`
+// itself lazily constructs its Queue only when actually called (services/redis.ts
+// never connects at import time), and this module does NOT import runLoop.ts
+// back — see runFinishedNotify.ts's header for why that direction would cycle.
+import { enqueueAgentNotifyRetry } from '../../jobs/agentNotifyRetryWorker';
+// Same "harmless to import here" reasoning as `enqueueAgentNotifyRetry` above
+// (jobs/, not services/): the fix-watch Queue is constructed lazily and this
+// module does not import runLoop.ts back — see fixWatchWorker.ts's header.
+import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
+import { actEvidenceSourceId, insertOpEvidence, type OpEvidenceInsert } from './opEvidence';
 import {
   buildAgentRunSystemPrompt,
+  analysisPromptContext,
   buildAgentRunTaskPrompt,
+  type AgentRunAnomalyPromptContext,
+  type AgentRunDesignPromptContext,
+  type AgentRunNarrativePromptContext,
   type AgentRunPromptContext,
+  type AgentRunSweepPromptContext,
+  type AgentRunTicketPromptContext,
 } from './runnerPrompt';
+import {
+  buildOutcomeSdkTools,
+  isOutcomeTool,
+  OUTCOME_MCP_TOOL_NAMES,
+  outcomeToolsForRun,
+  validateOutcomeToolInput,
+  type PatchPlanToolRefs,
+} from './outcomeTools';
+import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
+import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
+import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
+import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
+import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
+import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
+import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { getSandboxBackend, type SandboxUsage } from '../workspace/sandboxBackend';
+import { WorkspaceService } from '../workspace/workspaceService';
+import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
+import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
+import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
+import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
+import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
+import {
+  finalizeFleetDesign,
+  finalizePatchPlan,
+  finalizeNarrative,
+  finalizeSweep,
+  finalizeTicketTriage,
+  finalizeVerdict,
+} from './runFinalizers';
+import type {
+  AgentRow,
+  AgentRunOutcome,
+  LoopResult,
+  OutcomeExecutedAction,
+  OutcomeProposedAction,
+  RunContext,
+  RunRow,
+} from './runLoopTypes';
+
+/**
+ * Re-exported (issue #4451) so every existing importer of the run outcome
+ * shape keeps its current `./runLoop` path after the types moved into
+ * `runLoopTypes.ts`.
+ */
+export type {
+  AgentRunOutcome,
+  OutcomeExecutedAction,
+  OutcomeProposedAction,
+  TicketProposalOutcome,
+} from './runLoopTypes';
+import { loadSweepEvidence } from './sweepEvidence';
+import { loadNarrativeContext } from './narrativeContext';
+import { designBaselineNumbers, loadDesignEvidence } from './designEvidence';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -100,56 +202,6 @@ export const PROPOSAL_RECORDED_TEXT =
   + 'A human will review it. Do not retry this call and do not look for another way to '
   + 'perform it.';
 
-export interface OutcomeProposedAction {
-  tool: string;
-  action?: string;
-  args: Record<string, unknown>;
-  /**
-   * Set for Tier-3 proposals that reached `action_intents`. Presence alone does
-   * NOT mean a human can still approve it — `createActionIntent` commits and
-   * then cancels an intent nobody is eligible to decide. `intentError` is the
-   * authoritative signal, and `run.intent_ids` only ever lists PENDING ones.
-   */
-  intentId?: string;
-  /**
-   * Set instead of a live approval when the intent could not be created, or was
-   * born terminal (`no_eligible_approvers`).
-   */
-  intentError?: string;
-}
-
-export interface OutcomeExecutedAction {
-  tool: string;
-  action?: string;
-  /**
-   * '(inline)' for wave 3: an agent tool call executes inside the MCP handler
-   * and has no `ai_tool_executions` row of its own yet (that ledger is written
-   * by the chat session path). Wave 6's transcript work gives these real ids.
-   */
-  executionId: string;
-  result: 'ok' | 'failed';
-  durationMs: number;
-}
-
-export interface AgentRunOutcome {
-  /**
-   * Reserved for structured findings. Nothing populates it in wave 3 — the
-   * narrative lives in `run.summary` and the transcript work that would produce
-   * structured findings is wave 6. Kept as a declared key so the shape of the
-   * jsonb does not change under reviewers when it lands.
-   */
-  findings: unknown[];
-  proposedActions: OutcomeProposedAction[];
-  executedActions: OutcomeExecutedAction[];
-  deniedActions: Array<{ tool: string; reason: string }>;
-  /** Tool calls that actually EXECUTED (denials and proposals excluded). */
-  toolExecutionCount: number;
-  budgetExceeded?: boolean;
-  wallClockExceeded?: boolean;
-  /** The SDK stopped because `maxTurns` was reached (`error_max_turns`). */
-  maxTurnsExceeded?: boolean;
-}
-
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
 export class AgentRunError extends Error {
   readonly errorCode: string;
@@ -159,35 +211,6 @@ export class AgentRunError extends Error {
     this.name = 'AgentRunError';
     this.errorCode = errorCode;
   }
-}
-
-interface RunRow {
-  id: string;
-  agentId: string;
-  orgId: string;
-  deviceId: string | null;
-  alertId: string | null;
-  status: string;
-  modeAtStart: Exclude<AiAgentMode, 'off'>;
-  triggerKind: AiAgentTriggerKind;
-  policySnapshot: AiAgentPolicySnapshot;
-}
-
-interface AgentRow {
-  id: string;
-  orgId: string | null;
-  partnerId: string | null;
-  name: string;
-  kind: AiAgentKind;
-  recipients: Partial<AiAgentRecipients>;
-}
-
-interface RunContext {
-  run: RunRow;
-  agent: AgentRow;
-  orgPartnerId: string;
-  device: { id: string; siteId: string; hostname: string; osType: string } | null;
-  alert: { title: string; severity: string; message: string | null } | null;
 }
 
 /**
@@ -223,10 +246,26 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         orgId: aiAgentRuns.orgId,
         deviceId: aiAgentRuns.deviceId,
         alertId: aiAgentRuns.alertId,
+        ticketId: aiAgentRuns.ticketId,
+        anomalyIncidentId: aiAgentRuns.anomalyIncidentId,
         status: aiAgentRuns.status,
         modeAtStart: aiAgentRuns.modeAtStart,
         triggerKind: aiAgentRuns.triggerKind,
         policySnapshot: aiAgentRuns.policySnapshot,
+        profile: aiAgentRuns.profile,
+        correlationGroupId: aiAgentRuns.correlationGroupId,
+        scheduleId: aiAgentRuns.scheduleId,
+        triggerRef: aiAgentRuns.triggerRef,
+        // #5205 W06 — the run's AI Operator task linkage. Loaded here rather
+        // than looked up on demand: the pre-tool hook consults `taskId` on
+        // EVERY tool call (the task fence), so a per-call lookup would be a
+        // second round trip on the model's critical path.
+        taskId: aiAgentRuns.taskId,
+        taskStepKey: aiAgentRuns.taskStepKey,
+        taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
+        // Execution plane W04 — the frozen inputs and the compute reservation.
+        stagedInputs: aiAgentRuns.stagedInputs,
+        computeReservedCents: aiAgentRuns.computeReservedCents,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -301,7 +340,211 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
-    return { run: run as RunRow, agent: agent as AgentRow, orgPartnerId: org.partnerId, device, alert };
+    // Same "moved/deleted reads as absent" posture as device/alert above —
+    // this read is ALSO org-pinned inside `loadTicketContext` itself (it
+    // runs under this same system context), for the identical reason: a
+    // ticket can move org between admission and delivery.
+    let ticket: RunContext['ticket'] = null;
+    if (run.ticketId) {
+      try {
+        ticket = await loadTicketContext(run.ticketId, run.orgId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to load ticket context', {
+          runId, orgId: run.orgId, ticketId: run.ticketId, error,
+        });
+      }
+      if (!ticket) {
+        console.warn('[aiAgentRunLoop] run ticket is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, ticketId: run.ticketId,
+        });
+      }
+    }
+
+    // Same "moved/deleted reads as absent" posture as device/alert/ticket
+    // above — this read is ALSO org-pinned inside `loadAnomalyContext` itself
+    // (it runs under this same system context), for the identical reason: an
+    // incident can move org between admission and delivery.
+    let anomaly: RunContext['anomaly'] = null;
+    if (run.anomalyIncidentId) {
+      try {
+        anomaly = await loadAnomalyContext(run.anomalyIncidentId, run.orgId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to load anomaly context', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId, error,
+        });
+      }
+      if (!anomaly) {
+        console.warn('[aiAgentRunLoop] run anomaly incident is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId,
+        });
+      }
+    }
+
+    // Phase 2 wave P2-1 (alert verdicts). Same "missing reads as null, never
+    // as a hard failure" shape as the device/alert reads above — a group can
+    // be deleted or its org can drift between admission and delivery.
+    let correlationGroup: RunContext['correlationGroup'] = null;
+    if (run.correlationGroupId) {
+      const [row] = await db
+        .select({
+          id: alertCorrelationGroups.id,
+          memberCount: alertCorrelationGroups.memberCount,
+          noiseReductionPercent: alertCorrelationGroups.noiseReductionPercent,
+          rootAlertId: alertCorrelationGroups.rootAlertId,
+          metadata: alertCorrelationGroups.metadata,
+        })
+        .from(alertCorrelationGroups)
+        .where(and(
+          eq(alertCorrelationGroups.id, run.correlationGroupId),
+          eq(alertCorrelationGroups.orgId, run.orgId),
+        ))
+        .limit(1);
+      if (row) {
+        const metadata = row.metadata as Record<string, unknown> | null;
+        const correlationTypes = Array.isArray(metadata?.correlationTypes)
+          ? (metadata.correlationTypes as unknown[]).filter((s): s is string => typeof s === 'string')
+          : [];
+        correlationGroup = {
+          id: row.id,
+          memberCount: row.memberCount,
+          noiseReductionPercent: row.noiseReductionPercent,
+          rootAlertId: row.rootAlertId,
+          correlationTypes,
+        };
+      } else {
+        console.warn('[aiAgentRunLoop] run correlation group is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, correlationGroupId: run.correlationGroupId,
+        });
+      }
+    }
+
+    // Phase 2 wave P2-2 (scheduled sweeps). Runs INSIDE this same system
+    // context (`loadSweepEvidence`'s own header states it manages none of its
+    // own) — the `org_id = run.orgId` predicate every one of its statements
+    // carries is therefore the only thing keeping one tenant's sweep out of
+    // another's rows, exactly like the hand-written org pins above.
+    //
+    // Read defensively: `trigger_ref` is an untyped jsonb column, and a run
+    // could reach here hand-enqueued, half-migrated, or written by an older
+    // sweeper. Unknown kinds are DROPPED rather than passed through (a kind
+    // with no loader would throw inside `loadSweepEvidence`); missing kinds
+    // yield empty evidence, which the prompt renders as "these checks found
+    // nothing" — never a failed run.
+    let sweep: RunContext['sweep'] = null;
+    if (isSweepProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; sweepKinds?: unknown };
+      const rawKinds = Array.isArray(ref.sweepKinds) ? ref.sweepKinds : [];
+      const kinds = rawKinds.filter(
+        (kind): kind is AiSweepKind => (AI_SWEEP_KINDS as readonly unknown[]).includes(kind),
+      );
+      if (kinds.length !== rawKinds.length) {
+        console.warn('[aiAgentRunLoop] dropped unknown sweep kinds from trigger_ref', {
+          runId, orgId: run.orgId, requested: rawKinds.length, kept: kinds.length,
+        });
+      }
+      sweep = {
+        scheduleId: run.scheduleId ?? '',
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : '',
+        kinds,
+        evidence: await loadSweepEvidence(run.orgId, kinds),
+      };
+    }
+
+    // Phase 2 wave P2-3 (weekly org narrative). Runs INSIDE this same system
+    // context, exactly like the sweep evidence above and for the same reason:
+    // `loadNarrativeContext` manages no context of its own, so the `org_id`
+    // predicate every one of its statements carries is the only thing keeping
+    // one tenant's week out of another's report.
+    //
+    // Awaited directly, with no try/catch: `loadNarrativeContext` isolates
+    // every one of its loaders internally (`Promise.allSettled`-style
+    // `settled()` + a `reportLoaderFailure` warning), so a broken table
+    // surfaces as an `unavailable` entry the prompt renders as "(not
+    // measured)" — it does not throw. `trigger_ref` is read DEFENSIVELY for
+    // the same reason the sweep block reads it that way: it is an untyped
+    // jsonb column and a run could reach here hand-enqueued or written by an
+    // older scheduler.
+    let narrative: RunContext['narrative'] = null;
+    if (isNarrativeProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown };
+      narrative = {
+        scheduleId: run.scheduleId ?? '',
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : '',
+        context: await loadNarrativeContext(run.orgId),
+      };
+    }
+
+    // Fleet Designer W01 (#5651). Runs INSIDE this same system context, exactly
+    // like the sweep/narrative loads above — `loadDesignEvidence` manages no
+    // context of its own, so the `org_id` predicate every one of its
+    // statements carries is the only thing keeping one tenant's fleet out of
+    // another's design. `trigger_ref` is read DEFENSIVELY for the same reason
+    // the sweep/narrative blocks read it that way.
+    //
+    // Unlike sweep/narrative, a design run CAN fail here: the spec's own rule
+    // is "a run only fails when the device section itself cannot be
+    // assembled" — every other section degrades to an `unavailable` entry the
+    // prompt renders as "(not measured)", but a design with NO devices at all
+    // has nothing to design for.
+    let design: RunContext['design'] = null;
+    if (isDesignProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; siteId?: unknown };
+      const siteId = typeof ref.siteId === 'string' ? ref.siteId : null;
+      const evidence = await loadDesignEvidence(run.orgId, { siteId });
+      if (evidence.devices.length === 0 && evidence.unavailable.includes('devices')) {
+        throw new AgentRunError('design_evidence_unavailable', `device evidence was unavailable for org ${run.orgId}`);
+      }
+      design = {
+        scheduleId: run.scheduleId ?? null,
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : null,
+        siteId,
+        evidence,
+      };
+    }
+
+    // AI patch agent W01 (#5747). Runs INSIDE this same system context, like
+    // the sweep/narrative/design loads above — `loadPatchEvidence` manages no
+    // context of its own, so the `org_id` predicate every one of its
+    // statements carries is the only tenant boundary. A patch run fails here
+    // only when the compliance rollup itself is unavailable (nothing to plan
+    // for); every other section degrades to "(not measured)".
+    let patch: RunContext['patch'] = null;
+    if (isPatchProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; focusDeviceId?: unknown };
+      let evidence;
+      try {
+        evidence = await loadPatchEvidence(run.orgId, org.partnerId ?? null);
+      } catch (error) {
+        if (error instanceof PatchEvidenceUnavailableError) {
+          throw new AgentRunError('patch_evidence_unavailable', `patch compliance rollup was unavailable for org ${run.orgId}`);
+        }
+        throw error;
+      }
+      patch = {
+        scheduleId: run.scheduleId ?? null,
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : null,
+        evidence,
+        // W04 (#5750): a reactive run's focus hint, read defensively like the rest.
+        focusDeviceId: typeof ref.focusDeviceId === 'string' ? ref.focusDeviceId : null,
+      };
+    }
+
+    return {
+      run: run as RunRow,
+      agent: agent as AgentRow,
+      orgPartnerId: org.partnerId,
+      device,
+      alert,
+      ticket,
+      anomaly,
+      correlationGroup,
+      sweep,
+      narrative,
+      design,
+      patch,
+      sessionId: null,
+      workspace: null,
+    };
   });
 }
 
@@ -318,19 +561,337 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
  * no RBAC helper is ever reached from an agent run.
  */
 export function createAgentRunPreToolUse(args: {
-  run: Pick<RunRow, 'id' | 'orgId'>;
+  // #5205 W06 adds the three task-linkage columns: `taskId` selects
+  // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
+  // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
+  // Tier-3 proposal reserves under.
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
   agentName: string;
   agentAuth: AuthContext;
+  agentKind: AiAgentKind;
+  /** `true` in scope; `false` a clean mismatch; `null` unverifiable. Anything
+   *  but `true` denies the call — see `isRunResourceScopeCurrent`. */
+  revalidateResourceScope?: (toolName: string) => Promise<boolean | null>;
   guardrailPolicy: AgentGuardrailPolicy;
   outcome: AgentRunOutcome;
   intentIds: string[];
   /** Per-tool count of calls the gate ALLOWED, consumed by the post hook. */
   allowedPending: Map<string, number>;
+  /** The run's execution-ledger session, or `null` if session creation itself failed. */
+  sessionId: string | null;
+  /**
+   * Per-tool FIFO of `ai_tool_executions` ids (or `null` sentinels for a
+   * failed/skipped ledger write), shifted by the post hook. Same ordering
+   * assumption as `allowedPending`.
+   */
+  executionIdPending: Map<string, Array<string | null>>;
+  /**
+   * Per-tool FIFO of act-mode asset pins, pushed in LOCKSTEP with
+   * `executionIdPending` (a `null` entry for every ordinary allowed call, a
+   * real `ActAssetPin` only for one that dispatched through the act branch)
+   * — the SAME tool name can be BOTH in one run (e.g. `disk_cleanup` preview
+   * is a plain read-only allow, `disk_cleanup` execute is act-eligible), so
+   * this cannot be a separate independently-sized queue.
+   */
+  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  /** In-run `maxActionsPerRun` reservation counter, shared across every
+   *  act-mode call in this run (Task 3). */
+  actReservation: ActReservationState;
+  /**
+   * Absolute epoch ms the run's wall-clock ceiling expires at (Global
+   * Constraints: playbook executor wall-clock is bounded by the run's
+   * REMAINING budget, not a fresh timer per playbook) — same value the SDK
+   * loop's own `wallClockTimer` aborts on (see `driveSdkLoop`), threaded
+   * through so `playbookActExecutor.ts` can enforce it independently of the
+   * SDK's `abortController` (which this synchronous hook does not observe).
+   */
+  deadlineMs: number;
+  /**
+   * Fleet Designer W01 (#5651) — the SAME refs `postToolUse` receives,
+   * needed here too: `validateOutcomeToolInput('submit_fleet_design', ...)`
+   * throws unconditionally when its third argument is omitted (see its own
+   * switch case), so without this the pre-hook's own validate-only check
+   * below denied EVERY `submit_fleet_design` call before the SDK's real tool
+   * handler (which already has `design` via `buildOutcomeSdkTools`) ever
+   * ran — a design run could never actually submit. `undefined` on every
+   * non-design run, where the switch never reaches that case.
+   */
+  design?: FleetDesignOutcomeRefs;
+  /** Device ids frozen at admission for this run (W03/R4) — see
+   *  `ToolExecutionContext.runTargets`. */
+  runTargets: readonly string[];
+  /** Bytes this run may still stage into artifacts (W03/R4) — see
+   *  `ToolExecutionContext.stagedBytesRemaining`. */
+  stagedBytesRemaining: number;
+  /**
+   * AI patch agent W01 — the SAME refs the SDK tool handler and the post-hook
+   * receive, for the same reason as `design` above: the pre-hook's
+   * validate-only check must not deny every `submit_patch_plan`. `undefined`
+   * on every non-patch run.
+   */
+  patch?: PatchPlanToolRefs;
 }): PreToolUseCallback {
-  const { run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending } = args;
+  const {
+    run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch,
+    runTargets, stagedBytesRemaining,
+  } = args;
+
+  /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
+   *  Built once: identical for every call in the run. No run id or session id
+   *  here — a tool reads those from the auth principal (R4). */
+  const runFrame: ToolExecutionContext = {
+    runTargets,
+    stagedBytesRemaining,
+  };
+
+  /**
+   * #5205 W06 — the task fence read taken at the top of THIS tool call, kept
+   * so `recordProposal` can build the operation key from the SAME
+   * `plan_revision` the fence observed. Reading it twice would open a window
+   * where the key names a revision the fence never saw, which is precisely
+   * the mismatch `evaluateTaskClaimPredicate` would later refuse to dispatch.
+   * Null on a non-task run.
+   */
+  let taskFence: TaskFence | null = null;
+
+  /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
+   *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
+   *  call, submit the SAME action-intent approval. */
+  async function recordProposal(
+    check: { tier: number },
+    toolName: string,
+    input: Record<string, unknown>,
+    downgradeReason?: string,
+  ): Promise<{ allowed: false; error: string }> {
+    const action = readToolAction(toolName, input);
+    const entry: OutcomeProposedAction = {
+      tool: toolName,
+      ...(action ? { action } : {}),
+      args: input,
+      ...(downgradeReason ? { downgradeReason } : {}),
+    };
+
+    // Tier gate, not a shortcut: createActionIntent throws
+    // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
+    // runner that funnelled every mutation through it would turn ordinary
+    // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
+    // there — there is no approval object for them.
+    let intentError: string | undefined;
+    if (check.tier === 3) {
+      try {
+        const intent = await createActionIntent(agentAuth, {
+          toolName,
+          input,
+          source: 'ai_agent',
+          orgId: run.orgId,
+          reason: `Proposed by ${agentName} for run ${run.id}`,
+          // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
+          // run must enter the operation reservation path, even if the model
+          // calls an existing tool directly." This IS that path — passing the
+          // task context makes `createActionIntent` (W04) reserve the
+          // `ai_operator_operations` row in the SAME transaction as the intent
+          // insert and derive the intent's `idempotency_key` from task
+          // identity, so a continuation run re-proposing the same restart
+          // converges onto the existing intent (the C6 single-arbiter rule)
+          // instead of minting a second one.
+          //
+          // Note the branch is on `run.taskId`, not on the tool: EVERY tier-3
+          // proposal from a task-linked run is a task operation. There is no
+          // "direct effect" escape hatch on this path.
+          ...(run.taskId && run.taskStepKey && run.taskAttemptOrdinal !== null && taskFence
+            ? {
+              task: {
+                taskId: run.taskId,
+                taskStepKey: run.taskStepKey,
+                operationKey: buildTaskOperationKey({
+                  taskStepKey: run.taskStepKey,
+                  planRevision: taskFence.revision,
+                  toolName,
+                  // The tool's own device argument, resolved server-side by
+                  // `createActionIntent`'s scope resolution — used here only
+                  // to make the key target-specific.
+                  targetId: typeof (input as { deviceId?: unknown }).deviceId === 'string'
+                    ? (input as { deviceId: string }).deviceId
+                    : null,
+                  ordinal: 0,
+                }),
+                attemptOrdinal: run.taskAttemptOrdinal,
+              },
+            }
+            : {}),
+        });
+        entry.intentId = intent.id;
+        // createActionIntent does NOT throw when nobody can approve: it
+        // commits the intent and immediately cancels it with
+        // `no_eligible_approvers`, returning that snapshot. Counting such an
+        // id towards `awaiting_approval` would end the run in a state that
+        // can never resolve, and point the recipients' notification at an
+        // /approvals queue the intent will never appear in. Only a genuinely
+        // pending intent is something a human still owns.
+        if (intent.status === 'pending_approval') {
+          intentIds.push(intent.id);
+        } else {
+          intentError = intent.errorCode ?? `intent ${intent.status}`;
+          entry.intentError = intentError;
+          console.warn('[aiAgentRunLoop] proposal intent was not left pending approval', {
+            runId: run.id, toolName, intentId: intent.id, status: intent.status,
+            errorCode: intent.errorCode,
+          });
+        }
+      } catch (error) {
+        // no_eligible_approvers, agent_policy_denied, … The PROPOSAL is still
+        // recorded — a reviewer needs to see what the agent wanted to do even
+        // when no approval will ever arrive — and the model is told why.
+        intentError = error instanceof Error ? error.message : String(error);
+        entry.intentError = intentError;
+        console.warn('[aiAgentRunLoop] proposal could not be submitted for approval', {
+          runId: run.id, toolName, error,
+        });
+      }
+    }
+
+    outcome.proposedActions.push(entry);
+    return {
+      allowed: false,
+      error: intentError
+        ? `Proposal recorded but not submitted for approval: ${intentError}. Do not retry.`
+        : PROPOSAL_RECORDED_TEXT,
+    };
+  }
+
+  /** Shared by the ordinary 'allow' tail AND an act-mode 'ok' revalidation —
+   *  both write the SAME ledger row and per-tool FIFOs; only `actPin` (and
+   *  therefore the returned `context`) differs. */
+  async function recordAllowedExecution(
+    toolName: string,
+    input: Record<string, unknown>,
+    actPin: ActAssetPin | null,
+  ): Promise<{ allowed: true; context?: ToolExecutionContext }> {
+    allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
+
+    // Ledger write is best-effort: the tool call is already decided ALLOWED
+    // above, and a failure here must never turn that into a denial. A failed
+    // (or skipped, when the session itself never got created) write pushes a
+    // `null` sentinel so the post hook's FIFO stays aligned with the calls
+    // that actually happened.
+    let executionId: string | null = null;
+    if (sessionId) {
+      try {
+        executionId = await startToolExecution({ sessionId, toolName, toolInput: input });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] execution-ledger write failed — tool call still executes', {
+          runId: run.id, toolName, error,
+        });
+        executionId = null;
+      }
+    }
+    const pending = executionIdPending.get(toolName) ?? [];
+    pending.push(executionId);
+    executionIdPending.set(toolName, pending);
+
+    const pinQueue = actPinPending.get(toolName) ?? [];
+    pinQueue.push(actPin);
+    actPinPending.set(toolName, pinQueue);
+
+    return actPin?.toolExecutionContext
+      ? { allowed: true, context: { ...runFrame, ...actPin.toolExecutionContext } }
+      : { allowed: true, context: runFrame };
+  }
 
   return async (toolName, input) => {
-    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+    // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
+    if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
+      const reason = 'This run\'s device is no longer within the agent\'s resource scope, '
+        + 'or that scope could not be verified. Stop and do not retry.';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
+    // #5205 W06, spec §7.3 — THE TASK FENCE. There is no run-level cancel in
+    // this codebase (baseline C17: `cancelled`/`expired` are valid
+    // `ai_agent_runs` statuses with zero production writers and no route), so
+    // a task that is paused, stopping, expired or terminal cannot stop its
+    // in-flight reasoning run by cancelling it. It fences it at the next tool
+    // call and lets it finish, which is exactly this check.
+    //
+    // Ahead of the outcome-tool branch on purpose: `submit_task_step` is the
+    // one call whose result would otherwise be persisted into a checkpoint the
+    // task must no longer accept. A fenced task's run may still READ nothing
+    // and end; it may not propose, execute, or record.
+    if (run.taskId) {
+      const fence: TaskFence | null = await loadTaskFence(run.orgId, run.taskId).catch((error: unknown) => {
+        // A failed fence read is NOT permission. Refusing on a transient DB
+        // error costs one denied tool call in a run that is about to end
+        // anyway; allowing on it would let a cancelled task keep acting.
+        console.error('[aiAgentRunLoop] task fence read failed; denying', {
+          runId: run.id, taskId: run.taskId, error,
+        });
+        return null;
+      });
+      if (!fence || fence.fenced) {
+        const reason = fence
+          ? `AI Operator task ${run.taskId} is fenced (state '${fence.state}')`
+          : `AI Operator task ${run.taskId} could not be read`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: `${reason}. Stop and do not retry.` };
+      }
+      taskFence = fence;
+    }
+
+    // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
+    // `checkAgentGuardrails` below, because that guardrail has no allowlist
+    // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
+    // and would deny it as an unknown tool. `submit_alert_verdict` is only
+    // ever exposed to the SDK on a verdict-profile run (see the `allowedTools`
+    // computation in `driveSdkLoop`), so a full-profile run reaching here is
+    // either a stale prompt/tool cache or a hostile attempt to call it
+    // anyway — denied and recorded either way.
+    if (isOutcomeTool(toolName)) {
+      // Review fix (wave P2-1 fix round 1): this branch sits AHEAD of
+      // `checkAgentGuardrails`, which is where the env-flag + DB kill switch
+      // are normally enforced — an outcome tool bypassed both entirely.
+      // Same two checks, same deny reasons, so a kill-switched run cannot
+      // record a verdict either.
+      if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
+        const reason = 'Autonomous AI agents are disabled';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+      const killState = getCachedAiKillStateSnapshot();
+      if (killState.killed) {
+        const reason = `Autonomous AI agents are kill-switched (epoch ${killState.epoch})`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+      // Generalized in wave P2-2 (task 6) from "verdict runs only" to "the
+      // tool this run's profile owns": `outcomeToolsForProfile` is the SAME
+      // function that decides SDK exposure and post-hook capture below, so a
+      // sweep run can never record a verdict (or vice versa) even if a stale
+      // tool cache offers the wrong name. The deny reason names the profile
+      // because that is the mismatch a reviewer needs to see.
+      // #5205 W06: `outcomeToolsForRun`, not `outcomeToolsForProfile` — a
+      // task-linked run is a `full`-profile run (whose profile set is empty)
+      // that additionally owns `submit_task_step`. Same single-source-of-truth
+      // property, widened by one input.
+      if (!outcomeToolsForRun(run).includes(toolName)) {
+        outcome.deniedActions.push({
+          tool: toolName,
+          reason: run.taskId
+            ? `outcome tool ${toolName} is not available to this task-linked run`
+            : `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
+        });
+        return { allowed: false, error: 'not available on this run' };
+      }
+      try {
+        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : design);
+      } catch (e) {
+        return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
+      }
+      return { allowed: true, context: runFrame };
+    }
+
+    const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
+    const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';
@@ -338,70 +899,200 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: false, error: reason };
     }
 
-    if (check.disposition === 'propose') {
-      const action = readToolAction(toolName, input);
-      const entry: OutcomeProposedAction = {
-        tool: toolName,
-        ...(action ? { action } : {}),
-        args: input,
-      };
-
-      // Tier gate, not a shortcut: createActionIntent throws
-      // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
-      // runner that funnelled every mutation through it would turn ordinary
-      // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
-      // there — there is no approval object for them.
-      let intentError: string | undefined;
-      if (check.tier === 3) {
-        try {
-          const intent = await createActionIntent(agentAuth, {
-            toolName,
-            input,
-            source: 'ai_agent',
-            orgId: run.orgId,
-            reason: `Proposed by ${agentName} for run ${run.id}`,
-          });
-          entry.intentId = intent.id;
-          // createActionIntent does NOT throw when nobody can approve: it
-          // commits the intent and immediately cancels it with
-          // `no_eligible_approvers`, returning that snapshot. Counting such an
-          // id towards `awaiting_approval` would end the run in a state that
-          // can never resolve, and point the recipients' notification at an
-          // /approvals queue the intent will never appear in. Only a genuinely
-          // pending intent is something a human still owns.
-          if (intent.status === 'pending_approval') {
-            intentIds.push(intent.id);
-          } else {
-            intentError = intent.errorCode ?? `intent ${intent.status}`;
-            entry.intentError = intentError;
-            console.warn('[aiAgentRunLoop] proposal intent was not left pending approval', {
-              runId: run.id, toolName, intentId: intent.id, status: intent.status,
-              errorCode: intent.errorCode,
-            });
-          }
-        } catch (error) {
-          // no_eligible_approvers, agent_policy_denied, … The PROPOSAL is still
-          // recorded — a reviewer needs to see what the agent wanted to do even
-          // when no approval will ever arrive — and the model is told why.
-          intentError = error instanceof Error ? error.message : String(error);
-          entry.intentError = intentError;
-          console.warn('[aiAgentRunLoop] proposal could not be submitted for approval', {
-            runId: run.id, toolName, error,
-          });
-        }
-      }
-
-      outcome.proposedActions.push(entry);
-      return {
-        allowed: false,
-        error: intentError
-          ? `Proposal recorded but not submitted for approval: ${intentError}. Do not retry.`
-          : PROPOSAL_RECORDED_TEXT,
-      };
+    // Review fix (wave P2-1 fix round 1, PLAN CHANGE; reordered review round
+    // 2, Minor 2): a verdict run is read-only, full stop — a 'propose' or an
+    // 'act' the ordinary guardrail would otherwise record or execute is
+    // denied outright instead. This sits BELOW the `check.disposition ===
+    // 'deny'` branch above (not merged into it) so a REAL guardrail deny —
+    // kill switch, site scope, protected resource, disabled/off, an unknown
+    // action — keeps ITS OWN specific reason instead of being overwritten
+    // with the generic "verdict runs are read-only"; only 'propose'/'act'
+    // ever reach this branch now, since 'deny' and 'allow' have already
+    // returned above. Defense in depth on top of `guardrailPolicy.toolAllowlist`
+    // already being built from the verdict floor in `driveSdkLoop` (which
+    // makes an unlisted mutation deny for the allowlist reason before this
+    // is even reached) — this catches anything that reasoning missed, e.g.
+    // a read-only-looking tool with a mutating action this list didn't
+    // anticipate.
+    // Wave P2-2 (task 6): generalized from verdict-only to every READ-ONLY
+    // profile. A sweep run is read-only by the same construction (its floor
+    // is read-only tools, and `sweepLimits` pins `maxActionsPerRun: 0`), so
+    // a 'propose'/'act' disposition on one is the same class of miss this
+    // branch was added to catch. The rendered message is unchanged for a
+    // verdict run (`run.profile` IS 'verdict' there).
+    //
+    // Wave P2-3 (task 6): the narrative profile joins them, and is the
+    // STRONGEST case of the three — its tool floor is EMPTY
+    // (`narrativeProfile.ts`) and `narrativeLimits` pins `maxActionsPerRun:
+    // 0`, so a mutating call reaching here at all already means something
+    // upstream is wrong. Denying it outright rather than recording a proposal
+    // matters because a narrative run has no proposal surface at all: nothing
+    // reads `outcome.proposedActions` for this profile, so a recorded
+    // proposal would be a mutation request nobody would ever see.
+    //
+    // Wave P2-4 (task A6): triage joins them, on the SAME footing as
+    // narrative — its tool floor (`TRIAGE_TOOL_ALLOWLIST`) is empty too, so
+    // no mutating tool is ever exposed to a triage run in the first place;
+    // this is defense in depth against anything upstream reaching here
+    // anyway. A triage run's real output channel is `submit_ticket_proposal`
+    // (an outcome tool, handled above this branch, never reaching here) —
+    // nothing reads `outcome.proposedActions` for this profile either.
+    //
+    // Fleet Designer W01 (#5651): design joins them too. Its tool floor
+    // (`DESIGN_TOOL_ALLOWLIST`) is NOT empty — unlike narrative/triage it has
+    // a handful of read-only drill-down tools — but `designLimits` still
+    // pins `maxActionsPerRun: 0`, and every one of those tools is read-only
+    // by construction, so a 'propose'/'act' disposition reaching here is the
+    // same class of upstream miss this branch exists to catch. Its real
+    // output channel is `submit_fleet_design`, handled above this branch.
+    if (
+      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
+        || isDesignProfile(run) || isPatchProfile(run))
+      && check.disposition !== 'allow'
+    ) {
+      const reason = `${run.profile} runs are read-only`;
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
     }
 
-    allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
-    return { allowed: true };
+    if (check.disposition === 'propose') {
+      return recordProposal(check, toolName, input);
+    }
+
+    if (check.disposition === 'act') {
+      // Same pure resolver `checkAgentGuardrails` already called to reach
+      // 'act' — deterministic on the same (toolName, input), so this can
+      // only be non-null. The null branch below is defense in depth, never
+      // exercised by real dispatch: never let an 'act' disposition reach the
+      // execution tail without a manifest match backing it.
+      const op = resolveActOperation(toolName, input);
+      if (!op) {
+        const reason = `Act-mode dispatch could not re-resolve a manifest match for "${toolName}"`;
+        console.error('[aiAgentRunLoop] act disposition without a manifest match — denying', {
+          runId: run.id, toolName,
+        });
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+
+      // Device-less mutations are denied far upstream inside
+      // `checkAgentGuardrails` itself (before the act branch is even
+      // reached), so `guardrailPolicy.deviceId` is guaranteed non-null here
+      // — this check is defense in depth, not the primary gate.
+      if (!guardrailPolicy.deviceId) {
+        const reason = 'Act-mode execution requires a device-bound run';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+
+      const revalidated = await revalidateActExecution({
+        run: {
+          id: run.id,
+          orgId: run.orgId,
+          agentId: run.agentId,
+          agentKind,
+          deviceId: guardrailPolicy.deviceId,
+          deviceSiteId: guardrailPolicy.deviceSiteId ?? null,
+        },
+        op,
+        toolName,
+        input,
+        reserved: actReservation,
+      });
+
+      if ('deny' in revalidated) {
+        outcome.deniedActions.push({ tool: toolName, reason: revalidated.deny });
+        return { allowed: false, error: revalidated.deny };
+      }
+
+      if ('downgrade' in revalidated) {
+        // Drift (act → shadow) or a cap-exhausted reservation — falls into
+        // the EXACT same recording path as an ordinary unmatched-mutation
+        // proposal under act mode (aiGuardrails.ts's own act branch). Also
+        // covers a CUSTOM (non-built-in) `execute_playbook` call: `pinPlaybook`
+        // (actRevalidation.ts) downgrades those to a proposal before this
+        // function is ever reached, so the executor below only ever sees a
+        // playbookId already proven built-in. `revalidated.reason` (#3826
+        // cheap nonblocking fix) is set only for a missing/malformed-identity
+        // normalizeTarget downgrade — threaded through so the proposal a
+        // human reviews carries WHY it wasn't auto-executed.
+        return recordProposal(check, toolName, input, revalidated.reason);
+      }
+
+      if (op.key === 'execute_playbook') {
+        // Task 5 (#3826): the ONLY op where the manifest owns execution. The
+        // ordinary `execute_playbook` tool is a STUB that hands the model the
+        // step list to run turn-by-turn — never a rule-equivalent shape for
+        // unattended act mode. The deterministic executor replaces it
+        // entirely: it does NOT dispatch through `recordAllowedExecution`
+        // (the SDK tool never runs), so `actPinPending`/`executionIdPending`
+        // never see an entry for this call and the post-hook's FIFO guard
+        // (`remaining <= 0`) makes its no-op safe. The outcome is recorded
+        // here, directly, in the SAME shape the post-hook would have used.
+        const target = revalidated.pin.target as Extract<ActTarget, { kind: 'playbook' }>;
+        const playbookDigest = revalidated.pin.playbookDigest;
+        if (!playbookDigest) {
+          // Defense in depth: `pinPlaybook` always sets this on an `ok`
+          // pin — never reachable via real dispatch.
+          const reason = 'Act-mode playbook execution has no pinned digest to execute against';
+          console.error('[aiAgentRunLoop] execute_playbook pin missing playbookDigest', { runId: run.id });
+          outcome.deniedActions.push({ tool: toolName, reason });
+          return { allowed: false, error: reason };
+        }
+
+        const dispatchStartedAt = Date.now();
+        const result = await executeBuiltInPlaybookForRun({
+          run: {
+            id: run.id,
+            orgId: run.orgId,
+            agentId: run.agentId,
+            agentKind,
+            deviceId: guardrailPolicy.deviceId,
+            deviceSiteId: guardrailPolicy.deviceSiteId ?? null,
+          },
+          agentAuth,
+          playbookId: target.playbookId,
+          expectedDigest: playbookDigest,
+          variables: (input.variables as Record<string, unknown> | undefined) ?? {},
+          reserved: actReservation,
+          deadlineMs,
+        });
+        const durationMs = Date.now() - dispatchStartedAt;
+
+        outcome.executedActions.push({
+          ...executedActionTrigger(run),
+          tool: toolName,
+          executionId: '(inline)',
+          result: result.execution === 'succeeded' ? 'ok' : 'failed',
+          durationMs,
+          execution: result.execution,
+          verification: result.verification,
+          ...(result.verifyDetail ? { verifyDetail: result.verifyDetail } : {}),
+          actOpKey: op.key,
+          actTargetName: actTargetSummary(target),
+        });
+        outcome.toolExecutionCount += 1;
+
+        if (result.verification === 'failed') {
+          await recordActVerifyFailureAlert({
+            run: { id: run.id, orgId: run.orgId, deviceId: guardrailPolicy.deviceId, agentId: run.agentId },
+            op: { key: op.key },
+            target,
+            detail: result.verifyDetail,
+          });
+        }
+
+        // Worded as success, matching PROPOSAL_RECORDED_TEXT's convention —
+        // the playbook already ran; a model reading "denied" here would retry.
+        return { allowed: false, error: result.summary };
+      }
+
+      // ok: the ONLY remaining path that actually dispatches — through the
+      // normal tool implementation, exactly like a plain 'allow'.
+      return recordAllowedExecution(toolName, input, revalidated.pin);
+    }
+
+    return recordAllowedExecution(toolName, input, null);
   };
 }
 
@@ -414,24 +1105,214 @@ export function createAgentRunPreToolUse(args: {
 export function createAgentRunPostToolUse(args: {
   outcome: AgentRunOutcome;
   allowedPending: Map<string, number>;
+  executionIdPending: Map<string, Array<string | null>>;
+  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  run: {
+    id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
+    /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
+    taskId?: string | null;
+    triggerKind?: RunRow['triggerKind'];
+    alertId?: string | null;
+    scheduleId?: string | null;
+    ticketId?: string | null;
+  };
+  /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
+  agentUserId: string;
+  /**
+   * Fleet Designer W01 (#5651) — the refs `submit_fleet_design`'s validation
+   * needs (the evidence's device-id set and the server-computed baseline).
+   * Set only for a `design`-profile run; computed ONCE by `driveSdkLoop` and
+   * reused for the SDK tool build below, so the referential pass and the
+   * tool's own schema can never see two different device-id sets for the
+   * same run.
+   */
+  design?: FleetDesignOutcomeRefs;
+  /** AI patch agent W01 — see the pre-hook's `patch` param. */
+  patch?: PatchPlanToolRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch } = args;
 
-  return async (toolName, input, _output, isError, durationMs) => {
+  return async (toolName, input, output, isError, durationMs) => {
+    // Outcome tools (Phase 2 wave P2-1): never went through
+    // `recordAllowedExecution` in the pre-hook, so they never touch
+    // `allowedPending`/the execution ledger/the act pipeline — capture the
+    // validated verdict and stop, before any of the ordinary accounting below.
+    if (isOutcomeTool(toolName)) {
+      // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
+      // `outcomeToolsForProfile` the pre-hook denies against — so a name the
+      // pre-hook refused can never still land in the outcome via this path.
+      if (!isError && outcomeToolsForRun(run).includes(toolName)) {
+        switch (toolName) {
+          case 'submit_alert_verdict':
+            outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+            break;
+          case 'submit_sweep_findings':
+            outcome.sweepFindings = validateOutcomeToolInput(toolName, input);
+            break;
+          // Wave P2-3: what lands here is the SERVER-BUILT `NarrativeOutcome`
+          // (titles attached, sections re-ordered, markdown derived), not the
+          // model's submission — see `validateOutcomeToolInput`'s narrative
+          // overload.
+          case 'submit_narrative':
+            outcome.narrative = validateOutcomeToolInput(toolName, input);
+            break;
+          // Phase 2 wave P2-4 (ticket triage, #4191), task A6 — what lands
+          // here IS the model's raw (validated) submission, unlike
+          // `submit_narrative`: `TicketProposalOutcome` is a type alias onto
+          // the shared `TicketTriageProposal` with no server-owned rebuild
+          // step (see `TicketProposalOutcome`'s docstring). Turning this into
+          // `manage_tickets` intents/`ticket_drafts` rows happens downstream
+          // in `finishRun` (task A8), never here.
+          case 'submit_ticket_proposal':
+            outcome.ticketProposal = validateOutcomeToolInput(toolName, input);
+            break;
+          // #5205 W06 — the proposal is STORED, not acted on. The coordinator
+          // reads it off the persisted run row and `validateNextStep` decides
+          // whether the named step is reachable. Capturing it here is what
+          // makes the checkpoint durable: the run row is committed by
+          // `finishRun` before the task's wake ever fires.
+          case 'submit_task_step':
+            outcome.taskStep = validateOutcomeToolInput(toolName, input);
+            break;
+          // Fleet Designer W01 (#5651) — what lands here is the SERVER-BUILT
+          // `FleetDesignOutcome` (every itemRef attached, baseline numbers
+          // computed, markdown derived), not the model's submission — see
+          // `validateOutcomeToolInput`'s design overload. `design` is always
+          // set whenever this case can be reached: the pre-hook denies
+          // `submit_fleet_design` for any non-design run (`outcomeToolsForRun`
+          // gate), and a design run always has `ctx.design` populated by the
+          // context loader before the SDK tool is even built.
+          case 'submit_fleet_design':
+            if (!design) throw new Error('[aiAgentRunLoop] submit_fleet_design captured with no design refs');
+            outcome.fleetDesign = validateOutcomeToolInput(toolName, input, design);
+            break;
+          // AI patch agent W01 — the SERVER-BUILT plan (in-tool referential
+          // gate passed). `finalizePatchPlan` re-validates and records a
+          // disposition per item; nothing here executes or mints an intent.
+          case 'submit_patch_plan':
+            if (!patch) throw new Error('[aiAgentRunLoop] submit_patch_plan captured with no patch refs');
+            outcome.patchPlan = validateOutcomeToolInput(toolName, input, patch);
+            break;
+          // Execution plane W04 — the validated submission, stored verbatim.
+          // `proposedActions` stay PROPOSALS: nothing downstream of this line
+          // mints an intent from them (the run is device-less with
+          // maxActionsPerRun pinned to 0).
+          case 'submit_analysis':
+            outcome.analysis = validateOutcomeToolInput(toolName, input);
+            break;
+          default: {
+            const exhaustive: never = toolName;
+            throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
+          }
+        }
+      }
+      return;
+    }
+
     const remaining = allowedPending.get(toolName) ?? 0;
     if (remaining <= 0) return;
     allowedPending.set(toolName, remaining - 1);
 
+    let executionId: string | null = null;
+    const pending = executionIdPending.get(toolName);
+    if (pending && pending.length > 0) {
+      executionId = pending.shift() ?? null;
+    }
+    if (executionId) {
+      try {
+        await completeToolExecution({ executionId, isError, durationMs });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
+          toolName, executionId, error,
+        });
+      }
+    }
+
+    let actPin: ActAssetPin | null = null;
+    const pinQueue = actPinPending.get(toolName);
+    if (pinQueue && pinQueue.length > 0) {
+      actPin = pinQueue.shift() ?? null;
+    }
+
     const action = readToolAction(toolName, input);
-    outcome.executedActions.push({
+    const entry: OutcomeExecutedAction = {
+      ...executedActionTrigger(run),
       tool: toolName,
       ...(action ? { action } : {}),
-      executionId: '(inline)',
+      executionId: executionId ?? '(inline)',
       result: isError ? 'failed' : 'ok',
       durationMs,
-    });
+    };
+
+    // Recorded BEFORE the verification await below, not after: this whole
+    // hook runs under `safePostToolUse`'s POST_TOOL_USE_TIMEOUT_MS cap
+    // (aiAgentSdkTools.ts), which is independent of — and can be shorter
+    // than — `verifyActExecution`'s own per-read budget. If the outer cap
+    // fires while a verify read is still in flight, the entry must already
+    // be in `outcome.executedActions` (the action really did execute) rather
+    // than lost entirely. The object is mutated in place as verification
+    // resolves, never pushed twice.
+    outcome.executedActions.push(entry);
     outcome.toolExecutionCount += 1;
+
+    if (actPin && run.deviceId) {
+      try {
+        const verified = await verifyActExecution({
+          pin: actPin,
+          toolOutput: output,
+          isError,
+          run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId },
+          agentUserId,
+        });
+        entry.execution = verified.execution;
+        entry.verification = verified.verification;
+        if (verified.verifyDetail) entry.verifyDetail = verified.verifyDetail;
+        entry.actOpKey = actPin.op.key;
+        entry.actTargetName = actTargetSummary(actPin.target);
+
+        if (verified.verification === 'failed') {
+          await recordActVerifyFailureAlert({
+            run: { id: run.id, orgId: run.orgId, deviceId: run.deviceId, agentId: run.agentId },
+            op: { key: actPin.op.key },
+            target: actPin.target,
+            detail: verified.verifyDetail,
+          });
+        }
+      } catch (error) {
+        // verifyActExecution already catches its own read-back failures —
+        // this is a genuinely unexpected bug in the verify path itself.
+        // Never let it turn a completed tool call into a crashed run.
+        console.error('[aiAgentRunLoop] act verification failed unexpectedly (non-fatal)', {
+          runId: run.id, toolName, error,
+        });
+        entry.execution = 'unknown';
+        entry.verification = 'inconclusive';
+        entry.actOpKey = actPin.op.key;
+        entry.actTargetName = actTargetSummary(actPin.target);
+      }
+    }
   };
+}
+
+/**
+ * Run-level verdict rollup, computed once at finish over every executed
+ * action's (execution, verification) pair — see `AgentRunOutcome.runVerdict`.
+ * Pure; exported for direct unit coverage.
+ */
+export function computeRunVerdict(
+  outcome: Pick<AgentRunOutcome, 'executedActions' | 'proposedActions'>,
+): AgentRunVerdict {
+  const acted = outcome.executedActions.filter((a) => a.verification !== undefined);
+  if (acted.length === 0) return 'no_action';
+  // The rollup is over the (execution, verification) PAIR, not verification
+  // alone: a dispatch that itself failed/timed out/is unknown is not "clean"
+  // even when its read-back reports 'passed' (rare, but not proof), and a
+  // read-back that never ran ('skipped' — e.g. dispatch failed before the
+  // script could produce an exit code) must not roll up as a quiet success
+  // just because it isn't literally 'failed'/'inconclusive'.
+  const allClean = acted.every((a) => a.verification === 'passed' && a.execution === 'succeeded');
+  if (!allClean) return 'needs_attention';
+  return outcome.proposedActions.length > 0 ? 'partial' : 'remediated';
 }
 
 interface SdkUsage {
@@ -480,6 +1361,37 @@ export function dispositionForResultSubtype(subtype: string): ResultDisposition 
 }
 
 /**
+ * Phase 2 wave P2-4 (#4191), Task A8 — whether a run that created one or
+ * more intents still has a human decision pending. `true` iff at least one
+ * id in `intentIds` is NOT also in `decidedIntentIds`.
+ *
+ * Before this task, `executeAgentRun` used `intentIds.length > 0` directly:
+ * correct because every existing finalizer (`finalizeVerdict`/
+ * `finalizeSweep`) and every in-loop proposal path (`recordProposal`) only
+ * ever links a `pending_approval` intent id — a cancelled/errored one is
+ * never pushed (see `alertVerdicts.ts`'s header on why linking a cancelled
+ * id would be wrong). `finalizeTicketTriage` breaks that invariant on
+ * purpose: a creation-time `ticket_autonomy` grant produces a genuinely
+ * live intent whose status is ALREADY `approved` — nobody is waiting on it,
+ * so counting it toward `awaiting_approval` would leave the run in a status
+ * that reads as "needs a human" when it does not.
+ *
+ * `decidedIntentIds` defaults to empty, so for every other profile this is
+ * exactly `intentIds.length > 0` — unchanged behavior.
+ *
+ * Exported for direct unit coverage (same precedent as `computeRunVerdict`)
+ * rather than only reachable through the full SDK-loop harness.
+ */
+export function classifyIntentAwaitingApproval(
+  intentIds: string[],
+  decidedIntentIds: string[] | undefined,
+): boolean {
+  if (intentIds.length === 0) return false;
+  const decided = new Set(decidedIntentIds ?? []);
+  return intentIds.some((id) => !decided.has(id));
+}
+
+/**
  * Same precedence as `recordUsageFromSdkResult`: trust the SDK's self-reported
  * cost, and price the tokens ourselves only when it reports zero against a
  * non-zero token count (issue #1326 — the SDK cannot price a model id newer
@@ -512,90 +1424,253 @@ function extractAssistantText(message: unknown): string {
     .trim();
 }
 
+function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptContext {
+  return {
+    subject: ticket.subject,
+    description: ticket.description,
+    status: ticket.status,
+    priority: ticket.priority,
+    category: ticket.category,
+    tags: ticket.tags,
+    dueDate: ticket.dueDate,
+    comments: ticket.comments,
+    // P2-4 (#4191) Task 7 — both already sanitized/whitelist-filtered by
+    // `ticketContext.ts`'s `assembleTicketContext`; passed through as-is.
+    linkedDevice: ticket.linkedDevice,
+    // P2-4 (#4191) Task 7 review follow-up — the "unavailable ≠ zero" flags;
+    // passed through as-is (present/`true` only when set, matching
+    // `TicketRunContext`'s own optional-`true` contract).
+    linkedDeviceUnavailable: ticket.linkedDeviceUnavailable,
+    similarResolvedTickets: ticket.similarResolvedTickets,
+    similarResolvedTicketsUnavailable: ticket.similarResolvedTicketsUnavailable,
+    truncated: ticket.truncated,
+  };
+}
+
+function anomalyPromptContext(anomaly: AnomalyRunContext): AgentRunAnomalyPromptContext {
+  return {
+    anomalyType: anomaly.anomalyType,
+    bucketSeconds: anomaly.bucketSeconds,
+    windowStart: anomaly.windowStart,
+    firstSeenAt: anomaly.firstSeenAt,
+    lastSeenAt: anomaly.lastSeenAt,
+    peakScore: anomaly.peakScore,
+    rowCount: anomaly.rowCount,
+    metricNames: anomaly.metricNames,
+    siblings: anomaly.siblings,
+    truncated: anomaly.truncated,
+  };
+}
+
+function sweepPromptContext(sweep: NonNullable<RunContext['sweep']>): AgentRunSweepPromptContext {
+  return {
+    scheduleId: sweep.scheduleId,
+    occurrenceKey: sweep.occurrenceKey,
+    kinds: sweep.kinds,
+    evidence: sweep.evidence,
+  };
+}
+
+/**
+ * Named-field projection, like `sweepPromptContext` above: the prompt context
+ * gets exactly what the task turn may render, so a field added to
+ * `RunContext.narrative` cannot reach the model until someone puts it here
+ * too. `context` is passed by reference (it is already bounded and sanitized
+ * by `narrativeContext.ts`) and the renderer reads scalars off it — it is
+ * never serialized. See `buildNarrativeTaskPrompt`.
+ */
+function narrativePromptContext(
+  narrative: NonNullable<RunContext['narrative']>,
+): AgentRunNarrativePromptContext {
+  return {
+    scheduleId: narrative.scheduleId,
+    occurrenceKey: narrative.occurrenceKey,
+    context: narrative.context,
+  };
+}
+
+/**
+ * Named-field projection, like `narrativePromptContext` above — a field added
+ * to `RunContext.design` cannot reach the model until someone puts it here
+ * too. `evidence` is passed by reference (already bounded and sanitized by
+ * `designEvidence.ts`) and the renderer reads scalars off it — it is never
+ * serialized. See `buildFleetDesignTaskPrompt`.
+ */
+function designPromptContext(
+  design: NonNullable<RunContext['design']>,
+): AgentRunDesignPromptContext {
+  return {
+    trigger: design.scheduleId ? 'schedule' : 'manual',
+    occurrenceKey: design.occurrenceKey,
+    evidence: design.evidence,
+  };
+}
+
+/**
+ * Fleet Designer W01 (#5651) — the refs `submit_fleet_design`'s validation
+ * needs, computed ONCE per run from `ctx.design` so the post-hook capture and
+ * the SDK tool build below always agree on the same device-id set and
+ * baseline numbers. `undefined` for every non-design run.
+ */
+function designOutcomeRefs(ctx: RunContext): FleetDesignOutcomeRefs | undefined {
+  if (!ctx.design) return undefined;
+  return {
+    deviceIds: ctx.design.evidence.deviceIds,
+    baseline: designBaselineNumbers(ctx.design.evidence),
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * AI patch agent W01 — the refs `submit_patch_plan` validates against,
+ * computed ONCE per run from the assembled evidence (never a second query) so
+ * the pre-hook, the SDK handler and the post-hook capture agree.
+ */
+function patchOutcomeRefs(ctx: RunContext): PatchPlanToolRefs | undefined {
+  if (!ctx.patch) return undefined;
+  return {
+    refs: patchEvidenceRefs(ctx.patch.evidence),
+    evidenceTruncated: ctx.patch.evidence.truncated,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
+    analysis: ctx.run.profile === 'analysis'
+      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs)
+      : null,
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
     run: { id: ctx.run.id, mode: ctx.run.modeAtStart, triggerKind: ctx.run.triggerKind },
     device: ctx.device
       ? { id: ctx.device.id, hostname: ctx.device.hostname, osType: ctx.device.osType }
       : null,
     alert: ctx.alert,
+    ticket: ctx.ticket ? ticketPromptContext(ctx.ticket) : null,
+    anomaly: ctx.anomaly ? anomalyPromptContext(ctx.anomaly) : null,
     instructions: effective.instructions,
+    profile: ctx.run.profile,
+    correlationGroup: ctx.correlationGroup,
+    sweep: ctx.sweep ? sweepPromptContext(ctx.sweep) : null,
+    narrative: ctx.narrative ? narrativePromptContext(ctx.narrative) : null,
+    design: ctx.design ? designPromptContext(ctx.design) : null,
+    patch: ctx.patch
+      ? {
+          // W04 (#5750): an alert-routed run is 'alert'; the schedule/manual split is unchanged.
+          trigger: ctx.run.alertId ? 'alert' : ctx.patch.scheduleId ? 'schedule' : 'manual',
+          occurrenceKey: ctx.patch.occurrenceKey,
+          evidence: ctx.patch.evidence,
+          focusDeviceId: ctx.patch.focusDeviceId ?? null,
+        }
+      : null,
   };
 }
 
-async function notifyRunFinished(
+async function driveSdkLoop(
   ctx: RunContext,
-  finished: { status: string; summary: string; intentIds: string[] },
-): Promise<void> {
-  try {
-    // The run's immutable snapshot, NOT `ctx.agent.recipients`. The agent row
-    // loaded by `run.agent_id` is always the PARTNER BASELINE
-    // (resolveEffectiveAgentSystem pins `agentId: partnerRow.id`), so its raw
-    // recipients column silently drops every recipient an organization added
-    // through its override — and notifies nobody at all when only the override
-    // configured any. `mergeAgentPolicies` already unions the two sets into
-    // `effective.recipients`, and `resolveRecipientUserIds` re-derives
-    // membership against the RUN org, so the merged set is the correct input.
-    const userIds = await resolveRecipientUserIds(
-      {
-        orgId: ctx.agent.orgId,
-        partnerId: ctx.agent.partnerId,
-        recipients: ctx.run.policySnapshot.effective.recipients,
-      },
-      ctx.run.orgId,
-    );
-    if (userIds.length === 0) return;
-
-    const firstLine = finished.summary.split('\n')[0]?.trim() ?? '';
-    // AFTER the status commit and outside any held transaction (#1105).
-    await inSystemDbContext(async () => {
-      for (const userId of userIds) {
-        await createNotification({
-          userId,
-          orgId: ctx.run.orgId,
-          type: 'ai',
-          title: 'Agent run finished',
-          message: `${ctx.agent.name}: ${firstLine || finished.status}`,
-          // There is no run-detail page until wave 6; link to the approvals
-          // queue only when there is actually something waiting there.
-          link: finished.intentIds.length > 0 ? '/approvals' : null,
-          metadata: {
-            runId: ctx.run.id,
-            agentId: ctx.agent.id,
-            intentIds: finished.intentIds,
-            status: finished.status,
-          },
-          dedupeKey: `agent-run:${ctx.run.id}`,
-        });
-      }
-    });
-  } catch (error) {
-    // A notification failure must never redefine the run's outcome.
-    console.error('[aiAgentRunLoop] failed to notify run recipients', {
-      runId: ctx.run.id, error,
-    });
-  }
-}
-
-interface LoopResult {
-  summary: string;
-  costCents: number;
-  turnCount: number;
-  outcome: AgentRunOutcome;
-  intentIds: string[];
-  /**
-   * Set when the SDK loop itself threw. Carried back rather than rethrown so
-   * the tokens already burned still land on the run row — a crashed run that
-   * recorded `cost_cents: 0` would make the agent's daily budget cap
-   * under-count real spend. Setup failures BEFORE any spend still throw.
-   */
-  failure?: { errorCode: string; message: string };
-}
-
-async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
+  effective: AiAgentPolicy,
+  readCurrentPolicy: CurrentPolicyReader,
+): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
+  // Phase 2 wave P2-1 (alert verdicts). Computed FIRST — before
+  // `guardrailPolicy` and the execution-ledger session below — so both can
+  // read off it. `verdictLimits`'s output is used ONLY for the SDK `query()`
+  // options further down (`maxTurns`/`maxBudgetUsd`) and the local budget
+  // backstop — never re-validated through `aiAgentLimitsSchema` (its
+  // `maxActionsPerRun: 0` is below that schema's `min(1)`) and never written
+  // back into `run.policySnapshot`. `profileAllowlist` is `null` for a
+  // `full`-profile run (nothing to narrow); for a verdict run it is
+  // `verdictToolAllowlist`'s pinned floor, reused below for BOTH
+  // `guardrailPolicy.toolAllowlist` (review fix, wave P2-1 fix round 1 —
+  // supersedes the original "intersects the agent's allowlist" design: a
+  // bare `manage_alerts` entry in the agent's OWN allowlist must never let
+  // `acknowledge`/`resolve`/`suppress` reach `checkAgentGuardrails`'s
+  // allowlist gate on a verdict run) and the SDK's `allowedTools` exposure —
+  // one computation, one source of truth for what a verdict run can reach.
+  //
+  // Wave P2-2 (task 6) generalized this from verdict-only to a single
+  // profile branch covering `full | verdict | sweep`: `profileAllowlist` is
+  // `null` for `full` (nothing to narrow) and otherwise the profile's pinned
+  // floor, reused below for BOTH `guardrailPolicy.toolAllowlist` and the
+  // SDK's `allowedTools`/`onlyTools` exposure — one computation, one source
+  // of truth for what this run can reach, whichever profile it is.
+  //
+  // Wave P2-3 (task 6) added the fourth arm. A narrative run's
+  // `profileAllowlist` is the outcome tool ALONE (its drill-down floor is
+  // empty), so the same one computation makes `guardrailPolicy.toolAllowlist`,
+  // `allowedTools` and `onlyTools` all agree that this run can reach nothing
+  // but its own submission channel.
+  //
+  // Wave P2-4 (task A6) added the fifth arm. A triage run's
+  // `profileAllowlist` is ALSO the outcome tool alone (`TRIAGE_TOOL_ALLOWLIST`
+  // is empty, same design as narrative) — but `triageLimits`, unlike its
+  // three siblings, does NOT zero `maxActionsPerRun`: see `triageProfile.ts`'s
+  // `triageLimits` docstring for why that field is a deliberate passthrough
+  // here (task A8's post-run minting cap).
+  const verdict = isVerdictProfile(run);
+  const sweep = isSweepProfile(run);
+  const narrative = isNarrativeProfile(run);
+  const triage = isTriageProfile(run);
+  // Fleet Designer W01 (#5651) added the sixth arm. A design run's
+  // `profileAllowlist` is NOT the outcome tool alone — `DESIGN_TOOL_ALLOWLIST`
+  // gives it a small read-only drill-down floor, same shape as
+  // verdict/sweep's — but `designLimits`, like narrative/triage/verdict/sweep,
+  // still zeroes `maxActionsPerRun`: a design run is read-only by
+  // construction (Global Constraints), never just by convention.
+  const design = isDesignProfile(run);
+  // AI patch agent W01 (#5747) — the seventh arm: a small read-only
+  // drill-down floor plus `submit_patch_plan`; `patchLimits` zeroes
+  // `maxActionsPerRun`.
+  const patchRun = isPatchProfile(run);
+  // Execution plane W04 (#5715) — the eighth arm. An analysis run is the
+  // first profile whose floor carries NON-read-only tools (the four
+  // `workspace_*`, Tier 1 but allowlist-gated), so
+  // `guardrailPolicy.toolAllowlist` below is load-bearing in a way it is not
+  // for the read-only floors. Same single computation feeds authority,
+  // `allowedTools` and `onlyTools`.
+  const analysis = isAnalysisProfile(run);
+  const runLimits = verdict
+    ? verdictLimits(limits)
+    : sweep
+      ? sweepLimits(limits)
+      : narrative
+        ? narrativeLimits(limits)
+        : triage
+          ? triageLimits(limits)
+          : design
+            ? designLimits(limits)
+            : patchRun
+              ? patchLimits(limits)
+              : analysis
+                ? analysisLimits(limits)
+                : limits;
+  const profileAllowlist = verdict
+    ? verdictToolAllowlist(effective.toolAllowlist)
+    : sweep
+      ? sweepToolAllowlist(effective.toolAllowlist)
+      : narrative
+        ? narrativeToolAllowlist(effective.toolAllowlist)
+        : triage
+          ? triageToolAllowlist(effective.toolAllowlist)
+          : design
+            ? designToolAllowlist(effective.toolAllowlist)
+            : patchRun
+              ? patchToolAllowlist(effective.toolAllowlist)
+              : analysis
+                ? analysisToolAllowlist(effective.toolAllowlist)
+                : null;
+  // Computed here (not by the SDK-loop timer below) so the pre-hook's
+  // act-mode playbook executor (Task 5, #3826) can enforce the SAME
+  // wall-clock ceiling independently of the SDK's `abortController` — a
+  // synchronous tool-use hook does not observe that abort while it's still
+  // awaiting inside `executeBuiltInPlaybookForRun`.
+  // `runLimits`, not `limits`: the analysis profile pins its own wall clock
+  // (`analysisWallClockSeconds`), and the sandbox's provider-side deadline is
+  // derived from what is left of THIS value. No other profile overrides the
+  // field, so this is a no-op for all of them.
+  const wallClockMs = Math.max(1, Math.round(runLimits.wallClockSeconds * 1000));
+  const deadlineMs = Date.now() + wallClockMs;
 
   const llm = await resolveLlmConfigForOrg(run.orgId);
   if (llm.source === 'unavailable') {
@@ -605,6 +1680,44 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
   const model = effective.model ?? llm.model;
 
+  // #5870 — the only log line between admission and termination. Without it
+  // a run that is legitimately still thinking (a design run may now run up
+  // to 1800s) is indistinguishable from one that is hung; `turn_count` and
+  // `cost_cents` are only written at finalization. No secrets or prompt
+  // content: runId/profile/model/maxTurns/wallClockMs are all metadata
+  // already stored on the run row or its policy snapshot.
+  console.log('[aiAgentRunLoop] run loop starting', {
+    runId: run.id,
+    profile: run.profile,
+    model,
+    maxTurns: runLimits.maxTurnsPerRun,
+    wallClockMs,
+  });
+
+  // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
+  // model on every task-linked run." Admission stamped the CONFIGURED model
+  // (`policySnapshot.effective.model`), which is null whenever the agent
+  // inherits the org's LLM default — the fallback on the line above. This is
+  // the first and only moment the value actually used is known, so it is
+  // stamped here rather than guessed at admission.
+  //
+  // Best-effort and non-fatal: a failed metadata write must never turn a
+  // healthy run into a failed one. `resolved_model` is not in
+  // `ai_agent_runs_immutable_guard()`'s deny-list, so this UPDATE is
+  // permitted where a `policy_snapshot` rewrite would raise.
+  if (run.taskId) {
+    try {
+      await inSystemDbContext(() => db
+        .update(aiAgentRuns)
+        .set({ resolvedModel: model })
+        .where(eq(aiAgentRuns.id, run.id)));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to stamp resolved model (non-fatal)', {
+        runId: run.id, taskId: run.taskId, error,
+      });
+    }
+  }
+
   // THE run's policy, not the agent's current one: `mode_at_start` and the
   // release-time revalidation in 3b both reason about this snapshot, and an
   // operator narrowing the allowlist mid-run must not change what a proposal
@@ -612,11 +1725,15 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const guardrailPolicy: AgentGuardrailPolicy = {
     enabled: effective.enabled,
     mode: run.modeAtStart,
-    toolAllowlist: effective.toolAllowlist,
+    toolAllowlist: profileAllowlist ?? effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     deviceId: run.deviceId,
     deviceSiteId: ctx.device?.siteId ?? null,
   };
+
+  // Execution plane W04 — the admission-frozen inputs. Read DEFENSIVELY:
+  // `staged_inputs` is jsonb and is NULL for every non-analysis profile.
+  const stagedInputs = (run.stagedInputs ?? null) as AiAgentRunStagedInputs | null;
 
   // Throws AgentRunOwnershipError if the agent does not own this org.
   const agentAuth = buildAgentAuthContext(
@@ -632,12 +1749,72 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       orgId: run.orgId,
       deviceId: run.deviceId,
       deviceSiteId: ctx.device?.siteId ?? null,
+      // W04: a device-LESS analysis run is pinned to its frozen device SET.
+      // Without this it would have NO allowedDeviceIds at all — i.e. every
+      // device in the org, which is what analysisMaxInputDevicesPerRun exists
+      // to prevent.
+      ...(analysis && stagedInputs ? { allowedDeviceIds: stagedInputs.deviceIds } : {}),
     },
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
 
+  // Execution plane W04 — the workspace is constructed eagerly and the
+  // SANDBOX lazily: `new WorkspaceService(...)` costs nothing, and `ensure()`
+  // (which creates the microVM) only runs if the model actually calls a
+  // workspace tool. A run that concludes from datasets alone never starts a
+  // sandbox and settles at 0 cents.
+  if (analysis && stagedInputs) {
+    const workspace = new WorkspaceService({
+      orgId: run.orgId,
+      runId: run.id,
+      sessionId: null,
+      region: stagedInputs.region,
+      deadlineAt: new Date(deadlineMs),
+      allowedInputHandles: stagedInputs.handles,
+      limits: {
+        analysisMaxComputeSeconds:
+          runLimits.analysisMaxComputeSeconds ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeSeconds,
+        analysisMaxComputeCentsPerRun:
+          runLimits.analysisMaxComputeCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun,
+        analysisMaxStagedBytesPerRun:
+          runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun,
+        analysisMaxArtifactBytesPerRun:
+          runLimits.analysisMaxArtifactBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxArtifactBytesPerRun,
+        analysisMaxStepTimeoutSeconds:
+          runLimits.analysisMaxStepTimeoutSeconds ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
+        analysisMaxStepsPerRun:
+          runLimits.analysisMaxStepsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      },
+    }, getSandboxBackend());
+    registerWorkspace(run.id, workspace);
+    ctx.workspace = workspace;
+  }
+
+  // Execution-ledger session: created here — AFTER the ownership check above
+  // can no longer throw, so an ownership_mismatch failure never leaks an
+  // orphaned `active` session row nothing will ever close (that failure path
+  // returns straight to `executeAgentRun`'s catch block, not `finishRun`).
+  // Stored on `ctx` so `finishRun` can reconcile and close it once the loop
+  // below is done. Best-effort: a failure here must not fail the run — it
+  // just means every tool call below skips its ledger row (see the pre-hook's
+  // `sessionId` guard) and falls back to the `'(inline)'` executionId, same as
+  // before wave 4a.
+  try {
+    ctx.sessionId = await createAgentRunSession({
+      runId: run.id,
+      agentId: ctx.agent.id,
+      orgId: run.orgId,
+      deviceId: run.deviceId,
+      model,
+      maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
+    });
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to create the execution-ledger session', {
+      runId: run.id, error,
+    });
+  }
+
   const outcome: AgentRunOutcome = {
-    findings: [],
     proposedActions: [],
     executedActions: [],
     deniedActions: [],
@@ -645,21 +1822,108 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   };
   const intentIds: string[] = [];
   const allowedPending = new Map<string, number>();
+  const executionIdPending = new Map<string, Array<string | null>>();
+  const actPinPending = new Map<string, Array<ActAssetPin | null>>();
+  // Shared across every act-mode call in THIS run — see actRevalidation.ts.
+  const actReservation: ActReservationState = { count: 0 };
 
+  // Fleet Designer W01 (#5651) — computed ONCE here (not inside either hook)
+  // and reused for BOTH the pre-hook's validate-only check and the post-hook
+  // capture below, so the referential pass and the tool's own schema can
+  // never see two different device-id sets or two different `generatedAt`
+  // timestamps for the same run.
+  const designRefs = designOutcomeRefs(ctx);
+  const patchRefs = patchOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
-    run, agentName: ctx.agent.name, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending,
+    run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
+    intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
+    actReservation, deadlineMs, design: designRefs, patch: patchRefs,
+    revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, readCurrentPolicy, toolName),
+    // W03 seeds the run frame from the single-device runs that exist today.
+    // W04's `analysis` profile replaces both values with the admission-frozen
+    // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
+    // array is "no frame" (see ToolExecutionContext.runTargets) — a full-profile
+    // run with no device keeps today's behaviour exactly.
+    runTargets: analysis && stagedInputs ? stagedInputs.deviceIds : (run.deviceId ? [run.deviceId] : []),
+    stagedBytesRemaining: analysis
+      ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
+      : EXPORT_DEFAULT_MAX_BYTES,
   });
-  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending });
+  const postToolUse = createAgentRunPostToolUse({
+    outcome, allowedPending, executionIdPending, actPinPending,
+    run: {
+      id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      profile: run.profile, taskId: run.taskId,
+      triggerKind: run.triggerKind, alertId: run.alertId, scheduleId: run.scheduleId, ticketId: run.ticketId,
+    },
+    agentUserId: agentAuth.user.id,
+    design: designRefs,
+    patch: patchRefs,
+  });
+
+  // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
+  // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
+  // is still the sole authority for anything the model does manage to call;
+  // see `verdictToolAllowlist`'s own docstring. Reuses `profileAllowlist`
+  // computed at the top of this function — the SAME list that narrowed
+  // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
+  // never drift apart.
+  const exposedNames = profileAllowlist
+    ? profileAllowlist.map((name) => (
+      isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
+    ))
+    : BREEZE_MCP_TOOL_NAMES;
+
+  // F2 fix (P2-1 second live check): `allowedTools` above only gates
+  // PERMISSION to call a tool — the MCP server still sends every REGISTERED
+  // tool's full schema to the model on every turn regardless of
+  // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
+  // what gets registered in the first place. Reuses `profileAllowlist` again
+  // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
+  // above — collapsed to bare tool names (`manage_alerts:list` and
+  // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
+  // tool excluded: an outcome tool is never in the registry `tools`
+  // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
+  // below instead, which `createBreezeMcpServer` always includes regardless
+  // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
+  // whole registry, unchanged.
+  const onlyTools = profileAllowlist
+    ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+    : undefined;
 
   // No getActiveSession: a headless run has no ActiveSession, and the
-  // session-aware tools (M365/Google) correctly refuse without one.
-  const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse);
+  // session-aware tools (M365/Google) correctly refuse without one. The
+  // profile's outcome tool (`submit_alert_verdict` for verdict,
+  // `submit_sweep_findings` for sweep) is passed as `extraTools`; `full`
+  // gets an EMPTY array from `outcomeToolsForProfile`, so it never even
+  // registers one on the MCP server, let alone exposes it via
+  // `allowedTools`.
+  const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
+    buildOutcomeSdkTools(
+      outcomeToolsForRun(run),
+      designRefs || patchRefs ? { design: designRefs, patch: patchRefs } : undefined,
+    ),
+    onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
+  // S8: the ONE surface with a genuinely stable request identity — the agent
+  // run's own id. Re-driving a run therefore rejoins its existing reservation
+  // instead of taking a second hold on the org's cap.
+  const reservation = await reserveAiBudget({
+    orgId: run.orgId,
+    idempotencyKey: `ai-agent-run:${run.id}`,
+    billingSource,
+  });
+  if (reservation.kind === 'denied') {
+    throw new AgentRunError('org_budget_exceeded', reservation.message);
+  }
+  const reservationId = reservation.reservationId;
+  const maxBudgetCents = reservation.kind === 'reserved'
+    ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
+    : runLimits.maxBudgetCentsPerRun;
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
-  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
   const wallClockTimer = setTimeout(() => {
     wallClockExceeded = true;
     abortController.abort();
@@ -672,6 +1936,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   let maxTurnsExceeded = false;
   let costCents = 0;
   let turnCount = 0;
+  let receivedResult = false;
   const usage: SdkUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -686,12 +1951,12 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
         options: {
           systemPrompt: buildAgentRunSystemPrompt(prompt),
           model,
-          maxTurns: Math.max(1, limits.maxTurnsPerRun),
+          maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: limits.maxBudgetCentsPerRun / 100,
+          maxBudgetUsd: maxBudgetCents / 100,
           tools: [],
-          allowedTools: BREEZE_MCP_TOOL_NAMES,
+          allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
           abortController,
           env: buildClaudeSdkChildEnv(usableLlm),
@@ -711,6 +1976,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             continue;
           }
           if (message.type !== 'result') continue;
+          receivedResult = true;
 
           turnCount += message.num_turns;
           const messageUsage = message.usage as unknown as SdkUsage;
@@ -752,7 +2018,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > limits.maxBudgetCentsPerRun) {
+          if (costCents > maxBudgetCents) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -801,19 +2067,29 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
   try {
-    await recordSessionlessSdkUsage(
-      run.orgId,
-      {
-        costCents,
-        usage,
-        numTurns: turnCount,
-        toolExecutionCount: outcome.toolExecutionCount,
-        model,
-      },
-      billingSource,
-    );
+    if (receivedResult) {
+      await recordSessionlessSdkUsage(
+        run.orgId,
+        {
+          costCents,
+          usage,
+          numTurns: turnCount,
+          toolExecutionCount: outcome.toolExecutionCount,
+          model,
+        },
+        billingSource,
+        reservationId,
+      );
+    } else {
+      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+    }
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
+      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
+        runId: run.id,
+        error: markError,
+      }));
   }
 
   return {
@@ -822,6 +2098,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     turnCount,
     outcome,
     intentIds,
+    agentAuth,
     ...(failure ? { failure } : {}),
   };
 }
@@ -857,24 +2134,124 @@ export async function executeAgentRun(runId: string): Promise<void> {
   // 2. Stop-gate. The queue can deliver minutes after admission, and the kill
   //    switch or the operator's policy may have changed since. This decides
   //    only WHETHER to start — the loop itself runs on the run's immutable
-  //    snapshot (see driveSdkLoop).
-  const stopped = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
-  if (stopped) {
+  //    snapshot except for the agent's RESOURCE SCOPE, which is rechecked here
+  //    and again before every tool call against a TTL-cached resolution of the
+  //    current policy. That recheck is narrow-only: it can deny a run whose
+  //    device fell outside the scope, never widen one (see driveSdkLoop).
+  const { stopped, current } = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
+  // ONE resolution of the current policy for the whole gate, then reused (under
+  // a short TTL) by every per-tool-call resource-scope recheck below — the gate
+  // used to resolve it twice back to back, and the pre-tool hook once per call.
+  const readCurrentPolicy = createCurrentPolicyReader(ctx, current);
+  const scopeCurrent = stopped ? true : await isRunResourceScopeCurrent(ctx, readCurrentPolicy);
+  if (stopped || scopeCurrent !== true) {
+    // A clean scope mismatch is the same policy event admission reports
+    // (`trigger_filter_mismatch`); an UNVERIFIABLE scope is an infrastructure
+    // failure and must not masquerade as one (#6096 D3).
+    const reason = stopped
+      ? 'policy_revoked_before_start'
+      : scopeCurrent === false ? 'trigger_filter_mismatch' : 'resource_scope_unverifiable';
+    if (scopeCurrent === false) {
+      console.warn('[aiAgentRunLoop] the run\'s device is outside the agent\'s resource scope', {
+        runId, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      });
+    } else if (scopeCurrent === null) {
+      console.error('[aiAgentRunLoop] could not verify the run\'s resource scope before start', {
+        runId, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      });
+    }
     await transitionRunStatus(runId, 'running', 'skipped', {
-      errorCode: 'policy_revoked_before_start',
+      errorCode: reason,
       finishedAt: new Date(),
     });
-    await safePublish('ai.agent.run.skipped', run.orgId, {
-      runId, agentId: run.agentId, reason: 'policy_revoked_before_start',
-    });
+    await safePublish('ai.agent.run.skipped', run.orgId, { runId, agentId: run.agentId, reason });
     return;
   }
 
   const effective = run.policySnapshot.effective;
 
+  // Tracks what to log the ledger session as closing under (see
+  // `cleanupExecutionLedger`) — defaults to 'failed' so a throw anywhere below,
+  // including one before this is ever reassigned, closes it correctly.
+  let ledgerOutcome: 'completed' | 'failed' = 'failed';
+  // Execution plane W04 — the outcome the workspace finalizer stamps its
+  // compute numbers onto. `driveSdkLoop` mutates the SAME object it returns,
+  // so assigning it here (rather than reading `result.outcome`, which does not
+  // exist on the throw path) gives the `finally` something to write to
+  // whichever way the run ends.
+  // The loop's REAL outcome, once it exists. The `finally` below needs
+  // something to stamp compute onto on the throw path, where `result` never
+  // existed — but on every other path it must be the same object `finishRun`
+  // serialized, or `computeUsageEstimated` would land on a throwaway and the
+  // run-detail DTO would never see it.
+  let loopOutcome: AgentRunOutcome | null = null;
+  const orphanWorkspaceOutcome: AgentRunOutcome = {
+    proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+  };
+
   try {
-    const result = await driveSdkLoop(ctx, effective);
+    const result = await driveSdkLoop(ctx, effective, readCurrentPolicy);
     const { outcome, intentIds } = result;
+    loopOutcome = outcome;
+    // Computed once here so every terminal path below (failure, ceiling, or
+    // normal finish) carries the same rollup — `finishRun` serializes
+    // `result.outcome` verbatim into the DB row.
+    outcome.runVerdict = computeRunVerdict(outcome);
+
+    // Execution plane W04 — teardown + settlement BEFORE `finishRun`, so the
+    // compute numbers are on the outcome the run row serializes (and the
+    // sandbox is gone before the run is announced as finished). The `finally`
+    // below calls this again for the throw path; the second call is a no-op
+    // because `ctx.workspace` is nulled here.
+    await finalizeWorkspaceForRun(ctx, outcome);
+
+    // Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1
+    // (IMPORTANT 3): verdict persistence + suggestion→intent linking runs
+    // HERE, before the awaiting_approval/completed decision further down,
+    // so a newly created pending intent is counted by
+    // `intentIds.length > 0` — a verdict run whose suggestion produced a
+    // pending approval must itself finish `awaiting_approval`, like any
+    // other run with a pending intent. `verdictErrorCode` is applied ONLY
+    // at the normal-finish `finishRun` call below (not to the `failure`/
+    // `ceiling` branches, which already carry a real, more specific code —
+    // see `finalizeVerdict`'s own docstring for why).
+    const verdictErrorCode = await finalizeVerdict(ctx, result);
+    // Task A7 (wave P2-2) — the sweep sibling, same placement and for the
+    // same reason: proposal→intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created pending
+    // intent is counted by `intentIds.length > 0`. A run is either a verdict
+    // run or a sweep run, never both, so at most one of these two codes is
+    // ever non-null.
+    const sweepErrorCode = await finalizeSweep(ctx, result);
+    // Task A7 (wave P2-3) — third in the same row and for the same reason: it
+    // persists the narrative as a system-authored report artifact and links
+    // `ai_agent_runs.report_run_id` BEFORE the awaiting_approval/completed
+    // decision below, and — the ordering that actually matters here — before
+    // `finishRun` emits the notification that POINTS AT that artifact. A run
+    // is exactly one of verdict / sweep / narrative, so at most one of the
+    // three error codes below is ever non-null.
+    const narrativeErrorCode = await finalizeNarrative(ctx, result);
+    // Task A8 (wave P2-4) — fourth in the same row, same reason: a triage
+    // run's proposal->intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created
+    // pending (or creation-time `ticket_autonomy`-approved) intent is
+    // counted correctly. A run is exactly one of verdict / sweep /
+    // narrative / triage, so at most one of the four error codes below is
+    // ever non-null.
+    const ticketTriageErrorCode = await finalizeTicketTriage(ctx, result);
+    // Fleet Designer W01 (#5651) — fifth in the same row and for the same
+    // reason: it persists the design as a system-authored report artifact and
+    // links `ai_agent_runs.report_run_id` BEFORE the awaiting_approval/
+    // completed decision below. A run is exactly one of verdict / sweep /
+    // narrative / triage / design, so at most one of the five error codes
+    // below is ever non-null.
+    const fleetDesignErrorCode = await finalizeFleetDesign(ctx, result);
+    // AI patch agent W01 (#5747) — sixth in the same row. It only re-validates
+    // the plan and records dispositions (no rows, no intents), so ordering
+    // against the awaiting_approval decision is moot, but it must run before
+    // `finishRun` serializes the outcome. At most one of the six codes below
+    // is ever non-null.
+    const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -887,10 +2264,55 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // A run that hit a ceiling before producing anything a human can act on is
     // a FAILURE, not a quiet success: the reviewer needs to know the agent was
     // cut off, not that it found nothing. A run that was cut off after doing
-    // useful work finishes normally, with the flag in `outcome`.
+    // useful work finishes normally, with the flag in `outcome`. A verdict
+    // run's "useful work" IS `outcome.alertVerdict` (review fix, wave P2-1 fix
+    // round 1) — without this, a verdict run that called `submit_alert_verdict`
+    // and then hit `error_max_turns` with no further prose would finish
+    // `failed('max_turns_exceeded')` despite having done its ONE job, wrongly
+    // counting against the agent's circuit breaker (`recordRunTerminal`).
+    //
+    // `outcome.budgetExceeded` itself is relative to THIS run's effective
+    // budget (`runLimits.maxBudgetCentsPerRun` above) — for a verdict-profile
+    // run that's `verdictBudgetCentsPerRun` (5 cents by default, see
+    // `verdictProfile.ts`'s `verdictLimits`), not the agent's top-level
+    // `maxBudgetCentsPerRun` (50 cents by default). Don't read a verdict run's
+    // `budgetExceeded: true` as "spent close to 50 cents" — it means the run
+    // crossed its own, much smaller, profile ceiling.
     const producedSomething =
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0
+      || outcome.alertVerdict !== undefined
+      // Same rule for a sweep run's ONE job (wave P2-2, task 6): a run that
+      // called `submit_sweep_findings` and only then hit `error_max_turns`
+      // has produced exactly what it was admitted to produce, and must not
+      // be counted a ceiling failure against the agent's circuit breaker.
+      || outcome.sweepFindings !== undefined
+      // Same rule again for a narrative run's ONE job (wave P2-3, task 6),
+      // and it bites harder here than for either sibling: `narrativeMaxTurns`
+      // is 3 by default, so a run that submits on its last turn and then has
+      // no turn left to write a closing sentence is the COMMON case, not an
+      // edge one. Without this it would finish `failed('max_turns_exceeded')`
+      // holding a complete, publishable narrative.
+      || outcome.narrative !== undefined
+      // Same rule again for a triage run's ONE job (wave P2-4, task A6): a
+      // run that called `submit_ticket_proposal` and only then hit
+      // `error_max_turns` has produced exactly what it was admitted to
+      // produce (a proposal task A8 still has to turn into anything), and
+      // must not be counted a ceiling failure against the circuit breaker.
+      || outcome.ticketProposal !== undefined
+      // Fleet Designer W01 (#5651) — same rule again for a design run's ONE
+      // job: a run that called `submit_fleet_design` and only then hit
+      // `error_max_turns` has produced exactly what it was admitted to
+      // produce, and must not be counted a ceiling failure against the
+      // agent's circuit breaker (which, per Global Constraints, treats a
+      // design run's success as circuit-neutral anyway — see `agentCircuit.ts`).
+      || outcome.fleetDesign !== undefined
+      // AI patch agent W01 — same rule for a patch run's ONE job.
+      || outcome.patchPlan !== undefined
+      // Execution plane W04 — same rule for an analysis run's ONE job: a run
+      // that called `submit_analysis` and only then hit `error_max_turns` has
+      // produced exactly what it was admitted to produce.
+      || outcome.analysis !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -908,7 +2330,23 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // Awaiting approval is a REAL terminal-ish state for the run: the agent is
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', null, result);
+    //
+    // Task A8 (wave P2-4): a plain `intentIds.length > 0` check is no longer
+    // sufficient — a triage run's `ticket_autonomy` grant can create intents
+    // that are ALREADY decided (`approved`, no human fan-out ever ran) at
+    // the moment they're minted. `classifyIntentAwaitingApproval` excludes
+    // those (`result.decidedIntentIds`) from the count; every other
+    // profile's finalizer only ever links a `pending_approval` id, so
+    // `decidedIntentIds` stays empty and this is behaviorally IDENTICAL to
+    // the old check for verdict/sweep/narrative/full runs.
+    ledgerOutcome = 'completed';
+    await finishRun(
+      ctx,
+      classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
+        ?? patchPlanErrorCode,
+      result,
+    );
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -916,15 +2354,126 @@ export async function executeAgentRun(runId: string): Promise<void> {
         ? 'ownership_mismatch'
         : 'run_failed';
     console.error('[aiAgentRunLoop] agent run failed', { runId, errorCode, error });
-    const moved = await transitionRunStatus(runId, 'running', 'failed', {
-      errorCode,
-      finishedAt: new Date(),
-    });
+    // This is the LAST-RESORT terminalization: the runner queue is
+    // `attempts: 1` (replaying a crashed run could re-invoke tools that
+    // already had real-world effects), so if this throws, the row stays
+    // `running` forever and any AI Operator task waiting on it re-arms its
+    // poll until its own deadline fires — with nothing anywhere explaining
+    // why. `transitionRunStatus` gained a task-outbox insert inside its
+    // transaction in #5205 W06 and can now throw where it previously could
+    // only return false, so the fallback needs a fallback.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(runId, 'running', 'failed', {
+        errorCode,
+        finishedAt: new Date(),
+      });
+    } catch (terminalError) {
+      console.error('[aiAgentRunLoop] could not terminalize a failed run', {
+        runId, orgId: run.orgId, errorCode, terminalError,
+      });
+      captureException(
+        terminalError instanceof Error ? terminalError : new Error(String(terminalError)),
+      );
+    }
     if (moved) {
       await safePublish('ai.agent.run.failed', run.orgId, {
         runId, agentId: run.agentId, errorCode,
       });
     }
+  } finally {
+    // Fires on every path that got far enough to create a session — the
+    // normal finish, the `!moved` early return inside `finishRun`, AND a throw
+    // between session creation and `finishRun` (see `cleanupExecutionLedger`'s
+    // docstring). A crashed process (SIGKILL) is the one path this cannot
+    // cover; `reapStalledAgentRuns` (`runService.ts`) covers that one instead.
+    // Execution plane W04 (spec §7 step 6, §5.6). Runs on EVERY path out of
+    // a run that built a workspace — normal finish, ceiling, SDK throw, the
+    // `!moved` early return inside `finishRun`. A SIGKILLed process is the one
+    // path this cannot cover; `jobs/workspaceReaper.ts` (W02) destroys by
+    // `provider_ref` for that one.
+    await finalizeWorkspaceForRun(ctx, loopOutcome ?? orphanWorkspaceOutcome);
+    await cleanupExecutionLedger(ctx, ledgerOutcome);
+  }
+}
+
+
+/**
+ * Execution plane W04 — destroy the run's sandbox, settle its compute against
+ * EVERY billing source, and stamp the run row. Best-effort throughout: a
+ * billing failure must never turn a completed analysis into a failed one —
+ * but it is never silent either, because an unsettled reservation holds the
+ * org's daily compute budget down until midnight.
+ *
+ * Order is load-bearing: finalize (destroy + usage) → settle → stamp the run
+ * row → unregister. Settling before the destroy would bill a sandbox that is
+ * still running; unregistering first would let a late tool call create a
+ * SECOND sandbox for a run that is over.
+ */
+async function finalizeWorkspaceForRun(
+  ctx: RunContext,
+  // The run's in-flight `AgentRunOutcome`. Passed explicitly rather than read
+  // off `ctx`: `RunContext` is the loaded, read-only description of the run,
+  // and the outcome is the mutable thing the loop is building — the same
+  // separation every other finalizer in this file keeps.
+  outcome: AgentRunOutcome,
+): Promise<void> {
+  const workspace = ctx.workspace;
+  if (!workspace) return;
+  const reservedCents = ctx.run.computeReservedCents ?? 0;
+  let cents = 0;
+  let usage: SandboxUsage | null = null;
+  let estimated = false;
+  try {
+    usage = await workspace.finalize();
+    estimated = workspace.usageEstimated;
+    if (!usage) {
+      // The ONLY zero case: no sandbox was ever created (the model concluded
+      // from datasets alone). `finalize()` returns non-null for every run
+      // whose sandbox existed, INCLUDING one that `workspace_cancel` or the
+      // compute cap destroyed early — those are the two ordinary endings of
+      // an analysis run, and billing them at $0 would be the defect.
+      cents = 0;
+    } else if (estimated) {
+      // Spec §9: usage unavailable ⇒ settle at the RESERVATION, the worst
+      // case. Never $0, and never a guess that undercharges.
+      cents = reservedCents;
+    } else {
+      cents = calculateComputeCents(getSandboxBackend().name, usage, WORKSPACE_MEMORY_GB);
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] workspace finalize failed', { runId: ctx.run.id, error });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    cents = reservedCents;
+    estimated = true;
+  } finally {
+    // Carried on the outcome so the run-detail DTO can tell a measured charge
+    // from a worst-case one. Set before `unregisterWorkspace` so the outcome
+    // is complete whichever path `finishRun` took.
+    outcome.computeCents = cents;
+    outcome.computeUsageEstimated = estimated;
+    unregisterWorkspace(ctx.run.id);
+    ctx.workspace = null;
+  }
+
+  try {
+    // EVERY billing source (spec §5.6): a BYOK partner pays Anthropic for
+    // tokens, but the microVM is ours. `settleComputeCents` performs the
+    // credit deduction itself, and only for `platform`. The source is
+    // re-resolved here rather than threaded from `driveSdkLoop`, because this
+    // runs on the throw path too — where that value may never have existed.
+    const billingSource: AiBillingSource = await getLlmBillingSourceForOrg(ctx.run.orgId);
+    await settleComputeCents(ctx.run.orgId, ctx.run.id, cents, billingSource);
+    // Stamp the measured provider numbers beside the cents the settle wrote.
+    await inSystemDbContext(() => db
+      .update(aiAgentRuns)
+      .set({ computeCpuMs: usage?.cpuMs ?? 0, computeWallMs: usage?.wallMs ?? 0 })
+      .where(eq(aiAgentRuns.id, ctx.run.id)));
+  } catch (error) {
+    console.error('[aiAgentRunLoop] compute settlement failed; reservation may be held', {
+      runId: ctx.run.id, cents, error,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -933,6 +2482,105 @@ const TERMINAL_EVENT = {
   awaiting_approval: 'ai.agent.run.awaiting_approval',
   failed: 'ai.agent.run.failed',
 } as const;
+
+/**
+ * Act-execution op evidence (Task 6, P2-5, #4192) — one `executed`/`failed`
+ * row per executed action carrying an `actOpKey`, keyed by the action's
+ * INDEX in `executedActions` (`actEvidenceSourceId`, Deviation #4:
+ * `executionId` falls back to the literal `'(inline)'` when the execution-
+ * ledger write itself failed, so it is not unique within a run — the index
+ * is). The ONLY caller is `finishRun`, after its terminal CAS already won,
+ * so this runs at most once per winning executor. Unconditional on `status`/
+ * `watches` on purpose: an action can genuinely execute before a run later
+ * fails for an unrelated reason, and that execution still earns evidence.
+ *
+ * `watchId === null` means no watch will EVER verify this run — either
+ * `scheduleFixWatch` was never even attempted (`watches` false, or `status`
+ * not `'completed'`: exactly the runs the extensive comments above document
+ * as executing nothing, so this is a no-op for them in practice) or it WAS
+ * attempted and came back null (an ineligible run, or a genuinely failed
+ * `createFixWatchRow` — see `scheduleFixWatch`'s own header for why null
+ * means exactly that and nothing else after Task 5). Either way, every
+ * `executed` action whose own verification did NOT fail is credited an
+ * immediate `verified` row on the SAME source id, since no later watch
+ * verdict will ever supply one. A non-null `watchId` means a watch row
+ * exists and `checkFixWatchPhase2` (fixWatch.ts) will supply
+ * `verified`/`recurred` later — this function credits nothing extra in
+ * that case.
+ *
+ * Best-effort and non-fatal, like every other post-CAS side effect in this
+ * function (`deliverRunFinishedNotifications` above): a ledger write
+ * failure must never retroactively change how this run's terminal outcome
+ * is reported.
+ */
+async function recordActExecutionEvidence(
+  run: RunRow,
+  executedActions: OutcomeExecutedAction[],
+  watchId: string | null,
+): Promise<void> {
+  const rows: OpEvidenceInsert[] = [];
+  const occurredAt = new Date();
+  const pushRow = (opKey: string, sourceId: string, metric: 'executed' | 'failed' | 'verified') => {
+    rows.push({
+      orgId: run.orgId,
+      agentId: run.agentId,
+      namespace: 'act_op',
+      opKey,
+      ruleId: null,
+      sourceKind: 'act_execution',
+      sourceId,
+      metric,
+      runId: run.id,
+      occurredAt,
+    });
+  };
+
+  for (const [index, action] of executedActions.entries()) {
+    if (!action.actOpKey) continue;
+
+    // Plan line 84 (C4 amendment) defines `executed` and `failed` as TWO
+    // INDEPENDENT rules, not an if/else — the UNIQUE constraint is
+    // `(source_kind, source_id, metric)`, so the same sourceId can legally
+    // carry both metrics. `executed` = "attempted AND the executor reported
+    // success" (`execution === 'succeeded'`), full stop. `failed` = an
+    // ATTEMPTED failure: the dispatch itself failed, OR it dispatched but
+    // never resolved cleanly (`timeout`/`unknown` — `isFixWatchEligible`,
+    // fixWatch.ts, already documents these as "not clean"), OR it dispatched
+    // successfully but its own verification failed (the disk-cleanup shape:
+    // the command ran, but the check that grades it failed). A dispatch that
+    // succeeded AND whose verification failed therefore earns BOTH rows —
+    // the executor did its job; the outcome was still bad.
+    const isExecuted = action.execution === 'succeeded';
+    const isFailedAttempt =
+      action.execution === 'failed' ||
+      action.execution === 'timeout' ||
+      action.execution === 'unknown' ||
+      action.verification === 'failed';
+    if (!isExecuted && !isFailedAttempt) continue;
+
+    const sourceId = actEvidenceSourceId(run.id, index);
+    if (isExecuted) pushRow(action.actOpKey, sourceId, 'executed');
+    if (isFailedAttempt) pushRow(action.actOpKey, sourceId, 'failed');
+
+    // No watch will ever verify this run, so a successfully-dispatched
+    // action is credited immediately — UNLESS its own inline verification
+    // already failed, in which case it must never be credited `verified`
+    // even though the dispatch itself succeeded (it also just earned a
+    // `failed` row above).
+    if (isExecuted && watchId === null && action.verification !== 'failed') {
+      pushRow(action.actOpKey, sourceId, 'verified');
+    }
+  }
+  if (rows.length === 0) return;
+
+  try {
+    await inSystemDbContext(() => insertOpEvidence(rows));
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to write act-execution op evidence (non-fatal)', {
+      runId: run.id, error,
+    });
+  }
+}
 
 async function finishRun(
   ctx: RunContext,
@@ -967,15 +2615,236 @@ async function finishRun(
     ...(errorCode ? { errorCode } : {}),
   });
 
-  await notifyRunFinished(ctx, {
-    status,
-    summary: result.summary,
-    intentIds: result.intentIds,
-  });
+  // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
+  // function is skipped entirely on the `!moved` branch above (another
+  // executor or `reapStalledAgentRuns` already owns this run), which is
+  // exactly the case the ledger cleanup exists for. See the note there.
+
+  // `deliverRunFinishedNotifications` re-reads the run row it just committed
+  // above (Task 6, #3826) rather than taking `status`/`result` in-process —
+  // see runFinishedNotify.ts's header for why the retry worker needs the
+  // SAME by-id entry point. A failure here must never redefine the run's
+  // terminal status, so it's caught here and durably retried instead of
+  // left to just fail silently as the old inline version did.
+  //
+  // Review fix (wave P2-1 fix round 1): a verdict run is skipped entirely —
+  // its "finished" surface is the alert badge/classification, not a run
+  // notification a technician has to act on, and `scheduleFixWatch` just
+  // below is act-lane only (a verdict run never executes anything to watch
+  // for regression). Both are best-effort/failure-tolerant machinery built
+  // for `full`-profile runs; there is nothing here for a verdict run to skip
+  // INTO a gap — this is a deliberate no-op, not a missing feature.
+  //
+  // Wave P2-2 (task 6) SPLIT the two: a SWEEP run does notify. Nobody is
+  // watching a 06:00 cron occurrence, and unlike a verdict it leaves no
+  // badge on an alert row a technician was already looking at — the
+  // run-finished notification IS the surface for it. It still schedules no
+  // fix-watch: a sweep executes nothing, so there is no fix whose
+  // regression could be watched for.
+  //
+  // Wave P2-3 (task 6): a NARRATIVE run lands on the same side of both splits
+  // as a sweep, for the same two reasons — nobody is watching a Monday 07:00
+  // occurrence and it leaves no badge on a row someone was already looking
+  // at (so it notifies), and it executes nothing (so there is no fix to
+  // watch). Task A7 re-points the notification's title/link at the stored
+  // report artifact; the DECISION to notify at all is this line.
+  //
+  // Wave P2-4 (task A6): `notifies` is left as-is here — a triage run is not
+  // excluded (only `verdict` is), so it already falls on the "does notify"
+  // side; what that notification actually SAYS for a triage run is task A9's
+  // job in `runFinishedNotify.ts`, not this line. `watches` DOES gain the
+  // triage exclusion: a triage run's tool floor is empty
+  // (`TRIAGE_TOOL_ALLOWLIST`), so — exactly like sweep and narrative — it
+  // executes nothing, and there is no fix whose regression `scheduleFixWatch`
+  // could watch for.
+  const notifies = !isVerdictProfile(ctx.run);
+  // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
+  // reasoning as sweep/narrative/triage — a design run executes nothing (its
+  // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
+  // so there is no fix whose regression `scheduleFixWatch` could watch for.
+  // `notifies` is unaffected: a design run is not excluded (only `verdict`
+  // is), so it already falls on the "does notify" side.
+  const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run)
+    && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run)
+    // AI patch agent W01: a patch run executes nothing, so there is no fix
+    // whose regression a fix-watch could watch for.
+    && !isPatchProfile(ctx.run);
+
+  if (notifies) {
+    try {
+      await deliverRunFinishedNotifications(ctx.run.id);
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
+        runId: ctx.run.id, error,
+      });
+      await enqueueAgentNotifyRetry(ctx.run.id);
+    }
+  }
+
+  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+  // deliberately never affects this run's own status: `scheduleFixWatch`
+  // swallows every failure internally (see its header). Only a clean
+  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+  // `verification`, but gating on `status` here avoids the query entirely on
+  // the common non-completed paths).
+  let watchId: string | null = null;
+  if (watches && status === 'completed') {
+    watchId = await scheduleFixWatch(
+      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+      result.outcome,
+    );
+  }
+
+  // Act-execution op evidence (Task 6, P2-5, #4192) — see
+  // `recordActExecutionEvidence`'s own header for why this is unconditional
+  // on `watches`/`status` rather than nested inside the block above.
+  await recordActExecutionEvidence(ctx.run, result.outcome.executedActions, watchId);
 }
 
 /**
- * Kill switch + current effective policy. True means "do not start".
+ * Best-effort execution-ledger cleanup, called from `executeAgentRun`'s
+ * `finally` so it fires on EVERY path out of a run that got as far as
+ * creating a session — not just the happy in-process finish. Covers:
+ *  - `finishRun`'s `!moved` branch (another executor, or `reapStalledAgentRuns`,
+ *    already transitioned this run out of `running`);
+ *  - a throw between session creation and `finishRun` (e.g. `createBreezeMcpServer`
+ *    or `transitionRunStatus` itself throwing), caught by `executeAgentRun`'s
+ *    own catch block;
+ *  - the normal path, where `finishRun` already committed the terminal status.
+ *
+ * `outcome` only distinguishes 'completed'/'failed' for `closeAgentRunSession`'s
+ * log line — the same two-way collapse `finishRun` used to do inline
+ * (`awaiting_approval` reads as 'completed': the agent is done thinking either
+ * way, a human owning the follow-up is not the session continuing).
+ */
+async function cleanupExecutionLedger(
+  ctx: RunContext,
+  outcome: 'completed' | 'failed',
+): Promise<void> {
+  if (!ctx.sessionId) return;
+  const sessionId = ctx.sessionId;
+  try {
+    const hungCount = await reconcileHungExecutions(sessionId);
+    if (hungCount > 0) {
+      console.warn('[aiAgentRunLoop] reconciled tool executions left in-flight at run finish', {
+        runId: ctx.run.id, sessionId, hungCount,
+      });
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to reconcile hung executions (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
+  try {
+    await closeAgentRunSession(sessionId, outcome);
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to close the execution-ledger session (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
+}
+
+/**
+ * How long a run may reuse one resolution of its agent's CURRENT policy.
+ *
+ * The contract this bound buys: staleness can only ever DELAY a narrowing, by
+ * at most this long, and never let a widening take effect — the run is matched
+ * against its own immutable snapshot as well as the current policy. That is
+ * what makes it safe not to pay `resolveEffectiveAgentSystem` (four queries
+ * and a system transaction) on every tool call.
+ */
+const RESOURCE_SCOPE_RECHECK_TTL_MS = 5_000;
+
+/** Overridable ONLY so the TTL boundary is testable without global fake timers. */
+let resourceScopeRecheckClock: () => number = () => Date.now();
+export function __setResourceScopeRecheckClockForTests(clock: (() => number) | null): void {
+  resourceScopeRecheckClock = clock ?? (() => Date.now());
+}
+
+type CurrentPolicyReader = () => Promise<ResolvedAgent | null>;
+
+/**
+ * A per-run, TTL-bounded reader for the agent's current effective policy.
+ * Seeded with the resolution `isStoppedBeforeStart` already paid for, so the
+ * start gate resolves once rather than twice.
+ *
+ * Errors are NOT cached: a failed resolution reports `null`, every caller
+ * fails closed on it, and the next call retries.
+ */
+function createCurrentPolicyReader(ctx: RunContext, seed: ResolvedAgent | null): CurrentPolicyReader {
+  let cached: ResolvedAgent | null = seed;
+  let cachedAt = resourceScopeRecheckClock();
+  return async () => {
+    const now = resourceScopeRecheckClock();
+    if (cached && now - cachedAt < RESOURCE_SCOPE_RECHECK_TTL_MS) return cached;
+    cached = await resolveEffectiveAgentSystem(ctx.run.orgId, ctx.agent.kind)
+      .catch((error: unknown) => {
+        console.error('[aiAgentRunLoop] could not re-resolve the effective policy for scope recheck', {
+          runId: ctx.run.id, orgId: ctx.run.orgId, error,
+        });
+        return null;
+      });
+    cachedAt = now;
+    return cached;
+  };
+}
+
+/**
+ * Recheck the run's RESOURCE SCOPE — admission scope AND live scope — because a
+ * policy edit may NARROW a run's scope mid-run, never widen it (the snapshot
+ * half is what makes a widening edit unreachable).
+ *
+ * Deliberately NOT a second kill switch. `enabled`, `mode` and agent identity
+ * belong to `isStoppedBeforeStart`, which decides only WHETHER to start;
+ * rechecking them here would break the invariant that the loop runs on the
+ * run's immutable snapshot, hard-denying the next tool call of a remediation
+ * already in flight because someone flipped the agent to shadow. A `null`
+ * current policy means the scope could not be VERIFIED, not that the agent is
+ * disabled — fail closed either way.
+ *
+ * Three-valued on purpose (#6096 D3): `true` in scope, `false` a CLEAN scope
+ * mismatch (the run's device is outside the scope), `null` the scope could not
+ * be VERIFIED (a failed policy resolution or a throw). Both non-true results
+ * fail closed; the start gate reports them under different error codes so a
+ * misconfigured filter is never mistaken for a broken database.
+ *
+ * Scope does NOT fence which tools may be called — it bounds which DEVICE they
+ * may touch, and the run's exact-device allowlist (`agentAuthContext`) carries
+ * that boundary into every device-keyed tool. `toolName` is for logging only.
+ */
+async function isRunResourceScopeCurrent(
+  ctx: RunContext,
+  readCurrentPolicy: CurrentPolicyReader,
+  toolName?: string,
+): Promise<boolean | null> {
+  const snapshotTriggers = ctx.run.policySnapshot.effective.triggers;
+  try {
+    const current = await readCurrentPolicy();
+    if (!current) return null;
+    const scoped = hasAgentResourceScope(snapshotTriggers)
+      || hasAgentResourceScope(current.effective.triggers);
+    // An unscoped run pays nothing beyond the (cached) read above: no device
+    // lookups.
+    if (!scoped) return true;
+    return await agentRunMatchesResourceScope(
+      snapshotTriggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
+    ) && await agentRunMatchesResourceScope(
+      current.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
+    );
+  } catch (error) {
+    console.error('[aiAgentRunLoop] resource scope recheck failed', {
+      runId: ctx.run.id, toolName, error,
+    });
+    return null;
+  }
+}
+
+/**
+ * Kill switch + current effective policy. Returns `{ stopped, current }`:
+ * `stopped: true` means "do not start", and `current` is the resolution the
+ * caller reuses for the resource-scope gate (`null` when it could not be
+ * resolved, which is always also `stopped`).
  *
  * `agentId` is not decoration. `resolveEffectiveAgentSystem` re-resolves by
  * (org, kind) and always reports the CURRENT partner baseline, so without this
@@ -986,27 +2855,63 @@ async function finishRun(
  * "still enabled" to mean anything.
  *
  * An org OVERRIDE does not trip this: the resolver reports the baseline id
- * either way, so ordinary org-level policy edits still reach the run through
- * the enabled/mode check alone.
+ * either way, so org-level policy edits still reach the enabled/mode check. Resource
+ * restrictions are separately revalidated before execution and every tool call.
  */
 async function isStoppedBeforeStart(
   orgId: string,
   kind: AiAgentKind,
   agentId: string,
-): Promise<boolean> {
-  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return true;
+): Promise<{ stopped: boolean; current: ResolvedAgent | null }> {
+  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return { stopped: true, current: null };
+
+  // Wave 5A Task 2 (#3827): refresh the DB kill-state cache here, at
+  // admission, so the run's whole tool-dispatch loop — which reads the
+  // cached snapshot synchronously through `checkAgentGuardrails` — starts
+  // from state at most 5s stale (`aiKillState.ts`'s own staleness-bound
+  // note). Gate admission on it directly too, matching this function's own
+  // "kill switch" doc comment and the env-flag check immediately above:
+  // belt-and-suspenders with the guardrail's per-dispatch check, not a
+  // replacement for it.
+  const killState = await readAiKillState();
+  if (killState.killed) {
+    console.warn('[aiAgentRunLoop] AI kill switch is engaged — refusing to start', {
+      orgId, kind, agentId, epoch: killState.epoch,
+    });
+    return { stopped: true, current: null };
+  }
+
   try {
+    // Returned to the caller so the resource-scope recheck can reuse it rather
+    // than resolving the same policy a second time in the same gate.
     const current = await resolveEffectiveAgentSystem(orgId, kind);
-    if (!current) return true;
+    if (!current) return { stopped: true, current: null };
     if (current.agentId !== agentId) {
       console.warn('[aiAgentRunLoop] the run\'s agent is no longer the effective agent', {
         orgId, kind, runAgentId: agentId, currentAgentId: current.agentId,
       });
-      return true;
+      return { stopped: true, current };
     }
-    return !current.effective.enabled || current.effective.mode === 'off';
+    return {
+      stopped: !current.effective.enabled || current.effective.mode === 'off',
+      current,
+    };
   } catch (error) {
     console.error('[aiAgentRunLoop] could not re-resolve the effective policy', { orgId, kind, error });
-    return true;
+    return { stopped: true, current: null };
   }
+}
+
+
+/** Derive cause from the run, never from model tool arguments. */
+function executedActionTrigger(run: {
+  triggerKind?: OutcomeExecutedAction['triggerKind'];
+  alertId?: string | null;
+  scheduleId?: string | null;
+  ticketId?: string | null;
+}): Pick<OutcomeExecutedAction, 'triggerKind' | 'triggerRefId'> {
+  const refId = run.triggerKind === 'alert' ? run.alertId
+    : run.triggerKind === 'schedule' ? run.scheduleId
+    : run.triggerKind === 'ticket' ? run.ticketId : null;
+  return { triggerKind: run.triggerKind, ...(refId ? { triggerRefId: refId } : {}) };
 }

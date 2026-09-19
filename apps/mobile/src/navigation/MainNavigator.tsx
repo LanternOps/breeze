@@ -1,14 +1,30 @@
+import { useEffect } from 'react';
+import { View } from 'react-native';
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import {
+  BottomTabBar,
+  createBottomTabNavigator,
+  type BottomTabBarProps,
+} from '@react-navigation/bottom-tabs';
 
 import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
 import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
 import { DevicesListScreen } from '../screens/devices/DevicesListScreen';
 import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
+import { FindingsListScreen } from '../screens/systems/FindingsListScreen';
+import { FindingDetailScreen } from '../screens/systems/FindingDetailScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
-import { HomeIcon, SystemsIcon, TicketsIcon } from '../components/TabIcons';
+import { CreateTicketScreen } from '../screens/tickets/CreateTicketScreen';
+import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScreen';
+import { TimesheetScreen } from '../screens/time/TimesheetScreen';
+import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
+import { flushPendingNavigation } from './navigationRef';
+import type { CommentMode } from '../screens/tickets/commentMode';
+import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
+import { TimerBar } from '../components/TimerBar';
 import { palette, fontFamily } from '../theme';
 import type { Alert, Device } from '../services/api';
 
@@ -17,22 +33,79 @@ export type SystemsStackParamList = {
   SystemsDevices: { orgId?: string | null; orgName?: string | null } | undefined;
   SystemsAlertDetail: { alert: Alert };
   SystemsDeviceDetail: { device: Device };
+  /**
+   * #5365. `SystemsFindings` carries `orgName` alongside `orgId` because the
+   * ACTIVE ISSUES row the tap comes from already resolved the name — refetching
+   * the org list just to title the screen would leave the header blank on the
+   * way in. The detail screen carries only the id: everything else it needs
+   * comes from `GET /fleet/findings/:id`, and a stale copied-down title is
+   * exactly what a lifecycle action would invalidate.
+   */
+  SystemsFindings: { orgId: string; orgName: string };
+  SystemsFindingDetail: { findingId: string };
+};
+
+/**
+ * #5366. `composeMode` / `focusComposer` let a caller open the ticket *at the
+ * composer* rather than at the top of a read-only page — stopping a timer is
+ * the first such caller. Both are optional and both are absent on the push-tap
+ * path, which must keep opening the ticket with the keyboard down.
+ *
+ * Named rather than inlined so `navigateToTicket` can build the params against
+ * the same type the screen reads them from.
+ */
+export type TicketDetailParams = {
+  ticketId: string;
+  composeMode?: CommentMode;
+  focusComposer?: boolean;
 };
 
 export type TicketsStackParamList = {
   Tickets: undefined;
-  TicketDetail: { ticketId: string };
+  CreateTicket: undefined;
+  TicketDetail: TicketDetailParams;
+  /**
+   * W11 (#4337). Carries `contentType` and `filename` as params rather than
+   * re-fetching the attachment row: the feed already holds both, and the viewer
+   * needs `contentType` to decide between rendering inline and handing the file
+   * to the OS *before* it can usefully fetch anything.
+   */
+  AttachmentViewer: {
+    ticketId: string;
+    attachmentId: string;
+    contentType: string;
+    filename: string;
+  };
 };
 
+/**
+ * W06 (#3900). W05 mounted TimesheetScreen straight onto the tab, so there was
+ * no stack to add a second Time screen to. A stack here (rather than hanging
+ * TimeSuggestions off TicketsStack) keeps the back gesture landing on the
+ * timesheet, which is where the banner that opens it lives.
+ */
+export type TimeStackParamList = {
+  Timesheet: undefined;
+  TimeSuggestions: { date?: string } | undefined;
+};
+
+/**
+ * `TicketsTab` carries nested params so push taps can address a screen inside
+ * the tickets stack directly (`navigateToTicket`, #4336). Declared rather than
+ * cast: a cast here would let a rename inside TicketsStackParamList compile
+ * fine and fail only on a real device.
+ */
 export type MainTabParamList = {
   HomeTab: undefined;
   SystemsTab: undefined;
-  TicketsTab: undefined;
+  TicketsTab: NavigatorScreenParams<TicketsStackParamList> | undefined;
+  TimeTab: undefined;
 };
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const SystemsStack = createNativeStackNavigator<SystemsStackParamList>();
 const TicketsStack = createNativeStackNavigator<TicketsStackParamList>();
+const TimeStack = createNativeStackNavigator<TimeStackParamList>();
 
 const stackScreenOptions = {
   headerStyle: { backgroundColor: palette.dark.bg0 },
@@ -55,11 +128,40 @@ function TicketsStackNavigator() {
         options={{ headerShown: false }}
       />
       <TicketsStack.Screen
+        name="CreateTicket"
+        component={CreateTicketScreen}
+        options={{ title: 'New ticket' }}
+      />
+      <TicketsStack.Screen
         name="TicketDetail"
         component={TicketDetailScreen}
         options={{ title: 'Ticket' }}
       />
+      <TicketsStack.Screen
+        name="AttachmentViewer"
+        component={AttachmentViewerScreen}
+        // A modal, not a push: the viewer is a detour from the ticket, and a
+        // swipe-down back to the feed is what a full-screen photo should do.
+        options={{ presentation: 'modal', title: 'Attachment' }}
+      />
     </TicketsStack.Navigator>
+  );
+}
+
+function TimeStackNavigator() {
+  return (
+    <TimeStack.Navigator screenOptions={stackScreenOptions}>
+      <TimeStack.Screen
+        name="Timesheet"
+        component={TimesheetScreen}
+        options={{ headerShown: false }}
+      />
+      <TimeStack.Screen
+        name="TimeSuggestions"
+        component={TimeSuggestionsScreen}
+        options={{ title: 'Unlogged sessions' }}
+      />
+    </TimeStack.Navigator>
   );
 }
 
@@ -86,7 +188,14 @@ function SystemsStackNavigator() {
       <SystemsStack.Screen
         name="SystemsDevices"
         component={DevicesListScreen}
-        options={{ headerShown: false }}
+        // `title` still drives the BACK BUTTON label on whatever screen gets
+        // pushed on top of this one, even with the header itself hidden here —
+        // react-navigation falls back to the raw ROUTE NAME ("SystemsDevices",
+        // no space) when a headerless screen has no title. Every other
+        // headerless route in this file (Systems, Tickets, Timesheet) happens
+        // to already be a single readable word, so this is the only one that
+        // needed an explicit title.
+        options={{ headerShown: false, title: 'Devices' }}
       />
       <SystemsStack.Screen
         name="SystemsAlertDetail"
@@ -98,13 +207,66 @@ function SystemsStackNavigator() {
         component={DeviceDetailScreen}
         options={{ title: 'Device Details' }}
       />
+      <SystemsStack.Screen
+        name="SystemsFindings"
+        component={FindingsListScreen}
+        // The org name replaces this at mount (`navigation.setOptions`); the
+        // static value is what shows during the push transition.
+        options={{ title: 'Findings' }}
+      />
+      <SystemsStack.Screen
+        name="SystemsFindingDetail"
+        component={FindingDetailScreen}
+        options={{ title: 'Finding' }}
+      />
     </SystemsStack.Navigator>
   );
 }
 
+/**
+ * The timer bar rides directly above the tab bar rather than inside any one
+ * screen: a running timer has to stay visible (and stoppable) wherever the
+ * technician navigates, and this is also the mount point that owns replaying
+ * the offline queue on reconnect. It renders nothing when no timer is running
+ * and nothing is queued, so it costs no vertical space in the common case.
+ */
+function TabBarWithTimer(props: BottomTabBarProps) {
+  return (
+    <View>
+      {/* The "N time entries need attention" row is only useful if it goes
+          somewhere: the timesheet is where the technician re-enters them. */}
+      <TimerBar onOpenTimesheet={() => props.navigation.navigate('TimeTab')} />
+      <BottomTabBar {...props} />
+    </View>
+  );
+}
+
 export function MainNavigator() {
+  // Second flush source for buffered ticket taps (#4336), and the one that
+  // matters most.
+  //
+  // NavigationContainer's `onReady` fires at most ONCE per container instance —
+  // react-navigation guards it with an `onReadyCalledRef` it never resets
+  // (@react-navigation/core BaseNavigationContainer) — while the container's
+  // readiness is defined as "a root navigator has registered a focus listener",
+  // i.e. THIS component being mounted. ApprovalGate renders ApprovalScreen
+  // instead of its children for the duration of an approval takeover, so
+  // readiness genuinely cycles true -> false -> true inside one session.
+  //
+  // A ticket tap taken while an approval is on screen therefore buffers, and
+  // `onReady` never fires again to release it. Flushing on mount here delivers
+  // it the moment the tab tree comes back, which is exactly the behaviour the
+  // spec asks for: the tap navigates underneath and is revealed when the
+  // decision clears. This runs after the navigator's own effects (React flushes
+  // child effects before parent effects), so the container is ready by now;
+  // flushPendingNavigation re-buffers rather than dropping if it somehow is not.
+  useEffect(() => {
+    flushPendingNavigation();
+  }, []);
+
   return (
     <Tab.Navigator
+      tabBar={(props: BottomTabBarProps) => <TabBarWithTimer {...props} />}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: palette.brand.base,
@@ -147,6 +309,16 @@ export function MainNavigator() {
           tabBarLabel: 'Tickets',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (
             <TicketsIcon color={color} size={size} />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="TimeTab"
+        component={TimeStackNavigator}
+        options={{
+          tabBarLabel: 'Time',
+          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
+            <TimeIcon color={color} size={size} />
           ),
         }}
       />

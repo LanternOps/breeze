@@ -6,8 +6,10 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { buildResponseValidator, coerceFormResponses, type TicketFormField } from '@breeze/shared';
+import { useHashState } from '@/lib/useHashState';
 import TicketFormFields from './TicketFormFields';
 import type { TicketPriority } from './ticketConfig';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 
 interface Option { id: string; name: string }
 interface CategoryOption { id: string; name: string; parentId: string | null }
@@ -20,12 +22,23 @@ interface AvailableTicketForm {
 // Sentinel for the "type a requester manually" choice in the select.
 const MANUAL_REQUESTER = '__manual__';
 
+/** Pure parser for `#orgId=<id>` (the organization record's Tickets tab links
+ *  here as `/tickets/new#orgId=<id>` — #5075 W03), fed to `useHashState` so the
+ *  read happens post-mount rather than in a `useState` initializer. This page
+ *  is server-rendered (`client:load`), so reading `window.location.hash`
+ *  directly in the initializer would render `''` on the server and the real
+ *  org id on the client's first paint — the #2421 hydration-mismatch class
+ *  (see `ContractWorkspace.tsx`'s identical `presetOrgId` pattern for the
+ *  contracts equivalent of this same deep link). */
+function parseOrgIdHash(hash: string): string | undefined {
+  return new URLSearchParams(hash).get('orgId') || undefined;
+}
+
 export default function CreateTicketPage() {
   const { t } = useTranslation('tickets');
   const [orgs, setOrgs] = useState<Option[]>([]);
-  const [devices, setDevices] = useState<Option[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [orgId, setOrgId] = useState('');
+  const [orgId, setOrgId] = useHashState('', parseOrgIdHash);
   const [orgLocked, setOrgLocked] = useState(false);
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
@@ -42,7 +55,14 @@ export default function CreateTicketPage() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [deviceSearch, setDeviceSearch] = useState('');
   const selectedForm = forms.find((f) => f.id === formId) ?? null;
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    orgId: orgId || undefined,
+    includeIds: deviceId ? [deviceId] : [],
+    enabled: !!orgId,
+  });
 
   const loadOptions = useCallback(async () => {
     setLoadError(false);
@@ -103,19 +123,10 @@ export default function CreateTicketPage() {
   }, [categories]);
 
   useEffect(() => {
-    if (!orgId) { setDevices([]); setDeviceId(''); return; }
+    if (!orgId) { setDeviceId(''); return; }
     // Reset on every org change — a stale deviceId from the previous org would
     // submit a cross-org device (the select only LOOKS cleared once options swap).
     setDeviceId('');
-    void (async () => {
-      const res = await fetchWithAuth(`/devices?orgId=${orgId}`);
-      if (res.ok) {
-        const b = await res.json();
-        setDevices((b.data ?? b.devices ?? []).map((d: { id: string; displayName?: string; hostname?: string }) => ({
-          id: d.id, name: d.displayName ?? d.hostname ?? d.id
-        })));
-      }
-    })();
   }, [orgId]);
 
   // Requester options follow the org (a portal user is scoped to one org). Reset
@@ -172,7 +183,7 @@ export default function CreateTicketPage() {
     e.preventDefault();
     // With a form selected the server composes the subject from titleTemplate, so
     // a blank subject is fine; without a form the subject stays required.
-    if (!orgId || (!subject.trim() && !selectedForm)) return;
+    if (!orgId || (!subject.trim() && !selectedForm) || !deviceOptions.canSubmit) return;
 
     // Validate the form responses client-side for inline errors before POSTing.
     // The API re-validates authoritatively — this is a UX fast-path, not the gate.
@@ -230,7 +241,7 @@ export default function CreateTicketPage() {
     } finally {
       setSaving(false);
     }
-  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail, selectedForm, formValues, t]);
+  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail, selectedForm, formValues, t, deviceOptions.canSubmit]);
 
   const selectCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
@@ -354,10 +365,21 @@ export default function CreateTicketPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>
           <label className="text-sm font-medium" htmlFor="ct-device">{t('createTicketPage.deviceOptional')}</label>
+          <input
+            type="search"
+            aria-label="Search devices"
+            value={deviceSearch}
+            onChange={(e) => setDeviceSearch(e.target.value)}
+            disabled={!orgId || deviceOptions.state === 'loading'}
+            placeholder="Search devices"
+            className={`${selectCls} mb-1`}
+          />
           <select id="ct-device" value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={!orgId} className={selectCls} data-testid="create-ticket-device-input">
             <option value="">{t('common:labels.none')}</option>
-            {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {deviceOptions.options.map((d) => <option key={d.id} value={d.id}>{d.displayName ?? d.hostname}</option>)}
           </select>
+          {deviceOptions.state === 'error' && <p role="alert" className="mt-1 text-xs text-destructive">{deviceOptions.error?.message}</p>}
+          {deviceOptions.page?.hasMore && <button type="button" onClick={() => void deviceOptions.loadMore()} className="mt-1 text-xs text-primary">Load more</button>}
         </div>
         <div>
           <label className="text-sm font-medium" htmlFor="ct-cat">{t('createTicketPage.category')}</label>
@@ -375,7 +397,7 @@ export default function CreateTicketPage() {
       </div>
       <div className="flex justify-end gap-2">
         <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-cancel">{t('common:actions.cancel')}</a>
-        <button type="submit" disabled={saving || !orgId || (!subject.trim() && !selectedForm)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
+        <button type="submit" disabled={saving || !orgId || (!subject.trim() && !selectedForm) || !deviceOptions.canSubmit} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
           {saving ? t('createTicketPage.creating') : t('createTicketPage.createTicket')}
         </button>
       </div>

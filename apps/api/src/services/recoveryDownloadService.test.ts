@@ -9,6 +9,19 @@ vi.mock('node:fs', () => ({
 }));
 
 const resolveSnapshotProviderConfigMock = vi.fn();
+const lineageRows = vi.hoisted(() => [] as Array<Array<{ orgId: string; deviceId: string }>>);
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => {
+      const chain: Record<string, any> = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.limit = vi.fn(async () => lineageRows.shift() ?? []);
+      return chain;
+    }),
+  },
+}));
 
 vi.mock('./recoveryBootstrap', () => ({
   asRecord: (value: unknown) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {}),
@@ -42,6 +55,31 @@ import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadServic
 describe('getAuthenticatedRecoveryDownloadTarget', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    lineageRows.length = 0;
+    lineageRows.push([{ orgId: 'org-1', deviceId: 'device-1' }]);
+  });
+
+  it('rejects a token whose pinned snapshot lineage changed before loading provider credentials', async () => {
+    lineageRows[0] = [{ orgId: 'org-2', deviceId: 'device-2' }];
+
+    const result = await getAuthenticatedRecoveryDownloadTarget(
+      {
+        id: 'token-moved',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        snapshotId: 'snapshot-db-moved',
+        status: 'authenticated',
+        authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+      },
+      'snapshots/snap-ext-001/manifest.json'
+    );
+
+    expect(result).toEqual({
+      unavailable: true,
+      reason: 'Recovery snapshot lineage is unavailable.',
+    });
+    expect(resolveSnapshotProviderConfigMock).not.toHaveBeenCalled();
   });
 
   it('allows authenticated tokens to resolve in-scope local snapshot downloads', async () => {
@@ -59,6 +97,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     const result = await getAuthenticatedRecoveryDownloadTarget(
       {
         id: 'token-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
         snapshotId: 'snapshot-db-1',
         status: 'authenticated',
         authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
@@ -74,6 +114,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     const result = await getAuthenticatedRecoveryDownloadTarget(
       {
         id: 'token-2',
+        orgId: 'org-1',
+        deviceId: 'device-1',
         snapshotId: 'snapshot-db-2',
         status: 'used',
         authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
@@ -103,6 +145,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     const result = await getAuthenticatedRecoveryDownloadTarget(
       {
         id: 'token-3',
+        orgId: 'org-1',
+        deviceId: 'device-1',
         snapshotId: 'snapshot-db-3',
         status: 'authenticated',
         authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
@@ -139,6 +183,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       const result = await getAuthenticatedRecoveryDownloadTarget(
         {
           id: 'token-4',
+          orgId: 'org-1',
+          deviceId: 'device-1',
           snapshotId: 'snapshot-db-4',
           status: 'authenticated',
           authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
@@ -170,6 +216,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         getAuthenticatedRecoveryDownloadTarget(
           {
             id: 'token-5',
+            orgId: 'org-1',
+            deviceId: 'device-1',
             snapshotId: 'snapshot-db-5',
             status: 'authenticated',
             authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),

@@ -109,6 +109,10 @@ export const partnerBillingSettingsSchema = z.object({
   defaultMarkupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
   // When true, hardware catalog items default to taxable when added/imported.
   autoTaxHardware: z.boolean().optional(),
+  // #3205 W07: include the "Billed devices" appendix on invoice PDFs. Default
+  // OFF (partners.invoice_device_appendix NOT NULL DEFAULT false). Resolved once
+  // at issue onto invoices.device_appendix and frozen there.
+  invoiceDeviceAppendix: z.boolean().optional(),
   // Auto-email the issued invoice (with its public pay link) when a quote is
   // accepted. Default ON — see partners.auto_email_invoice_on_quote_accept.
   autoEmailInvoiceOnQuoteAccept: z.boolean().optional(),

@@ -32,8 +32,39 @@ vi.mock('../db', () => ({
   }
 }));
 
+// Org-status gate (org-lifecycle Wave 2): `portalAuthMiddleware` now refuses a
+// session whose ORG is not usable — suspended, offboarded, archived, or fenced
+// into `merging` for a merge. It delegates that question to
+// `services/tenantStatus`, which opens its own system-scope DB read, so these
+// suites' `../db` mock cannot satisfy it (the real module reaches for
+// `getCurrentDbAccessContext`, which the mock does not export, and its query
+// would return no rows anyway and 403 every request).
+//
+// Mock the tenant-status BOUNDARY, exactly as `middleware/clientAiAuth.test.ts`
+// does for the sibling gate: default to "usable" so these tests keep asserting
+// what they are about. Do NOT relax the gate itself — it is covered directly by
+// `routes/portal/authOrgStatusGate.test.ts`.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
+}));
+
+// portalAuthMiddleware resolves the org's timezone once during hydration
+// (services/portal/timezone.ts) via a real DB left-join query this suite's
+// generic `../db` mock cannot satisfy, and `../db/schema` here doesn't export
+// `organizations`/`partners` at all. Mock the resolver BOUNDARY, same pattern
+// as the tenantStatus mock immediately above — the resolver itself is covered
+// directly by `services/portal/timezone.test.ts` and the hydration contract by
+// `routes/portal/authOrgStatusGate.test.ts`.
+vi.mock('../services/portal/timezone', () => ({
+  resolveOrgTimezone: vi.fn(async () => 'UTC'),
+}));
+
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
+  backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devices: {},
   // networkBaseline.ts (pulled in transitively by the portal route graph) reads
   // discoveredAssetTypeEnum.enumValues at module load — required for the mock.
@@ -49,11 +80,14 @@ vi.mock('../db/schema', () => ({
     email: 'portalUsers.email',
     name: 'portalUsers.name',
     passwordHash: 'portalUsers.passwordHash',
+    authMethod: 'portalUsers.authMethod',
     receiveNotifications: 'portalUsers.receiveNotifications',
     status: 'portalUsers.status',
     lastLoginAt: 'portalUsers.lastLoginAt',
     updatedAt: 'portalUsers.updatedAt'
   },
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   ticketComments: {},
   tickets: {}
 }));
@@ -67,6 +101,7 @@ const portalUser = {
   email: 'portal@example.com',
   name: 'Portal User',
   passwordHash: 'hash',
+  authMethod: 'password',
   receiveNotifications: true,
   status: 'active'
 };

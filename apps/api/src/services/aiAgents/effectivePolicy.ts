@@ -1,13 +1,16 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import {
+  AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentProtectedResourcesSchema,
   aiAgentRecipientsSchema,
   aiAgentTriggersSchema,
   minAgentMode,
+  type AgentCeilingDto,
   type AiAgentKind,
   type AiAgentLimits,
   type AiAgentPolicy,
@@ -29,6 +32,7 @@ import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
 import { aiBudgets } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
+import { intersectToolRefs } from './toolAllowlist';
 
 type PolicyRowFields = Pick<
   AiAgentRow,
@@ -40,6 +44,7 @@ type PolicyRowFields = Pick<
   | 'limits'
   | 'triggers'
   | 'recipients'
+  | 'actAssets'
   | 'instructions'
   | 'cooldownSeconds'
 >;
@@ -54,6 +59,7 @@ export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
     limits: aiAgentLimitsSchema.parse(row.limits ?? {}),
     triggers: aiAgentTriggersSchema.parse(row.triggers ?? {}),
     recipients: aiAgentRecipientsSchema.parse(row.recipients ?? {}),
+    actAssets: aiAgentActAssetsSchema.parse(row.actAssets ?? {}),
     instructions: row.instructions ?? null,
     cooldownSeconds: row.cooldownSeconds,
   };
@@ -64,6 +70,19 @@ const intersect = (a: string[], b: string[]): string[] => a.filter((value) => b.
 const intersectOptional = (a?: string[], b?: string[]): string[] | undefined =>
   a && b ? intersect(a, b) : a ?? b;
 
+// Limit keys merged with Math.max instead of Math.min. Everything else is
+// tighten-only (the org may only narrow). `promoteThreshold` (v9, C3) is a
+// BAR, not a budget: a partner who requires 50 verified executions before a
+// key becomes promote-eligible must not be undercut by an org row asking for
+// 5. Named here, not inline, so a future limit that needs the same exception
+// is one addition to this set instead of a special case buried in the loop.
+// `sweepPromoteThreshold` (#4442 W05) is the second member, for the same
+// reason: it is a BAR on how much sweep-chosen-target evidence a key needs
+// before act mode graduates. `maxUnattendedDevicesPerSweep` is deliberately
+// NOT here — it is a budget, and max-merging it would let an org WIDEN how
+// many machines a sweep may touch unattended, a real safety inversion.
+const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold', 'sweepPromoteThreshold']);
+
 function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): AiAgentLimits {
   const partner = partnerLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
   const org = orgLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
@@ -72,8 +91,9 @@ function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): Ai
   for (const key of Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>) {
     const partnerValue = partner[key];
     const orgValue = org[key];
+    const useMax = MAX_MERGED_LIMIT_KEYS.has(key);
     if (typeof partnerValue === 'boolean' && typeof orgValue === 'boolean') {
-      merged[key] = partnerValue && orgValue;
+      merged[key] = useMax ? partnerValue || orgValue : partnerValue && orgValue;
       continue;
     }
     // mergeAgentPolicies is exported and pure, so a later caller can hand it a
@@ -85,7 +105,7 @@ function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): Ai
     const partnerFinite = Number.isFinite(partnerNumber);
     const orgFinite = Number.isFinite(orgNumber);
     merged[key] = partnerFinite && orgFinite
-      ? Math.min(partnerNumber, orgNumber)
+      ? (useMax ? Math.max(partnerNumber, orgNumber) : Math.min(partnerNumber, orgNumber))
       : partnerFinite
         ? partnerNumber
         : orgFinite
@@ -113,6 +133,7 @@ function partnerProvenance(): AiAgentPolicyProvenance {
     limits: 'partner',
     triggers: 'partner',
     recipients: 'partner',
+    actAssets: 'partner',
     instructions: 'partner',
     cooldownSeconds: 'partner',
   };
@@ -128,7 +149,57 @@ export function mergeAgentPolicies(
   opts: { allowedModels: string[] | null },
 ): { effective: AiAgentPolicy; provenance: AiAgentPolicyProvenance } {
   const provenance = partnerProvenance();
-  if (!org) return { effective: partner, provenance };
+  if (!org) {
+    return {
+      // Wave 6 PR 4 follow-up (#3828) — `anomalyEnabled` is the one field on
+      // this policy that must NOT pass through from the partner baseline
+      // unchanged, even in this "no org override at all" fast path. Every
+      // other field's tighten-only contract is "org can only narrow the
+      // partner's ceiling", which correctly degrades to "use the partner's
+      // value" when there is no org row to narrow with. A binary opt-in
+      // safety gate is different: if the partner baseline alone could turn
+      // it on, every org under that partner would start receiving
+      // anomaly-triggered runs the moment the partner flips one row, with
+      // zero action at any individual org. So this ignores partner.triggers.
+      // anomalyEnabled here and always resolves to `undefined` (falsy) —
+      // see AiAgentTriggers.anomalyEnabled's docstring for the full account,
+      // and the general-merge branch below for the "org override present"
+      // case (same rule: only the org's OWN value is ever consulted).
+      //
+      // P2-4 Task A6 (#4191) — `ticketAutonomousWrites` gets the identical
+      // treatment, for the identical reason: a partner-wide baseline row
+      // must never blanket-enable unattended ticket writes for every org
+      // under it. See AiAgentTriggers.ticketAutonomousWrites's docstring.
+      //
+      // C3 (P2-5, release-blocking) — `actAssets.supervisedActionKeys` joins
+      // that list: it resolves to `[]` here, not the partner's own list.
+      // Partner `supervisedActionKeys` is a CEILING (what an org MAY be
+      // granted), never an inherited GRANT (what it HAS) — only an org row
+      // is a grant. With no org row there is nothing granted, so the
+      // effective set is empty even though the partner baseline names keys.
+      // Promotion (`manage_ai_agents:authorize_supervised_key`) is the only
+      // writer that ever adds a key to an org row; demotion is the only one
+      // that ever removes one. See the general-merge branch below for the
+      // "org row present" case — unchanged: intersect(partner, org).
+      //
+      // Only overridden when the partner's actAssets actually carries the
+      // key: a pre-this-deploy row's stored jsonb has no `supervisedActionKeys`
+      // property at all (schemaVersion predates it, same as the general-merge
+      // branch's `?? []` handling), and every read site already reads the
+      // field as `effective.actAssets.supervisedActionKeys ?? []`
+      // (policyDecide.ts), so `undefined` and `[]` are equivalent at every
+      // consumer. Leaving it untouched here keeps this fast path a true
+      // passthrough for every other partner-only agent, unchanged by C3.
+      effective: {
+        ...partner,
+        triggers: { ...partner.triggers, anomalyEnabled: undefined, ticketAutonomousWrites: undefined },
+        actAssets: partner.actAssets.supervisedActionKeys !== undefined
+          ? { ...partner.actAssets, supervisedActionKeys: [] }
+          : partner.actAssets,
+      },
+      provenance,
+    };
+  }
 
   const pick = <K extends keyof AiAgentPolicy>(
     key: K,
@@ -163,7 +234,7 @@ export function mergeAgentPolicies(
     ),
     mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
     model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
-    toolAllowlist: pick('toolAllowlist', intersect(partner.toolAllowlist, org.toolAllowlist), 'merged'),
+    toolAllowlist: pick('toolAllowlist', intersectToolRefs(partner.toolAllowlist, org.toolAllowlist), 'merged'),
     protectedResources: pick('protectedResources', {
       services: union(partner.protectedResources.services, org.protectedResources.services),
       paths: union(partner.protectedResources.paths, org.protectedResources.paths),
@@ -177,15 +248,73 @@ export function mergeAgentPolicies(
         org.triggers.alertSeverities,
       ) as AiAgentPolicy['triggers']['alertSeverities'],
       alertRuleIds: intersectOptional(partner.triggers.alertRuleIds, org.triggers.alertRuleIds),
+      // AI patch agent W04 (#5750) — same tighten-only intersection as the
+      // other narrowing lists; enforced by evaluateAgentTriggerFilters.
+      alertCategories: intersectOptional(partner.triggers.alertCategories, org.triggers.alertCategories),
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      anomalyTypes: intersectOptional(partner.triggers.anomalyTypes, org.triggers.anomalyTypes),
+      metricNames: intersectOptional(partner.triggers.metricNames, org.triggers.metricNames),
+      // `minAnomalyScore` is a FLOOR ("fire only at or above this"), so `max`
+      // IS the tighten-only rule — the same direction as the intersections.
+      minAnomalyScore: partner.triggers.minAnomalyScore === undefined
+        ? org.triggers.minAnomalyScore
+        : org.triggers.minAnomalyScore === undefined
+          ? partner.triggers.minAnomalyScore
+          : Math.max(partner.triggers.minAnomalyScore, org.triggers.minAnomalyScore),
+      // Wave 6 PR 3 (#3828, Task 4) — same tighten-only intersection as the
+      // other narrowing lists above. Unenforced by the admission subscriber
+      // this PR (`AiAgentTriggers.ticketCategories`'s docstring), but merged
+      // here anyway so the effective policy never silently drops a value an
+      // operator configured, ahead of whichever task wires evaluation in.
+      ticketCategories: intersectOptional(partner.triggers.ticketCategories, org.triggers.ticketCategories),
+      ticketPriorities: intersectOptional(
+        partner.triggers.ticketPriorities,
+        org.triggers.ticketPriorities,
+      ) as AiAgentPolicy['triggers']['ticketPriorities'],
       respectMaintenanceWindows:
         partner.triggers.respectMaintenanceWindows || org.triggers.respectMaintenanceWindows,
+      // Wave 6 PR 4 follow-up (#3828) — deliberately NOT tighten-only
+      // intersection/AND, and deliberately NOT "either layer true → true".
+      // Reads ONLY the org's own override: `partner.triggers.anomalyEnabled`
+      // is never consulted in either direction. See this field's docstring
+      // on AiAgentTriggers (packages/shared) and the `!org` branch above
+      // (same rule applied to the "no org override" fast path).
+      anomalyEnabled: org.triggers.anomalyEnabled === true ? true : undefined,
+      // P2-4 Task A6 (#4191) — same org-row-only opt-in as anomalyEnabled
+      // directly above: reads ONLY org.triggers.ticketAutonomousWrites,
+      // partner.triggers.ticketAutonomousWrites is never consulted in
+      // either direction. See AiAgentTriggers.ticketAutonomousWrites's
+      // docstring (packages/shared) for the full rationale.
+      ticketAutonomousWrites: org.triggers.ticketAutonomousWrites === true ? true : undefined,
     }, 'merged'),
     recipients: pick('recipients', {
       userIds: union(partner.recipients.userIds, org.recipients.userIds),
       roleIds: union(partner.recipients.roleIds, org.recipients.roleIds),
+    }, 'merged'),
+    // Tighten-only, same as toolAllowlist: an org may only NARROW the
+    // partner's authorized script set, never add a script the partner never
+    // opted in — an org intersecting against an empty partner baseline stays
+    // empty, which is exactly "run_script never act-eligible" (Task 6).
+    //
+    // supervisedActionKeys (wave 5 Part B, #3827) mirrors scriptIds exactly,
+    // for the same reason: an org may only narrow the partner's authorized
+    // POLICY_DECIDABLE_TIER3 key set, never widen it. `?? []` on both sides is
+    // load-bearing, not defensive — the field is optional on AiAgentActAssets
+    // because AI_AGENT_POLICY_SNAPSHOT_VERSION was NOT bumped for it (v3 is
+    // already tolerant), so a partner or org row written before this deploy
+    // has no `supervisedActionKeys` key in its stored `actAssets` jsonb at
+    // all. `normalizeAgentPolicy` fills the shared-schema default of `[]`
+    // for any row read through it, but `mergeAgentPolicies` is also exported
+    // pure and callable directly with a hand-built AiAgentPolicy (as several
+    // tests here do), so the merge itself must not assume the key is present.
+    actAssets: pick('actAssets', {
+      scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
+      supervisedActionKeys: intersectToolRefs(
+        partner.actAssets.supervisedActionKeys ?? [],
+        org.actAssets.supervisedActionKeys ?? [],
+      ),
     }, 'merged'),
     instructions: pick(
       'instructions',
@@ -200,6 +329,109 @@ export function mergeAgentPolicies(
   };
 
   return { effective, provenance };
+}
+
+/**
+ * The "live partner-wide baseline row" predicate, shared by every reader that
+ * projects the partner axis: `loadPartnerBaselineKinds`, `loadPartnerBaselineCeiling`,
+ * and `resolveEffectiveAgentInner`'s own partner-row lookup. `kind` is
+ * optional because `loadPartnerBaselineKinds` scans every kind at once — the
+ * other two callers pin a single kind.
+ */
+function livePartnerBaselineWhere(partnerId: string, kind?: AiAgentKind) {
+  return kind === undefined
+    ? and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), isNull(aiAgents.disabledAt))
+    : and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), eq(aiAgents.kind, kind), isNull(aiAgents.disabledAt));
+}
+
+/**
+ * Which `AiAgentKind`s currently have an active (non-disabled) partner-wide
+ * baseline row for `partnerId` — i.e. which kinds `resolveEffectiveAgentInner`
+ * would NOT reject at its `if (!partnerRow) return null` gate above.
+ *
+ * #4170: an org-only agent is override-only by design (that gate), but
+ * nothing told the create form or the agents list that a given org row is
+ * inert until a partner baseline for its kind exists. The LIST route
+ * (`GET /ai/agents`) uses this to flag existing org rows, and reports the
+ * whole set on the response so the create form can warn BEFORE a kind's org
+ * row exists at all — there is nothing to read `hasPartnerBaseline` off of at
+ * that point.
+ *
+ * Same read-elevation as the partner-row lookup in `resolveEffectiveAgentInner`
+ * (`readWithPartnerAxisVisibility`, pending the real RLS branch tracked by
+ * #4942) — an org token carries a partnerId but never passes
+ * `breeze_has_partner_access`, so a plain read under its own RLS context would
+ * silently come back empty. `partnerId: null` (no partner axis at all) answers
+ * the empty set without a query.
+ */
+export async function loadPartnerBaselineKinds(
+  partnerId: string | null,
+): Promise<Set<AiAgentKind>> {
+  if (!partnerId) return new Set();
+
+  const rows = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ kind: aiAgents.kind })
+      .from(aiAgents)
+      .where(livePartnerBaselineWhere(partnerId))
+      // Bounded by the partial unique index (`ai_agents_partner_kind_uq`): at
+      // most one live partner-wide row per kind, so this can never return more
+      // than AI_AGENT_KINDS.length rows.
+      .limit(AI_AGENT_KINDS.length));
+
+  return new Set(rows.map((row) => row.kind));
+}
+
+/**
+ * The partner an organization belongs to — the ceiling an ORG-owned row is
+ * narrowed by comes from the organization, never from the caller's own
+ * partnerId (a system-scope session has none; #5089 review: POST /preview
+ * and GET /ceiling used to hand such a caller no ceiling at all, so the
+ * review card promised an unattended run the create then 422'd through
+ * scriptAuthorization.ts). Plain org read under the caller's own db context.
+ *
+ * `organizations.partner_id` is NOT NULL, so `null` here means exactly one
+ * thing: the org row is not visible to this context (unknown id, or RLS).
+ * A write-time caller must treat that as an invariant violation and fail
+ * CLOSED — never as "no baseline" (scriptAuthorization.ts).
+ */
+export async function resolveOrgPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
+
+/**
+ * The partner-wide baseline's tool ceiling for ONE kind, projected for an
+ * org-scoped caller that cannot read the partner row itself. Same
+ * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two
+ * allowlists and the baseline's authorized script ids leaves this function.
+ */
+export async function loadPartnerBaselineCeiling(
+  partnerId: string | null,
+  kind: AiAgentKind,
+): Promise<AgentCeilingDto | null> {
+  if (!partnerId) return null;
+
+  const rows = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ toolAllowlist: aiAgents.toolAllowlist, actAssets: aiAgents.actAssets })
+      .from(aiAgents)
+      .where(livePartnerBaselineWhere(partnerId, kind))
+      .limit(1));
+
+  const row = rows[0];
+  if (!row) return null;
+
+  const actAssets = aiAgentActAssetsSchema.parse(row.actAssets ?? {});
+  return {
+    toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
+    supervisedActionKeys: actAssets.supervisedActionKeys ?? [],
+    scriptIds: actAssets.scriptIds ?? [],
+  };
 }
 
 export type ResolvedAgent = AiAgentPolicySnapshot;
@@ -273,12 +505,7 @@ async function resolveEffectiveAgentInner(
     db
       .select()
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, org.partnerId),
-        isNull(aiAgents.orgId),
-        eq(aiAgents.kind, kind),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(org.partnerId, kind))
       .limit(1));
 
   // No partner baseline means the org override cannot self-enable the agent.

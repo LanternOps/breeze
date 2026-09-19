@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
 import { fetchWithAuth } from '../../stores/auth';
+import { SSO_REAUTH_INTENT_KEY, stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
 import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
 vi.mock('../../stores/auth', () => ({
@@ -10,7 +11,7 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn() }) }
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) }
   )
 }));
 
@@ -457,6 +458,66 @@ describe('ProfilePage MFA setup', () => {
   });
 });
 
+describe('ProfilePage — change password (#4660)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // #4660: POST /auth/change-password used to reject a wrong currentPassword
+  // with a bare 401; it now answers 400 with a body carrying `message:
+  // 'Current password is incorrect'`, which handlePasswordChange reads via
+  // `errorData.message` (not `errorData.error`). This pins that the server's
+  // actual reason reaches the user inline instead of silently falling back
+  // to the generic "failed to change password" copy.
+  it('shows the server-provided message when currentPassword is rejected with 400', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/auth/change-password') {
+        return makeJsonResponse(
+          {
+            error: 'Current password is incorrect',
+            message: 'Current password is incorrect',
+            code: 'invalid_credentials'
+          },
+          false,
+          400
+        );
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: false,
+          hasPassword: true
+        }}
+      />
+    );
+
+    // The page has two "Current password" inputs (the MFA confirm-password
+    // prompt and this Change Password form); query the change-password
+    // form's fields by their unambiguous ids rather than by label text.
+    const currentPasswordInput = document.getElementById('currentPassword') as HTMLInputElement;
+    const newPasswordInput = document.getElementById('newPassword') as HTMLInputElement;
+    const confirmPasswordInput = document.getElementById('confirmPassword') as HTMLInputElement;
+    expect(currentPasswordInput).not.toBeNull();
+
+    fireEvent.change(currentPasswordInput, { target: { value: 'wrong-current-pw' } });
+    fireEvent.change(newPasswordInput, { target: { value: 'brand-new-pw-1' } });
+    fireEvent.change(confirmPasswordInput, { target: { value: 'brand-new-pw-1' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    expect(await screen.findByText('Current password is incorrect')).toBeTruthy();
+  });
+});
+
 // ── #4018: MFA enrollment for a PASSWORDLESS, SSO-provisioned account ────────
 // Such an account cannot satisfy the password step-up the enrollment endpoints
 // normally demand, so it proves identity with a fresh, forced IdP round-trip
@@ -478,6 +539,9 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     restoreLocation();
+    // #4055 records the originating card in sessionStorage; a value bleeding
+    // between tests would silently reroute the one after it.
+    sessionStorage.clear();
     // Real jsdom location + history so the hash-consumption assertions below
     // exercise the actual replaceState behaviour rather than a stub's.
     window.history.replaceState(null, '', '/settings/profile');
@@ -748,4 +812,86 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   // them together, and the passwordless confirm view's only action is a
   // full-page navigation to the IdP — so a reload drops the user on the status
   // card rather than on a QR screen with a dead Verify button. See the report.
+
+  // ── #4055: the TOTP half of "return to the card you left from" ─────────────
+  // The passkey half lives in ProfilePage.passkeys.test.tsx. These pin the side
+  // that must NOT change: the authenticator card's own round-trip still lands
+  // on the QR screen, and it now says so out loud instead of relying on it
+  // being the only thing the return path could possibly do.
+  describe('returning to the card the trip started from (#4055)', () => {
+    it('records the authenticator card as the origin BEFORE navigating to the IdP', async () => {
+      // Captured at assign() time: the recorded intent has to be durable at the
+      // instant the page leaves, or the return has nothing to read.
+      let intentAtNavigation: string | null = 'not-called';
+      const assignMock = vi.fn(() => {
+        intentAtNavigation = sessionStorage.getItem(SSO_REAUTH_INTENT_KEY);
+      });
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: {
+          assign: assignMock,
+          hash: '',
+          search: '',
+          pathname: '/settings/profile',
+          href: 'http://localhost/settings/profile',
+        },
+      });
+
+      fetchWithAuthMock.mockImplementation(async (url) => {
+        if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+        if (String(url) === '/sso/reauth/start') {
+          return makeJsonResponse({ authUrl: 'https://idp.example.com/authorize?prompt=login' });
+        }
+        return undefined as unknown as Response;
+      });
+
+      try {
+        render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+        fireEvent.click(screen.getByTestId('mfa-setup-start'));
+        fireEvent.click(await screen.findByTestId('mfa-sso-reauth'));
+
+        await waitFor(() => expect(assignMock).toHaveBeenCalled());
+        expect(intentAtNavigation).toBe('totp');
+      } finally {
+        // In a `finally` on purpose: a bare restore after the assertions is
+        // skipped when one fails, and the stubbed location then leaks into
+        // every later test as an empty hash.
+        restoreLocation();
+      }
+    });
+
+    it('still opens the QR screen when the trip started from the authenticator card', async () => {
+      stashSsoReauthIntent('totp');
+      window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+
+      render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+      await waitFor(() => {
+        const setupCall = fetchWithAuthMock.mock.calls.find(
+          ([url]) => String(url) === '/auth/mfa/setup'
+        );
+        expect(setupCall).toBeDefined();
+        expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: 'grant-abc' });
+      });
+      await screen.findByText(/Set up authenticator/i);
+      expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();
+    });
+
+    // An intent recorded for a trip that never completed must not survive to
+    // reroute the next one. The mount effect consumes it whether or not a grant
+    // came back — an error return (`?ssoReauthError=`) leaves nothing to route.
+    it('clears a stale intent even when the return carried no grant', async () => {
+      stashSsoReauthIntent('passkey');
+      window.history.replaceState(null, '', '/settings/profile?ssoReauthError=reauth_not_fresh');
+
+      render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+      await screen.findByTestId('mfa-setup-start');
+
+      expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();
+      // No grant, so nothing to enroll with — and certainly no /mfa/setup.
+      expect(
+        fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === '/auth/mfa/setup')
+      ).toHaveLength(0);
+    });
+  });
 });

@@ -11,12 +11,18 @@ import {
   assertReportExecutionPreflight,
   generateReport,
   previousBaselineFor,
+  StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
-import { getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck } from './helpers';
+import {
+  getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
+  isSystemManagedReportDefinition, PORTAL_SELF_SERVICE_REPORT,
+} from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
+// Execution plane W05 (spec §6.3) — attach an analysis artifact by reference.
+import { z } from 'zod';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -70,6 +76,25 @@ runsRoutes.post(
       return c.json({ error: 'Report not found' }, 404);
     }
 
+    // P2-3 (#4190) — a system-managed definition has NO acting user to execute
+    // as, and the agent scheduler owns when it runs. Refused before the
+    // authority resolution below, which would otherwise resolve the CALLER as
+    // the principal for a report they do not own. 409, not 403: the caller's
+    // permissions are fine (they can read and download this very report) —
+    // it is the report that cannot be generated on request.
+    if (isSystemManagedReportDefinition(report)) {
+      return c.json({ error: 'system_managed_report' }, 409);
+    }
+
+    // #4562 W10 — the canonical customer-portal definition is generated only
+    // by the customer, under a `portal_user` authority that is always
+    // org-unrestricted. A run created HERE would carry this caller's (possibly
+    // site-restricted) scope and still be listed by the portal as the
+    // customer's own report. Refused while the portal exposes reports.
+    if (await isPortalSelfServiceLocked(db, report)) {
+      return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
+    }
+
     const liveResult = await resolveRequestReportAuthority(
       auth,
       report.orgId,
@@ -97,6 +122,7 @@ runsRoutes.post(
         return c.json({ error: 'Access to report scope denied' }, 403);
       }
       executionAuthority = {
+        principalKind: 'user',
         scope: effectiveScope,
         principalUserId: liveResult.authority.principalUserId,
         capturedAt: liveResult.authority.capturedAt,
@@ -123,6 +149,9 @@ runsRoutes.post(
         reportId: report.id,
         status: 'pending',
         startedAt: new Date(),
+        requestedByKind: 'user',
+        requestedByUserId: auth.user.id,
+        requestedByPortalUserId: null,
         ...persistedSiteScopeValues(executionAuthority),
       })
       .returning();
@@ -178,6 +207,15 @@ runsRoutes.post(
           errorMessage: err instanceof Error ? err.message : 'Failed to generate report'
         })
         .where(eq(reportRuns.id, run.id));
+      // P2-3 (#4190) — belt to the braces of the `isSystemManagedReportDefinition`
+      // gate above, which today refuses every stored-artifact type before this
+      // point (its `type` leg matches `ai_org_narrative` regardless of
+      // principal). Kept so a FUTURE stored-artifact type that is not
+      // system-managed surfaces as a 409 the first time someone presses
+      // Generate, instead of a 500 with "Invalid report type" in the run row.
+      if (err instanceof StoredArtifactOnlyReportError) {
+        return c.json({ error: 'stored_artifact_only' }, 409);
+      }
       return c.json({ message: 'Report generation failed', runId: run.id, status: 'failed' }, 500);
     }
   }
@@ -319,6 +357,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
@@ -430,6 +469,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
         reportName: reports.name,
         reportType: reports.type,
         reportFormat: reports.format,
@@ -457,6 +497,73 @@ runsRoutes.get(
       },
     });
   }
+);
+
+/**
+ * POST /reports/runs/:id/attachments/from-artifact — link an AI run artifact to
+ * a report run (execution-plane spec §6.3).
+ *
+ * `report_runs` stores no file of its own today: it keeps the data snapshot in
+ * `result` jsonb and renders PDF/CSV on demand. This link is therefore the FIRST
+ * way a report run can carry a produced file, and it carries it by reference —
+ * the artifact's own 30-day retention applies, and `ON DELETE SET NULL` means an
+ * expired artifact leaves the run readable with nothing attached.
+ *
+ * Tenancy rides `getReportRunWithOrgCheck`, the same guard every other run route
+ * here uses: `report_runs` has no `org_id` of its own, and that helper is what
+ * joins to `reports`, applies the caller's org axis AND re-checks the run's
+ * persisted site scope against the caller's live authority. An ad-hoc join would
+ * have reproduced the org half and silently dropped the site half.
+ *
+ * Gated on REPORTS_WRITE, and the authority is resolved for the `write` action:
+ * attaching a file to a run is a change to what that report shows a customer.
+ */
+runsRoutes.post(
+  '/runs/:id/attachments/from-artifact',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action),
+  zValidator('json', z.object({ handle: z.string().guid() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const runId = c.req.param('id')!;
+    const { handle } = c.req.valid('json');
+
+    const access = await getReportRunWithOrgCheck(runId, auth, 'write');
+    if (!access) {
+      return c.json({ error: 'Report run not found' }, 404);
+    }
+    const { metadata } = access;
+
+    // Imported LAZILY: `artifactService` reads `aiRunArtifacts` off the
+    // `db/schema` barrel, and this module is in the static graph of the whole
+    // reports route surface. A top-level import puts that table into every
+    // reports suite's module graph and breaks the ones whose partial
+    // `vi.mock('../../db/schema')` factories do not declare it. Same reason
+    // routes/tickets/attachments.ts and ticketAttachmentStorage defer it.
+    const { resolveArtifact } = await import('../../services/artifacts/artifactService');
+    const artifact = await resolveArtifact(handle, { orgId: metadata.orgId });
+    if (!artifact) {
+      return c.json(
+        { error: 'No such artifact is available to this organization', code: 'ARTIFACT_NOT_FOUND' },
+        404,
+      );
+    }
+
+    await db
+      .update(reportRuns)
+      .set({ artifactId: artifact.id })
+      .where(eq(reportRuns.id, metadata.id));
+
+    writeRouteAudit(c, {
+      orgId: metadata.orgId,
+      action: 'report_run.artifact.attach',
+      resourceType: 'report_run',
+      resourceId: metadata.id,
+      details: { artifactId: artifact.id, runId: artifact.runId, byteSize: artifact.bytes },
+    });
+
+    return c.json({ data: { runId: metadata.id, artifactId: artifact.id } });
+  },
 );
 
 function runPayloadMatchesAuthority(

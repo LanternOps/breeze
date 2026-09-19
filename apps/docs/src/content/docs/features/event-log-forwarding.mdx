@@ -103,6 +103,47 @@ Each document is given a deterministic ID derived from its content, so re-sendin
 
 ---
 
+## Fleet-Wide Log Search
+
+Independently of forwarding to an external SIEM, Breeze also keeps managed-device event logs centrally and lets you search across multiple devices and organizations at once:
+
+```bash
+curl -X POST /api/v1/logs/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "patch installation failed",
+    "timeRange": {
+      "start": "2026-02-01T00:00:00Z",
+      "end": "2026-02-28T23:59:59Z"
+    },
+    "level": ["error", "critical"],
+    "category": ["system"],
+    "deviceIds": ["UUID1", "UUID2"],
+    "limit": 100,
+    "sortBy": "timestamp",
+    "sortOrder": "desc"
+  }'
+```
+
+`level` accepts `info`, `warning`, `error`, `critical`; `category` accepts `security`, `application`, `system`, `hardware` -- the same values as the event log fields above.
+
+### Additional Fleet Log Features
+
+| Feature | Endpoint | Description |
+|---|---|---|
+| Aggregation | `GET /api/v1/logs/aggregation` | Time-bucketed counts grouped by level, category, source, or device |
+| Trends | `GET /api/v1/logs/trends` | Top error patterns and trending log sources |
+| Correlation detection | `POST /api/v1/logs/correlation/detect` | Find patterns appearing across multiple devices |
+| Correlation list | `GET /api/v1/logs/correlation` | List detected correlations with status |
+| Saved queries | `GET/POST/DELETE /api/v1/logs/queries` | Save and reuse common search filters |
+
+<Aside type="note">
+  This searches Breeze's own stored copy of the event logs, not the external SIEM destination -- it works whether or not forwarding is enabled. For per-device diagnostic logs from the agent itself (not managed-device event logs), see [Querying Diagnostic Logs](/features/log-shipping/#querying-diagnostic-logs) in the Log Shipping docs.
+</Aside>
+
+---
+
 ## Troubleshooting
 
 **No "test connection" button.**

@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Taxa fixa",
         "perDevice": "Por dispositivo",
+        "perDeviceRole": "Por função do dispositivo",
+        "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por assento",
         "manual": "Quantidade manual"
+      },
+      "dynamicGroup": "dinâmico",
+      "deletedGroup": "{{name}} (grupo excluído)",
+      "coverage": {
+        "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
+        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato.",
+        "uncoveredLead": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{counted}} de {{included}} incluídos",
+        "includedOnly": "{{included}} incluídos",
+        "overBilled": "{{included}} incluídos · {{overage}} acima (faturados)",
+        "overFlagged": "{{included}} incluídos · {{overage}} acima (sinalizados)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} acima dos {{included}} incluídos, não faturados",
+        "billed": "{{description}} — {{overage}} acima dos {{included}} incluídos, faturados pela tarifa de excedente"
       },
       "transition": {
         "activate": "Ativar",
@@ -31,7 +51,13 @@
         "cancel": "Cancelar"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "grupo excluído",
+        "siteDeleted": "site excluído",
+        "siteDeletedNamed": "site excluído: {{name}}"
+      },
+      "lineScope": {
+        "site": "Site: {{name}}"
       }
     },
     "contractDetail": {
@@ -44,7 +70,8 @@
         "autoIssue": "Emissão automática",
         "renewal": "Renovação",
         "estimatedPerPeriod": "Estim. / período",
-        "notes": "Observações"
+        "notes": "Observações",
+        "invoiceNote": "Observação na fatura"
       },
       "values": {
         "noDrafts": "Não (rascunhos)"
@@ -67,6 +94,15 @@
         "period": "Período",
         "generated": "Gerado",
         "invoice": "Fatura",
+        "outcome": "Resultado",
+        "outcomeAllBilled": "Tudo faturado",
+        "outcomeUncovered": "{{count}} sem cobertura",
+        "outcomeFlagged": "{{count}} sinalizados",
+        "outcomeNoDeviceLines": "Sem linhas de dispositivos",
+        "outcomeNotRecorded": "Não registrado",
+        "outcomeToggle": "Mostrar o resultado do período",
+        "outcomeDevicesEvaluated": "Dispositivos avaliados: {{count}}",
+        "outcomeBilledOverage": "Excedente faturado: {{count}}",
         "empty": "Nenhuma fatura foi gerada ainda.",
         "viewInvoice": "Ver fatura"
       },
@@ -96,6 +132,8 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "flaggedOverage": "{{count}} linha(s) excedem a quantidade incluída e não foram faturadas: {{names}}",
+        "uncoveredDevices": "Fatura gerada, mas {{count}} dispositivo(s) não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
       },
@@ -110,7 +148,8 @@
         "confirm": "Excluir rascunho"
       },
       "documents": {
-        "title": "Documentos executados",
+        "title": "Acordos assinados",
+        "subtitle": "Aceitos junto com o orçamento e fixados na versão do modelo que o cliente viu.",
         "columns": {
           "template": "Modelo",
           "signer": "Signatário",
@@ -118,8 +157,8 @@
           "quote": "Orçamento"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Ainda não há documentos executados.",
-        "loadError": "Não foi possível carregar os documentos executados.",
+        "empty": "Ainda não há acordos assinados.",
+        "loadError": "Não foi possível carregar os acordos assinados.",
         "downloadError": "Não foi possível baixar o PDF.",
         "download": "Baixar PDF",
         "preparing": "Preparando…",
@@ -143,13 +182,22 @@
         "addLine": "Não foi possível adicionar a linha.",
         "removeLine": "Não foi possível remover a linha.",
         "activateContract": "Não foi possível ativar o contrato.",
-        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo."
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo.",
+        "updateLine": "Não foi possível atualizar a linha.",
+        "lineNotFound": "Essa linha não existe mais. Atualize o contrato.",
+        "contractNotEditable": "As linhas só podem ser editadas em contratos em rascunho ou ativos.",
+        "siteNotInOrg": "Esse site pertence a outra organização.",
+        "groupNotInOrg": "Esse grupo de dispositivos pertence a outra organização.",
+        "invalidLinePatch": "Essas alterações não são válidas para este tipo de linha.",
+        "priceNotRepresentable": "Esse preço tem casas decimais demais para {{currency}}.",
+        "catalogItemNotFound": "Esse item do catálogo não está disponível neste contrato."
       },
       "toast": {
         "contractCreated": "Contrato criado",
         "lineAdded": "Linha adicionada",
         "lineRemoved": "Linha removida",
-        "contractActivated": "Contrato ativado"
+        "contractActivated": "Contrato ativado",
+        "lineUpdated": "Linha atualizada"
       },
       "schedule": {
         "title": "Agenda",
@@ -172,15 +220,16 @@
       },
       "content": {
         "title": "Conteúdo",
-        "notesOptional": "Observações (opcional)",
-        "termsOptional": "Termos (opcional, exibidos na fatura)",
+        "notesOptional": "Observações (opcional, adicionadas ao bloco Observações das faturas geradas)",
+        "termsOptional": "Observação na fatura (opcional, adicionada ao bloco Observações das faturas geradas)",
         "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
       },
       "lines": {
         "unitPrice": "Preço unitário",
         "qty": "Qtd.",
         "tax": "Imposto",
-        "empty": "Ainda não há linhas. Adicione uma linha recorrente abaixo."
+        "empty": "Ainda não há linhas. Adicione uma linha recorrente abaixo.",
+        "edit": "Editar"
       },
       "addLine": {
         "integrationHint": "Adicione de uma integração — ela preenche uma linha.",
@@ -188,6 +237,20 @@
         "addFromPax8Catalog": "Adicionar do catálogo Pax8",
         "importFromTdSynnex": "Importar da TD SYNNEX",
         "lineType": "Tipo de linha",
+        "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
+        "allowanceHint": "A linha cobra a quantidade incluída em todos os períodos, mesmo quando são contados menos dispositivos.",
+        "includedQuantity": "Quantidade incluída",
+        "overageMode": "Acima da quantidade incluída",
+        "overageBill": "Faturar excedentes",
+        "overageFlag": "Sinalizar excedentes para revisão",
+        "overageUnitPrice": "Preço por unidade adicional",
+        "allowanceRequired": "Informe uma quantidade incluída e um preço se faturar os excedentes.",
+        "deviceRoles": "Funções do dispositivo (um dispositivo é cobrado quando sua função é uma destas)",
+        "deviceRolesRequired": "Escolha pelo menos uma função.",
+        "deviceGroup": "Grupo de dispositivos (cobra seus membros; grupos dinâmicos são avaliados no faturamento)",
+        "selectGroup": "Selecione um grupo",
+        "deviceGroupRequired": "Escolha um grupo.",
+        "deviceGroupsLoadFailed": "Não foi possível carregar os grupos de dispositivos desta organização.",
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
@@ -207,6 +270,16 @@
         "priceLookupFailed": "Não foi possível consultar o preço em {{currency}}.",
         "priceNotRepresentable": "O preço em {{currency}} salvo para este item não é válido em {{currency}} — corrija-o no catálogo ou remova o vínculo com o catálogo e informe uma linha manual.",
         "priceSourceOrgOverride": "Preço específico da organização {{org}}"
+      },
+      "editLine": {
+        "save": "Salvar linha",
+        "cancel": "Cancelar",
+        "typeLocked": "O tipo de linha não pode ser alterado. Remova a linha e adicione uma nova.",
+        "priceFromCatalog": "O preço vem do catálogo. Remova o vínculo com o catálogo para defini-lo manualmente.",
+        "refreshPrice": "Atualizar preço do catálogo",
+        "restoreCatalogLink": "Restaurar vínculo com o catálogo",
+        "unlinkNeedsPrice": "Informe um preço unitário e a configuração de imposto para remover o vínculo com o catálogo.",
+        "noChanges": "Ainda não há nada para salvar."
       },
       "estimate": {
         "title": "Estimado neste período",
@@ -240,7 +313,16 @@
       "newContract": "Novo contrato",
       "doneEditing": "Concluir edição"
     },
+    "list": {
+      "estimateUnavailable": "Estimativa indisponível: não foi possível avaliar um grupo de dispositivos deste contrato",
+      "estimateExcluded": "Exclui {{count}} contrato(s) cuja estimativa está indisponível"
+    },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos são faturados em uma moeda diferente da moeda da organização.",
+        "countPlus": "{{count}}+ contratos são faturados em uma moeda diferente da moeda da organização.",
+        "review": "Revisar"
+      },
       "title": "Contratos",
       "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",
       "newContract": "Novo contrato",
@@ -322,8 +404,8 @@
     },
     "tabs": {
       "contracts": "Contratos",
-      "templates": "Modelos",
-      "documents": "Documentos",
+      "templates": "Modelos de acordo",
+      "documents": "Acordos assinados",
       "currencyMismatches": "Divergências de moeda"
     },
     "currencyMismatches": {
@@ -384,16 +466,16 @@
       }
     },
     "templatesTab": {
-      "title": "Modelos de contrato",
-      "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
-      "newTemplate": "Novo modelo",
+      "title": "Modelos de acordo",
+      "description": "Seu contrato mestre e seus termos padrão. Adicione um a um orçamento e o cliente o assina junto com a proposta; a cópia assinada fica arquivada no contrato que esse orçamento cria.",
+      "newTemplate": "Novo modelo de acordo",
       "includeArchived": "Mostrar arquivados",
       "allOrgs": "Todas as orgs",
       "ownerOrg": "Organização",
       "noVersions": "Ainda sem versões",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Arquivar",
-      "loadError": "Falha ao carregar os modelos de contrato",
+      "loadError": "Falha ao carregar os modelos de acordo",
       "createError": "Falha ao criar o modelo",
       "created": "Modelo criado",
       "archiveError": "Falha ao arquivar o modelo",
@@ -409,11 +491,11 @@
         "archived": "Arquivado"
       },
       "empty": {
-        "title": "Ainda não há modelos",
-        "description": "Crie seu primeiro modelo de contrato para começar."
+        "title": "Ainda não há modelos de acordo",
+        "description": "Adicione seu contrato mestre ou seus termos padrão uma única vez e depois inclua-os em qualquer orçamento. Os clientes assinam ao aceitar."
       },
       "createDialog": {
-        "title": "Novo modelo de contrato",
+        "title": "Novo modelo de acordo",
         "name": "Nome",
         "namePlaceholder": "ex. Contrato mestre de serviços",
         "description": "Descrição",
@@ -427,18 +509,18 @@
         "orgRequired": "Selecione uma organização para um modelo de propriedade da organização.",
         "nameRequired": "Informe um nome de modelo.",
         "cancel": "Cancelar",
-        "create": "Criar modelo",
+        "create": "Criar modelo de acordo",
         "creating": "Criando…"
       }
     },
     "documentsTab": {
-      "title": "Documentos",
-      "description": "Documentos de contrato executados ainda não vinculados a um contrato.",
+      "title": "Acordos assinados",
+      "description": "Acordos assinados ainda não vinculados a um contrato. Vincule cada um para que apareça no contrato que ele rege.",
       "empty": {
-        "title": "Nenhum documento não vinculado",
-        "description": "Os documentos executados aparecem aqui até serem vinculados a um contrato."
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Os acordos assinados aparecem aqui até serem vinculados a um contrato."
       },
-      "loadError": "Não foi possível carregar os documentos.",
+      "loadError": "Não foi possível carregar os acordos assinados.",
       "columns": {
         "template": "Modelo",
         "signer": "Signatário",
@@ -460,8 +542,8 @@
         "confirm": "Vincular",
         "linking": "Vinculando…"
       },
-      "linkSuccess": "Documento vinculado ao contrato.",
-      "linkError": "Não foi possível vincular o documento a esse contrato."
+      "linkSuccess": "Acordo assinado vinculado ao contrato.",
+      "linkError": "Não foi possível vincular o acordo assinado a esse contrato."
     },
     "templateEditor": {
       "back": "Voltar",
@@ -487,7 +569,7 @@
       "publish": "Publicar",
       "publishDirtyHint": "Salve seu rascunho antes de publicar",
       "body": "Corpo",
-      "bodyAria": "Corpo do modelo de contrato",
+      "bodyAria": "Corpo do modelo de acordo",
       "preview": "Pré-visualização",
       "edit": "Editar",
       "saveDraft": "Salvar rascunho",
@@ -504,12 +586,99 @@
       "publishError": "Falha ao publicar a versão",
       "publishSuccess": "Versão publicada",
       "warnings": {
-        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos contratos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
     }
   },
+  "agreements": {
+    "tabs": {
+      "templates": "Modelos de acordo",
+      "signed": "Acordos assinados"
+    },
+    "signedPage": {
+      "title": "Acordos assinados",
+      "description": "Todos os acordos que seus clientes assinaram. Vincule um a um contrato para que apareça no contrato que ele rege.",
+      "unlinkedOnly": "Somente sem vínculo",
+      "empty": {
+        "title": "Nenhum acordo assinado ainda",
+        "description": "Um acordo é assinado quando o cliente aceita um orçamento que o contém."
+      },
+      "emptyUnlinked": {
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Todos os acordos assinados já estão arquivados em um contrato."
+      },
+      "columns": {
+        "contract": "Contrato"
+      },
+      "viewContract": "Ver contrato",
+      "notLinked": "Sem vínculo",
+      "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
+      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
+      "usageUnavailable": "Uso indisponível",
+      "backToTemplates": "Voltar aos modelos de acordo",
+      "archiveConfirm": {
+        "title": "Arquivar este modelo de acordo?",
+        "message": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "messageUnknownUsage": "Não foi possível verificar onde este modelo é usado. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "confirm": "Arquivar modelo"
+      }
+    },
+    "contractPill": {
+      "under": "Sob {{template}} v{{n}}"
+    }
+  },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "estações de trabalho",
+        "server": "servidores",
+        "printer": "impressoras",
+        "router": "roteadores",
+        "switch": "comutadores de rede",
+        "firewall": "firewalls de rede",
+        "access_point": "pontos de acesso",
+        "phone": "telefones",
+        "iot": "dispositivos IoT",
+        "camera": "câmeras",
+        "nas": "dispositivos NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Cobrar por conjunto de dispositivos",
+        "typeLabel": "Conjunto de dispositivos",
+        "types": {
+          "per_device": "Por dispositivo",
+          "per_device_role": "Por função de dispositivo",
+          "per_device_group": "Por grupo de dispositivos",
+          "per_seat": "Por licença"
+        },
+        "rolesLabel": "Funções de dispositivo",
+        "groupLabel": "Grupo de dispositivos",
+        "siteLabel": "Site (opcional)",
+        "allSites": "Todos os sites",
+        "quantityAuto": "A quantidade é contada automaticamente",
+        "autoSummary": "Quantidade automática · {{count}} {{set}} · estimada",
+        "driftChip": "contagem alterada: {{stored}} → {{live}}",
+        "refresh": "Atualizar contagens",
+        "estimateError": "Não foi possível verificar a contagem atual de dispositivos.",
+        "pickerError": "Não foi possível carregar os grupos de dispositivos ou os locais. Atualize a página e tente novamente.",
+        "groupDeleted": "O grupo de dispositivos “{{name}}” foi excluído — escolha outro",
+        "siteDeleted": "O site “{{name}}” foi excluído — escolha outro",
+        "typeLocked": "Um conjunto de dispositivos não pode ser alterado após a criação da linha — remova a linha e adicione-a novamente.",
+        "allowanceGroupLabel": "Franquia de quantidade",
+        "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
+        "includedLabel": "Quantidade incluída",
+        "overageModeLabel": "Acima da franquia",
+        "overageBill": "Cobrar cada unidade adicional",
+        "overageFlag": "Reportar para revisão",
+        "overagePriceLabel": "Preço de excedente",
+        "driftToast": "{{count}} linha(s) não correspondem mais à contagem atual de dispositivos: {{lines}}",
+        "retargetToast": "{{count}} linha(s) precisam que um grupo de dispositivos ou site seja escolhido novamente para esta organização"
+      },
       "actions": {
         "addImage": "Adicionar imagem",
         "addLine": "Adicionar linha",
@@ -557,7 +726,7 @@
       "addSection": {
         "captionPlaceholder": "Legenda (opcional)",
         "headingPlaceholder": "Texto do título",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Adicionar seção",
         "richTextPlaceholder": "Texto da proposta…",
@@ -590,7 +759,7 @@
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
         "richText": "Texto rico",
-        "contract": "Contrato",
+        "contract": "Acordo / termos",
         "table": "Tabela",
         "callout": "Destaque"
       },
@@ -661,7 +830,7 @@
       "emptyBlocks": "Ainda não há conteúdo. Adicione um título, rich text ou uma tabela de preços abaixo.",
       "errors": {
         "addCatalogItem": "Não foi possível adicionar o item do catálogo.",
-        "addContractSection": "Não foi possível adicionar a seção de contrato",
+        "addContractSection": "Não foi possível adicionar a seção de acordo",
         "addDistributorItem": "Não foi possível adicionar o item do distribuidor.",
         "addImageSection": "Não foi possível adicionar a seção de imagem.",
         "addLine": "Não foi possível adicionar a linha.",
@@ -676,7 +845,7 @@
         "importPax8Product": "Não foi possível importar o produto Pax8.",
         "lineAddedCatalogSaveFailed": "Linha adicionada, mas o salvamento no catálogo falhou.",
         "lineNeedsNameOrDescription": "Uma linha precisa de um nome ou uma descrição.",
-        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
+        "loadContractTemplates": "Não foi possível carregar os modelos de acordo",
         "moveLine": "Não foi possível mover a linha.",
         "quantityWholeGreaterThanZero": "Informe uma quantidade inteira maior que 0.",
         "removeLine": "Não foi possível remover a linha.",
@@ -694,7 +863,9 @@
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
         "uploadImage": "Não foi possível enviar a imagem.",
-        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
+        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -779,7 +950,7 @@
         "savedToCatalog": "Salvo no catálogo",
         "sectionAdded": "Seção adicionada",
         "sectionRemoved": "Seção removida",
-        "contractSectionAdded": "Seção de contrato adicionada"
+        "contractSectionAdded": "Seção de acordo adicionada"
       },
       "symbols": {
         "check": "✓",
@@ -825,8 +996,9 @@
         "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
-        "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
-        "title": "Termos e Condições"
+        "placeholder": "Condições de pagamento, observações de entrega, etc.",
+        "title": "Termos e Condições (texto simples)",
+        "helper": "Para termos jurídicos reutilizáveis, adicione uma seção Acordo / termos — o cliente a assina junto com a proposta."
       },
       "tidyAll": {
         "complete": "{{count}} descrição(ões) revisada(s).",
@@ -845,10 +1017,10 @@
         "perYear": "/ano"
       },
       "contract": {
-        "templateLabel": "Modelo de contrato",
+        "templateLabel": "Modelo de acordo",
         "templatePlaceholder": "Selecione um modelo…",
-        "noTemplates": "Ainda não há modelos de contrato. Crie um em Contratos → Modelos.",
-        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de anexar.",
+        "noTemplates": "Ainda não há modelos de acordo. <templatesLink>Crie um</templatesLink> em Contratos → Modelos de acordo.",
+        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
@@ -857,7 +1029,7 @@
         "labelPlaceholder": "Rótulo opcional (por exemplo, Contrato mestre de serviços)",
         "variableRequired": "Insira um valor",
         "variableUnresolved": "Esta variável ainda não foi resolvida",
-        "untitledTemplate": "Contrato",
+        "untitledTemplate": "Acordo",
         "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
         "updateToVersion": "Atualizar para v{{version}}",
         "saveVariables": "Salvar variáveis",
@@ -874,7 +1046,7 @@
         "preparedForPlaceholder": "Substituir o nome do cliente",
         "showPreparedBy": "Mostrar “preparado por” (sua empresa)",
         "imageLabel": "Imagem de capa",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "removeImage": "Remover imagem"
       },
       "ghost": {
@@ -1133,6 +1305,30 @@
         "untitled": "uma versão mais recente"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda da cotação",
+        "description": "Esta cotação em rascunho está precificada em {{currency}}.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas da cotação",
+        "modeClear": "Remover todas as linhas",
+        "modeClearHint": "As linhas são excluídas. Obrigatório quando alguma linha é manual ou um pacote.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "modeRepriceUnavailable": "Indisponível — pelo menos uma linha é manual ou um pacote, então a tabela de preços não consegue reprificá-la. Em vez disso, exclua todas as linhas.",
+        "confirm": "Entendo que isto altera a moeda da cotação.",
+        "submit": "Alterar moeda"
+      },
+      "toast": {
+        "changed": "Moeda da cotação alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda da cotação."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
       "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
@@ -1164,11 +1360,21 @@
       "warehouses": "Depósitos: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.",
+        "estimate": "Quantidade estimada — cobrada pelo número real de {{set}} em cada período de faturamento.",
+        "setDevices": "dispositivos",
+        "setSeats": "licenças",
+        "setGroup": "dispositivos em “{{name}}”",
+        "atSite": "{{set}} em {{site}}",
+        "allowanceBill": "Inclui {{included}}; unidades adicionais são cobradas a {{price}} cada.",
+        "allowanceFlag": "Inclui {{included}}; unidades adicionais são reportadas para revisão, não cobradas automaticamente."
+      },
       "additionalItems": "Itens adicionais",
       "contract": {
-        "download": "Baixar contrato",
-        "previewTitle": "Documento do contrato {{name}}",
-        "unavailable": "Arquivo do contrato indisponível",
+        "download": "Baixar acordo",
+        "previewTitle": "Acordo {{name}}",
+        "unavailable": "Arquivo do acordo indisponível",
         "versionFooter": "{{name}} — versão {{version}}"
       },
       "draft": "Rascunho",
@@ -1498,6 +1704,7 @@
       "messageLabel": "Mensagem (opcional)",
       "messagePlaceholder": "Adicione uma breve nota para o cliente…",
       "includePdfLabel": "Anexar o PDF da fatura",
+      "includeDeviceAppendixLabel": "Incluir o apêndice de dispositivos faturados",
       "signaturePreviewLabel": "Sua assinatura será adicionada:",
       "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
       "tooManyRecipients": "Até {{max}} endereços.",
@@ -1553,6 +1760,29 @@
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda da fatura",
+        "description": "Esta fatura em rascunho está precificada em {{currency}}.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas da fatura",
+        "modeClear": "Remover todas as linhas",
+        "modeClearHint": "As linhas são excluídas. Obrigatório quando alguma linha é manual ou um pacote.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "confirm": "Entendo que isto altera a moeda da fatura.",
+        "submit": "Alterar moeda"
+      },
+      "toast": {
+        "changed": "Moeda da fatura alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda da fatura."
+      }
+    },
     "deposit": {
       "duePrefix": "Entrada de",
       "dueSuffix": "devida — {{paid}} de {{total}} pagos.",
@@ -1575,6 +1805,21 @@
       "tax": "Imposto",
       "total": "Total",
       "allHidden": "Todas as linhas são apenas internas. Use “Mostrar custo e margem” para vê-las."
+    },
+    "devices": {
+      "title": "Dispositivos faturados",
+      "toggle": "Dispositivos ({{count}})",
+      "notRecorded": "O detalhe de dispositivos não foi registrado para esta fatura.",
+      "hostname": "Nome do host",
+      "role": "Função",
+      "countedAs": "Contado como",
+      "included": "Incluído",
+      "overage": "Excedente",
+      "removed": "Dispositivo removido",
+      "showing": "Mostrando {{shown}} de {{total}}",
+      "flaggedHeading": "Sinalizados, não faturados",
+      "empty": "Nenhum dispositivo foi contado para esta linha.",
+      "loadError": "Não foi possível carregar a lista de dispositivos."
     },
     "paymentMethods": {
       "cash": "Dinheiro",
@@ -1615,12 +1860,18 @@
       },
       "reverseError": "Não foi possível estornar o pagamento.",
       "reverseSuccess": "Pagamento estornado",
+      "reverseInQuickbooksToo": "Estorne este pagamento também no QuickBooks",
       "sendLink": "Enviar link de pagamento",
       "setUp": "Configurar",
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
+      "inQuickbooks": "No QuickBooks",
+      "syncingToQuickbooks": "Sincronizando…",
+      "quickbooksSyncFailed": "Falha na sincronização com o QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
@@ -1659,6 +1910,24 @@
       "confirm": "Redefinir link",
       "success": "Link redefinido — os links anteriores não funcionam mais",
       "error": "Não foi possível redefinir o link"
+    },
+    "accountingSync": {
+      "title": "Sincronização com o QuickBooks",
+      "status": {
+        "pending": "Ainda não enviada",
+        "synced": "Sincronizada",
+        "error": "Falha na sincronização",
+        "synced_with_tax_variance": "Sincronizada com diferença de imposto"
+      },
+      "taxVarianceHint": "O QuickBooks calculou um total de impostos diferente. Compare os dois registros antes de fechar o período.",
+      "docNumber": "Documento do QuickBooks {{docNumber}}",
+      "lastSynced": "Última sincronização em {{when}}",
+      "syncing": "Sincronizando…",
+      "push": "Enviar ao QuickBooks",
+      "pushed": "Fatura enviada ao QuickBooks.",
+      "pushFailed": "Falha ao enviar a fatura ao QuickBooks.",
+      "voidedHint": "Esta fatura está anulada — não há nada para enviar ao QuickBooks.",
+      "remoteDeletedHint": "Esta fatura foi excluída no QuickBooks. Enviá-la novamente criaria uma duplicata — resolva isso no QuickBooks primeiro."
     }
   },
   "invoiceDocument": {
@@ -1718,7 +1987,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignoradas{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Anulada",
-      "voidedVerb": "anuladas"
+      "voidedVerb": "anuladas",
+      "quickbooks": "Enviar ao QuickBooks",
+      "quickbooksQueued": "{{enqueued}} na fila para o QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas",
+      "quickbooksQueuedFailed": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas, {{failed}} não enfileiradas",
+      "quickbooksFailed": "Falha ao enfileirar o envio ao QuickBooks. Tente novamente."
     },
     "bulkDelete": {
       "message": "Excluir {{count}} fatura(s) selecionada(s)? Somente faturas em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",
@@ -1798,7 +2072,9 @@
       "total": "Total"
     },
     "title": "Faturas",
-    "tryAgain": "Tentar novamente"
+    "tryAgain": "Tentar novamente",
+    "exportBillables": "Exportar itens faturáveis",
+    "exportBillablesDialogTitle": "Exportar itens faturáveis"
   },
   "orgBillingSettings": {
     "address": {
@@ -1897,6 +2173,8 @@
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",
       "description": "Moeda, impostos, numeração e termos aplicados a novas cotações e faturas de todos os clientes.",
+      "deviceAppendix": "Incluir o apêndice de dispositivos faturados nos PDFs das faturas",
+      "deviceAppendixHelp": "Adiciona uma página listando cada dispositivo contado em cada linha da fatura. Desativado por padrão; a escolha é congelada na emissão.",
       "documentPageSize": "Tamanho da página",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Carta",
@@ -1928,6 +2206,24 @@
     },
     "statusPill": {
       "prefix": "Status:"
+    }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Padrões",
+    "documents": "Documentos",
+    "connections": "Conexões"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Contabilidade",
+      "description": "Stripe e QuickBooks se conectam em Integrações — gerencie-os lá.",
+      "cta": "Gerenciar conexões contábeis →"
+    },
+    "catalog": {
+      "title": "Catálogo e distribuidores",
+      "description": "O catálogo de produtos e as conexões de distribuidores (Pax8, TD SYNNEX) ficam em dois lugares — alterne entre eles aqui.",
+      "catalogCta": "Abrir catálogo de produtos →",
+      "distributorsCta": "Abrir distribuidores →"
     }
   }
 }

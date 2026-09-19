@@ -91,6 +91,11 @@ vi.mock('../middleware/auth', () => ({
 import { authMiddleware } from '../middleware/auth';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
+// Real dialect + real `sql` (the drizzle-orm mock above spreads the original and
+// replaces only the condition builders), so a captured predicate can be compiled
+// to the exact text Postgres would receive.
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import {
   metricsMiddleware,
   metricsRoutes,
@@ -247,16 +252,23 @@ function stubFleetGaugeQueries(
   selectMock: ReturnType<typeof vi.fn>,
   opts: { fleet?: Record<string, unknown>; readiness?: Record<string, unknown> } = {}
 ): void {
-  selectMock.mockImplementation(() => ({
-    from: (table: unknown) => ({
-      where: () =>
-        Promise.resolve([
-          table === devices
-            ? (opts.fleet ?? { devicesActive: 0, organizationsActive: 0 })
-            : (opts.readiness ?? { count: 0 }),
-        ]),
-    }),
-  }));
+  selectMock.mockImplementation(() => {
+    // The readiness half joins `devices` (#3969); the fleet half does not. One
+    // chain object serving both keeps this stub indifferent to which.
+    const chain: Record<string, any> = {};
+    chain.from = (table: unknown) => {
+      chain._table = table;
+      return chain;
+    };
+    chain.innerJoin = () => chain;
+    chain.where = () =>
+      Promise.resolve([
+        chain._table === devices
+          ? (opts.fleet ?? { devicesActive: 0, organizationsActive: 0 })
+          : (opts.readiness ?? { count: 0 }),
+      ]);
+    return chain;
+  });
 }
 
 function getMetricLine(metrics: string, name: string, labels?: Record<string, string>): string | undefined {
@@ -845,26 +857,50 @@ describe('metrics routes', () => {
      * reordered inside one transaction, which is a refactor with no behavioural
      * meaning.
      */
+    /**
+     * What the readiness half of the pass actually handed to Drizzle: the
+     * tables it joined and the predicate it filtered on. Recorded separately
+     * from the fleet query's `captured` array so a test can compile the
+     * predicate rather than trust a hand-shaped mock result (#3969).
+     */
+    const readinessQuery: { condition?: unknown; joinedTables: unknown[] } = {
+      joinedTables: [],
+    };
+
     function mockFleetQueries(opts: {
       fleet?: Record<string, unknown>;
       readiness?: Record<string, unknown>;
       fleetError?: Error;
     } = {}): any[] {
       const captured: any[] = [];
+      readinessQuery.condition = undefined;
+      readinessQuery.joinedTables = [];
       selectMock.mockImplementation(() => ({
-        from: (table: unknown) => ({
-          where: (condition: any) => {
-            if (table === devices) {
-              captured.push(condition);
-              dbContextEvents.push('fleet-query');
-              if (opts.fleetError) return Promise.reject(opts.fleetError);
-              return Promise.resolve([
-                opts.fleet ?? { devicesActive: 0, organizationsActive: 0 },
-              ]);
-            }
-            return Promise.resolve([opts.readiness ?? { count: 0 }]);
-          },
-        }),
+        from: (table: unknown) => {
+          if (table === devices) {
+            return {
+              where: (condition: any) => {
+                captured.push(condition);
+                dbContextEvents.push('fleet-query');
+                if (opts.fleetError) return Promise.reject(opts.fleetError);
+                return Promise.resolve([
+                  opts.fleet ?? { devicesActive: 0, organizationsActive: 0 },
+                ]);
+              },
+            };
+          }
+          const readinessChain: any = {
+            innerJoin: (joined: unknown) => {
+              readinessQuery.joinedTables.push(joined);
+              return readinessChain;
+            },
+            where: (condition: any) => {
+              readinessQuery.condition = condition;
+              return Promise.resolve([opts.readiness ?? { count: 0 }]);
+            },
+          };
+          return readinessChain;
+        },
       }));
       return captured;
     }
@@ -893,6 +929,66 @@ describe('metrics routes', () => {
       expect(getMetricLine(body, 'breeze_backup_low_readiness_devices')).toBe(
         'breeze_backup_low_readiness_devices 3'
       );
+    });
+
+    // `readFleetGauges` has always DOCUMENTED that ephemeral Quick Support
+    // devices and decommissioned records are excluded "the same exclusions
+    // `GET /metrics/` applies, so the gauge and the dashboard count the same
+    // fleet". That was true of the devices query and never of the readiness
+    // query beneath it, which was a bare count over `recovery_readiness` with
+    // no join to `devices` at all — so a device decommissioned 16 days earlier
+    // kept pinning the BreezeBackupLowReadinessDevices warning on US prod, and
+    // the comment actively misled whoever triaged it (#3969).
+    //
+    // Asserted against the COMPILED SQL, not against the predicate objects: a
+    // mock can be taught to return any count we like, and only the text
+    // Postgres receives can prove the exclusion is really in the query. The
+    // count assertion above passes just as happily with no filter at all.
+    describe('backup low-readiness gauge exclusions (#3969)', () => {
+      function compiledReadinessPredicate(): string {
+        expect(readinessQuery.condition).toBeDefined();
+        return new PgDialect().sqlToQuery(readinessQuery.condition as SQL).sql;
+      }
+
+      it('joins recovery_readiness to devices so the two can be filtered together', async () => {
+        mockFleetQueries({ readiness: { count: 3 } });
+
+        await scrape();
+
+        expect(readinessQuery.joinedTables).toContain(devices);
+      });
+
+      it('excludes decommissioned devices from the low-readiness count', async () => {
+        mockFleetQueries({ readiness: { count: 3 } });
+
+        await scrape();
+
+        expect(compiledReadinessPredicate()).toMatch(
+          /"devices"\."status"\s*(<>|!=)\s*'decommissioned'/
+        );
+      });
+
+      it('excludes ephemeral Quick Support devices from the low-readiness count', async () => {
+        mockFleetQueries({ readiness: { count: 3 } });
+
+        await scrape();
+
+        expect(compiledReadinessPredicate()).toMatch(
+          /"devices"\."is_ephemeral"\s*=\s*false/
+        );
+      });
+
+      // The exclusions must be ADDED to the threshold filter, not replace it —
+      // otherwise the gauge counts every readiness row on the fleet.
+      it('still filters on the low-readiness threshold', async () => {
+        mockFleetQueries({ readiness: { count: 3 } });
+
+        await scrape();
+
+        expect(compiledReadinessPredicate()).toMatch(
+          /"recovery_readiness"\."readiness_score"\s*</
+        );
+      });
     });
 
     it('coerces string counts from the driver', async () => {

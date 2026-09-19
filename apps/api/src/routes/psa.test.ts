@@ -508,6 +508,91 @@ describe('psa routes', () => {
     });
   });
 
+  it('does not carry stored PSA credentials to a changed origin', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentials: { baseUrl: 'https://attacker.example' } })
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/credentials.*re-entered|missing required credential/i)
+    });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a changed PSA origin with a complete replacement credential set', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [connectionRow()]) }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credentials: {
+          baseUrl: 'https://replacement.atlassian.net',
+          username: 'replacement@example.com',
+          apiToken: 'replacement-token',
+        },
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = setSpy.mock.calls[0]![0] as { credentials: string };
+    const persisted = JSON.parse(setArg.credentials.replace(/^enc:/, ''));
+    expect(persisted).toEqual({
+      baseUrl: 'https://replacement.atlassian.net',
+      username: 'replacement@example.com',
+      apiToken: 'replacement-token',
+    });
+  });
+
+  it('drops optional stored PSA authorization when replacing an origin', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({
+      provider: 'connectwise',
+      credentials: `enc:${JSON.stringify({
+        baseUrl: 'https://old.connectwise.example',
+        companyId: 'old-company',
+        publicKey: 'old-public',
+        privateKey: 'old-private',
+        clientId: 'optional-stored-client-id',
+      })}`,
+    })]) as never);
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [connectionRow({ provider: 'connectwise' })]) }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credentials: {
+          baseUrl: 'https://new.connectwise.example',
+          companyId: 'new-company',
+          publicKey: 'new-public',
+          privateKey: 'new-private',
+        },
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = setSpy.mock.calls[0]![0] as { credentials: string };
+    const persisted = JSON.parse(setArg.credentials.replace(/^enc:/, ''));
+    expect(persisted).toEqual({
+      baseUrl: 'https://new.connectwise.example',
+      companyId: 'new-company',
+      publicKey: 'new-public',
+      privateKey: 'new-private',
+    });
+  });
+
   it('merges PATCHed settings so an edit cannot silently un-pause a connection', async () => {
     // settings.status is written by POST /connections/:id/status and is NOT a
     // field the edit form round-trips, so a wholesale replace reactivated a
@@ -1046,6 +1131,35 @@ describe('psa routes', () => {
       expect(countChain.where).toHaveBeenCalled();
     });
 
+    it('GET /connections/:id anchors the lookup on the access axis, not id alone', async () => {
+      // Review finding (#4998): with the partner-wide SELECT branch in RLS, an
+      // org caller can now fetch a partner-wide row by id and relies solely on
+      // ensureConnectionAccess to reject it. The lookup must carry the same
+      // axis filter the list route uses so a future caller that forgets the
+      // gate gets "not found" rather than the row.
+      const orgCondition = vi.fn((col: unknown) => ({ orgEq: col, value: 'org-123' }));
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          partnerOrgAccess: null,
+          orgId: 'org-123',
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (orgId: string) => orgId === 'org-123',
+          accessibleOrgIds: ['org-123'],
+          orgCondition
+        });
+        return next();
+      });
+      const chain = makeChain([connectionRow({ partnerId: null })]);
+      selectMock.mockReturnValueOnce(chain as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(orgCondition).toHaveBeenCalledWith('psa_connections.org_id');
+    });
+
     it('serializes ownerScope organization for an org-owned row', async () => {
       selectMock.mockReturnValueOnce(makeChain([connectionRow({ partnerId: null })]) as never);
 
@@ -1066,7 +1180,8 @@ describe('psa routes', () => {
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' },
         canAccessOrg: () => false,
-        accessibleOrgIds: []
+        accessibleOrgIds: [],
+        orgCondition: (col: unknown) => ({ orgIn: col, value: [] })
       });
       return next();
     });
@@ -1077,4 +1192,3 @@ describe('psa routes', () => {
     expect(res.status).toBe(403);
   });
 });
-

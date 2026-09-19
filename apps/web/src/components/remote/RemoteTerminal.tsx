@@ -60,6 +60,12 @@ export type RemoteTerminalProps = {
 // server's 40s deadline, and SERVER_SILENCE_TIMEOUT_MS must stay above the
 // server's ping interval — otherwise healthy idle sessions get killed on
 // whichever side drifted.
+// Identifies the single <style> element carrying xterm's stylesheet. The CSS
+// is inlined into this component's chunk (see initTerminal), so it has to be
+// attached to the document exactly once no matter how many times the terminal
+// mounts.
+const XTERM_STYLE_ELEMENT_ID = 'xterm-css';
+
 const CLIENT_PING_INTERVAL_MS = 20_000;
 const SERVER_SILENCE_TIMEOUT_MS = 45_000;
 const LIVENESS_CHECK_INTERVAL_MS = 5_000;
@@ -94,6 +100,28 @@ export default function RemoteTerminal({
   // not drive the UI or the wire.
   const connectAttemptRef = useRef(0);
 
+  // initTerminal must be immune to prop-identity churn (deviceHostname flips
+  // ~100-300ms after mount once the parent's device fetch resolves; onError/t
+  // can also change identity across renders). These refs hold the latest
+  // value for use inside the one-shot init routine without pulling them into
+  // its dependency array — see initTerminal below and issue #4152.
+  const deviceHostnameRef = useRef(deviceHostname);
+  const onErrorRef = useRef(onError);
+  const tRef = useRef(t);
+  deviceHostnameRef.current = deviceHostname;
+  onErrorRef.current = onError;
+  tRef.current = t;
+  // The hostname actually announced in the terminal's "connecting to" line so
+  // far. Compared against the live prop by the effect below to decide whether
+  // to write an updated line — never to decide whether to re-init.
+  const announcedHostnameRef = useRef<string | null>(null);
+  // Set synchronously the instant init starts (before the first await), so a
+  // second invocation can never slip past the guard while the first is still
+  // mid-flight — this is what actually prevents the double-init race, not the
+  // terminalRef null-check alone (that check happens too late: it stays null
+  // until well after the first `await import(...)`).
+  const initStartedRef = useRef(false);
+
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   // Tracks whether the one-shot auto-connect has already fired. This gates the
   // auto-connect effect so it runs exactly once, on initial mount: without it,
@@ -110,9 +138,18 @@ export default function RemoteTerminal({
   const [bytesTransferred, setBytesTransferred] = useState({ sent: 0, received: 0 });
   const [terminalReady, setTerminalReady] = useState(false);
 
-  // Initialize xterm.js
+  // Initialize xterm.js. Deliberately has no dependencies: this must run
+  // exactly once per mount, immune to deviceHostname/onError/t identity
+  // changes (issue #4152). Anything that can change after mount is read via
+  // a ref (deviceHostnameRef/onErrorRef/tRef) instead of being captured in
+  // the closure via the dependency array.
   const initTerminal = useCallback(async () => {
-    if (!terminalContainerRef.current || terminalRef.current) return;
+    if (!terminalContainerRef.current || initStartedRef.current) return;
+    // Flip this synchronously, before any await, so a second invocation
+    // triggered while this one is still mid-flight (e.g. a hostname prop
+    // update landing between the dynamic imports below) can never pass the
+    // guard and start a second terminal.
+    initStartedRef.current = true;
 
     try {
       // Dynamic import of xterm.js
@@ -120,8 +157,46 @@ export default function RemoteTerminal({
       const { FitAddon } = await import('@xterm/addon-fit');
       const { WebLinksAddon } = await import('@xterm/addon-web-links');
 
-      // Import CSS
-      await import('@xterm/xterm/css/xterm.css');
+      // xterm's stylesheet ships INSIDE this lazy chunk (`?inline` hands us
+      // the CSS as a string) instead of as a separate hashed .css asset, and
+      // that is the actual fix for #4152.
+      //
+      // A plain `import '@xterm/xterm/css/xterm.css'` compiles to Vite's
+      // preload helper injecting a `<link rel=stylesheet>` and awaiting its
+      // `load` event — a promise that REJECTS on `error`. It does reject in
+      // the field: after an upgrade a stale hashed URL returns the SPA's
+      // index.html, which `nosniff` refuses to treat as CSS. Awaited bare,
+      // that lone rejection unwound the rest of init and left a permanently
+      // dead pane. Worse, the helper memoises attempted deps in a
+      // module-level `seen` map, so the remount that appeared to "fix" it
+      // (a tab round-trip) merely SKIPPED the stylesheet — the terminal came
+      // back styleless, and xterm.css is not decorative: it positions
+      // `.xterm-viewport`, absolutely stacks the `.xterm-screen` canvases and
+      // hides `.xterm-helper-textarea`, the offscreen textarea that captures
+      // keyboard/IME input.
+      //
+      // Inlining removes the whole failure class: there is no second asset to
+      // go stale, and the CSS cannot arrive without the JS that needs it. The
+      // catch is defence in depth only — a styling problem must never again be
+      // able to take the session down with it.
+      try {
+        const { default: xtermCss } = await import('@xterm/xterm/css/xterm.css?inline');
+        // Idempotent: remounts (every Remote Tools tab switch is one) and the
+        // second terminal on a split view must not stack duplicate <style>
+        // elements. Injecting a <style> is CSP-legal here — apps/web already
+        // carries style-src 'unsafe-inline' for xterm's runtime inline styles.
+        if (xtermCss && !document.getElementById(XTERM_STYLE_ELEMENT_ID)) {
+          const style = document.createElement('style');
+          style.id = XTERM_STYLE_ELEMENT_ID;
+          style.textContent = xtermCss;
+          document.head.appendChild(style);
+        }
+      } catch (cssError) {
+        console.warn(
+          'Terminal stylesheet failed to load; continuing with an unstyled terminal:',
+          cssError
+        );
+      }
 
       const fitAddon = new FitAddon();
       const webLinksAddon = new WebLinksAddon();
@@ -176,18 +251,32 @@ export default function RemoteTerminal({
       });
       resizeObserverRef.current.observe(terminalContainerRef.current);
 
-      // Display welcome message
-      terminal.writeln(`\x1b[1;34m${t('remoteTerminal.welcome')}\x1b[0m`);
-      terminal.writeln(`\x1b[90m${t('remoteTerminal.connectingTo', { hostname: deviceHostname })}\x1b[0m`);
+      // Display welcome message. Read the hostname/translator via refs so
+      // this stays correct even though this callback has no deps: it always
+      // sees the latest value at the moment init actually runs.
+      const hostnameAtInit = deviceHostnameRef.current;
+      terminal.writeln(`\x1b[1;34m${tRef.current('remoteTerminal.welcome')}\x1b[0m`);
+      terminal.writeln(`\x1b[90m${tRef.current('remoteTerminal.connectingTo', { hostname: hostnameAtInit })}\x1b[0m`);
       terminal.writeln('');
+      announcedHostnameRef.current = hostnameAtInit;
 
       // Signal that terminal is ready for connection
       setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
-      onError?.(t('remoteTerminal.errors.initialize'));
+      // Release the one-shot guard so the user can retry without remounting.
+      // It is only otherwise cleared by unmount cleanup, which is why a failed
+      // cold mount used to need a tab round-trip to recover (#4152).
+      initStartedRef.current = false;
+      // Surface the failure. Without this the pane keeps the initial
+      // 'disconnected' status while `autoConnectAttempted` stays false (the
+      // auto-connect effect is gated on `terminalReady`, which never flips),
+      // so the retry overlay's condition is never satisfied and the user is
+      // left with an empty pane and nothing to click.
+      setStatus('failed');
+      onErrorRef.current?.(tRef.current('remoteTerminal.errors.initialize'));
     }
-  }, [deviceHostname, onError, t]);
+  }, []);
 
   // Connect to remote session
   const connect = useCallback(async () => {
@@ -555,22 +644,48 @@ export default function RemoteTerminal({
     }, 100);
   }, []);
 
-  // Initialize terminal on mount
+  // Initialize terminal on mount. initTerminal has no deps (see above), so
+  // this effect's identity never changes across renders and it runs exactly
+  // once per real mount/unmount — a deviceHostname/onError/t prop change
+  // cannot re-trigger it (issue #4152).
   useEffect(() => {
     initTerminal();
 
     return () => {
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
+        resizeObserverRef.current = null;
       }
       if (webSocketRef.current) {
         webSocketRef.current.close();
+        webSocketRef.current = null;
       }
       if (terminalRef.current) {
         terminalRef.current.dispose();
+        terminalRef.current = null;
       }
+      fitAddonRef.current = null;
+      // Reset the one-shot init guard and readiness flag so a genuine
+      // remount (a fresh mount of this component, or React StrictMode's
+      // dev-mode mount→cleanup→mount on the same instance) can re-init
+      // cleanly instead of being permanently blocked by stale guard state.
+      initStartedRef.current = false;
+      announcedHostnameRef.current = null;
+      setTerminalReady(false);
     };
   }, [initTerminal]);
+
+  // The device hostname resolves asynchronously after mount (the page starts
+  // with a "Loading device..." placeholder). Once it changes to the real
+  // value, update the terminal's "connecting to" line in place rather than
+  // re-initializing the terminal — the line is display-only and never
+  // affects the guard above.
+  useEffect(() => {
+    if (!terminalReady || !terminalRef.current) return;
+    if (deviceHostname === announcedHostnameRef.current) return;
+    terminalRef.current.writeln(`\x1b[90m${t('remoteTerminal.connectingTo', { hostname: deviceHostname })}\x1b[0m`);
+    announcedHostnameRef.current = deviceHostname;
+  }, [deviceHostname, terminalReady, t]);
 
   // Auto-connect exactly once, on initial mount. The attempt flag is only set
   // when the timer actually fires (not when scheduled), so an effect re-run
@@ -588,6 +703,22 @@ export default function RemoteTerminal({
       return () => clearTimeout(timer);
     }
   }, [terminalReady, status, sessionId, autoConnectAttempted, connect]);
+
+  // The overlay's button has to serve two different broken states. When a
+  // session died, the terminal object still exists and reconnecting is the
+  // whole job. When init itself failed there is no terminal at all, and
+  // connect() early-returns on the null `terminalRef` — so the button silently
+  // did nothing (#4152). Re-run init in that case; the auto-connect effect
+  // takes it from there once `terminalReady` flips, which is also why the
+  // status has to go back to 'disconnected' (that effect is gated on it).
+  const handleOverlayRetry = useCallback(() => {
+    if (terminalRef.current) {
+      void connect();
+      return;
+    }
+    setStatus('disconnected');
+    void initTerminal();
+  }, [connect, initTerminal]);
 
   // Format connection duration
   const getConnectionDuration = () => {
@@ -616,7 +747,12 @@ export default function RemoteTerminal({
   return (
     <div
       className={cn(
-        'flex flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
+        // flex-1 min-h-0 (#4510): lets the pane grow to fill a flex-column
+        // parent's available height (RemoteToolsPage's terminal tab panel)
+        // instead of shrinking to the header + the inner 400px floor below.
+        // Inert when the parent isn't a flex container (e.g. RemoteTerminalPage,
+        // which sizes this via the `className` prop instead).
+        'flex flex-1 min-h-0 flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
         isFullscreen && 'fixed inset-4 z-50',
         className
       )}
@@ -697,13 +833,10 @@ export default function RemoteTerminal({
       </div>
 
       {/* Terminal Container */}
-      <div className={cn('relative flex-1 flex flex-col', isFullscreen && 'min-h-0')}>
+      <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={terminalContainerRef}
-          className={cn(
-            'flex-1 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
-            isFullscreen && 'min-h-0'
-          )}
+          className="flex-1 min-h-0 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden"
           onClick={() => terminalRef.current?.focus()}
         />
         {/* Disconnect overlay (issue #2871): a dead session must be unmissable,
@@ -728,7 +861,7 @@ export default function RemoteTerminal({
               <button
                 type="button"
                 data-testid="terminal-overlay-reconnect"
-                onClick={connect}
+                onClick={handleOverlayRetry}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
                 <RefreshCw className="h-4 w-4" />

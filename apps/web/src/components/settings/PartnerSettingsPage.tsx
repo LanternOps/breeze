@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AtSign,
   Bell,
+  Blocks,
   Building2,
   Globe,
   KeyRound,
@@ -16,7 +18,6 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
-import TicketingSettingsTabs from './TicketingSettingsTabs';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
@@ -30,7 +31,10 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
+import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
+import PartnerModulesCard from './PartnerModulesCard';
+import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import type {
@@ -47,7 +51,8 @@ import type {
   InheritableBrandingSettings,
   InheritableAiBudgetSettings,
   InheritableRemoteAccessSettings,
-  IpAllowlistStatus
+  IpAllowlistStatus,
+  SendingDomainsCapabilityDto
 } from '@breeze/shared';
 import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
@@ -55,8 +60,11 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
+import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
+import { fetchSendingDomains } from '@/lib/api/sendingDomains';
+import { isTabVisible } from './sendingDomains/domainView';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'sendingDomains' | 'modules';
 
 type Partner = {
   id: string;
@@ -69,6 +77,11 @@ type Partner = {
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature?: string | null;
   settings: PartnerSettings;
+  // #5075 W04 — which service-desk/billing module this partner runs.
+  // `undefined` on every render before the partner fetch resolves, and also on
+  // an API too old to send it. The card treats both the same way: display
+  // 'native', publish nothing to the store (see PartnerModulesCard's prop doc).
+  serviceManagementMode?: ServiceManagementMode;
   createdAt: string;
 };
 
@@ -90,6 +103,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     label: 'partnerSettingsPage.groups.company',
     tabs: [
       { key: 'company', hash: 'company', label: 'partnerSettingsPage.tabs.company.label', description: 'partnerSettingsPage.tabs.company.description', icon: Building2 },
+      { key: 'modules', hash: 'modules', label: 'partnerSettingsPage.tabs.modules.label', description: 'partnerSettingsPage.tabs.modules.description', icon: Blocks, selfSaving: true },
       { key: 'regional', hash: 'regional', label: 'partnerSettingsPage.tabs.regional.label', description: 'partnerSettingsPage.tabs.regional.description', icon: Globe },
       { key: 'defaults', hash: 'defaults', label: 'partnerSettingsPage.tabs.defaults.label', description: 'partnerSettingsPage.tabs.defaults.description', icon: SlidersHorizontal, enforced: true },
     ],
@@ -107,6 +121,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
       { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
+      { key: 'sendingDomains', hash: 'sending-domains', label: 'partnerSettingsPage.tabs.sendingDomains.label', description: 'partnerSettingsPage.tabs.sendingDomains.description', icon: AtSign, selfSaving: true },
       { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
     ],
@@ -148,7 +163,7 @@ function getTabFromHash(): TabKey | null {
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Login Branding) persist independently and are never "dirty"
 // from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider' | 'sendingDomains' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -172,14 +187,6 @@ export default function PartnerSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [activeTab, setActiveTab] = useState<TabKey>('company');
-
-  // The M365 consent callback returns to `/settings/partner?ticketMailbox=…#ticketing`.
-  // Capture that signal ONCE at mount (this page mounts a single time), before the
-  // mailbox card strips the param, so we can deep-link the embedded Ticketing group's
-  // Inbound sub-tab deterministically — see TicketingSettingsTabs `initialTab`.
-  const [deepLinkTicketMailbox] = useState(
-    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
-  );
 
   // Regional form state
   const [timezone, setTimezone] = useState('UTC');
@@ -207,9 +214,19 @@ export default function PartnerSettingsPage() {
   const [defaultsData, setDefaultsData] = useState<InheritableDefaultSettings>({});
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
+  // The AI Budgets tab's alert-threshold box can hold text that does not parse;
+  // it never reaches `aiBudgetsData`, so saving while it is red would persist
+  // the previous ladder and report success (#4388 W03). The input reports true
+  // again when it unmounts, so leaving the tab never strands the Save button.
+  const [aiBudgetsValid, setAiBudgetsValid] = useState(true);
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
+  // Capability only: the tab does its own full read. `checked` distinguishes
+  // "not fetched yet" from "fetched and this instance has no provider", so a
+  // deep link to #sending-domains does not bounce to Company mid-flight.
+  const [sendingDomainsCapability, setSendingDomainsCapability] = useState<SendingDomainsCapabilityDto | null>(null);
+  const [sendingDomainsChecked, setSendingDomainsChecked] = useState(false);
 
   // Dirty tracking: a per-tab serialized snapshot of the saveable form state,
   // compared against the baseline captured after fetch (and reset after save).
@@ -318,6 +335,14 @@ export default function PartnerSettingsPage() {
         .then(r => (r.ok ? r.json() : Promise.reject(new Error('pinnable fetch failed'))))
         .then((p: PinnableVersions) => setPinnableVersions(p))
         .catch(() => setPinnableVersions(null));
+
+      // Best-effort: decides whether the Sender Addresses tab appears at all.
+      // A 404 means EMAIL_DOMAINS_PROVIDER is unset on this instance — the
+      // default everywhere — and the tab stays hidden.
+      fetchSendingDomains()
+        .then((result) => setSendingDomainsCapability(result.supported ? (result.data.capability ?? null) : null))
+        .catch(() => setSendingDomainsCapability(null))
+        .finally(() => setSendingDomainsChecked(true));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('partnerSettingsPage.genericError'));
     } finally {
@@ -368,6 +393,26 @@ export default function PartnerSettingsPage() {
     const canonical = `#${TAB_BY_KEY[key].hash}`;
     if (window.location.hash !== canonical) window.location.hash = canonical;
   };
+
+  const sendingDomainsVisible = isTabVisible(sendingDomainsCapability);
+
+  // TAB_GROUPS stays a module constant so HASH_TO_TAB keeps resolving
+  // `#sending-domains`; visibility is applied to the rendered nav only.
+  const visibleGroups = useMemo(
+    () => TAB_GROUPS.map(group => ({
+      ...group,
+      tabs: group.tabs.filter(tab => tab.key !== 'sendingDomains' || sendingDomainsVisible),
+    })),
+    [sendingDomainsVisible]
+  );
+
+  // A bookmark to a tab this instance hides falls back to Company — but only
+  // once the capability read has actually settled.
+  useEffect(() => {
+    if (sendingDomainsChecked && !sendingDomainsVisible && activeTab === 'sendingDomains') {
+      setActiveTab('company');
+    }
+  }, [sendingDomainsChecked, sendingDomainsVisible, activeTab]);
 
   const handleSave = async () => {
     // Block a malformed maintenance window client-side (issue #1963) so the
@@ -456,6 +501,9 @@ export default function PartnerSettingsPage() {
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
       setPartner(updated);
+      // Lets layout islands that read partner settings (MfaPolicyOffBanner)
+      // re-check without a page navigation.
+      window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // The just-sent values are now the persisted state.
       setBaseline(currentSnapshot);
     } catch (err) {
@@ -544,7 +592,7 @@ export default function PartnerSettingsPage() {
             {t('partnerSettingsPage.selfSaving')}
           </p>
         ) : (
-          <button type="button" onClick={handleSave} disabled={saving || !isDirty}
+          <button type="button" onClick={handleSave} disabled={saving || !isDirty || !aiBudgetsValid}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? t('common:states.saving') : t('partnerSettingsPage.saveSettings')}
@@ -560,13 +608,14 @@ export default function PartnerSettingsPage() {
 
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
-          groups={TAB_GROUPS.map(group => ({
+          groups={visibleGroups.map(group => ({
             label: t(/* i18n-dynamic */ group.label),
             items: group.tabs.map(tab => ({ ...tab, label: t(/* i18n-dynamic */ tab.label), description: t(/* i18n-dynamic */ tab.description), dirty: !!dirtyTabs[tab.key] })),
           }))}
           activeKey={activeTab}
           onNavigate={key => navigateToTab(key as TabKey)}
           selectId="partner-settings-section"
+          testIdPrefix="partner-settings"
         />
 
         <div className="min-w-0 space-y-6">
@@ -578,7 +627,8 @@ export default function PartnerSettingsPage() {
 
           {/* Company Tab */}
           {activeTab === 'company' && (
-            <PartnerCompanyTab
+            <div className="space-y-6">
+              <PartnerCompanyTab
               name={companyName}
               address={address}
               contact={{
@@ -598,6 +648,13 @@ export default function PartnerSettingsPage() {
                 setContactWebsite(c.website || '');
               }}
             />
+            </div>
+          )}
+
+          {/* Modules Tab (M7) — the service management on/off switch gets its
+              own home instead of living inside Company. */}
+          {activeTab === 'modules' && (
+            <PartnerModulesCard serviceManagementMode={partner?.serviceManagementMode} />
           )}
 
           {/* Regional Tab */}
@@ -655,7 +712,7 @@ export default function PartnerSettingsPage() {
 
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
             </section>
           )}
 
@@ -673,17 +730,27 @@ export default function PartnerSettingsPage() {
             </section>
           )}
 
-          {/* Ticketing: partner-wide statuses, priority SLAs, categories, and billing
-              export. Each sub-tab persists independently, so the top-level "Save
-              Settings" button does not apply here. */}
+          {/* Ticketing now has its own standalone page (M0) — this tab links out
+              to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (
-            <section className="space-y-2" data-testid="partner-ticketing-tab">
-              <p className="text-sm text-muted-foreground">
-                {t('partnerSettingsPage.ticketingDescription')}
-              </p>
-              <TicketingSettingsTabs syncHash={false} initialTab={deepLinkTicketMailbox ? 'inbound' : undefined} />
-            </section>
+            <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="partner-settings-ticketing-panel">
+              <h2 className="text-lg font-semibold">{t('partnerSettingsPage.tabs.ticketing.label')}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{t('partnerSettingsPage.tabs.ticketing.description')}</p>
+              <a
+                href="/settings/ticketing"
+                data-testid="partner-settings-ticketing-link"
+                className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('partnerSettingsPage.tabs.ticketing.linkCta')}
+              </a>
+            </div>
           )}
+
+          {/* Custom sender addresses: partner sending domains, DNS records,
+              per-stream sender identities and the test send. Self-contained
+              with its own load/save, so the top-level "Save Settings" button
+              does not apply here. */}
+          {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
         </div>
       </div>
     </div>

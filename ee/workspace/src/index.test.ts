@@ -100,6 +100,12 @@ async function stagedApp(options: {
       ? { user: { id: USER_ID }, scope: 'system', accessibleOrgIds: null }
       : options.auth;
     if (auth) c.set('auth' as never, auth as never);
+    if (auth) {
+      c.set('extensionAuthorization' as never, {
+        hasPermission: () => true,
+        mfaSatisfied: true,
+      } as never);
+    }
     const agent = options.agent === undefined
       ? { deviceId: DEVICE_ID, agentId: 'agent-1', orgId: ORG_ID, siteId: null, role: 'agent' }
       : options.agent;

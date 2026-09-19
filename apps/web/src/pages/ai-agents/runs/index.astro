@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import RunsListPage from '../../../components/aiAgents/RunsListPage';
+---
+
+<DashboardLayout titleKey="titles.aiAgentsRuns">
+  <RunsListPage client:load />
+</DashboardLayout>

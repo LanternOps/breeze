@@ -11,6 +11,30 @@ Scans can be triggered manually for specific devices or scheduled through scan p
 
 ---
 
+## Using the Console
+
+Open **Sensitive Data** from the Security section of the left sidebar. The page has four tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Dashboard** | Stat cards for total findings, open findings, critical-open findings, and findings remediated in the last 24 hours, plus bar/pie breakdowns by data type and risk level |
+| **Findings** | A paginated, filterable table of individual findings (by data type, risk, status, and a client-side text search) with row selection for bulk remediation |
+| **Scans** | Recent scans with status, duration, and finding counts, plus a **New Scan** button |
+| **Policies** | Scan policies -- create, edit, and delete them here |
+
+<Steps>
+1. From the **Scans** tab, click **New Scan** to open the scan dialog.
+2. Optionally select an existing policy to reuse its detection classes, or pick detection classes (Credentials, PCI, PHI, PII, Financial) directly.
+3. Enter one or more device IDs (comma, semicolon, or newline separated).
+4. Submit. Each targeted device gets its own scan row, which updates live as the agent reports progress.
+</Steps>
+
+To act on a finding, select one or more rows in the **Findings** tab and choose a remediation action. **Encrypt**, **Quarantine**, and **Secure Delete** are destructive and require a confirmation step; **Secure Delete** additionally requires a second-approval token when the organization has that control enabled. **Accept Risk** and **False Positive** apply immediately.
+
+Policies created from the **Policies** tab can be owned by a single organization or, for partner-scope users, made **partner-wide** ("All organizations") so the same detection schedule applies across every managed org.
+
+---
+
 ## Key Concepts
 
 ### Data Classification Types
@@ -67,6 +91,18 @@ Scan policies define the detection configuration, file scope, and schedule for s
 A partner-scoped user with access to every organization under the partner can create a scan policy once and have it apply to all of them, instead of recreating the same policy per org. When creating a policy, choose **All organizations (partner-wide policy)** instead of **This organization only**. Ownership is set at creation time and can't be changed later -- to move a policy between an org and partner-wide, delete and recreate it.
 
 Scheduled scans on a partner-wide policy fan out across every organization under the partner: the scheduler enqueues scans for devices in each member org, checking each org independently so one backed-up org doesn't delay scans in the others. Scan results and findings always belong to the device's own organization, not the partner. Partner-wide policies show an **All orgs** badge in the policy list, and creating, updating, or deleting one requires partner-wide management access.
+
+### Who can run a recurring scan
+
+A scan policy with an **interval** or **cron** schedule runs under the authority of the person who last activated it — not under a standing system identity. Creating or saving an active recurring policy therefore needs `devices:write` **and** `devices:execute`, with multi-factor authentication satisfied on the session, and every scheduled device must be inside that user's site scope (otherwise the save is refused with "Scheduled scan target is outside authorized scope"). Breeze re-checks that authority each time the schedule fires and each time a scan command is created: if the approving user is deactivated, loses the permission, has their site scope narrowed, or their MFA is reset, the schedule stops silently rather than continuing under stale rights. Re-saving the policy by a user with current authority starts it again.
+
+Manual scans (**Scan Now** / `POST /sensitive-data/scan`) are not tied to a policy's authority — they run as the user who clicks, and need `devices:execute` plus MFA.
+
+### Recurring scans need re-approval after upgrade
+
+<Aside type="caution" title="Upgrading to v0.112.0 or later">
+  Recurring scan policies created before v0.112.0 carry no approving-user authority, so the upgrade **switches every one of them off** and fails any scheduled scan that was queued or running at the time. Nothing is deleted and no badge is shown — each affected policy simply appears **inactive** on the **Scan Policies** tab. To resume it, a user who holds `devices:write` and `devices:execute` (with MFA) turns **Active** back on, or re-saves the policy; the schedule is then bound to that user. Until then, **Scan Now** against a device still works, but a manual scan that names the inactive policy is refused with `Policy is inactive`.
+</Aside>
 
 ### Creating a Policy
 

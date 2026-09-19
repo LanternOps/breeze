@@ -1,8 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SQL, Param } from 'drizzle-orm';
 
-vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
-vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
+vi.mock('../db', () => ({
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+// #5128: scriptDispatch.ts now imports `CommandTypes` from './commandQueue'
+// (a re-export of the leaf module './commandTypes') to look up the script
+// type's default offline policy. Pull the REAL table in via a nested import
+// (rather than hand-rolling `{ SCRIPT: 'script' }`) so it cannot drift from
+// the registry `commandOfflinePolicy.ts` builds against.
+vi.mock('./commandQueue', async () => {
+  const { CommandTypes } = await import('./commandTypes');
+  return { CommandTypes, queueCommand: vi.fn() };
+});
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
   releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +43,14 @@ vi.mock('./scriptSecretDelivery', () => ({
   failClaimedSecretCommandsForUnsupportedAgent: vi.fn((claimed: unknown[]) => Promise.resolve(claimed)),
 }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+// #4919 — dispatch now owns the maintenance-window gate. Mocked permissive
+// here so this file's subject stays the dispatch mechanics; the gate itself
+// is covered by scriptMaintenanceGate.test.ts and its wiring by
+// scriptDispatch.maintenanceWindow.test.ts.
+vi.mock('./scriptMaintenanceGate', () => ({
+  checkScriptMaintenanceSuppression: vi.fn().mockResolvedValue({ suppressed: false }),
+}));
+
 
 import { db } from '../db';
 import { queueCommand } from './commandQueue';
@@ -111,13 +131,28 @@ const mockDiscardDelete = (rows: unknown[] | (() => Promise<unknown[]>)) => {
   return del;
 };
 
-// Mocks the live `devices.status` re-read the requireOnline gate performs.
+// Mocks the live `devices.status` re-read the reject-policy gate performs.
 // Pass `undefined` to model a device row that no longer exists.
 const mockLiveDeviceStatus = (status: string | undefined) => {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(status === undefined ? [] : [{ status }]),
+      }),
+    }),
+  } as any);
+};
+
+// Mocks the users-row existence probe (#3826 Wave 4A Task 3): a single
+// `db.select({id}).from(users).where(eq(users.id, candidate)).limit(1)`
+// query. Pass `found: true` to model a real users row (real-user path,
+// unchanged behavior) or `found: false` to model an agent-shaped id that
+// does not resolve to any users row (degrade path).
+const mockUsersProbe = (found: boolean) => {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(found ? [{ id: 'probed' }] : []),
       }),
     }),
   } as any);
@@ -189,9 +224,9 @@ describe('dispatchScriptToDevice — invariants', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('rejects offline device when requireOnline (snapshot and live read agree)', async () => {
+  it('rejects offline device under a reject policy (snapshot and live read agree)', async () => {
     mockLiveDeviceStatus('offline');
-    const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() } });
+    const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('device_offline');
@@ -199,15 +234,15 @@ describe('dispatchScriptToDevice — invariants', () => {
     }
   });
 
-  it('queues for an offline device when requireOnline is not set (manual semantics)', async () => {
+  it('queues for an offline device when no policy is passed (manual semantics)', async () => {
     const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(true);
-    // requireOnline:false is deliberate offline-queueing (manual/route
-    // semantics) — no live re-read should fire for it.
+    // The registry default for `script` is deliberate offline-queueing
+    // (manual/route semantics) — no live re-read should fire for it.
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('requireOnline gate re-reads live status: rejects a stale-online snapshot when the live read says offline', async () => {
+  it('reject policy re-reads live status: rejects a stale-online snapshot when the live read says offline', async () => {
     // Automation fleet runs snapshot device status once at run start
     // (automationRuntime.ts:1712/2269) and can dispatch minutes later — the
     // snapshot passed in here says 'online', but the live devices row has
@@ -215,7 +250,7 @@ describe('dispatchScriptToDevice — invariants', () => {
     // snapshot, or it would dispatch to a device that's actually offline.
     mockLiveDeviceStatus('offline');
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'online' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -225,19 +260,19 @@ describe('dispatchScriptToDevice — invariants', () => {
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('requireOnline gate proceeds when the live read says online, even off a stale non-online snapshot', async () => {
+  it('reject policy proceeds when the live read says online, even off a stale non-online snapshot', async () => {
     mockLiveDeviceStatus('online');
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'offline' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(true);
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('requireOnline gate rejects with "Device not found" when the live row is gone', async () => {
+  it('reject policy rejects with "Device not found" when the live row is gone', async () => {
     mockLiveDeviceStatus(undefined);
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'online' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -264,8 +299,65 @@ describe('dispatchScriptToDevice — invariants', () => {
   });
 });
 
+describe('dispatchScriptToDevice — #5128 offline policy', () => {
+  it('a queued (offline) dispatch stamps deliver_by and submitted_org_id on the command row', async () => {
+    const before = Date.now();
+    const r = await dispatchScriptToDevice({
+      device: device({ orgId: 'org-a', status: 'offline' }),
+      source: { kind: 'saved', script: savedScript() },
+    });
+
+    expect(r.ok).toBe(true);
+    const queueOptions = vi.mocked(queueCommand).mock.calls[0]![4] as
+      | { deliverBy?: Date; submittedOrgId?: string }
+      | undefined;
+    expect(queueOptions?.deliverBy).toBeInstanceOf(Date);
+    expect(queueOptions?.submittedOrgId).toBe('org-a');
+
+    // Standard TTL is 7 days (168h) by default — assert it lands roughly
+    // there rather than pinning the exact env-configurable constant.
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const deliverByMs = queueOptions!.deliverBy!.getTime();
+    expect(deliverByMs).toBeGreaterThan(before + SEVEN_DAYS_MS - 60_000);
+    expect(deliverByMs).toBeLessThan(before + SEVEN_DAYS_MS + 60_000);
+
+    if (r.ok) {
+      expect(r.deliverBy).toBeInstanceOf(Date);
+      expect(r.deliverBy!.getTime()).toBe(deliverByMs);
+    }
+  });
+
+  it('an explicit reject policy short-circuits before any queueCommand', async () => {
+    mockLiveDeviceStatus('offline');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }),
+      offlinePolicy: { kind: 'reject' },
+      source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('device_offline');
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  it('an explicit offlinePolicy reject wins over the queueing registry default', async () => {
+    mockLiveDeviceStatus('offline');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }),
+      // No implicit gate remains (#5128 W4) — only the explicit policy gates this.
+      offlinePolicy: { kind: 'reject' },
+      source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('device_offline');
+    // The reject path re-reads live status.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+});
+
 describe('dispatchScriptToDevice — rows and payload', () => {
   it('saved: creates an execution row with the DEVICE org and passes executionId in payload', async () => {
+    mockUsersProbe(true); // 'user-1' resolves to a real users row — real-user path.
     const r = await dispatchScriptToDevice({
       device: device(), source: { kind: 'saved', script: savedScript(), automationRunId: null },
       parameters: { a: '1' }, triggeredBy: 'user-1', triggerType: 'manual',
@@ -273,6 +365,8 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     expect(r.ok).toBe(true);
     const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
     expect(execValues).toMatchObject({ scriptId: 'script-1', deviceId: 'device-1', orgId: 'org-a', triggeredBy: 'user-1', status: 'pending' });
+    // Real-user path must stay byte-identical: no $actor sidecar.
+    expect(execValues.parameters).not.toHaveProperty('$actor');
     const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
     expect(payload).toMatchObject({ scriptId: 'script-1', executionId: 'exec-1', language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' });
   });
@@ -395,6 +489,152 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('payload boom');
     expect(db.delete).toHaveBeenCalled();
     expect(queueCommand).not.toHaveBeenCalled();
+  });
+});
+
+// #3826 Wave 4A Task 3: agent principals reach dispatchScriptToDevice through
+// the same handlers humans use (auth.user.id is an ai_agents id, not a
+// users.id, for an ai_agent principal — see agentAuthContext.ts). Both
+// `script_executions.triggered_by` and (via queueCommand) `device_commands
+// .created_by` FK-reference users.id, so an agent-shaped id must degrade to
+// NULL before either insert — mirrors the shipped commandQueue.ts:855-889
+// precedent exactly.
+describe('dispatchScriptToDevice — users-FK probe-and-degrade (#3826)', () => {
+  it('degrades an agent-shaped triggeredBy/createdBy to null on BOTH columns and stashes actor metadata', async () => {
+    mockUsersProbe(false); // agent id does not resolve to a users row
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'agent-shaped-id-1',
+      createdBy: 'agent-shaped-id-1',
+    });
+    expect(r.ok).toBe(true);
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.triggeredBy).toBeNull();
+    expect(execValues.parameters).toMatchObject({
+      $actor: { actorType: 'ai_agent', actorId: 'agent-shaped-id-1' },
+    });
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBeUndefined();
+  });
+
+  it('single probe covers BOTH columns: exactly one users select when triggeredBy === createdBy', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('real-user path stays byte-identical: createdBy passes through to queueCommand verbatim', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBe('user-1');
+  });
+
+  it('does not probe at all when neither triggeredBy nor createdBy is supplied (no behavior change)', async () => {
+    await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('raw source: degrades an agent-shaped createdBy for queueCommand (no execution row to stash metadata in)', async () => {
+    mockUsersProbe(false);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'raw', content: 'ipconfig', language: 'powershell', provenance: 'automation:auto-1' },
+      createdBy: 'agent-shaped-id-2',
+    });
+    expect(r.ok).toBe(true);
+    expect(db.insert).not.toHaveBeenCalled();
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBeUndefined();
+  });
+
+  // #4299: the load-bearing half of the probe. `users` is an RLS-forced
+  // dual-axis table and `withSystemDbAccessContext` short-circuits to the
+  // caller's store when one is already open (`withDbAccessContext` returns
+  // early on an existing store), so a probe that does not FIRST escape the
+  // request context runs org-scoped. A partner-level human (`users.org_id IS
+  // NULL`) matches no branch of the users SELECT policy from an org-scoped,
+  // user-less context, so the probe reads zero rows and degrades a REAL human
+  // to NULL on both `triggered_by` and `created_by` — silently, since this
+  // path is FK-safe. Nesting order is the observable proof this suite can
+  // make: `db` is mocked here, so no RLS policy is actually evaluated. The
+  // real-Postgres proof of the identical escape (a partner-level human kept
+  // through an org-scoped, user-less caller context) is the load-bearing test
+  // in __tests__/integration/commandQueueCreatedBy.integration.test.ts, which
+  // covers the sibling probe in commandQueue.ts. This assertion fails against
+  // the pre-#4299 code — verified, not assumed.
+  it('runs the actor probe OUTSIDE the caller DB context, in a system context', async () => {
+    const dbModule = await import('../db');
+    const order: string[] = [];
+    vi.mocked(dbModule.runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-outside');
+      const result = await fn();
+      order.push('exit-outside');
+      return result;
+    });
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-system');
+      const result = await fn();
+      order.push('exit-system');
+      return result;
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockImplementation(() => {
+            order.push('users-probe');
+            return Promise.resolve([{ id: 'probed' }]);
+          }),
+        }),
+      }),
+    } as any);
+
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+
+    expect(r.ok).toBe(true);
+    // Nesting matters: outside must open before system, and the read must land
+    // between them. `withSystemDbAccessContext` alone (no escape) yields
+    // ['enter-system', 'users-probe', 'exit-system'] and is the regression.
+    expect(order).toEqual([
+      'enter-outside',
+      'enter-system',
+      'users-probe',
+      'exit-system',
+      'exit-outside',
+    ]);
+    // And the real user still survives the guard on BOTH columns.
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.triggeredBy).toBe('user-1');
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBe('user-1');
+  });
+
+  it('does not add an $actor key when the script has no bound parameters and the actor IS real', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.parameters).not.toHaveProperty('$actor');
   });
 });
 
@@ -888,7 +1128,7 @@ describe('dispatchScriptToDevice — sourced parameters', () => {
 
   describe('builtin name lookups', () => {
     // `loadBuiltinNameContext` is the only db.select this codepath makes
-    // (requireOnline is off in these tests), so one chain models both.
+    // (no reject policy in these tests), so one chain models both.
     const mockNameSelect = (rows: unknown[]) => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -1184,7 +1424,7 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
   });
 
   // The blocker the review caught: the immediate-send path claims the command
-  // itself and never reaches decryptClaimedCommandsForDelivery, so without
+  // itself and never reaches prepareClaimedCommandsForDelivery, so without
   // this gate a downgraded agent would receive the script with the credential
   // unset.
   //

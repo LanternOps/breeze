@@ -8,7 +8,9 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./commandQueue', () => ({
   CommandTypes: { BACKUP_RESTORE: 'backup_restore' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 vi.mock('./backupJobCreation', () => ({ createManualBackupJobIfIdle: vi.fn() }));
 vi.mock('../jobs/backupEnqueue', () => ({ enqueueBackupDispatch: vi.fn() }));
@@ -41,6 +43,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (siteId) => (!allowedSiteIds ? true : !!siteId && allowedSiteIds.includes(siteId)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 

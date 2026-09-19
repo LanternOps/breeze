@@ -8,14 +8,39 @@ import AutomationRunHistory, {
   type DeviceRunResult,
   type DeviceScriptResult,
 } from './AutomationRunHistory';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { usePermissions } from '@/lib/permissions';
+import { useHashTab } from '@/lib/useHashState';
+import type { TriggerFilter } from './AutomationList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
+
+export const JOB_TABS = ['all', 'scheduled', 'on-demand', 'webhooks', 'event-rules'] as const;
+export type JobTab = typeof JOB_TABS[number];
+
+const TAB_TO_FILTER: Record<JobTab, TriggerFilter> = {
+  all: 'all',
+  scheduled: 'schedule',
+  'on-demand': 'manual',
+  webhooks: 'webhook',
+  'event-rules': 'event',
+};
+const FILTER_TO_TAB: Record<TriggerFilter, JobTab> = {
+  all: 'all',
+  schedule: 'scheduled',
+  manual: 'on-demand',
+  webhook: 'webhooks',
+  event: 'event-rules',
+};
+
+export function triggerFilterForTab(tab: JobTab): TriggerFilter {
+  return TAB_TO_FILTER[tab];
+}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -51,6 +76,11 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
     // never render.
     managedByAgentId:
       item.managedByAgentId === null ? null : asString(item.managedByAgentId),
+    // Compiled-from-monitor automations (#5287) carry this so the fetch layer
+    // can filter them out below — a monitor-managed row is an implementation
+    // detail of its monitor, not a Job the operator manages here.
+    managedByMonitorId:
+      item.managedByMonitorId === null ? null : asString(item.managedByMonitorId),
     description: asString(item.description),
     triggerType,
     triggerConfig: {
@@ -58,6 +88,12 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
       eventType: asString(trigger.eventType),
       webhookUrl: asString(trigger.webhookUrl)
     },
+    actions: Array.isArray(item.actions)
+      ? item.actions.filter(isPlainRecord).map(action => ({
+        type: asString(action.type) ?? '',
+        runAs: asString(action.runAs),
+      }))
+      : [],
     enabled: Boolean(item.enabled),
     lastRunAt: asString(item.lastRunAt),
     lastRunStatus: undefined,
@@ -171,6 +207,10 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
 
 export default function AutomationsPage() {
   const { t } = useTranslation('scripts');
+  const { permissions } = usePermissions();
+  // #3262 — mirrors canManagePartnerWidePolicies(auth) server-side. UX only;
+  // the cancel route re-checks this on every request.
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -178,6 +218,11 @@ export default function AutomationsPage() {
   const [selectedAutomation, setSelectedAutomation] = useState<Automation | null>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryRun[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [tab, setTab] = useHashTab<JobTab>(JOB_TABS, 'all');
+  const switchTab = (next: JobTab) => {
+    window.location.hash = next;
+    setTab(next);
+  };
 
   const fetchAutomations = useCallback(async () => {
     try {
@@ -189,7 +234,15 @@ export default function AutomationsPage() {
       }
       const data = await response.json();
       const rows = data.data ?? data.automations ?? [];
-      setAutomations(Array.isArray(rows) ? rows.map((row: unknown) => toListAutomation(row, t)) : []);
+      // Monitor-managed automations (#5287) are compiled artifacts of their
+      // monitor, not Jobs an operator manages here — hide them from the list.
+      // (Non-monitor-managed automations still show, including agent-managed
+      // ones, which render read-only inline instead of being hidden — #3824.)
+      setAutomations(
+        Array.isArray(rows)
+          ? rows.map((row: unknown) => toListAutomation(row, t)).filter((automation) => !automation.managedByMonitorId)
+          : []
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
     } finally {
@@ -247,7 +300,7 @@ export default function AutomationsPage() {
   }, [modalMode, selectedAutomation, runHistory, fetchRunHistory]);
 
   const handleEdit = (automation: Automation) => {
-    void navigateTo(`/automations/${automation.id}`);
+    void navigateTo(`/jobs/${automation.id}`);
   };
 
   const handleDelete = (automation: Automation) => {
@@ -361,13 +414,27 @@ export default function AutomationsPage() {
           <p className="text-muted-foreground">{t('automationsPage.description')}</p>
         </div>
         <a
-          href="/automations/new"
+          href="/jobs/new"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
           {t('automationsPage.actions.new')}
         </a>
       </div>
+
+      <nav className="flex gap-1 border-b" aria-label={t('automationsPage.tabs.ariaLabel')}>
+        {JOB_TABS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => switchTab(key)}
+            aria-current={tab === key ? 'page' : undefined}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          >
+            {t(/* i18n-dynamic */ `automationsPage.tabs.${key}`)}
+          </button>
+        ))}
+      </nav>
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -382,6 +449,8 @@ export default function AutomationsPage() {
         onRun={handleRun}
         onToggle={handleToggle}
         onViewHistory={handleViewHistory}
+        triggerFilter={triggerFilterForTab(tab)}
+        onTriggerFilterChange={(value) => switchTab(FILTER_TO_TAB[value])}
       />
 
       {/* Delete Confirmation Modal */}
@@ -423,6 +492,9 @@ export default function AutomationsPage() {
           onClose={handleCloseModal}
           automationName={selectedAutomation.name}
           onLoadRunDetail={fetchRunDetail}
+          permissions={permissions}
+          canManagePartnerWide={canManagePartnerWide}
+          onRunCancelled={() => void fetchRunHistory(selectedAutomation)}
         />
       )}
     </div>

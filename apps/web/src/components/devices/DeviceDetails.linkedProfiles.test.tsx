@@ -60,7 +60,7 @@ async function tabLabels(): Promise<string[]> {
   await user.click(await screen.findByText('More'));
   const dropdown = (await screen.findByText('Details')).closest('div')!;
   return within(dropdown)
-    .getAllByRole('button')
+    .getAllByRole('menuitem')
     .map((b) => b.textContent ?? '');
 }
 

@@ -1,10 +1,12 @@
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   backupJobs as backupJobsTable,
   backupSnapshots as backupSnapshotsTable,
   backupVerifications as backupVerificationsTable,
+  devices,
 } from '../../db/schema';
+import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { queueCommandForExecution } from '../../services/commandQueue';
@@ -30,6 +32,12 @@ import type {
   RecoveryReadiness
 } from './types';
 import { normalizeBackupVerificationType } from './types';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  authorizeQueuedRecoveryWork,
+  captureRecoveryAuthorizationSubject,
+  type CapturedRecoveryAuthorizationSubject,
+} from '../../services/recoveryAuthorizationSubject';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -65,6 +73,7 @@ type VerificationFilters = {
   to?: number | null;
   limit?: number;
   excludeSimulated?: boolean;
+  allowedSiteIds?: readonly string[];
 };
 
 export type RunBackupVerificationInput = {
@@ -75,6 +84,19 @@ export type RunBackupVerificationInput = {
   snapshotId?: string;
   source: string;
   requestedBy?: string | null;
+};
+
+export type RunScheduledBackupVerificationInput = Omit<
+  RunBackupVerificationInput,
+  'snapshotId' | 'requestedBy' | 'source'
+> & {
+  backupJobId: string;
+  source: 'post-backup-integrity-check' | 'weekly-test-restore';
+};
+
+export type ScheduledVerificationDependencies = {
+  resolveProviderConfig: typeof resolveVerificationProviderConfig;
+  queueCommand: typeof queueCommandForExecution;
 };
 
 function toEpoch(value?: string | Date | null): number {
@@ -236,15 +258,43 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
   return typeof filters.limit === 'number' ? rows.slice(0, filters.limit) : rows;
 }
 
+const MAX_LIST_FAILURE_REASON_LENGTH = 200;
+
+export function toVerificationListItem(row: BackupVerification): BackupVerification {
+  // Verification details are agent-controlled and can contain restore paths,
+  // failed-file names, command identifiers, and raw result internals. List
+  // consumers only get the simulated-evidence marker plus, for failed rows, a
+  // whitespace-normalized, length-capped `reason` string (never other keys).
+  const details: Record<string, unknown> = {};
+  if (row.details?.simulated === true) details.simulated = true;
+  if (row.status === 'failed' && typeof row.details?.reason === 'string') {
+    const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, MAX_LIST_FAILURE_REASON_LENGTH);
+    if (reason) details.reason = reason;
+  }
+  return {
+    ...row,
+    details: Object.keys(details).length > 0 ? details : null,
+  };
+}
+
 async function listBackupVerificationsFromDb(
   orgId: string,
   filters: VerificationFilters = {}
 ): Promise<BackupVerification[] | null> {
   if (!supportsDbOrg(orgId)) return null;
+  if (filters.allowedSiteIds?.length === 0) return [];
   if (filters.deviceId && !isUuid(filters.deviceId)) return null;
   if (filters.backupJobId && !isUuid(filters.backupJobId)) return null;
 
   const conditions: SQL[] = [eq(backupVerificationsTable.orgId, orgId)];
+  if (filters.allowedSiteIds) {
+    conditions.push(sql`exists (
+      select 1 from ${devices}
+      where ${devices.id} = ${backupVerificationsTable.deviceId}
+        and ${devices.orgId} = ${backupVerificationsTable.orgId}
+        and ${inArray(devices.siteId, [...filters.allowedSiteIds])}
+    )`);
+  }
   if (filters.deviceId) conditions.push(eq(backupVerificationsTable.deviceId, filters.deviceId));
   if (filters.backupJobId) conditions.push(eq(backupVerificationsTable.backupJobId, filters.backupJobId));
   if (filters.verificationType === 'integrity') {
@@ -275,6 +325,7 @@ async function listBackupVerificationsFromDb(
     }));
   } catch (error) {
     console.warn('[backupVerification] DB verification read failed; falling back to memory:', error);
+    if (filters.allowedSiteIds) return [];
     return null;
   }
 }
@@ -352,9 +403,16 @@ async function resolveSnapshot(orgId: string, snapshotId: string): Promise<Backu
 async function resolveBackupJob(
   orgId: string,
   deviceId: string,
-  backupJobId?: string
+  backupJobId?: string,
+  requireCurrentDbLineage = false,
 ): Promise<BackupJob> {
-  if (supportsDbOrg(orgId) && isUuid(deviceId) && (!backupJobId || isUuid(backupJobId))) {
+  const dbIdentityShape = supportsDbOrg(orgId)
+    && isUuid(deviceId)
+    && (!backupJobId || isUuid(backupJobId));
+  if (requireCurrentDbLineage && supportsDbOrg(orgId) && !dbIdentityShape) {
+    throw new Error('Scheduled verification identifiers are not valid current database identities');
+  }
+  if (dbIdentityShape) {
     try {
       if (backupJobId) {
         const [row] = await runWithSystemDbAccess(() => db
@@ -377,6 +435,9 @@ async function resolveBackupJob(
           }
           return normalized;
         }
+        if (requireCurrentDbLineage) {
+          throw new Error('Backup job not found for organization');
+        }
       } else {
         const [row] = await runWithSystemDbAccess(() => db
           .select()
@@ -395,11 +456,15 @@ async function resolveBackupJob(
             errorCount: row.errorCount as number | null,
           });
         }
+        if (requireCurrentDbLineage) {
+          throw new Error('Backup job not found for requested device');
+        }
       }
     } catch (error) {
       if (error instanceof Error && error.message === 'backupJobId does not belong to requested device') {
         throw error;
       }
+      if (requireCurrentDbLineage) throw error;
       console.warn('[backupVerification] DB backup job lookup failed; falling back to memory:', error);
     }
   }
@@ -430,6 +495,7 @@ async function resolveBackupJob(
 async function resolveSnapshotForBackupJob(
   orgId: string,
   backupJob: BackupJob,
+  requireCurrentDbLineage = false,
 ): Promise<BackupSnapshot | null> {
   if (supportsDbOrg(orgId) && isUuid(backupJob.id)) {
     try {
@@ -450,10 +516,14 @@ async function resolveSnapshotForBackupJob(
           fileCount: row.fileCount as number | null,
         });
       }
+      if (requireCurrentDbLineage) return null;
     } catch (error) {
+      if (requireCurrentDbLineage) throw error;
       console.warn('[backupVerification] DB snapshot lookup by job failed; falling back to memory:', error);
     }
   }
+
+  if (requireCurrentDbLineage && supportsDbOrg(orgId)) return null;
 
   const resolved = backupSnapshots.find(
     (row) => row.id === backupJob.snapshotId && snapshotOrgById.get(row.id) === orgId
@@ -499,11 +569,57 @@ export async function listBackupVerifications(
   filters: VerificationFilters = {}
 ): Promise<BackupVerification[]> {
   const dbRows = await listBackupVerificationsFromDb(orgId, filters);
-  if (dbRows) return dbRows;
-  return listBackupVerificationsFromMemory(orgId, filters);
+  const rows = dbRows ?? (filters.allowedSiteIds ? [] : listBackupVerificationsFromMemory(orgId, filters));
+  return rows.map(toVerificationListItem);
+}
+
+function scheduledVerificationAuth(orgId: string): AuthContext {
+  return {
+    principal: { kind: 'system', reason: 'backup-verification-scheduler' },
+    user: { id: 'system', email: 'system@localhost', name: 'System', isPlatformAdmin: true },
+    token: null,
+    partnerId: null,
+    orgId,
+    scope: 'system',
+    accessibleOrgIds: null,
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+  } as AuthContext;
+}
+
+export async function runScheduledBackupVerification(
+  input: RunScheduledBackupVerificationInput,
+  deps: ScheduledVerificationDependencies = {
+    resolveProviderConfig: resolveVerificationProviderConfig,
+    queueCommand: queueCommandForExecution,
+  },
+): Promise<{
+  verification: BackupVerification;
+  readiness: RecoveryReadiness | null;
+}> {
+  const subject = await captureRecoveryAuthorizationSubject(
+    scheduledVerificationAuth(input.orgId),
+    input.orgId,
+    'verify',
+  );
+  return runBackupVerificationInternal(input, subject, deps);
 }
 
 export async function runBackupVerification(input: RunBackupVerificationInput): Promise<{
+  verification: BackupVerification;
+  readiness: RecoveryReadiness | null;
+}> {
+  return runBackupVerificationInternal(input, null, {
+    resolveProviderConfig: resolveVerificationProviderConfig,
+    queueCommand: queueCommandForExecution,
+  });
+}
+
+async function runBackupVerificationInternal(
+  input: RunBackupVerificationInput,
+  scheduledSubject: CapturedRecoveryAuthorizationSubject | null,
+  deps: ScheduledVerificationDependencies,
+): Promise<{
   verification: BackupVerification;
   readiness: RecoveryReadiness | null;
 }> {
@@ -516,19 +632,28 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   let backupJob = snapshot
-    ? await resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId)
-    : await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    ? await resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId, scheduledSubject !== null)
+    : await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId, scheduledSubject !== null);
 
   if (input.backupJobId) {
-    backupJob = await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    backupJob = await resolveBackupJob(
+      input.orgId,
+      input.deviceId,
+      input.backupJobId,
+      scheduledSubject !== null,
+    );
   }
 
   if (snapshot && snapshot.jobId !== backupJob.id) {
     throw new Error('snapshotId does not belong to backupJobId');
   }
 
-  if (!snapshot && backupJob.snapshotId) {
-    const resolved = await resolveSnapshotForBackupJob(input.orgId, backupJob);
+  if (!snapshot && (backupJob.snapshotId || scheduledSubject)) {
+    const resolved = await resolveSnapshotForBackupJob(
+      input.orgId,
+      backupJob,
+      scheduledSubject !== null,
+    );
     if (resolved && resolved.deviceId !== input.deviceId) {
       throw new Error('Backup job snapshot does not match requested device');
     }
@@ -536,6 +661,10 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
       throw new Error('Backup job snapshot linkage is inconsistent');
     }
     snapshot = resolved;
+  }
+
+  if (scheduledSubject && !snapshot) {
+    throw new Error('Scheduled verification requires a current internal snapshot');
   }
 
   if (input.verificationType === 'test_restore' && !snapshot) {
@@ -546,7 +675,29 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   const now = new Date().toISOString();
   const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
 
-  const providerConfig = await resolveVerificationProviderConfig(input.orgId, backupJob);
+  if (scheduledSubject && snapshot) {
+    const authorizeCurrentLineage = () =>
+      authorizeQueuedRecoveryWork(
+        scheduledSubject,
+        input.orgId,
+        [
+          { kind: 'device', id: input.deviceId, role: 'target' },
+          { kind: 'snapshot', id: snapshot.id, role: 'source' },
+        ],
+        'verify',
+      );
+    const authorization = supportsDbOrg(input.orgId)
+      ? await runWithSystemDbAccess(authorizeCurrentLineage)
+      : await authorizeCurrentLineage();
+    const authorizedSnapshot = authorization.resources.resources.find(
+      (resource) => resource.kind === 'snapshot' && resource.id === snapshot!.id,
+    );
+    if (!authorizedSnapshot || authorizedSnapshot.deviceId !== input.deviceId) {
+      throw new Error('Scheduled verification snapshot lineage does not match requested device');
+    }
+  }
+
+  const providerConfig = await deps.resolveProviderConfig(input.orgId, backupJob);
   if (!providerConfig) {
     // A backup job with a null configId predates destination tracking: we can't
     // reconstruct where its snapshot was written, and reading the device's
@@ -561,7 +712,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
-  const dispatchResult = await queueCommandForExecution(
+  const dispatchResult = await deps.queueCommand(
     input.deviceId,
     commandType,
     {
@@ -570,10 +721,43 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
       provider: providerConfig.provider,
       providerConfig: providerConfig.providerConfig,
     },
-    { userId: input.requestedBy || undefined }
+    { userId: input.requestedBy || undefined, expectedOrgId: input.orgId }
   );
 
   if (dispatchResult.error) {
+    // The queue deliberately makes an org mismatch indistinguishable from a
+    // missing device. Record the revoked pairing without revealing its new owner.
+    if (dispatchResult.error === 'Device not found') {
+      const reason = 'device_org_changed';
+      console.warn('[backupVerification] refusing dispatch:', { deviceId: input.deviceId, orgId: input.orgId, reason });
+      const verification = addBackupVerification({
+        orgId: input.orgId,
+        deviceId: input.deviceId,
+        backupJobId: backupJob.id,
+        snapshotId,
+        verificationType: input.verificationType,
+        status: 'failed',
+        startedAt: now,
+        completedAt: new Date().toISOString(),
+        filesVerified: 0,
+        filesFailed: 0,
+        details: { source: input.source, requestedBy: input.requestedBy ?? null, reason },
+      }, input.orgId);
+      await persistVerificationToDb(verification);
+      await createAuditLogAsync({
+        orgId: input.orgId,
+        actorType: input.requestedBy ? 'user' : 'system',
+        actorId: input.requestedBy || '00000000-0000-0000-0000-000000000000',
+        action: 'backup.verification_failed',
+        resourceType: 'device',
+        resourceId: input.deviceId,
+        result: 'failure',
+        errorMessage: reason,
+        details: { reason, verificationId: verification.id, backupJobId: backupJob.id },
+      });
+      recordBackupDispatchFailure('backup_verification', reason);
+      throw new BackupVerificationDispatchError(dispatchResult.error, 409);
+    }
     recordBackupDispatchFailure(
       'backup_verification',
       dispatchResult.error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed'

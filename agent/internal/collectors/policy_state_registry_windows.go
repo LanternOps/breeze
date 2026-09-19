@@ -4,15 +4,29 @@ package collectors
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
 
+// CollectRegistryState reads each configured probe out of the local registry.
+//
+// The returned error is a completeness signal, not a fatal one: entries always
+// holds whatever was readable, and a non-nil error means at least one probe
+// could not be read (access denied, I/O) so the result is PARTIAL. Callers must
+// not upload a partial result with replace:true — that deletes the server's
+// prior observation of every probe missing from this batch (#3529).
+//
+// An absent key or value is genuine absence rather than failure: it is reported
+// by omission with no error, so a complete collection still clears stale server
+// state for policies that were removed from the device.
 func (c *PolicyStateCollector) CollectRegistryState(probes []RegistryProbe) ([]RegistryStateEntry, error) {
 	entries := make([]RegistryStateEntry, 0, len(probes))
 	seen := make(map[string]struct{})
+	var probeErrs []error
 
 	for _, probe := range probes {
 		registryPath := strings.TrimSpace(probe.RegistryPath)
@@ -29,24 +43,46 @@ func (c *PolicyStateCollector) CollectRegistryState(probes []RegistryProbe) ([]R
 
 		root, subPath, err := resolveRegistryProbePath(registryPath)
 		if err != nil {
+			// Malformed probe configuration, not a collection failure: the
+			// value can never be read, so absence is the honest report. Logged
+			// so a typo'd probe is discoverable instead of reading as "policy
+			// absent" on every device forever.
+			slog.Debug("skipping unresolvable policy registry probe",
+				"registryPath", registryPath,
+				"error", err.Error())
 			continue
 		}
 
 		key, err := registry.OpenKey(root, subPath, registry.QUERY_VALUE)
 		if err != nil {
+			if !errors.Is(err, registry.ErrNotExist) {
+				probeErrs = append(probeErrs, fmt.Errorf("open %s: %w", registryPath, err))
+			}
+			continue
+		}
+
+		// Probe existence separately from decoding: a value that is present but
+		// unreadable (access denied) must not be reported as "policy absent".
+		_, _, err = key.GetValue(valueName, nil)
+		if err != nil {
+			if !errors.Is(err, registry.ErrNotExist) {
+				probeErrs = append(probeErrs, fmt.Errorf("read %s\\%s: %w", registryPath, valueName, err))
+			}
+			key.Close()
 			continue
 		}
 
 		entry, ok := readRegistryProbeValue(key, registryPath, valueName)
 		key.Close()
 		if !ok {
+			probeErrs = append(probeErrs, fmt.Errorf("read %s\\%s: unsupported value type", registryPath, valueName))
 			continue
 		}
 
 		entries = append(entries, entry)
 	}
 
-	return entries, nil
+	return entries, errors.Join(probeErrs...)
 }
 
 func resolveRegistryProbePath(path string) (registry.Key, string, error) {

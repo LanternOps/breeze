@@ -1,9 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { TOOL_PERMISSIONS, checkGuardrails } from './aiGuardrails';
-import { applyScriptMetadataInputShape, SCRIPT_BUILDER_TOOL_TIERS } from './scriptBuilderTools';
+import {
+  applyScriptMetadataInputShape,
+  buildScriptBuilderTools,
+  SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL,
+  SCRIPT_BUILDER_MCP_TOOL_NAMES,
+  SCRIPT_BUILDER_TOOL_TIERS,
+  scriptBuilderMcpToolName,
+} from './scriptBuilderTools';
+import { isAllowedForSession } from './mcpToolNames';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import type { AuthContext } from '../middleware/auth';
 
 /**
  * Guard against the "Unknown tool" regression (script-builder could not search
@@ -26,12 +35,12 @@ import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 // (and must not require) TOOL_TIERS / TOOL_PERMISSIONS entries.
 const APPLY_TOOLS = new Set(['apply_script_code', 'apply_script_metadata']);
 
-// A few MCP tool names dispatch to a differently-named executeTool handler;
-// preToolUse / checkToolPermission see the HANDLER name. Keep in sync with the
-// makeExistingHandler(...) call sites in createScriptBuilderMcpServer.
-const MCP_NAME_TO_HANDLER: Record<string, string> = {
-  execute_script_on_device: 'run_script',
-};
+// One MCP tool name dispatches to a differently-named executeTool handler;
+// preToolUse's tier/RBAC/schema lookups see the HANDLER name. Imported rather
+// than restated here so the test cannot drift from the map the registration
+// itself resolves through — the "still dispatches each tool to its executeTool
+// handler name" case below pins the map against the real handlers.
+const MCP_NAME_TO_HANDLER = SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL;
 
 const SCRIPT_BUILDER_CONTEXT_HANDLER_TOOLS = Object.keys(SCRIPT_BUILDER_TOOL_TIERS)
   .filter((name) => !APPLY_TOOLS.has(name))
@@ -108,6 +117,229 @@ describe('script-builder context tools are fully wired for the session guardrail
         limit: 10,
       }).success,
     ).toBe(true);
+  });
+});
+
+// ============================================
+// #4883: the session allowlist must see the EXPOSED tool name
+// ============================================
+
+/**
+ * The three maps above are about the *handler* identity. This block is about
+ * the other identity every tool has — the `mcp__script_builder__<name>` the
+ * SDK exposes to the model, which is also what `scriptAi.ts` puts in the
+ * session's `allowedTools`.
+ *
+ * `createSessionPreToolUse` gates on `isAllowedForSession(<name>,
+ * session.allowedTools)`. `execute_script_on_device` dispatches to the
+ * `run_script` handler, so passing the handler name to that gate compared
+ * `run_script` against an allowlist that only ever holds
+ * `mcp__script_builder__execute_script_on_device` — every Script Builder test
+ * run came back `Tool 'run_script' is not allowed for this session`, before
+ * tier/approval logic ran at all (#4883).
+ *
+ * These tests drive the REAL registered handlers, so they fail if the two
+ * identities are ever conflated again — including for a future renamed tool.
+ */
+describe('#4883: script-builder tools reach the session guardrail under the name the session granted', () => {
+  const GUARD_TEST_BLOCK = 'blocked-by-guard-test';
+
+  /**
+   * Invoke every registered context tool's handler with a pre-hook that
+   * records what the guardrail was asked about and then blocks, so nothing
+   * reaches executeTool / the database.
+   */
+  async function capturePreToolUseCalls() {
+    const calls: Array<{ toolName: string; mcpToolName: string | undefined }> = [];
+    const onPreToolUse = vi.fn(
+      async (toolName: string, _input: Record<string, unknown>, mcpToolName?: string) => {
+        calls.push({ toolName, mcpToolName });
+        return { allowed: false as const, error: GUARD_TEST_BLOCK };
+      },
+    );
+
+    const getAuth = () => {
+      throw new Error('getAuth must not be reached — the pre-hook blocks first');
+    };
+    const tools = buildScriptBuilderTools(getAuth as unknown as () => AuthContext, onPreToolUse);
+    const contextTools = tools.filter((t) => !APPLY_TOOLS.has(t.name));
+
+    for (const t of contextTools) {
+      await t.handler({} as never, undefined);
+    }
+
+    return { contextTools, calls };
+  }
+
+  it('asks the guardrail about a name the session allowlist actually contains', async () => {
+    const { contextTools, calls } = await capturePreToolUseCalls();
+
+    expect(calls).toHaveLength(contextTools.length);
+    contextTools.forEach((t, i) => {
+      const { toolName, mcpToolName } = calls[i]!;
+      const checkedName = mcpToolName ?? toolName;
+      expect(
+        isAllowedForSession(checkedName, SCRIPT_BUILDER_MCP_TOOL_NAMES),
+        `${t.name}: the guard checks '${checkedName}' against a session allowlist that holds `
+          + `'${scriptBuilderMcpToolName(t.name)}' — it will deny a tool the session granted`,
+      ).toBe(true);
+    });
+  });
+
+  it('still dispatches each tool to its executeTool handler name', async () => {
+    const { contextTools, calls } = await capturePreToolUseCalls();
+
+    contextTools.forEach((t, i) => {
+      // Handler identity: what TOOL_TIERS / TOOL_PERMISSIONS / the rate limits
+      // are keyed on. Pins SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL against the real
+      // registration, so the map the three tests above derive from cannot
+      // quietly disagree with what actually runs.
+      expect(calls[i]!.toolName).toBe(MCP_NAME_TO_HANDLER[t.name] ?? t.name);
+      // Exposed identity: it must be THIS tool's MCP name, not some other
+      // allowlisted tool's — otherwise the gate could be satisfied by a name
+      // the model never called.
+      expect(calls[i]!.mcpToolName).toBe(scriptBuilderMcpToolName(t.name));
+    });
+  });
+
+  it('registers exactly the tools the session allowlist is built from', async () => {
+    const registered = buildScriptBuilderTools(
+      (() => {
+        throw new Error('getAuth must not be reached');
+      }) as unknown as () => AuthContext,
+    ).map((t) => t.name);
+
+    // SCRIPT_BUILDER_MCP_TOOL_NAMES is derived from SCRIPT_BUILDER_TOOL_TIERS,
+    // so a tool registered without a tier entry is exposed to the model but
+    // absent from the session allowlist — denied on every call, exactly the
+    // #4883 failure mode by a different route.
+    expect(registered.slice().sort()).toEqual(Object.keys(SCRIPT_BUILDER_TOOL_TIERS).sort());
+  });
+
+  // The allowlist must not have been WIDENED to make the above pass. A bare
+  // handler alias in SCRIPT_BUILDER_MCP_TOOL_NAMES would satisfy the first
+  // test while also granting `run_script` to every session that only ever
+  // asked for `execute_script_on_device`.
+  it('does not grant the bare run_script handler name', () => {
+    expect(isAllowedForSession('run_script', SCRIPT_BUILDER_MCP_TOOL_NAMES)).toBe(false);
+    expect(isAllowedForSession('mcp__breeze__run_script', SCRIPT_BUILDER_MCP_TOOL_NAMES)).toBe(false);
+  });
+
+  it('still rejects tools the script-builder session never granted', () => {
+    for (const denied of [
+      'execute_command',
+      'mcp__breeze__execute_command',
+      'mcp__script_builder__execute_command',
+      'manage_devices',
+      'm365_reset_password',
+    ]) {
+      expect(
+        isAllowedForSession(denied, SCRIPT_BUILDER_MCP_TOOL_NAMES),
+        `${denied} is not a script-builder tool and must stay denied`,
+      ).toBe(false);
+    }
+  });
+
+  it('returns the guardrail denial to the model instead of executing', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: false as const, error: GUARD_TEST_BLOCK }));
+    const getAuth = () => {
+      throw new Error('getAuth must not be reached');
+    };
+    const tools = buildScriptBuilderTools(getAuth as unknown as () => AuthContext, onPreToolUse);
+    const exec = tools.find((t) => t.name === 'execute_script_on_device');
+    expect(exec).toBeDefined();
+
+    const result = await exec!.handler({} as never, undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(GUARD_TEST_BLOCK);
+  });
+});
+
+// ============================================
+// #4888: execute_script_on_device's registered input shape must carry the
+// same run-context fields run_script accepts, and adding them must not
+// disturb the #4883 identity split this file already guards.
+// ============================================
+describe('#4888: execute_script_on_device accepts a run context without disturbing the #4883 identity split', () => {
+  function executeScriptOnDeviceTool() {
+    const tools = buildScriptBuilderTools(
+      (() => {
+        throw new Error('getAuth must not be reached');
+      }) as unknown as () => AuthContext,
+    );
+    const t = tools.find((tool) => tool.name === 'execute_script_on_device');
+    if (!t) throw new Error('execute_script_on_device not registered');
+    return t;
+  }
+
+  it('the registered zod input shape accepts runAs and targetSessionId', () => {
+    const t = executeScriptOnDeviceTool();
+    const schema = z.object(t.inputSchema);
+
+    const result = schema.safeParse({
+      scriptId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      deviceIds: ['a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e'],
+      runAs: 'user',
+      targetSessionId: 3,
+    });
+
+    expect(result.success).toBe(true);
+    // Not merely "didn't reject" — a plain (non-strict) zod object silently
+    // STRIPS unrecognized keys and still reports success, so success:true
+    // alone would pass vacuously even if the shape never declared these
+    // fields at all. Assert they actually survived parsing.
+    if (result.success) {
+      expect(result.data.runAs).toBe('user');
+      expect(result.data.targetSessionId).toBe(3);
+    }
+  });
+
+  it('the registered zod input shape still rejects runAs: "elevated" (not a launch-time choice)', () => {
+    const t = executeScriptOnDeviceTool();
+    const schema = z.object(t.inputSchema);
+
+    const result = schema.safeParse({
+      scriptId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      deviceIds: ['a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e'],
+      runAs: 'elevated',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('is still registered under the name execute_script_on_device (the #4883 exposed identity)', () => {
+    const t = executeScriptOnDeviceTool();
+    expect(t.name).toBe('execute_script_on_device');
+  });
+
+  it('the session-allowlist check still receives the mcp__script_builder__ prefixed name (#4883)', async () => {
+    const calls: Array<{ toolName: string; mcpToolName: string | undefined }> = [];
+    const onPreToolUse = vi.fn(
+      async (toolName: string, _input: Record<string, unknown>, mcpToolName?: string) => {
+        calls.push({ toolName, mcpToolName });
+        return { allowed: false as const, error: 'blocked-by-guard-test' };
+      },
+    );
+    const tools = buildScriptBuilderTools(
+      (() => {
+        throw new Error('getAuth must not be reached');
+      }) as unknown as () => AuthContext,
+      onPreToolUse,
+    );
+    const t = tools.find((tool) => tool.name === 'execute_script_on_device')!;
+
+    await t.handler({ scriptId: 's', deviceIds: ['d'] } as never, undefined);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.mcpToolName).toBe('mcp__script_builder__execute_script_on_device');
+    // Handler identity: preToolUse must still see 'run_script', not the
+    // exposed name — that's what TOOL_TIERS/TOOL_PERMISSIONS/toolInputSchemas
+    // are keyed on.
+    expect(calls[0]!.toolName).toBe('run_script');
+  });
+
+  it('still dispatches execute_script_on_device calls to the run_script handler (#4883)', () => {
+    expect(SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL['execute_script_on_device']).toBe('run_script');
   });
 });
 

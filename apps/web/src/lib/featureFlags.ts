@@ -21,12 +21,13 @@ export const ENABLE_EDR_INTEGRATIONS = parseBoolean(
 );
 
 // Unified Devices list network arm (#1322): surface network-discovered assets
-// alongside agent endpoints in the Devices view. Off by default until the
-// remaining rough edges (unified sort/pagination, per-asset detail pages,
-// inline approval) land — see the #1322 follow-up issues.
+// alongside agent endpoints in the Devices view. ON by default since
+// 2026-09-06 (unified sort, per-asset detail pages, class-aware filters and an
+// honest bulk bar all landed); set PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST=false
+// at build time to fall back to the agent-only list.
 export const ENABLE_NETWORK_DEVICES_IN_LIST = parseBoolean(
   import.meta.env.PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST,
-  false
+  true
 );
 
 // NOTE: registration enablement is intentionally NOT a build-time flag. A

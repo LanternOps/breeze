@@ -1,7 +1,7 @@
 import type { APIRequestContext, Page, Request } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
-import { waitForAppReady } from '../pages/hydration';
+import { waitForAppReady, waitForHydration } from '../pages/hydration';
 import { OrgBillingSettingsPage } from '../pages/OrgBillingSettingsPage';
 import { InvoicesPage } from '../pages/InvoicesPage';
 import { QuotesPage } from '../pages/QuotesPage';
@@ -227,12 +227,18 @@ test.describe('multi-currency — non-USD org browser slices', () => {
         await expect(doc).not.toContainText('$');
         await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
+        // Hydration guard (#3906) — see the same note in
+        // quote-contract-proposal.spec.ts: the portal dev server used to emit
+        // this `client:load` island's module URL without the `/portal` prefix,
+        // so Caddy dropped it into the web catch-all and it never hydrated even
+        // though the SSR'd markup above looked correct. The portal dev server
+        // now serves its whole module graph under the base path, so fail loud
+        // here if that regresses.
+        await waitForHydration(publicPage, 'public-quote-accept');
+
         // Accept through the same public endpoint the "Accept & sign" button
-        // calls. PublicQuoteView is a `client:load` island served under the
-        // portal's `/portal` base path, and Astro dev-mode fails to fetch its
-        // hydration module there (project memory portal_dev_island_hydration_404),
-        // so every button on this page is inert in a dev stack regardless of
-        // selector or timing — see the same note in quote-contract-proposal.spec.ts.
+        // calls, rather than by clicking it, so this stays deterministic
+        // regardless of the signer-name input's exact UI validation.
         const acceptResponse = await publicPage.request.post(
           `${origin}/api/v1/quotes/public/${acceptToken}/accept`,
           { data: { signerName: 'Jordan Rivers' } },
@@ -262,5 +268,23 @@ test.describe('multi-currency — non-USD org browser slices', () => {
       await expect(invoices.detailSummary()).toContainText('€400.00');
       await expect(invoices.detailSummary()).not.toContainText('$');
     });
+  });
+});
+
+// W01 settings consolidation (#6224, M1): the standalone org billing URL is
+// retired in favor of the org settings page's own Billing tab. Independent of
+// the serial multi-currency describe block above — needs only a valid orgId.
+test.describe('org billing settings — legacy URL redirect (M1)', () => {
+  test.beforeEach(clearRefreshState);
+
+  test('the legacy standalone billing URL redirects to the org settings Billing tab', async ({ authedPage: page }) => {
+    const token = await readAccessToken(page);
+    const created = await apiJson<{ id: string }>(
+      page.request, token, 'post', '/api/v1/orgs/organizations',
+      { name: `E2E Billing Redirect ${Date.now()}`, slug: `e2e-billing-redirect-${Date.now()}` },
+    );
+
+    const billing = new OrgBillingSettingsPage(page);
+    await billing.gotoLegacyUrlAndExpectRedirect(created.id);
   });
 });

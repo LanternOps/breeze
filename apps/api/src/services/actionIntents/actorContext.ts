@@ -5,14 +5,81 @@ import { apiKeys } from '../../db/schema/apiKeys';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { deserializeAiOrigin } from '@breeze/shared';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
+import { IntentScopeLostError, resolveIntentTargetDevice, resolveIntentTargetTicket } from './intentTargetScope';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
+
+/**
+ * Tool/action pairs that are TENANT-SHAPE MUTATIONS whose approved intent
+ * names a target org distinct from the intent's own (source) org (#4650).
+ * The tool's own handler (e.g. `aiToolsTicketing.ts`'s `move_org`) gates on
+ * `auth.canAccessOrg(targetOrgId)`, but every release-time `AuthContext`
+ * below is otherwise pinned to `accessibleOrgIds: [intent.orgId]` — so
+ * without this allowlist that gate is unreachable for EVERY approved
+ * cross-org move, not just unauthorized ones.
+ *
+ * Keyed `toolName -> action -> argument key holding the target org id`.
+ * ONLY a tool/action pair listed here is eligible for the widening below;
+ * every other tool/action keeps the single-org `accessibleOrgIds` it always
+ * had. Adding an entry here is a deliberate widening of release-time trust —
+ * pair it with the same three integration-test properties this fix
+ * introduced: an approved release of the new tool/action succeeds
+ * cross-org, no OTHER tool/action gets the widening, and an approver/agent
+ * without access to the recorded target org is still refused.
+ *
+ * The widening below independently re-verifies the target org's CURRENT
+ * partner against the releasing identity's own partner before granting
+ * access — but that bounds WHO gets to widen, not what the tool is then
+ * allowed to do with it. A new entry's TOOL HANDLER must independently
+ * enforce its own tenancy boundary on the target (same-partner, or whatever
+ * the mutation's actual constraint is) before executing — `move_org`'s own
+ * `moveTicketOrg` (ticketService.ts) does this by re-fetching both orgs
+ * under a row lock and rejecting a cross-partner move — never assume the
+ * widening bound alone is a substitute for the tool's own check.
+ */
+const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  manage_tickets: { move_org: 'targetOrgId' },
+};
+
+/**
+ * Resolves the persisted target-org id for a tenant-shape-mutation intent by
+ * reading ONLY the intent's immutable `arguments` snapshot — captured verbatim
+ * from the tool-call input at intent CREATION time and blocked from later
+ * edits by `action_intents_immutable_trg`. Never re-derives the target from a
+ * live lookup of the ticket/device's CURRENT org: that value can legitimately
+ * change between approval and release (a second, unrelated moveOrg), and
+ * trusting it would let release-time access follow a target the four-eyes
+ * approval never saw — the exact TOCTOU the immutable snapshot exists to
+ * close.
+ *
+ * Returns null for any intent whose tool/action is not in the allowlist
+ * above, or whose recorded target-org argument is missing or not a string.
+ */
+function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
+  // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
+  // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
+  // purpose: `services/aiGuardrails.ts` pulls in the full tool-registry import
+  // graph (down to `db/schema`), and this module (like
+  // `actionIntents/durableRelease.ts`) stays a light leaf so its narrowly-
+  // mocked unit test suite doesn't have to mock that graph too. Every entry
+  // in the allowlist above is presently a base-key tool (`manage_tickets`
+  // does not appear in `TOOL_ACTION_INPUT_KEYS`) — add a matching override
+  // here if a future entry ever needs one.
+  const actionValue = intent.arguments.action;
+  if (typeof actionValue !== 'string') return null;
+  const argKey = TENANT_MUTATION_TARGET_ORG_ARG[intent.actionName]?.[actionValue];
+  if (!argKey) return null;
+  const raw = intent.arguments[argKey];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
 
 /**
  * Rebuilds the acting `AuthContext` for a stored action intent at RELEASE
@@ -27,6 +94,13 @@ import type { TokenPayload } from '../jwt';
  * the SAME closure factories `authMiddleware` uses to build the request-path
  * AuthContext — so org/site access semantics can never drift between "live
  * request" and "durable release" execution.
+ *
+ * ONE typed exception escapes instead of collapsing to `null`:
+ * `IntentScopeLostError` (P2-2, #4189), when an agent intent's device SCOPE
+ * is gone. It is distinguished from `null`/`actor_invalid` on purpose —
+ * `revalidateApprovedIntentForRelease` maps it to the terminal
+ * `agent_scope_lost` errorCode the controller ruling names, which tells an
+ * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
   if (intent.requestedByUserId) {
@@ -99,9 +173,47 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
   }
 }
 
+/**
+ * #4177 (W04): the APPROVER's own AuthContext for releasing an agent-originated
+ * intent whose action creates a row a real user must own (today
+ * `manage_tickets:log_time_entry` — `time_entries.user_id` is a users FK).
+ *
+ * Same revalidation as a user-owned intent (account active, current
+ * permissions still reach `intent.orgId`, same-partner target widening) —
+ * the approver read the proposal and accepted the work as theirs, so they
+ * must be able to stand behind it NOW, not just at decision time. `null` ⇒
+ * the worker fails the release closed (`actor_invalid`).
+ *
+ * The principal is `user_session`, NOT the intent's recorded `ai_agent`
+ * origin: this context executes AS the human who approved (the tool handler
+ * refuses the ai_agent principal on exactly this action), and the decision
+ * itself is what put the human present. The AI origin still travels on
+ * `aiOrigin` so dispatch attribution is not lost.
+ *
+ * The context is PARTNER-scoped, and the approver must resolve on the
+ * partner axis (a `partner_users` member of `intent.partnerId`). `time_entries`
+ * is a partner-axis table (RLS Shape 3: `breeze_has_partner_access(partner_id)`)
+ * and its own HTTP surface is `requireScope('partner', 'system')` — an
+ * org-axis approver (a customer-side user) can never log time through the UI
+ * and must not be able to through a release either. The generic user-owned
+ * builder synthesises `scope: 'organization'` (accessiblePartnerIds = []),
+ * under which the insert is an RLS violation — proven live by
+ * aiTimeEntryProposal.integration.test.ts before this branch existed.
+ */
+export async function buildApproverAuthContextForIntent(
+  intent: ActionIntent,
+  approverUserId: string,
+): Promise<AuthContext | null> {
+  return buildUserOwnedAuthContext(intent, approverUserId, {
+    principal: { kind: 'user_session' },
+    requirePartnerAxis: true,
+  });
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
+  overrides: { principal?: AuthContext['principal']; requirePartnerAxis?: boolean } = {},
 ): Promise<AuthContext | null> {
   return withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
     const [user] = await db
@@ -157,7 +269,57 @@ async function buildUserOwnedAuthContext(
       return null;
     }
 
-    const { orgCondition, canAccessOrg } = buildOrgAccessClosures([intent.orgId]);
+    // #4177: a user-owned release runs partner-scoped (see
+    // buildApproverAuthContextForIntent). Fail closed unless the approver's
+    // CURRENT permissions resolved on the partner axis for the intent's own
+    // partner — never widen an org-axis member to partner scope.
+    const partnerAxis = overrides.requirePartnerAxis === true;
+    if (partnerAxis && (perms.scope !== 'partner' || !intent.partnerId || perms.partnerId !== intent.partnerId)) {
+      return null;
+    }
+    const scope: 'partner' | 'organization' = partnerAxis ? 'partner' : 'organization';
+
+    // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
+    // manage_tickets:move_org), widen accessibleOrgIds to also cover the
+    // TARGET org recorded on the intent at creation time — but ONLY when
+    // this same requester's already-resolved `perms` can reach it too.
+    // Reusing `permsCanAccessOrg` (not a new check) means the bound is
+    // exactly the same all/selected/none partner org-access gate applied to
+    // intent.orgId two lines up: an org-axis requester (whose `perms.orgId`
+    // is fixed to their one org) never widens, and a partner-axis requester
+    // widens only within their own org-access grant. A requester who cannot
+    // reach the target keeps the single-org accessibleOrgIds, so the tool's
+    // existing `auth.canAccessOrg(targetOrgId)` gate 403s exactly as before
+    // — now for the RIGHT reason (this approver really lacks target-org
+    // access) instead of unconditionally.
+    //
+    // `permsCanAccessOrg` ALONE is not a tenancy check: for an `orgAccess:
+    // 'all'` partner requester it returns true for literally any org id, with
+    // no read of which partner that org actually belongs to (unlike the
+    // request-time equivalent, `computeAccessibleOrgIds` in middleware/auth.ts,
+    // which filters by `organizations.partnerId` before ever handing out
+    // `accessibleOrgIds`). So a second, independent check confirms the
+    // recorded target org's CURRENT partner matches `intent.partnerId` —
+    // mirroring the agent-owned path below, which does the same live lookup
+    // for exactly this reason. Without it, a future allowlist entry whose
+    // tool handler lacks its own same-partner guard (unlike
+    // `moveTicketOrg`'s independent check, which is what makes the CURRENT
+    // single entry safe even without this) would hand an `orgAccess: 'all'`
+    // requester a genuinely cross-partner `accessibleOrgIds` widening.
+    const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+    let accessibleOrgIds = [intent.orgId];
+    if (targetOrgId && targetOrgId !== intent.orgId && permsCanAccessOrg(perms, targetOrgId)) {
+      const [targetOrg] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, targetOrgId))
+        .limit(1);
+      if (targetOrg && intent.partnerId && targetOrg.partnerId === intent.partnerId) {
+        accessibleOrgIds = [intent.orgId, targetOrgId];
+      }
+    }
+
+    const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
     const allowedSiteIds = perms.allowedSiteIds;
 
     // Synthesized, not re-verified downstream: executeTool's device/org
@@ -174,7 +336,7 @@ async function buildUserOwnedAuthContext(
       roleId: perms.roleId,
       orgId: intent.orgId,
       partnerId: intent.partnerId ?? null,
-      scope: 'organization',
+      scope,
       type: 'access',
       mfa: true,
     };
@@ -192,7 +354,16 @@ async function buildUserOwnedAuthContext(
       // being softened to user_session — a human-required gate must fail on
       // it. It is NOT a valid AuthContext principal, so it maps to the
       // closest fail-closed kind and is refused by any interactive gate.
-      principal: originPrincipalFor(intent),
+      //
+      // The ONE sanctioned override is `buildApproverAuthContextForIntent`
+      // (#4177), which executes as the approving human on purpose.
+      principal: overrides.principal ?? originPrincipalFor(intent),
+      // #5022 W01: read the AI origin back off the intent's own columns. This
+      // context is synthesised from the `users` row, so a chat-minted origin
+      // would otherwise be lost across the durable approval boundary — the
+      // approved action would dispatch unattributed. `deserializeAiOrigin`
+      // refuses to reconstruct anything from ids without a kind.
+      ...(deserializeAiOrigin(intent) ? { aiOrigin: deserializeAiOrigin(intent) } : {}),
       user: {
         id: user.id,
         email: user.email,
@@ -208,8 +379,8 @@ async function buildUserOwnedAuthContext(
       // orgCondition below.
       partnerId: intent.partnerId ?? null,
       orgId: intent.orgId,
-      scope: 'organization',
-      accessibleOrgIds: [intent.orgId],
+      scope,
+      accessibleOrgIds,
       orgCondition,
       canAccessOrg,
       allowedSiteIds,
@@ -294,20 +465,112 @@ async function buildAgentOwnedAuthContext(
       if (!org) {
         return null;
       }
+      // P2-2 (#4189): the intent's TARGET device, not the run's. A sweep run
+      // is device-less and pins its intents one device at a time via
+      // scope_kind/scope_device_id; a tombstoned scope (device deleted, or
+      // detached by a moveOrg) can never be released, so fail closed here
+      // rather than silently falling back to the run's own (null) device,
+      // which would rebuild an UNSCOPED, org-wide agent context.
+      const target = resolveIntentTargetDevice(intent, run);
+      if (target.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is device-scoped but its scope_device_id was tombstoned`,
+        );
+      }
       // The device's CURRENT site, not the site at proposal time — spec §3.2
       // pins a device-bound run to its device's site, and release must
       // reflect where the device lives NOW.
       let deviceSiteId: string | null = null;
-      if (run.deviceId) {
+      if (target.kind === 'scope') {
+        // Controller ruling (P2-2 A3): for a SCOPED target the device must
+        // still exist AND still belong to the intent's org — a device
+        // org-move that landed through the DB-side cascade rather than the
+        // HTTP moveOrg route leaves scope_device_id set, and this is the
+        // backstop. Treated exactly like a tombstone.
+        const [device] = await db
+          .select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        if (!device || device.orgId !== intent.orgId) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped device ${target.deviceId} is missing or no longer in org ${intent.orgId}`,
+          );
+        }
+        deviceSiteId = device.siteId ?? null;
+      } else if (target.deviceId) {
         const [device] = await db
           .select({ siteId: devices.siteId })
           .from(devices)
-          .where(eq(devices.id, run.deviceId))
+          .where(eq(devices.id, target.deviceId))
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
+
+      // P2-4 (Task A3, #4189/#4191): the TICKET-scope mirror of the device
+      // check above. `resolveIntentTargetTicket` never falls back to
+      // anything (there is no run-level "own ticket" to fall back to — see
+      // its doc comment in intentTargetScope.ts), so 'none' here just means
+      // this intent has no ticket target at all, and the branch is a no-op.
+      const ticketTarget = resolveIntentTargetTicket(intent);
+      if (ticketTarget.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is ticket-scoped but its scope_ticket_id was tombstoned`,
+        );
+      }
+      if (ticketTarget.kind === 'scope') {
+        const [ticket] = await db
+          .select({ id: tickets.id, orgId: tickets.orgId, status: tickets.status, deletedAt: tickets.deletedAt })
+          .from(tickets)
+          .where(eq(tickets.id, ticketTarget.ticketId))
+          .limit(1);
+        // Missing, soft-deleted, moved to another org, or closed — all
+        // treated exactly like a lost device scope. `resolved` is
+        // deliberately EXCLUDED from this list: resolution-note drafts
+        // (`manage_tickets:draft`, kind `draftResolutionNote`) are the
+        // motivating case for proposing against a ticket that has already
+        // moved to `resolved`, and every other ticket-triage tool call is
+        // equally valid against a resolved (not yet closed) ticket.
+        if (
+          !ticket
+          || ticket.deletedAt !== null
+          || ticket.orgId !== intent.orgId
+          || ticket.status === 'closed'
+        ) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped ticket ${ticketTarget.ticketId} is missing, deleted, closed, or no longer in org ${intent.orgId}`,
+          );
+        }
+      }
+
+      // #4650: same allowlisted widening as the user-owned path above, bounded
+      // to the ACTING AGENT's own scope (never the human approver's) — this
+      // AuthContext executes AS the agent. An org-scoped agent (agent.orgId
+      // !== null) is never eligible: its home IS a single org, so it can
+      // never legitimately reach a different one. A partner-scoped agent
+      // (agent.orgId === null) may widen only when the recorded target org's
+      // CURRENT partner ownership matches the agent's own partnerId. A live
+      // lookup here is correct, not the TOCTOU the target-org id itself must
+      // avoid — an org's partner assignment changing between approval and
+      // release is exactly the kind of access change release-time
+      // revalidation exists to catch (mirrors permsCanAccessOrg's re-check
+      // above, and the FK-guaranteed run/org/agent lineage asserts earlier in
+      // this function).
+      const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+      let releaseAccessibleOrgIds: string[] = [intent.orgId];
+      if (targetOrgId && targetOrgId !== intent.orgId && agent.orgId === null && agent.partnerId) {
+        const [targetOrg] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, targetOrgId))
+          .limit(1);
+        if (targetOrg?.partnerId === agent.partnerId) {
+          releaseAccessibleOrgIds = [intent.orgId, targetOrgId];
+        }
+      }
+
       try {
-        return buildAgentAuthContext(
+        const agentContext = buildAgentAuthContext(
           {
             id: agent.id,
             orgId: agent.orgId,
@@ -315,9 +578,24 @@ async function buildAgentOwnedAuthContext(
             name: agent.name,
             kind: agent.kind,
           },
-          { id: run.id, orgId: run.orgId, deviceId: run.deviceId, deviceSiteId },
+          // The run row's own deviceId is deliberately NOT used here: the
+          // rebuilt context is pinned to the intent's target device (and its
+          // site), which for a scoped intent is not the run's.
+          { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
           { id: run.orgId, partnerId: org.partnerId },
         );
+        // #5022 W01: prefer the PERSISTED origin over the freshly-minted one.
+        // Both branches then read from the same durable fact, and a run whose
+        // intent was created from a chat session keeps the session pointer.
+        const persistedOrigin = deserializeAiOrigin(intent);
+        const withOrigin = persistedOrigin
+          ? { ...agentContext, aiOrigin: persistedOrigin }
+          : agentContext;
+        if (releaseAccessibleOrgIds.length === 1) {
+          return withOrigin;
+        }
+        const { orgCondition, canAccessOrg } = buildOrgAccessClosures(releaseAccessibleOrgIds);
+        return { ...withOrigin, accessibleOrgIds: releaseAccessibleOrgIds, orgCondition, canAccessOrg };
       } catch (error) {
         if (error instanceof AgentRunOwnershipError) {
           console.error(

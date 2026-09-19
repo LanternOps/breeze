@@ -38,7 +38,7 @@ export default defineConfig({
         },
         {
           label: 'Agent',
-          items: [{ autogenerate: { directory: 'agents' } }],
+          items: [{ autogenerate: { directory: 'agents' } }, { slug: 'features/watchdog' }],
         },
         {
           label: 'Migration',
@@ -56,7 +56,11 @@ export default defineConfig({
               items: [
                 { slug: 'features/remote-access' },
                 { slug: 'features/scripts' },
+                { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/script-ai' },
+                { slug: 'features/ai-agents' },
+                { slug: 'features/ai-analysis-runs' },
+                { slug: 'features/ai-impact' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },
                 { slug: 'features/deployments' },
@@ -84,6 +88,7 @@ export default defineConfig({
                 { slug: 'features/browser-security' },
                 { slug: 'features/dns-security' },
                 { slug: 'features/edr-integrations' },
+                { slug: 'features/incident-response' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },
                 { slug: 'features/user-risk' },
@@ -93,12 +98,17 @@ export default defineConfig({
               ],
             },
             {
+              label: 'Service Desk',
+              items: [{ slug: 'features/ticketing' }],
+            },
+            {
               label: 'Billing & Invoicing',
               items: [
                 { slug: 'features/product-catalog' },
                 { slug: 'features/invoices' },
                 { slug: 'features/quotes' },
                 { slug: 'features/contracts' },
+                { slug: 'features/agreements' },
                 { slug: 'features/online-payments' },
               ],
             },
@@ -110,6 +120,7 @@ export default defineConfig({
               label: 'Monitoring & Alerting',
               items: [
                 { slug: 'features/alerts' },
+                { slug: 'features/monitors' },
                 { slug: 'features/alert-templates' },
                 { slug: 'features/network-monitors' },
                 { slug: 'features/service-monitoring' },
@@ -134,6 +145,8 @@ export default defineConfig({
               label: 'AI & Intelligence',
               items: [
                 { slug: 'features/ai' },
+                { slug: 'features/tool-sources' },
+                { slug: 'features/ai-script-authoring' },
                 { slug: 'features/bring-your-own-llm-key' },
                 { slug: 'features/ml-insights' },
                 { slug: 'features/fleet-hygiene' },
@@ -176,6 +189,7 @@ export default defineConfig({
                 { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
                 { slug: 'features/plugins' },
+                { slug: 'features/extensions' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
                 { slug: 'features/setup-wizard' },

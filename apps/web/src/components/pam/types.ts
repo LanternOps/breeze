@@ -115,8 +115,23 @@ export interface PamRule {
   timeWindow?: PamTimeWindow | null;
   verdict: PamVerdict;
   approvalDurationMinutes?: number | null;
+  // §6B (fix/pam-dedicated-permissions): set by the 2026-10-15-150200
+  // migration for a pre-existing auto_approve rule — the rule's original
+  // verdict is preserved here while `verdict` itself is forced to
+  // 'require_approval', so the rule keeps matching but now waits for a human
+  // until an admin re-approves it (`PATCH /pam/rules/:id { reapprove: true }`).
+  suspendedVerdict?: PamVerdict | null;
+  reapprovedAt?: string | null;
+  reapprovedByUserId?: string | null;
   createdAt: string;
   updatedAt: string;
+  // #3128: computed by GET /pam/rules — true when matchRiskTier can no longer
+  // be produced by this rule's tool selector (an AI tool risk-tier
+  // re-classification left the rule permanently unmatchable). Optional
+  // because older cached responses / other constructors of this type won't
+  // have them.
+  matchRiskTierStale?: boolean;
+  matchRiskTierValidTiers?: number[] | null;
 }
 
 /**

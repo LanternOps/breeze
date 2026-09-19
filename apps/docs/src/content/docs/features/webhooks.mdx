@@ -230,7 +230,7 @@ This produces the following schedule for the default policy:
 
 ### Custom Retry Policy
 
-You can override the default retry policy per webhook by setting the `retryPolicy` field in the database. The policy object accepts:
+You can override the default retry policy per webhook by setting the `retryPolicy` field in the database. There is no dashboard control or API field for this today -- creating and updating a webhook through the API or the dashboard does not accept a `retryPolicy` value, so this requires direct database access (self-hosted operators, or Breeze support on hosted accounts). The policy object accepts:
 
 ```json
 {

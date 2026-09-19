@@ -11,6 +11,7 @@ import {
   index,
   uniqueIndex
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { devices } from './devices';
 import { users } from './users';
 import { organizations, partners } from './orgs';
@@ -96,7 +97,12 @@ export const securityThreats = pgTable('security_threats', {
 }, (table) => ({
   deviceDetectedIdx: index('security_threats_device_detected_idx').on(table.deviceId, table.detectedAt),
   statusIdx: index('security_threats_status_idx').on(table.status),
-  deviceStatusDetectedIdx: index('security_threats_device_status_detected_idx').on(table.deviceId, table.status, table.detectedAt)
+  deviceStatusDetectedIdx: index('security_threats_device_status_detected_idx').on(table.deviceId, table.status, table.detectedAt),
+  orgDetectedAtIdx: index('security_threats_org_detected_at_idx')
+    .on(table.orgId, table.detectedAt),
+  orgResolvedAtIdx: index('security_threats_org_resolved_at_idx')
+    .on(table.orgId, table.resolvedAt)
+    .where(sql`${table.resolvedAt} IS NOT NULL`)
 }));
 
 export const securityScans = pgTable('security_scans', {

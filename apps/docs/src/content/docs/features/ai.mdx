@@ -20,15 +20,21 @@ Six capabilities extend and govern this system:
 
 ## AI Risk Engine
 
-The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Monitoring → AI Risk Engine** in the sidebar.
+The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Security → AI Risk** in the sidebar.
+
+### AI-authored scripts
+
+You can also extend the assistant with your own tools: point Breeze at an MCP server you run and its tools appear alongside these, with the same tiers and approvals — see [Tool Sources](/features/tool-sources/).
+
+The assistant and background agents can author a script mid-conversation, have it independently reviewed, and run it once you approve — see [AI Script Authoring & Review](/features/ai-script-authoring/) for the full walkthrough. The AI Risk Dashboard's **Script Proposals** panel tracks proposals per day, unattended runs, and how often a human's decision disagrees with the independent reviewer's recommendation.
 
 ### Tool tiers
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation` |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence`, `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability` |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 <Aside>
@@ -66,12 +72,13 @@ A small, fixed set of actions always requires a different user to approve:
 - **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
 - **Computer control** and unattended remote session creation
 - **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+- **AI agent governance** — granting an agent a pre-authorized action key, so its future runs may take that action unattended
 
 To decide a pending four-eyes request:
 
 <Steps>
 
-1. Open **Monitoring → AI Risk Engine**.
+1. Open **Security → AI Risk**.
 
 2. Click **Approval History**.
 
@@ -111,7 +118,7 @@ When an approved Microsoft 365 **password reset** executes this way, the request
 
 ### Rate limits
 
-Each tool has a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**.
+Many tools have a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**. Read-only or lower-risk tools not listed here (for example `get_user_experience_metrics`, `query_backups`, `get_backup_status`, `browse_snapshots`, `create_incident`, `get_incident_timeline`, `generate_incident_report`, and `list_playbooks`) currently have no rate limit.
 
 | Tool | Limit | Window |
 |---|---|---|
@@ -123,24 +130,16 @@ Each tool has a per-tool sliding window rate limit. Requests that exceed the lim
 | `file_operations` | 20 requests | 5 min |
 | `manage_services` | 10 requests | 5 min |
 | `analyze_disk_usage` | 10 requests | 5 min |
-| `get_user_experience_metrics` | 20 requests | 5 min |
 | `manage_configuration_policy` | 20 requests | 5 min |
 | `manage_processes` | 15 requests | 5 min |
 | `query_monitors` | 30 requests | 5 min |
 | `manage_monitors` | 10 requests | 5 min |
 | `get_service_monitoring_status` | 30 requests | 5 min |
-| `query_backups` | 20 requests | 5 min |
-| `get_backup_status` | 20 requests | 5 min |
-| `browse_snapshots` | 20 requests | 5 min |
-| `trigger_backup` | 3 requests | 10 min |
+| `trigger_backup` | 5 requests | 10 min |
 | `restore_snapshot` | 3 requests | 10 min |
-| `create_incident` | 5 requests | 5 min |
 | `execute_containment` | 5 requests | 10 min |
 | `collect_evidence` | 10 requests | 5 min |
-| `get_incident_timeline` | 20 requests | 5 min |
-| `generate_incident_report` | 10 requests | 5 min |
-| `list_playbooks` | 20 requests | 5 min |
-| `execute_playbook` | 3 requests | 10 min |
+| `execute_playbook` | 5 requests | 10 min |
 
 ### Action Plans
 
@@ -174,9 +173,67 @@ The Risk Engine dashboard provides five views, each filterable by time range (24
 
 ---
 
+## AI attribution on the device page
+
+Scripts and commands that an AI assistant or an autonomous AI agent dispatches to a
+device are now recorded as such. Each `script_executions` and `device_commands` row
+carries who *decided* the work — `ai_assistant` (a person asked, in chat or over MCP)
+or `ai_agent` (an autonomous agent run decided, with no human in the loop) — plus the
+conversation or agent run it came from, and an `ai.command.executed` / `ai.script.executed`
+audit event is written alongside the dispatch.
+
+This answers a question the audit trail could not answer before: *who decided to do
+this to my machine*. It is deliberately separate from three other facts the row already
+carried — who **wrote** the script (authorship), what **scheduled** the run
+(`trigger_type`), and who the request **authenticated as** (the principal). An AI can
+start a policy-driven run, and a person can hand-run an AI-authored script, so
+collapsing them would destroy information.
+
+<Aside type="caution" title="What is not yet attributed">
+Work an AI **schedules** rather than dispatches — patch jobs, software deployments,
+automation runs, playbook executions, elevation requests and backups — is still recorded
+without an AI marker, because the device command is issued later by a background worker
+that runs under its own context. SentinelOne isolation and threat actions are performed
+through the vendor's API and never create a Breeze command, so they are unmarked too.
+</Aside>
+
+<Aside type="caution" title="Rows created before this release are unmarked">
+An unmarked row means *AI initiation was not recorded* — **never** *a human did this*.
+There is no backfill: every AI-run library script that already exists was stamped with
+the invoker's user id and a `manual` trigger, so historical AI work is indistinguishable
+from human work. The UI renders an unmarked row as the absence of a marker, not as a
+"human" badge.
+</Aside>
+
+<Aside type="caution" title="Best effort, not a guarantee">
+The AI marker on the audit event is written alongside the dispatch on a fire-and-forget
+path, so a dispatch that already succeeded is never failed by a lost audit write. A
+dropped write leaves a real action unmarked; it never marks a human action as AI.
+The columns on the command and execution rows themselves are written in the same
+statement as the row, so they are not subject to this.
+</Aside>
+
+### Tenant boundaries
+
+The origin pointers are severed whenever the row could otherwise reach across tenants:
+
+- **Device moved to another organisation** — the execution follows the device, but its
+  session and agent-run pointers are nulled (agent-run history stays with the source
+  organisation). The `ai_initiator_kind` marker is kept: the fact that an AI did the work
+  survives the move, the cross-tenant pointer does not.
+- **Organisation merge** — the execution is re-tenanted to the surviving organisation
+  with the same detach, because the originating agent run stays with the merged-away shell.
+- **Erasure** — deleting an AI session nulls the pointer on any surviving execution while
+  leaving the marker intact.
+
+All three columns are included in the tenant data export, so a customer asking "who did
+this to my machine" gets the answer in the one artifact designed to hold it.
+
+---
+
 ## Fleet Orchestration Brain
 
-The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **Fleet** in the main navigation sidebar.
+The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **AI → Fleet Orchestration** in the main navigation sidebar.
 
 ### Dashboard metrics
 
@@ -195,11 +252,12 @@ The page shows eight stat cards that aggregate live fleet data:
 
 ### AI tools
 
-When you are on the Fleet Orchestration page, the AI assistant gains access to eight fleet-level tools:
+When you are on the Fleet Orchestration page, the AI assistant gains access to nine fleet-level tools:
 
 | Tool | What it does |
 |---|---|
-| `manage_policies` | List, evaluate, create, activate/deactivate, and remediate policies |
+| `manage_configuration_policy` | Create, update, activate/deactivate, and delete configuration policies |
+| `configuration_policy_compliance` | Check org-wide compliance summary or per-device compliance status for a policy |
 | `manage_deployments` | Create, start, pause, resume, and cancel deployments |
 | `manage_patches` | Scan, approve, decline, defer, bulk approve, and rollback patches |
 | `manage_groups` | Create static/dynamic groups and manage membership |
@@ -315,9 +373,35 @@ When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE
 
 When billing is not configured, AI usage is unlimited — cost tracking still records usage for visibility, but no spending limits are enforced.
 
+**Credits remaining.** A partner-scoped login sees a **Breeze AI credits remaining** tile at the top of the AI Usage page, and the same figure follows the AI cost indicator elsewhere in the app — so you find out you are running low while you can still do something about it, not when a session refuses to start. The tile breaks the balance into what came with your plan and what you have bought on top. It is absent when you are signed in to a single organization rather than the partner, when the organization bills for its own AI usage, when no billing service is configured, or when the balance could not be fetched. An absent tile never means zero credits.
+
 <Aside type="tip">
   Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>
+
+### Budget alerts
+
+Independent of hard budget enforcement, an organisation can get warned as its AI spend approaches its cap. Each period (daily and monthly) is checked against a ladder of percentage thresholds, and once spend crosses a rung, an alert fires for that rung.
+
+Alerts only fire for an organisation that has AI enabled and a daily or monthly cap set. With no cap there is nothing to measure a percentage against, so no rung can be crossed.
+
+The default ladder is 50%, 80%, and 95% of the configured budget. On top of the ladder, a 100% "cap reached" alert always fires when the budget is exhausted, even if the ladder is empty or disabled, since that alert cannot be turned off. Each rung fires once per period; the ladder resets automatically when the daily or monthly period rolls over.
+
+Alerts are delivered to active users with the `billing:manage` permission, whether they belong to the organisation directly or are partner users whose access covers that organisation. Delivery has two channels:
+
+- Monthly rungs and the 100% cap-reached alert are delivered both in-app and by email.
+- Daily 50/80/95 rungs are delivered in-app only, to avoid an email per day as spend climbs toward a much smaller cap.
+
+### Configuring thresholds
+
+The threshold ladder is configured in two places:
+
+- **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
+- **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
+
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
+
+Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 
 ---
 
@@ -417,7 +501,7 @@ Breeze also provides AI tools for the PSA side of the platform — tickets, invo
 | `list_contracts` / `get_contract` / `manage_contracts` | Browse recurring contracts and manage drafts, lines, and lifecycle (activate, pause, resume, cancel) |
 | `manage_quotes` | Build and manage quotes/proposals — drafts, content blocks, lines, sending, declining, and pay links |
 
-These tools are currently exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools), not the built-in assistant chat. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions.
+These tools are currently exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools), not the built-in assistant chat. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---
 
@@ -425,7 +509,7 @@ These tools are currently exposed to external AI clients through the [MCP Server
 
 **Tier 3 action pending but never executing**
 
-Tier 3 actions require manual approval. Open **Monitoring → AI Risk Engine → Approval History** and approve or reject the pending request.
+Tier 3 actions require manual approval. Open **Security → AI Risk → Approval History** and approve or reject the pending request.
 
 **AI Risk Engine dashboard shows no data**
 

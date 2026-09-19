@@ -135,3 +135,74 @@ export async function consumeM365ReadActionBudget(
     return failClosed();
   }
 }
+
+/**
+ * Whole-domain sync pull budget (spec §5.10). Deliberately its OWN key family:
+ * a sync call is one executor round trip that may page 60 times inside the
+ * executor, so it is nothing like an interactive read and must not consume, or
+ * be consumed by, the 30/min + 2 000/day interactive pools.
+ *
+ * One fixed hourly window per connection. Continuation calls (sign-in activity,
+ * W05) count against the same 12, which is the point: a tenant that needs ten
+ * continuation pages must not get ten free Graph budgets.
+ *
+ * Fails CLOSED for the same reason the interactive budget does — a budget we
+ * cannot answer is a denial, and the ticker retries the row next tick.
+ */
+export const M365_SYNC_ACTIONS_PER_HOUR = 12;
+
+const SYNC_HOUR_KEY_TTL_SECONDS = 60 * 90;
+const SYNC_DENY_RETRY_AFTER_SECONDS = 60 * 60;
+
+function syncBudgetKey(connectionId: string, now: number): string {
+  const hourWindow = Math.floor(now / 3_600_000);
+  return `m365-sync-budget-hour-${connectionId}-${hourWindow}`;
+}
+
+function secondsRemainingInHour(now: number): number {
+  return 3600 - Math.floor((now % 3_600_000) / 1_000);
+}
+
+export async function consumeM365SyncBudget(
+  connectionId: string,
+): Promise<M365ReadActionBudgetResult> {
+  const now = Date.now();
+  const key = syncBudgetKey(connectionId, now);
+
+  try {
+    const redis = getRedis();
+    if (!redis) {
+      console.error(
+        `[readActionBudget] Redis unavailable, failing closed for sync connection=${connectionId}`,
+      );
+      return { allowed: false, retryAfterSeconds: SYNC_DENY_RETRY_AFTER_SECONDS };
+    }
+
+    const results = await redis.multi().incr(key).expire(key, SYNC_HOUR_KEY_TTL_SECONDS).exec();
+    if (!results) {
+      console.error(`[readActionBudget] Redis multi returned null for sync connection=${connectionId}`);
+      return { allowed: false, retryAfterSeconds: SYNC_DENY_RETRY_AFTER_SECONDS };
+    }
+
+    const rawCount = results[0]?.[1];
+    const count = typeof rawCount === 'number' ? rawCount : Number(rawCount ?? NaN);
+    if (!Number.isFinite(count)) {
+      console.error(
+        `[readActionBudget] Unexpected sync multi() result shape for connection=${connectionId}:`,
+        results,
+      );
+      return { allowed: false, retryAfterSeconds: SYNC_DENY_RETRY_AFTER_SECONDS };
+    }
+
+    if (count > M365_SYNC_ACTIONS_PER_HOUR) {
+      return { allowed: false, retryAfterSeconds: secondsRemainingInHour(now) };
+    }
+    return { allowed: true };
+  } catch (err) {
+    console.error(
+      `[readActionBudget] Redis error for sync connection=${connectionId}, failing closed:`,
+      err,
+    );
+    return { allowed: false, retryAfterSeconds: SYNC_DENY_RETRY_AFTER_SECONDS };
+  }
+}

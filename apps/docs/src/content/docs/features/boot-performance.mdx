@@ -88,7 +88,7 @@ The Breeze agent uses platform-specific data sources to collect boot timing and 
     Each item's CPU and disk I/O impact is derived from ETW boot trace data when available.
   </TabItem>
   <TabItem label="macOS">
-    **Boot Timing**: The `log show` command with the `--predicate` filter targeting kernel boot events. The agent parses timestamps from launchd and kernel log entries to calculate boot phase durations.
+    **Boot Timing**: The boot timestamp itself comes from `sysctl -n kern.boottime`. From there, the agent uses the `log show` command with a `--predicate` filter targeting the `loginwindow` process to determine when the desktop became ready, and calculates the boot phase duration as the time between the two.
 
     **Startup Items**: The agent enumerates:
     - Login Items configured in System Settings (`login_item` type)
@@ -181,6 +181,10 @@ The response includes:
 ## Managing Startup Items
 
 You can enable or disable startup items directly through the API. Both operations require the device to be online and dispatch a `manage_startup_item` command to the agent.
+
+<Aside type="note">
+  Triggering an on-demand collection (above) and enabling or disabling a startup item all require an MFA-verified session. If your account has MFA enrolled, you may be prompted to step up before the action completes.
+</Aside>
 
 ### Disabling a Startup Item
 

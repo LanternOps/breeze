@@ -272,6 +272,105 @@ describe('auditChainVerify worker', () => {
     });
   });
 
+  describe('verify plan (incremental vs full)', () => {
+    const ORIGINAL_MODE = process.env.AUDIT_CHAIN_VERIFY_MODE;
+    const ORIGINAL_SLICES = process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES;
+
+    function mockOrgs(orgIds: string[]) {
+      dbExecuteMock.mockResolvedValueOnce(orgIds.map((id) => ({ id })));
+    }
+
+    afterEach(() => {
+      if (ORIGINAL_MODE === undefined) delete process.env.AUDIT_CHAIN_VERIFY_MODE;
+      else process.env.AUDIT_CHAIN_VERIFY_MODE = ORIGINAL_MODE;
+      if (ORIGINAL_SLICES === undefined) delete process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES;
+      else process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES = ORIGINAL_SLICES;
+      vi.useRealTimers();
+    });
+
+    /** Flatten a drizzle `sql` tag into its text plus bound params, in order. */
+    function flatten(q: unknown): { text: string; params: unknown[] } {
+      const sqlObj = q as { queryChunks?: Array<unknown> };
+      const params: unknown[] = [];
+      const text = (sqlObj.queryChunks ?? [])
+        .map((c) => {
+          // StringChunk carries its literal text in `value: string[]`; every
+          // other chunk is an interpolated parameter.
+          if (c && typeof c === 'object' && Array.isArray((c as { value?: unknown }).value)) {
+            return ((c as { value: string[] }).value).join('');
+          }
+          params.push(c);
+          return '?';
+        })
+        .join('');
+      return { text, params };
+    }
+
+    it('defaults to the bounded incremental verifier with a 30-slice rolling re-scan', async () => {
+      delete process.env.AUDIT_CHAIN_VERIFY_MODE;
+      delete process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES;
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-09-17T04:13:00Z'));
+
+      mockOrgs(['org-1']);
+      dbExecuteMock.mockResolvedValueOnce([]);
+
+      await verifyAuditChains();
+
+      const { text, params } = flatten(dbExecuteMock.mock.calls[1]![0]);
+      expect(text).toMatch(/audit_log_verify_chain_incremental\(/);
+      expect(text).not.toMatch(/audit_log_verify_chain\(/);
+      expect(params).toEqual(['org-1', 30, Math.floor(Date.UTC(2026, 8, 17) / 86_400_000) % 30]);
+    });
+
+    it('advances one slice per UTC day and wraps at the slice count', () => {
+      const day = (iso: string) => __testOnly.rescanSliceIndex(7, new Date(iso));
+      expect(day('2026-02-28T04:13:00Z') + 1).toBe(day('2026-03-01T04:13:00Z') === 0 ? 7 : day('2026-03-01T04:13:00Z'));
+      expect(day('2026-03-01T04:13:00Z')).toBe((day('2026-02-28T04:13:00Z') + 1) % 7);
+      expect(__testOnly.rescanSlices()).toBe(30);
+      expect(__testOnly.verifyMode()).toBe('incremental');
+    });
+
+    it('honours AUDIT_CHAIN_VERIFY_RESCAN_SLICES and wraps the slice index', async () => {
+      process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES = '7';
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-09-30T04:13:00Z'));
+
+      mockOrgs(['org-1']);
+      dbExecuteMock.mockResolvedValueOnce([]);
+
+      await verifyAuditChains();
+
+      const { params } = flatten(dbExecuteMock.mock.calls[1]![0]);
+      expect(params).toEqual(['org-1', 7, Math.floor(Date.UTC(2026, 8, 30) / 86_400_000) % 7]);
+    });
+
+    it('AUDIT_CHAIN_VERIFY_MODE=full keeps the legacy whole-chain walk', async () => {
+      process.env.AUDIT_CHAIN_VERIFY_MODE = 'full';
+
+      mockOrgs(['org-1']);
+      dbExecuteMock.mockResolvedValueOnce([]);
+
+      await verifyAuditChains();
+
+      const { text, params } = flatten(dbExecuteMock.mock.calls[1]![0]);
+      expect(text).toMatch(/audit_log_verify_chain\(/);
+      expect(text).not.toMatch(/audit_log_verify_chain_incremental/);
+      expect(params).toEqual(['org-1']);
+    });
+
+    it('still raises an incident from an incremental break row', async () => {
+      mockOrgs(['org-1']);
+      dbExecuteMock.mockResolvedValueOnce([{ broken_id: 'row-x', expected: 'e', actual: 'a' }]);
+
+      const stats = await verifyAuditChains();
+
+      expect(stats.orgsBroken).toBe(1);
+      expect(stats.alertsRaised).toBe(1);
+      expect(dbInsertMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('worker processor', () => {
     it('runs the sweep for the scheduled job name', async () => {
       // Build the worker to capture its processor.
@@ -284,6 +383,27 @@ describe('auditChainVerify worker', () => {
 
       const result = await capturedWorkerProcessor.current!({ name: 'audit-chain-verify' });
       expect((result as { orgsChecked: number }).orgsChecked).toBe(1);
+    });
+
+    // The kill switch must stop the SWEEP, not just the schedule. A job that
+    // is already in Redis (queued, or active at the moment the container is
+    // recreated — BullMQ hands a stalled job straight back to the next worker)
+    // was re-run in full on US on 2026-09-03 with the flag set, 13 h of DB IO.
+    it('does not consume the queue at all when disabled by env flag', async () => {
+      process.env.AUDIT_CHAIN_VERIFY_ENABLED = 'false';
+      const { initializeAuditChainVerifyWorker } = await import('./auditChainVerify');
+      await initializeAuditChainVerifyWorker();
+      expect(capturedWorkerProcessor.current).toBeNull();
+      expect(workerCloseMock).not.toHaveBeenCalled();
+    });
+
+    it('skips a delivered job without touching the DB when disabled by env flag', async () => {
+      const { createAuditChainVerifyWorker } = await import('./auditChainVerify');
+      createAuditChainVerifyWorker();
+      process.env.AUDIT_CHAIN_VERIFY_ENABLED = 'false';
+      const result = await capturedWorkerProcessor.current!({ name: 'audit-chain-verify' });
+      expect(result).toMatchObject({ skipped: true, orgsChecked: 0 });
+      expect(dbExecuteMock).not.toHaveBeenCalled();
     });
 
     it('ignores unknown job names', async () => {

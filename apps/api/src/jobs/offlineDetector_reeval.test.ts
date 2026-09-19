@@ -61,6 +61,13 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => ['effect-id']),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = addBulkMock;

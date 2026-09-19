@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
+import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners,
+  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
 } from '../../db/schema';
+import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
 /**
@@ -97,6 +100,44 @@ type ResolverResult =
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
+/**
+ * Thrown ONLY by the proposal branch of the run_script resolver.
+ *
+ * The rest of this module is total by construction — every unresolvable case
+ * returns a sentinel, and intentService stores a NULL digest that both release
+ * paths treat as "nothing to check". For an AI-authored script that fail-open
+ * is unacceptable (spec §4.5), so this is the one case that aborts intent
+ * creation instead.
+ */
+export class EffectDigestUnresolvableError extends Error {
+  constructor(public readonly resolver: string, public readonly detail: string) {
+    super(`effect digest for ${resolver} could not be resolved: ${detail}`);
+    this.name = 'EffectDigestUnresolvableError';
+  }
+}
+
+/**
+ * Pinned material for a proposal-backed run. Lifecycle state is deliberately
+ * absent: release checks status/expiry/supersession/intent_id separately and
+ * fails with `proposal_not_runnable`, so an ordinary state change must not
+ * masquerade as `content_changed`.
+ */
+function runScriptProposalDigestMaterial(
+  proposal: ScriptProposalRow,
+  args: Record<string, unknown>,
+): string {
+  const deviceIds = Array.isArray(args.deviceIds) ? [...(args.deviceIds as string[])].sort() : [];
+  return JSON.stringify({
+    proposalId: proposal.id,
+    contentDigest: proposal.contentDigest,
+    language: proposal.language,
+    runAs: proposal.runAs,
+    timeoutSeconds: proposal.timeoutSeconds,
+    deviceIds,
+    scannerVersion: proposal.scannerVersion,
+  });
+}
+
 const MISSING_ARG: ResolverResult = { kind: 'missing_arg' };
 const TARGET_ABSENT: ResolverResult = { kind: 'target_absent' };
 const material = (value: string | Buffer): ResolverResult => ({ kind: 'material', material: value });
@@ -161,6 +202,21 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // correctly mismatches against the digest pinned at creation (the release
   // fails closed instead of trying to run a deleted script).
   run_script: async (args, database) => {
+    // AI script authoring (spec §4.5): a proposal-backed run pins the
+    // proposal's immutable material, and an unresolvable proposal ABORTS
+    // creation rather than storing a fail-open NULL digest.
+    if (typeof args.proposalId === 'string' && args.proposalId.length > 0) {
+      const [proposal] = await database
+        .select().from(scriptProposals).where(eq(scriptProposals.id, args.proposalId)).limit(1);
+      if (!proposal) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', `proposal ${args.proposalId} not found`);
+      }
+      const deviceIds = Array.isArray(args.deviceIds) ? (args.deviceIds as string[]) : [];
+      if (deviceIds.length === 0) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', 'deviceIds is required');
+      }
+      return { kind: 'material', material: runScriptProposalDigestMaterial(proposal, args) };
+    }
     const built = await buildRunScriptSnapshot(args, database);
     if (built.kind === 'missing_arg') return MISSING_ARG;
     if (built.kind === 'target_absent') return TARGET_ABSENT;
@@ -235,6 +291,90 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   'manage_contracts:activate': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
   'manage_contracts:cancel': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
 
+  // manage_ai_agents (P2-5, #4192) — registered under the WHOLE-TOOL key, not
+  // `manage_ai_agents:authorize_supervised_key`. The tool is a member of BOTH
+  // TIER3_FOUR_EYES_ACTIONS and the whole-tool TIER3_FOUR_EYES_TOOLS fail-safe,
+  // so effectDigestCoverage.contract.test.ts enumerates TWO surfaces; the
+  // action→tool fallback in effectDigestResolverKey means one whole-tool entry
+  // covers both, and any future action of this tool is pinned by default rather
+  // than shipping unpinned.
+  //
+  // The TOCTOU: the approver signs off on "grant <opKey> to org X's <kind>
+  // agent". The arguments stay byte-identical for the whole (up to 24h, mcp_api)
+  // approval window while the authority set underneath them moves — somebody
+  // edits `actAssets.supervisedActionKeys`, or the org row is created/disabled
+  // so the grant lands on a DIFFERENT row than the one reviewed. Pinning the
+  // org row's identity plus its sorted key list makes exactly those drifts a
+  // `content_changed` failure. Sorted because array order in jsonb is
+  // storage-incidental, and a reorder is not a change of authority.
+  //
+  // A MISSING org row is pinned as `orgAgentId: null`, NOT reported as
+  // TARGET_ABSENT: "this org has no row of its own and runs off the partner
+  // baseline" is a real, reviewable state, and the grant's first act is to
+  // clone a row into it (Task 15). Returning TARGET_ABSENT would store NULL and
+  // leave precisely the appear-under-the-approval case undetected.
+  //
+  // ORG AXIS ONLY, one read, on the caller's own connection. The PARTNER
+  // ceiling is deliberately NOT pinned: reading an `org_id IS NULL` row needs
+  // `readWithPartnerAxisVisibility`, which opens a SECOND pooled connection
+  // while the creation transaction still holds the first (the #1105 class this
+  // module's header forbids), and it is invisible to an org-scoped creator
+  // anyway — it would pin as "absent" at creation and as "present" at release,
+  // failing every promotion. The ceiling is re-checked fail-closed at execution
+  // under the graduation advisory lock, together with the feature flag, the
+  // human origin and live eligibility (Task 15), so it is covered by a live
+  // re-validation rather than by this pin.
+  //
+  // `args.orgId` is an ADDRESS, never an authority: it is set from the
+  // authenticated org at creation, `createActionIntent` rejects
+  // `args.orgId !== intent.orgId` (there BECAUSE both creation paths — the
+  // promote route and the chat/MCP `tool()` declaration — funnel through it),
+  // and the executor re-asserts the same equality UNCONDITIONALLY before
+  // writing. It exists here only because a resolver receives `(args, database)`
+  // and has no other way to name the org whose keys are being changed — both
+  // release paths recompute inside `withSystemDbAccessContext`, which carries
+  // no ambient org. The read predicates on org_id explicitly for the same
+  // reason every loader in this codebase does: RLS passes unconditionally
+  // under a system context.
+  //
+  // THIS PIN IS NOT A CROSS-TENANT CONTROL, and nothing may be built on the
+  // idea that it is. It fails closed on a forged `orgId` only for an
+  // ORG-scoped creator (creation reads no row → pins null; release reads the
+  // real row → `content_changed`). A PARTNER-scoped caller passes
+  // `breeze_has_org_access` for every org beneath the partner, so a forged
+  // SIBLING org id reads that sibling's real row at creation and the SAME row
+  // at release: the digest MATCHES and `content_changed` never fires. The
+  // equality checks above are the control; this resolver only pins drift in
+  // the authority set.
+  manage_ai_agents: async (args, database) => {
+    const orgId = typeof args.orgId === 'string' && args.orgId.length > 0 ? args.orgId : null;
+    const kind = typeof args.kind === 'string' && (AI_AGENT_KINDS as readonly string[]).includes(args.kind)
+      ? (args.kind as AiAgentKind)
+      : null;
+    const opKey = typeof args.opKey === 'string' && args.opKey.length > 0 ? args.opKey : null;
+    if (!orgId || !kind || !opKey) return MISSING_ARG;
+
+    const [orgAgent] = await database
+      .select({ id: aiAgents.id, actAssets: aiAgents.actAssets })
+      .from(aiAgents)
+      .where(and(
+        eq(aiAgents.orgId, orgId),
+        eq(aiAgents.kind, kind),
+        isNull(aiAgents.disabledAt),
+      ))
+      .limit(1);
+
+    return material(JSON.stringify({
+      orgId,
+      kind,
+      opKey,
+      orgAgentId: orgAgent?.id ?? null,
+      // `supervisedActionKeys` is OPTIONAL (#3827) — a row written before that
+      // wave carries no such key and must read as "authorizes nothing".
+      orgKeys: [...(orgAgent?.actAssets?.supervisedActionKeys ?? [])].sort(),
+    }));
+  },
+
   // manage_organizations:update_org: pin the org's CURRENT status — the
   // field an approver's mental model of "what am I updating" is most likely
   // to be invalidated by (e.g. someone else suspended/churned the org while
@@ -255,6 +395,83 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     if (!org) return TARGET_ABSENT;
     return material(org.status);
+  },
+
+  // manage_policy_feature_link:update (RMM-QA-176 D9). Escalates to Tier 3 on
+  // INPUT content — a `maintenance` feature link is the canonical
+  // monitoring-suppression source — so it is enumerated in
+  // TIER3_INPUT_AWARE_ACTIONS and therefore needs a pin like any other
+  // four_eyes surface.
+  //
+  // The TOCTOU shape is the reason this is not optional: the approver signs
+  // off on "update link L to these settings", and within the approval window
+  // (up to 24h on mcp_api) L's CURRENT settings can be edited by someone else
+  // — a different featureType, a different linked feature policy, a wider
+  // window — while the intent's own arguments stay byte-identical.
+  //
+  // Pins CONTENT (featureType + featurePolicyId + inlineSettings) rather than
+  // `updated_at`, following manage_tickets:move_org: content is exactly what
+  // the approver evaluated, and a write that rewrites a row to the same values
+  // is not a change the approver needs to re-see.
+  'manage_policy_feature_link:update': async (args, database) => {
+    const featureLinkId = typeof args.featureLinkId === 'string' ? args.featureLinkId : null;
+    if (!featureLinkId) return MISSING_ARG;
+    const [link] = await database
+      .select({
+        featureType: configPolicyFeatureLinks.featureType,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+      .limit(1);
+    if (!link) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      featureType: link.featureType,
+      featurePolicyId: link.featurePolicyId,
+      inlineSettings: link.inlineSettings,
+    }));
+  },
+
+  // manage_patches:install (Tier 3, SUPERVISED) — AI patch agent W02 (#5748).
+  // The pinned content is the ELIGIBILITY VERDICT for (deviceId, patchIds…)
+  // under the device's CURRENT org, ring and policy — never the `patches`
+  // catalog row: `patches` is a GLOBAL vendor catalog re-synced on a schedule,
+  // so hashing its `updated_at` would fail closed on routine syncs — the exact
+  // trap recorded for `manage_patches:rollback` in
+  // effectDigestCoverage.contract.test.ts. A patch that was deferred,
+  // category-blocked, superseded, un-approved, or whose device changed ring or
+  // org between approval and release therefore changes the digest and the
+  // worker refuses the release with `content_changed`. `resolvedAt` is
+  // deliberately NOT part of the material (it moves on every recompute).
+  //
+  // The org comes off the device row read through the caller's `database`,
+  // never off the tool input (an intent's arguments carry no orgId, and if
+  // they did, the approver's org is what `revalidateRelease` checks — this
+  // pin is about the CONTENT). `resolvePatchInstallEligibility` reads through
+  // the ambient `db`, which every call site of this module (creation
+  // transaction, release worker, inline chat release) runs system-scoped —
+  // the same caller obligation the run_script resolver's `opts.database`
+  // carries.
+  'manage_patches:install': async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds : null;
+    const deviceId = deviceIds?.length === 1 && typeof deviceIds[0] === 'string' ? deviceIds[0] : null;
+    const patchIds = Array.isArray(args.patchIds) ? args.patchIds.filter((p): p is string => typeof p === 'string') : [];
+    if (!deviceId || patchIds.length === 0) return MISSING_ARG;
+    const [device] = await database
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return TARGET_ABSENT;
+    const verdict = await resolvePatchInstallEligibility({ deviceId, orgId: device.orgId, patchIds });
+    return material(JSON.stringify({
+      v: 1,
+      orgId: device.orgId,
+      ringId: verdict.ringId,
+      eligible: verdict.eligible.map((e) => e.patchId).sort(),
+      ineligible: verdict.ineligible.map((e) => `${e.patchId}:${e.reason}`).sort(),
+    }));
   },
 
   // manage_tickets:move_org — re-tenanting a ticket. Pins the ticket's

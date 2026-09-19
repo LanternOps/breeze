@@ -16,7 +16,7 @@ describe('featuresStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
-      features: { billing: false, support: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
       softwarePackages: { uploadsEnabled: true },
@@ -52,7 +52,7 @@ describe('featuresStore', () => {
       res({ features: { billing: true, support: true } })
     );
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('network'));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -82,7 +82,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(res({}, false, 500));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -95,9 +95,24 @@ describe('featuresStore', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // #5216 W01 PR C: the Tool Sources surface authors credentials that reach
+  // customer systems, so its gate defaults CLOSED — an older API that does not
+  // send the field must hide it, never flash it.
+  it('reads features.toolSources from /config and defaults it closed', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { toolSources: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.toolSources).toBe(true);
+  });
+
+  it.each([true, false, undefined])('reads sweep act capability %s and defaults closed', async (enabled) => {
+    fetchMock.mockResolvedValueOnce(res({ features: { aiAgentsSweepAct: enabled } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.aiAgentsSweepAct).toBe(enabled === true);
+  });
+
   it('coerces missing fields to false', async () => {
     fetchMock.mockResolvedValueOnce(res({}));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false });
   });
 });

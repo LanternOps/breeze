@@ -46,4 +46,13 @@ describe('safeNextPath', () => {
   it('rejects a malformed percent-escape rather than throwing', () => {
     expect(safeNextPath('/invoices/%E0%A4%A')).toBeNull();
   });
+
+  it.each([
+    '/dashboard',
+    '/security/devices?page=2',
+    '/backups/devices',
+    '/reports',
+  ])('accepts the protected portal path %s', (path) => {
+    expect(safeNextPath(path)).toBe(path);
+  });
 });

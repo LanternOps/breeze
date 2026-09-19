@@ -69,7 +69,7 @@ When a deployment auto-pauses, it enters a `paused` sub-state between batches. A
 
 ### Post-Install Detection (Software Deployments)
 
-For **Software** deployments, Breeze can verify what's actually installed on the device instead of just trusting the installer's exit code. Detection rules are authored **per software version**, in the Deployment Wizard, when you add or edit a version in the App Library — not per deployment.
+For **Software** deployments, Breeze can verify what's actually installed on the device instead of just trusting the installer's exit code. Detection rules are authored **per software version**, in the Deployment Wizard, when you add or edit a version in the Software catalog — not per deployment.
 
 | Clause Type | UI Label | Checks |
 |-------------|----------|--------|
@@ -98,35 +98,31 @@ To reinstall regardless of what's already on the device, enable **Reinstall even
 
 ### UI Walkthrough
 
+The deployment UI in Breeze currently covers **software** rollouts only. Script, patch, and configuration-policy deployments use the same underlying deployment engine and rollout controls described below, but today they're created through the API — there's no generic "New Deployment" screen with a Script/Patch/Software/Policy type picker.
+
 <Steps>
 
-1. Navigate to **Fleet** in the sidebar (deployments are managed within the Fleet page).
+1. Navigate to **Fleet Management → Software** in the sidebar.
 
-2. Click **New Deployment** in the top-right corner.
+2. Click **Deploy** on a specific software item (to deploy one package), or **Bulk Deploy** to start with a device selection and choose the package afterward.
 
-3. Enter a descriptive **Name** (e.g., "Monthly Cleanup — Windows Fleet").
+3. Choose the **Software** package and version. If the selected version has [detection rules](#post-install-detection-software-deployments) configured, devices where the software is already present are skipped automatically — check **Reinstall even if already present** to override this and force the installer to run anyway. The agent downloads the installer from a presigned S3 URL, verifies the SHA-256 checksum, and runs it silently (MSI/EXE on Windows, DEB on Linux, PKG/DMG on macOS). MSI packages default to `/qn /norestart` silent install arguments.
 
-4. Select the **Type**: Script, Patch, Software, or Policy (config update).
+4. Select the **Target Type** and specify target devices, groups, or a filter expression.
 
-5. Configure the **Payload** for the selected type:
-   - **Script**: Choose a script from the library and set parameters.
-   - **Patch**: Select patches to install from the patch catalog.
-   - **Software**: Choose a package from the App Library. The agent downloads from a presigned S3 URL, verifies the SHA-256 checksum, and runs the installer silently (MSI/EXE on Windows, DEB on Linux, PKG/DMG on macOS). MSI packages default to `/qn /norestart` silent install arguments. If the selected version has [detection rules](#post-install-detection-software-deployments) configured, devices where the software is already present are skipped automatically — check **Reinstall even if already present** to override this and force the installer to run anyway.
-   - **Policy**: Select a configuration policy to apply.
+5. Choose a **Rollout Mode**: Immediate or Staggered.
 
-6. Select the **Target Type** and specify target devices, groups, or a filter expression.
+6. If Staggered, configure batch size, batch delay, and optional failure thresholds.
 
-7. Choose a **Rollout Mode**: Immediate or Staggered.
+7. Enable **Respect Maintenance Windows** if devices should only receive the install during their configured maintenance window.
 
-8. If Staggered, configure batch size, batch delay, and optional failure thresholds.
+8. Configure **Retry Settings** if automatic retries are desired.
 
-9. Enable **Respect Maintenance Windows** if devices should only receive the command during their configured maintenance window.
-
-10. Configure **Retry Settings** if automatic retries are desired.
-
-11. Click **Save as Draft** to create the deployment without starting it, or proceed directly to **Initialize**.
+9. Review and confirm to create and start the deployment.
 
 </Steps>
+
+To deploy a script, a set of patches, or a configuration-policy update as a tracked, staggered rollout, use the API — the request body and rollout mechanics are identical to a software deployment, only the `type` and `payload` fields differ.
 
 ### API — Create Deployment
 

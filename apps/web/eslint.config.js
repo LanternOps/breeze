@@ -1,8 +1,10 @@
+import sqlstateGuard from '../../scripts/eslint/no-direct-sqlstate.mjs';
 import tsParser from '@typescript-eslint/parser';
 
 // Flat config (ESLint v9+). Mirrors the previous .eslintrc.cjs: TS parser
-// with JSX, latest ESM, no custom rules yet.
+// with JSX, latest ESM, and the shared SQLSTATE guard.
 export default [
+  sqlstateGuard,
   { ignores: ['dist/**', '.astro/**', 'node_modules/**'] },
   {
     files: ['src/**/*.{ts,tsx}'],

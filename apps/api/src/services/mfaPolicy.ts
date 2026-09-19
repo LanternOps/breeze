@@ -4,6 +4,11 @@ import { roles, organizationUsers, partnerUsers } from '../db/schema/users';
 import { partners } from '../db/schema/orgs';
 import { getEffectiveOrgSettings } from './effectiveSettings';
 import { mfaForcePartnerAdmin } from '../config/env';
+import {
+  evaluateMfaEnrollmentGrace,
+  resolveMfaGraceDays,
+  type MfaGraceFacts,
+} from './mfaEnrollmentGrace';
 import { captureException } from './sentry';
 
 /**
@@ -17,6 +22,16 @@ import { captureException } from './sentry';
  * unless effective settings explicitly disable it. Passkey is always allowed —
  * it is phishing-resistant, so a tenant may restrict totp/sms but never the
  * strongest factor.
+ *
+ * Enrolment grace window (#5306): a role-forced account that has NEVER held a
+ * factor gets a per-user, nonrenewable deadline (services/mfaEnrollmentGrace.ts)
+ * before the role force is enforced. While that window is open the ROLE axis is
+ * postponed (`required` false, `pendingEnrollment.deadline` set); once it lapses
+ * `required` is true exactly as it was before the feature. The window is only
+ * consulted when the role force would otherwise bite and settings do not already
+ * require MFA — so strictest-wins and the kill-switch semantics below are
+ * untouched, and an already-enrolled user stays `required` (which is what keeps
+ * self-disable and last-passkey removal blocked mid-window).
  *
  * Kill switch (MFA_FORCE_FOR_PARTNER_ADMIN=false) suppresses ONLY the
  * role-driven force (the env flag is named/documented for the partner-admin
@@ -47,16 +62,42 @@ export interface MfaAllowedMethods { totp: boolean; sms: boolean; passkey: boole
 export interface EffectiveMfaPolicy {
   required: boolean;
   allowedMethods: MfaAllowedMethods;
-  source: { roleForceMfa: boolean; settingsRequireMfa: boolean; killSwitchOff: boolean };
+  /**
+   * #5306 — set while this user's enrolment grace window is OPEN. It describes
+   * the window, not the verdict: a settings-read failure under `failClosed` can
+   * legitimately report `required: true` alongside an open window. UI copy
+   * ("enrol by <date>") should read this; gates must read `required`.
+   */
+  pendingEnrollment: { deadline: string } | null;
+  source: {
+    roleForceMfa: boolean;
+    settingsRequireMfa: boolean;
+    killSwitchOff: boolean;
+    /** 'active' | 'expired' while a grant exists for a role-forced user, else 'none'. */
+    graceWindow: 'active' | 'expired' | 'none';
+  };
 }
 
 export interface MfaSecuritySettings {
   requireMfa?: boolean;
   allowedMethods?: { totp?: boolean; sms?: boolean };
+  /** #5306 — partner-configurable enrolment grace length in days (0..30, default 14). */
+  mfaEnrollmentGraceDays?: number;
 }
 type SecuritySettings = MfaSecuritySettings;
 
-function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowedMethods {
+function methodsFromSettings(
+  security: SecuritySettings | undefined,
+  settingsUnavailable = false,
+  failClosedMethods = false,
+): MfaAllowedMethods {
+  if (settingsUnavailable && failClosedMethods) {
+    // TOTP and SMS are tenant-configurable, so an unreadable policy cannot
+    // authorize either at a sensitive control boundary. Passkeys are always
+    // permitted by policy and remain usable as the phishing-resistant escape
+    // hatch rather than turning a settings outage into a universal lockout.
+    return { totp: false, sms: false, passkey: true };
+  }
   const am = security?.allowedMethods;
   return {
     totp: am?.totp !== false,
@@ -79,20 +120,44 @@ function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowed
  * INSIDE its own transaction, and applies the rule here — so strictest-wins
  * and the kill-switch semantics stay single-sourced.
  *
- * `settingsUnavailable` + `failClosed` reproduce the same disposition
- * getEffectiveMfaPolicy applies to a settings-read error (see opts.failClosed).
+ * `settingsUnavailable` plus the fail-closed flags reproduce the same
+ * disposition getEffectiveMfaPolicy applies to a settings-read error.
  */
 export function combineMfaPolicyFacts(facts: {
   roleForceMfa: boolean;
   security: MfaSecuritySettings | undefined;
   settingsUnavailable?: boolean;
   failClosed?: boolean;
+  failClosedMethods?: boolean;
+  /**
+   * #5306 — this user's grace state, read by the caller. Omit it (or pass null)
+   * to keep the pre-feature behaviour: role force is enforced immediately.
+   */
+  grace?: MfaGraceFacts | null;
 }): EffectiveMfaPolicy {
   const killSwitchOff = !mfaForcePartnerAdmin();
   const settingsRequireMfa = facts.security?.requireMfa === true;
   // Kill switch suppresses ONLY the role-force component; settings-driven
   // requireMfa is enforced regardless (overseer hardening decision).
-  const roleForceApplies = facts.roleForceMfa && !killSwitchOff;
+  let roleForceApplies = facts.roleForceMfa && !killSwitchOff;
+
+  // #5306. Only the role axis is postponed, and only when it is the ONLY reason
+  // MFA would be required — if settings already require it there is no window to
+  // give, and a user who holds a factor stays required so the control gates
+  // (self-disable, last-passkey removal) keep refusing mid-window.
+  let pendingEnrollment: { deadline: string } | null = null;
+  let graceWindow: 'active' | 'expired' | 'none' = 'none';
+  const grace = facts.grace;
+  if (roleForceApplies && !settingsRequireMfa && grace && !grace.hasFactor && grace.deadline) {
+    if (grace.expired) {
+      graceWindow = 'expired';
+    } else {
+      graceWindow = 'active';
+      pendingEnrollment = { deadline: grace.deadline.toISOString() };
+      roleForceApplies = false;
+    }
+  }
+
   const required =
     roleForceApplies
     || settingsRequireMfa
@@ -100,13 +165,18 @@ export function combineMfaPolicyFacts(facts: {
 
   return {
     required,
-    allowedMethods: methodsFromSettings(facts.security),
-    source: { roleForceMfa: facts.roleForceMfa, settingsRequireMfa, killSwitchOff },
+    allowedMethods: methodsFromSettings(
+      facts.security,
+      facts.settingsUnavailable === true,
+      facts.failClosedMethods === true,
+    ),
+    pendingEnrollment,
+    source: { roleForceMfa: facts.roleForceMfa, settingsRequireMfa, killSwitchOff, graceWindow },
   };
 }
 
 /**
- * @param opts.failClosed  Login/enrollment gates FAIL OPEN on a settings-read
+ * @param opts.failClosed  Login gates FAIL OPEN on a settings-read
  *   error (a transient blip must never mass-lock a tenant out of signing in).
  *   CONTROL gates that *relax* protection on a false `required` — self-disable
  *   (`/mfa/disable`) and last-factor removal (`DELETE /passkeys/:id`) — must
@@ -114,16 +184,71 @@ export function combineMfaPolicyFacts(facts: {
  *   org/partner-required MFA. On a read error under `failClosed`, `required`
  *   is forced true (the role-force axis is unaffected — its join is outside
  *   the settings try/catch and already enforces regardless).
+ * @param opts.failClosedMethods Factor enrollment/use gates pass this option.
+ *   If settings cannot be read, tenant-disableable TOTP and SMS are denied;
+ *   passkeys remain allowed because policy cannot disable them.
  */
+/**
+ * Read-only `security` settings for a scope, resolved exactly the way
+ * `getEffectiveMfaPolicy` resolves them (partner-inherited for org scope via
+ * `getEffectiveOrgSettings`, partner's own row for partner scope). Exists for
+ * callers that need the setting WITHOUT the role-force read or the
+ * enrolment-grace grant write — e.g. the Admin → Users list, which derives an
+ * MFA status column for many users off one settings read rather than one
+ * `getEffectiveMfaPolicy` call (and its grant side effect) per row.
+ *
+ * Fails open (`undefined`) on a read error, same disposition as
+ * `getEffectiveMfaPolicy`'s settings branch when neither fail-closed flag is
+ * set — a transient blip must not make an admin list look wrong, and
+ * `resolveMfaGraceDays(undefined)` already falls back to the documented
+ * default.
+ */
+export async function getScopeSecuritySettings(
+  input: Pick<MfaPolicyInput, 'scope' | 'orgId' | 'partnerId'>,
+): Promise<MfaSecuritySettings | undefined> {
+  if (input.scope === 'system') return undefined;
+
+  return dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(async () => {
+      try {
+        if (input.scope === 'organization' && input.orgId) {
+          const { effective } = await getEffectiveOrgSettings(input.orgId);
+          return effective.security as MfaSecuritySettings | undefined;
+        }
+        if (input.scope === 'partner' && input.partnerId) {
+          const [partner] = await dbModule.db
+            .select({ settings: partners.settings })
+            .from(partners)
+            .where(eq(partners.id, input.partnerId))
+            .limit(1);
+          const settings = (partner?.settings ?? {}) as Record<string, unknown>;
+          return settings.security as MfaSecuritySettings | undefined;
+        }
+        return undefined;
+      } catch (err) {
+        console.error('[mfa-policy] getScopeSecuritySettings read failed — failing open (undefined):', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        return undefined;
+      }
+    }),
+  );
+}
+
 export async function getEffectiveMfaPolicy(
   input: MfaPolicyInput,
-  opts?: { failClosed?: boolean },
+  opts?: { failClosed?: boolean; failClosedMethods?: boolean },
 ): Promise<EffectiveMfaPolicy> {
   if (input.scope === 'system') {
     return {
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: !mfaForcePartnerAdmin() },
+      pendingEnrollment: null,
+      source: {
+        roleForceMfa: false,
+        settingsRequireMfa: false,
+        killSwitchOff: !mfaForcePartnerAdmin(),
+        graceWindow: 'none',
+      },
     };
   }
 
@@ -166,21 +291,49 @@ export async function getEffectiveMfaPolicy(
           security = settings.security as SecuritySettings | undefined;
         }
       } catch (err) {
-        const disposition = opts?.failClosed ? 'failing closed (required)' : 'failing open (not required)';
+        const closedAxes = [
+          opts?.failClosed ? 'required' : null,
+          opts?.failClosedMethods ? 'methods' : null,
+        ].filter(Boolean).join('+');
+        const disposition = closedAxes
+          ? `failing closed (${closedAxes})`
+          : 'failing open (not required; methods allowed)';
         console.error(`[mfa-policy] effective settings read failed — ${disposition}:`, err);
         captureException(err instanceof Error ? err : new Error(String(err)));
         security = undefined;
         settingsReadFailed = true;
       }
 
-      // Control gates (opts.failClosed) treat an unreadable settings row as
-      // "still required" so a transient blip can't strip org/partner-mandated
-      // MFA; login/enrollment gates leave failClosed unset and fail open.
+      // --- enrolment grace window (#5306) ---
+      // Read ONLY when the role force would otherwise bite right now: the kill
+      // switch is on, the role forces, and settings do not already require MFA.
+      // That keeps the extra query (and the one-time grant write) off every
+      // other request — including the hot middleware gate for users whose org
+      // policy requires MFA anyway.
+      let grace: MfaGraceFacts | null = null;
+      // If the settings read failed, `security` is undefined and the window
+      // length falls back to the 14-day default. That is intentional: the axis
+      // this postpones is the ROLE force, which does not depend on settings, and
+      // the fallback self-corrects — every later call re-reads the setting, and
+      // a tenant that actually sets requireMfa returns to immediate enforcement
+      // as soon as its settings are readable again. Control gates that pass
+      // failClosed still end up `required` regardless (see combineMfaPolicyFacts).
+      if (roleForceMfa && mfaForcePartnerAdmin() && security?.requireMfa !== true) {
+        // Deliberately NOT inside the settings try/catch: like the role join, a
+        // failure here is a hard error rather than an optional enrichment.
+        grace = await evaluateMfaEnrollmentGrace(input.userId, resolveMfaGraceDays(security));
+      }
+
+      // Each control gate opts into the axis it must fail closed. Login leaves
+      // both flags unset for availability; factor enrollment/use denies the
+      // tenant-disableable methods when policy settings are unreadable.
       return combineMfaPolicyFacts({
         roleForceMfa,
         security,
         settingsUnavailable: settingsReadFailed,
         failClosed: opts?.failClosed === true,
+        failClosedMethods: opts?.failClosedMethods === true,
+        grace,
       });
     }),
   );

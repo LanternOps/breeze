@@ -1,0 +1,517 @@
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { deviceExternalLinks, deviceHardware, devices, organizations } from '../../../db/schema';
+import { normalizeHostname, normalizeSerial } from './deviceIdentity';
+import {
+  DEFAULT_IMPORT_SYSTEM,
+  type DeviceCandidate,
+  type DeviceCustomFieldImportRow,
+  type DeviceMatchMethod,
+  type DeviceResolution,
+} from './types';
+
+/**
+ * Device resolution for the RMM custom-field importer (#3257 W06).
+ *
+ * Resolution order, ALWAYS within one organization:
+ *   deviceId → (externalSystem, externalId) via device_external_links →
+ *   serialNumber → hostname (case-insensitive)
+ *
+ * EVERY supplied identifier is resolved, not just the first. Two identifiers
+ * that each pin a single, DIFFERENT device make the row an `identity-conflict`
+ * and it is refused: "first hit wins" would silently pick one and throw away
+ * the evidence that the row is wrong. An identifier that matches SEVERAL
+ * devices is not evidence of disagreement — a hostname collision must not veto
+ * an exact serial — so only single-match identifiers participate in the
+ * conflict check.
+ *
+ * Zero matches ⇒ `not-found`. More than one ⇒ `ambiguous` with ranked
+ * candidates. It NEVER auto-picks.
+ */
+
+/** How far the caller may reach. Everything here becomes a SQL predicate. */
+export interface DeviceResolutionScope {
+  partnerId: string;
+  /** null = system scope (unrestricted). An EMPTY array reaches nothing. */
+  accessibleOrgIds: string[] | null;
+  /** null/absent = unrestricted. RLS NEVER covered the site axis. */
+  allowedSiteIds: string[] | null;
+}
+
+/** One device as the resolver sees it. Timestamps are ISO strings on the wire. */
+export interface DeviceResolutionRecord {
+  deviceId: string;
+  orgId: string;
+  hostname: string | null;
+  displayName: string | null;
+  serialNumber: string | null;
+  osType: string | null;
+  status: string | null;
+  enrolledAt: string | null;
+  lastSeenAt: string | null;
+  siteId: string | null;
+}
+
+export interface DeviceExternalLinkRecord {
+  deviceId: string;
+  system: string;
+  externalId: string;
+  sourceInstance: string | null;
+}
+
+export interface DeviceResolutionSnapshot {
+  /** Organizations the caller may reach. A row naming anything else is `org-not-found`. */
+  reachableOrgIds: ReadonlySet<string>;
+  devices: ReadonlyMap<string, DeviceResolutionRecord>;
+  byLink: ReadonlyMap<string, string[]>;
+  bySerial: ReadonlyMap<string, string[]>;
+  byHostname: ReadonlyMap<string, string[]>;
+}
+
+/**
+ * A snapshot that reaches nothing. A FUNCTION, not a shared constant: the
+ * `Readonly*` types are erased at runtime, so a single module-level object
+ * returned from several early-return branches would be one mutable structure
+ * shared by every request that ever took an empty path.
+ */
+function emptySnapshot(): DeviceResolutionSnapshot {
+  return {
+    reachableOrgIds: new Set(),
+    devices: new Map(),
+    byLink: new Map(),
+    bySerial: new Map(),
+    byHostname: new Map(),
+  };
+}
+
+/**
+ * Mirrors `device_external_links_uniq`: (system, COALESCE(source_instance, ''),
+ * external_id) within one partner. `source_instance` is reserved and always
+ * null today, but keying on it here means adopting it later is a backfill.
+ *
+ * The parts are joined on U+0000 — the same separator and the same reason as
+ * `services/contacts/import.ts`'s composite key — because PostgreSQL cannot
+ * store a NUL in a `text` column, so no combination of these three free-form
+ * values can forge another row's key. An ordinary separator would: ('csv', '',
+ * 'a b') and ('csv', ' a', 'b') are two distinct rows under the unique index
+ * but collapse to the same space-joined string, which would make a row match a
+ * link Postgres considers unrelated. A row-supplied NUL simply matches nothing
+ * (it cannot exist on the stored side), so this fails closed either way.
+ */
+function linkKey(system: string, sourceInstance: string | null | undefined, externalId: string): string {
+  return `${system}\u0000${sourceInstance ?? ''}\u0000${externalId}`;
+}
+
+function pushInto(map: Map<string, string[]>, key: string, deviceId: string): void {
+  const existing = map.get(key);
+  if (existing) existing.push(deviceId);
+  else map.set(key, [deviceId]);
+}
+
+/**
+ * Indexes already-fetched rows. Split from the loader so the resolution rules
+ * are testable without a database — the loader's job is the SQL boundary, this
+ * one's is the identifier maps.
+ */
+export function buildDeviceResolutionSnapshot(input: {
+  reachableOrgIds: Iterable<string>;
+  devices: readonly DeviceResolutionRecord[];
+  links: readonly DeviceExternalLinkRecord[];
+}): DeviceResolutionSnapshot {
+  const byId = new Map<string, DeviceResolutionRecord>();
+  const bySerial = new Map<string, string[]>();
+  const byHostname = new Map<string, string[]>();
+  const byLink = new Map<string, string[]>();
+
+  for (const record of input.devices) {
+    byId.set(record.deviceId, record);
+    // Junk is filtered on BOTH sides of the join. The SQL below excludes it
+    // too; this is the half that a unit test can prove, and the half that
+    // survives if a future caller hands the builder rows from elsewhere.
+    const serial = normalizeSerial(record.serialNumber);
+    if (serial) pushInto(bySerial, serial, record.deviceId);
+    const hostname = normalizeHostname(record.hostname);
+    if (hostname) pushInto(byHostname, hostname, record.deviceId);
+  }
+
+  for (const link of input.links) {
+    pushInto(byLink, linkKey(link.system, link.sourceInstance, link.externalId), link.deviceId);
+  }
+
+  return {
+    reachableOrgIds: new Set(input.reachableOrgIds),
+    devices: byId,
+    byLink,
+    bySerial,
+    byHostname,
+  };
+}
+
+function uniqueStrings(values: Iterable<string | null | undefined>): string[] {
+  const out = new Set<string>();
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== '') out.add(value);
+  }
+  return [...out];
+}
+
+/**
+ * Refuses a missing reach instead of coalescing it to "unrestricted". A caller
+ * bug must narrow or crash, never widen — see the note at the call site.
+ */
+function requireReach(value: string[] | null, field: string): string[] | null {
+  if (value === undefined) {
+    throw new Error(
+      `[customFields] device resolution scope is missing ${field}; ` +
+      'refusing to run unrestricted. Pass null for system scope or an explicit list.',
+    );
+  }
+  return value;
+}
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * Loads every device the submitted rows could possibly match, and nothing else.
+ *
+ * SYSTEM context, deliberately: resolving devices across a partner's
+ * organizations needs it, and `breeze_has_org_access` short-circuits to TRUE
+ * under system scope — so RLS is NOT the boundary here. The organization and
+ * site predicates carried IN THE SQL below are the whole of it, exactly as
+ * services/contacts/import.ts documents for the contact importer.
+ *
+ * For the same reason this path must never use `getDeviceWithOrgCheck`
+ * (routes/devices/helpers.ts): it selects with no org predicate and checks in
+ * JS afterwards, which is safe under RLS and is no check at all under system
+ * scope.
+ *
+ * The read is bounded by the identifiers the rows actually mention, so a
+ * 1000-row chunk is a bounded lookup rather than a fleet scan.
+ */
+export async function loadDeviceResolutionSnapshot(
+  rows: readonly DeviceCustomFieldImportRow[],
+  scope: DeviceResolutionScope,
+): Promise<DeviceResolutionSnapshot> {
+  // `null` reach means system scope, which is unrestricted. An EMPTY array is a
+  // caller who can reach nothing, and must resolve to zero organizations rather
+  // than degrade into "no filter".
+  //
+  // `undefined` is NOT the same thing and must never be folded into `null` with
+  // a `??`: a route handler that builds this scope from an auth context and
+  // drops a field would then be granted the whole partner, silently. The fields
+  // are required in the type, so `undefined` can only arrive through a cast or
+  // a JS caller — either way it is a bug, and it fails loudly here instead of
+  // widening access. The site axis matters most: RLS never covered it, so this
+  // is its ONLY enforcement.
+  const reach = requireReach(scope.accessibleOrgIds, 'accessibleOrgIds');
+  if (reach !== null && reach.length === 0) return emptySnapshot();
+  const siteReach = requireReach(scope.allowedSiteIds, 'allowedSiteIds');
+  if (siteReach !== null && siteReach.length === 0) return emptySnapshot();
+  if (rows.length === 0) return emptySnapshot();
+
+  const wantedIds = uniqueStrings(rows.map((row) => row.deviceId?.trim()));
+  const wantedExternalIds = uniqueStrings(rows.map((row) => row.externalId?.trim()));
+  const wantedSerials = uniqueStrings(rows.map((row) => normalizeSerial(row.serialNumber)));
+  const wantedHostnames = uniqueStrings(rows.map((row) => normalizeHostname(row.hostname)));
+
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const orgRows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(
+          eq(organizations.partnerId, scope.partnerId),
+          isNull(organizations.deletedAt),
+          ...(reach ? [inArray(organizations.id, reach)] : []),
+        ));
+      const orgIds = orgRows.map((row) => row.id);
+      if (orgIds.length === 0) {
+        // Three very different situations land here and every one of them makes
+        // the whole batch read `org-not-found` / `not-found`: the partner really
+        // has no organizations; `partnerId` is wrong; or the caller named orgs
+        // that belong to somebody else. Without this line a caller-side bug is
+        // indistinguishable from "none of these devices exist in Breeze", which
+        // is the failure mode an operator cannot diagnose.
+        console.warn('[customFields] device resolution reached zero organizations', {
+          partnerId: scope.partnerId,
+          namedOrgCount: reach?.length ?? null,
+          rowCount: rows.length,
+        });
+        return emptySnapshot();
+      }
+
+      /**
+       * Reaches no DEVICE, but the caller's organizations are known. Returning a
+       * fully empty snapshot here instead would make every row that names a
+       * perfectly reachable org report `org-not-found` — wrong, and the opposite
+       * of what the non-disclosure rule is for.
+       */
+      const noDevices = () => buildDeviceResolutionSnapshot({
+        reachableOrgIds: orgIds,
+        devices: [],
+        links: [],
+      });
+
+      // THE boundary. RLS returns TRUE for every row in a system context, so
+      // these two predicates are the entire tenant and site isolation on this
+      // path — never let a query here be written without them.
+      const withinReach = and(
+        inArray(devices.orgId, orgIds),
+        ...(siteReach ? [inArray(devices.siteId, siteReach)] : []),
+      );
+
+      const links: DeviceExternalLinkRecord[] = wantedExternalIds.length === 0 ? [] : (
+        await db
+          .select({
+            deviceId: deviceExternalLinks.deviceId,
+            system: deviceExternalLinks.system,
+            externalId: deviceExternalLinks.externalId,
+            sourceInstance: deviceExternalLinks.sourceInstance,
+          })
+          .from(deviceExternalLinks)
+          .where(and(
+            eq(deviceExternalLinks.partnerId, scope.partnerId),
+            inArray(deviceExternalLinks.orgId, orgIds),
+            inArray(deviceExternalLinks.externalId, wantedExternalIds),
+          ))
+      );
+
+      const identifierMatches: SQL[] = [];
+      const idsToFetch = uniqueStrings([...wantedIds, ...links.map((link) => link.deviceId)]);
+      if (idsToFetch.length > 0) identifierMatches.push(inArray(devices.id, idsToFetch));
+      if (wantedSerials.length > 0) {
+        // Junk is excluded on the DATABASE side by construction: `wantedSerials`
+        // came through `normalizeSerial`, which returns null for every value on
+        // the agent's denylist, so no junk string can be in this IN-list and a
+        // device whose stored serial is "Default string" can never join on it.
+        // An explicit NOT IN (junk) here would be a provable no-op paid for on
+        // every lookup. Matches the `device_hardware_org_serial_idx` expression.
+        identifierMatches.push(
+          inArray(sql`upper(btrim(${deviceHardware.serialNumber}))`, wantedSerials),
+        );
+      }
+      if (wantedHostnames.length > 0) {
+        identifierMatches.push(inArray(sql`lower(${devices.hostname})`, wantedHostnames));
+      }
+      // No usable identifier survived — either the batch supplied none, or the
+      // only one it supplied was an external id with no link row.
+      if (identifierMatches.length === 0) return noDevices();
+
+      const deviceRows = await db
+        .select({
+          deviceId: devices.id,
+          orgId: devices.orgId,
+          hostname: devices.hostname,
+          displayName: devices.displayName,
+          osType: devices.osType,
+          status: devices.status,
+          enrolledAt: devices.enrolledAt,
+          lastSeenAt: devices.lastSeenAt,
+          siteId: devices.siteId,
+          serialNumber: deviceHardware.serialNumber,
+        })
+        .from(devices)
+        .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
+        .where(and(withinReach, or(...identifierMatches)));
+
+      return buildDeviceResolutionSnapshot({
+        reachableOrgIds: orgIds,
+        devices: deviceRows.map((row) => ({
+          deviceId: row.deviceId,
+          orgId: row.orgId,
+          hostname: row.hostname ?? null,
+          displayName: row.displayName ?? null,
+          // Junk is excluded on the DATABASE side too, not just the row side:
+          // the agent cleans SerialNumber only on Windows, so Linux and macOS
+          // filler values are already stored here. Left as-is on the record so
+          // a candidate still SHOWS what the device reports; the builder simply
+          // refuses to index it.
+          serialNumber: row.serialNumber ?? null,
+          osType: row.osType ?? null,
+          status: row.status ?? null,
+          enrolledAt: toIso(row.enrolledAt),
+          lastSeenAt: toIso(row.lastSeenAt),
+          siteId: row.siteId ?? null,
+        })),
+        links,
+      });
+    }, 'customFields.import.resolveDevice'),
+  );
+}
+
+/**
+ * PRESENTATION ONLY. Copies enrollment's collision priority chain
+ * (routes/agents/enrollment.ts:517-521) so the operator sees the same order the
+ * platform itself would consider most likely — online first, then any live row,
+ * then the oldest. It is NOT identity proof and it never selects. Each
+ * candidate carries serial, OS, enrolment date and last-seen so the pick is
+ * made on evidence.
+ */
+function statusRank(status: string | null): number {
+  if (status === 'online') return 0;
+  if (status === 'decommissioned') return 2;
+  return 1;
+}
+
+function rankCandidates(a: DeviceCandidate, b: DeviceCandidate): number {
+  const byStatus = statusRank(a.status) - statusRank(b.status);
+  if (byStatus !== 0) return byStatus;
+  const aEnrolled = a.enrolledAt ?? '';
+  const bEnrolled = b.enrolledAt ?? '';
+  if (aEnrolled !== bEnrolled) {
+    // Oldest first, and a device with no enrolment date sorts last rather than
+    // winning the tier by virtue of an empty string.
+    if (aEnrolled === '') return 1;
+    if (bEnrolled === '') return -1;
+    return aEnrolled < bEnrolled ? -1 : 1;
+  }
+  return a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0;
+}
+
+function toCandidate(record: DeviceResolutionRecord, method: DeviceMatchMethod): DeviceCandidate {
+  return {
+    deviceId: record.deviceId,
+    hostname: record.hostname,
+    displayName: record.displayName,
+    serialNumber: record.serialNumber,
+    osType: record.osType,
+    status: record.status,
+    enrolledAt: record.enrolledAt,
+    lastSeenAt: record.lastSeenAt,
+    siteId: record.siteId,
+    method,
+  };
+}
+
+function notResolved(
+  outcome: 'not-found' | 'org-not-found',
+  discardedIdentifiers: DeviceMatchMethod[],
+): DeviceResolution {
+  return {
+    outcome,
+    deviceId: null,
+    method: null,
+    candidates: [],
+    ...(discardedIdentifiers.length > 0 ? { discardedIdentifiers } : {}),
+  };
+}
+
+interface ResolvedAxis {
+  method: DeviceMatchMethod;
+  deviceIds: string[];
+}
+
+export function resolveDeviceRow(
+  row: DeviceCustomFieldImportRow,
+  snapshot: DeviceResolutionSnapshot,
+): DeviceResolution {
+  // Identifiers the row DID supply that carried no information. Today only a
+  // serial can land here (via the agent's junk denylist), and the distinction
+  // matters: "no serial column" and "every serial in this export is the BIOS
+  // filler string" both fail to match, but only the second is a data-quality
+  // problem the operator can act on. Folding them together would hide a
+  // mis-mapped column behind a wall of plausible `not-found`s.
+  const discardedIdentifiers: DeviceMatchMethod[] = [];
+
+  const rowOrgId = row.organizationId?.trim() || null;
+  // An org outside the caller's reach gets the SAME answer as one that does not
+  // exist, so the response is never an existence oracle for another partner's
+  // tenants.
+  if (rowOrgId && !snapshot.reachableOrgIds.has(rowOrgId)) {
+    return notResolved('org-not-found', discardedIdentifiers);
+  }
+
+  const reachable = (deviceId: string): boolean => {
+    const record = snapshot.devices.get(deviceId);
+    return !!record && (!rowOrgId || record.orgId === rowOrgId);
+  };
+
+  // Built in precedence order: id, link, serial, hostname.
+  const axes: ResolvedAxis[] = [];
+
+  const explicitId = row.deviceId?.trim();
+  if (explicitId) {
+    axes.push({ method: 'id', deviceIds: reachable(explicitId) ? [explicitId] : [] });
+  }
+
+  const externalId = row.externalId?.trim();
+  if (externalId) {
+    const system = row.externalSystem?.trim() || DEFAULT_IMPORT_SYSTEM;
+    const key = linkKey(system, row.externalSourceInstance ?? null, externalId);
+    axes.push({ method: 'link', deviceIds: (snapshot.byLink.get(key) ?? []).filter(reachable) });
+  }
+
+  const serial = normalizeSerial(row.serialNumber);
+  if (serial) {
+    axes.push({ method: 'serial', deviceIds: (snapshot.bySerial.get(serial) ?? []).filter(reachable) });
+  } else if (row.serialNumber?.trim()) {
+    discardedIdentifiers.push('serial');
+  }
+
+  const hostname = normalizeHostname(row.hostname);
+  if (hostname) {
+    axes.push({ method: 'hostname', deviceIds: (snapshot.byHostname.get(hostname) ?? []).filter(reachable) });
+  }
+
+  const resolved = axes.filter((axis) => axis.deviceIds.length > 0);
+  if (resolved.length === 0) return notResolved('not-found', discardedIdentifiers);
+
+  // Only identifiers that pin exactly ONE device are evidence of identity, so
+  // only they can disagree. An ambiguous hostname is a question, not a veto.
+  const singular = resolved.filter((axis) => axis.deviceIds.length === 1);
+
+  if (singular.length > 0) {
+    const distinct = new Set(singular.map((axis) => axis.deviceIds[0]!));
+    if (distinct.size > 1) {
+      const seen = new Set<string>();
+      const candidates: DeviceCandidate[] = [];
+      for (const axis of singular) {
+        const deviceId = axis.deviceIds[0]!;
+        if (seen.has(deviceId)) continue;
+        seen.add(deviceId);
+        const record = snapshot.devices.get(deviceId);
+        if (record) candidates.push(toCandidate(record, axis.method));
+      }
+      return {
+        outcome: 'identity-conflict',
+        deviceId: null,
+        method: null,
+        conflictingMethods: singular.map((axis) => axis.method),
+        candidates: candidates.sort(rankCandidates),
+        ...(discardedIdentifiers.length > 0 ? { discardedIdentifiers } : {}),
+      };
+    }
+    const winner = singular[0]!;
+    const extra = discardedIdentifiers.length > 0 ? { discardedIdentifiers } : {};
+    if (winner.method === 'link') {
+      return { outcome: 'link-match', deviceId: winner.deviceIds[0]!, method: 'link', candidates: [], ...extra };
+    }
+    return {
+      outcome: 'matched',
+      deviceId: winner.deviceIds[0]!,
+      method: winner.method,
+      candidates: [],
+      ...extra,
+    };
+  }
+
+  // Everything that resolved is ambiguous. The highest-precedence identifier
+  // supplies the candidate list; the operator picks, never the resolver.
+  const best = resolved[0]!;
+  const candidates = best.deviceIds
+    .map((deviceId) => snapshot.devices.get(deviceId))
+    .filter((record): record is DeviceResolutionRecord => !!record)
+    .map((record) => toCandidate(record, best.method))
+    .sort(rankCandidates);
+
+  return {
+    outcome: 'ambiguous',
+    deviceId: null,
+    method: null,
+    candidates,
+    ...(discardedIdentifiers.length > 0 ? { discardedIdentifiers } : {}),
+  };
+}

@@ -29,7 +29,7 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { userPasskeys } from '../../db/schema';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthTransition, createPartner, createUser } from './db-utils';
 
 vi.mock('../../services/passkeys', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/passkeys')>();
@@ -91,6 +91,11 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
     if (!redis) throw new Error('Redis unavailable in integration environment');
     const tempToken = `test-passkey-mfa-${user.id}`;
     tempTokens.push(tempToken);
+    // The completion route re-derives a capability from the binding cookie on
+    // the verify request and requires it to match this record's
+    // transitionId/browserGeneration exactly as a real login's pending-MFA
+    // branch would have produced them — a fake/random transitionId 409s.
+    const transition = await bootstrapAuthTransition();
     // SR2-06: the pending record now carries the epoch/status binding
     // captured at login — parsePendingMfa is strict, so a bare/legacy record
     // is rejected outright. `createUser` rows default to authEpoch/mfaEpoch=1
@@ -102,8 +107,11 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
         userId: user.id,
         mfaMethod: 'passkey',
         passkeyAvailable: true,
+        recoveryAvailable: false,
         authEpoch: 1,
         mfaEpoch: 1,
+        transitionId: transition.transitionId,
+        browserGeneration: transition.generation,
         statusExpectation: 'active',
         allowedMethods: { totp: true, sms: true, passkey: true },
         expiresAt: Date.now() + 5 * 60 * 1000,
@@ -124,7 +132,7 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', cookie: transition.cookie },
       body: JSON.stringify({ tempToken, credential: { id: credentialId } })
     });
 

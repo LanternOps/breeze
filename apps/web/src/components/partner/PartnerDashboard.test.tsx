@@ -132,7 +132,7 @@ describe('PartnerDashboard MRR (multi-currency, wave 7)', () => {
     expect(total.compareDocumentPosition(approx) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('keeps the segmented total and renders no approximate line when the rates endpoint fails', async () => {
+  it('keeps the segmented total and SAYS the approximate line is unavailable when the rates endpoint fails', async () => {
     wire([
       org('o1', 'Acme', [{ currencyCode: 'USD', amount: '12300.00' }]),
       org('o2', 'Globex', [{ currencyCode: 'EUR', amount: '4100.00' }]),
@@ -142,7 +142,12 @@ describe('PartnerDashboard MRR (multi-currency, wave 7)', () => {
     const total = await screen.findByTestId('partner-dashboard-total-mrr');
     await waitFor(() => expect(fetchWithAuth)
       .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
+    // The authoritative segmentation is untouched by the FX failure...
     expect(total.textContent).toBe('$12,300.00 + €4,100.00');
-    await waitFor(() => expect(screen.queryByTestId('partner-dashboard-mrr-approx')).toBeNull());
+    // ...and the companion line reports the failure instead of vanishing (#4415).
+    const approx = await screen.findByTestId('partner-dashboard-mrr-approx');
+    expect(approx.textContent).toBe('≈ total unavailable — could not load exchange rates');
+    expect(approx.dataset.approxState).toBe('failed');
+    expect(approx.textContent).not.toContain('CA$');
   });
 });

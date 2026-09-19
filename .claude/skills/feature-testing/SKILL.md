@@ -293,6 +293,23 @@ After recording results, create tasks for any follow-up:
 - Performance concerns observed
 - Documentation gaps
 
+## Phase 8: Tear Down
+
+If you brought the stack up for this verification (`pnpm wt-stack up`,
+`pnpm test-stack up`, or a compose-mode `up`), tear it down from the same
+worktree and branch — nothing does it for you:
+
+```bash
+pnpm wt-stack down       # dev stack (drops volumes)
+pnpm test-stack down     # integration pg+redis
+docker compose ls -a     # confirm nothing from this run is still listed
+```
+
+If you verified against a shared dev stack you did not start, leave it up.
+Either way, state in the final summary what is still running. Full checklist
+(orphaned projects, bare containers): `worktree-stack` skill → "Tear down when
+done".
+
 ## Quick Reference
 
 ### Playwright MCP Cheat Sheet

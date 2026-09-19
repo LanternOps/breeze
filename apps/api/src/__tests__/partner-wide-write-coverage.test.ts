@@ -62,6 +62,39 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  // --- network_monitors became dual-axis in #5291 W04 ------------------------
+  // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
+  // `network_check` monitor definition — the compiler is its only writer, and
+  // every caller-facing create/update/delete path below refuses one outright
+  // rather than gating it. So none of these four can reach a partner-owned row
+  // at all, which is a stronger property than passing the capability gate.
+  'routes/monitors.ts': 'legacy network-monitor CRUD is org-axis only: requireMonitorAccess refuses an org_id NULL row as 404, and a managed row as 409',
+  'routes/monitoring.ts': 'every write is scoped `networkMonitors.orgId = <org>`, which can never match a partner-wide (org_id NULL) row',
+  'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
+  'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',
+  // #5289 — the compiler's only write to monitor_definitions stamps the
+  // compiled_* ids and hash back onto a definition its CALLER already loaded
+  // and authorised. Every caller-facing write path (create/update/delete) runs
+  // the gate in services/monitors/monitorService.ts before compiling, and the
+  // compiler never takes an owner axis from a request.
+  'services/monitors/monitorCompiler.ts': 'stamps compiled_* provenance on a definition the caller already gated via monitorService',
+  // Built-in default monitors: provisions each partner's OWN three monitors
+  // once (no policy, no assignment), from createPartner()/the system-scope partner route/API boot —
+  // no caller-supplied partner id, never reachable with a partner token's choice
+  // of target.
+  'services/monitors/builtInMonitors.ts': 'one-time per-partner provisioning of the partner\'s own built-in rows; callers are createPartner(), a requireScope(system) route, and the boot backfill',
+  // --- tool_sources / tool_source_tools became dual-axis in #5216 -----------
+  // Discovery is a BullMQ job, not a caller-facing write: it loads the source
+  // row by id, copies that row's OWN owner axis onto the tools it upserts (the
+  // constraint trigger tool_source_tools_owner_guard_trg rejects anything
+  // else), and never reads an owner from a request. All FIVE caller-facing
+  // mutating routes in routes/toolSources.ts run the
+  // `existing.orgId === null && !canManagePartnerWidePolicies(auth)` gate
+  // before touching a partner-wide row: PATCH /:id, DELETE /:id, PATCH
+  // /:id/tools/:toolId, POST /:id/tools/bulk, and POST /:id/discover (the
+  // one enqueue site a caller can reach — added in the same PR that added
+  // this allowlist entry, after a review round found it missing).
+  'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
   // hash, MFA secret, passkeys, phone, email verification, last-login), never
@@ -73,6 +106,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/auth/mfa.ts': 'writes the acting user\'s own MFA enrolment',
   'routes/auth/passkeys.ts': 'writes the acting user\'s own passkey credentials',
   'routes/auth/password.ts': 'writes the acting user\'s own password hash',
+  'routes/auth/ssoLinkCompletion.ts': 'SSO login completion (#4067): stamps the signing-in user\'s own last-login column',
   'routes/auth/phone.ts': 'writes the acting user\'s own phone factor',
   'routes/auth/verifyEmail.ts': 'writes the acting user\'s own email-verification state',
   'routes/system.ts': 'platform-admin/system bootstrap surface, gated on isPlatformAdmin',
@@ -94,7 +128,29 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
   'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
-  'routes/softwareInventory.ts': 'read-oriented inventory surface; its policy writes delegate to softwarePolicies routes',
+  // Corrected 2026-09 (site-ceiling gate review): this entry previously read
+  // "read-oriented inventory surface; its policy writes delegate to
+  // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
+  // insert/update software_policies (Default Allowlist/Blocklist) and, via
+  // ensureDefaultConfigPolicyLink, configurationPolicies/
+  // configPolicyFeatureLinks/configPolicyAssignments (lines ~180-235,
+  // 397-480, 518-635). It stays exempt from THIS gate for a real reason: both
+  // resolveOrgId (writes) and every write call site pass a concrete orgId —
+  // resolveOrgId never returns an org-less result, so this route can never
+  // create or modify a partner-wide (org_id NULL) row. The write-authority gap
+  // this route actually had — a site-restricted org user could still silently
+  // mutate org-wide default policies — is closed by the ORTHOGONAL
+  // site-ceiling gate (canMutateOrgWideGovernance) added directly to
+  // /approve, /deny, /clear.
+  // AI script authoring W04 (#5612): the ORG GRANT half of ai_script_policies.
+  // Every write sets a concrete org_id (resolveTargetOrgId → auth.orgId or a
+  // canAccessOrg-checked ?orgId), so this route can never create or modify a
+  // partner-wide (org_id NULL) row; the partner CEILING row has its own route
+  // (routes/partnerAiScriptPolicy.ts), gated on canManagePartnerWidePolicies.
+  // Enabling the lane is additionally gated at the route: approvals:decide +
+  // MFA + a resource-bound ai_script_lane_grant step-up.
+  'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
+  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
@@ -112,8 +168,13 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/llm/llmConfigResolver.ts': 'runtime resolver; only write is the system-context version-CASed credential-error stamp',
   'services/partnerCreate.ts': 'new-partner bootstrap seeds first roles/user/org before any partner capability can exist',
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
+  'services/patchAlerts.ts': 'patch-job finalizer / reboot sweep creating derived alert artifacts (global built-in templates, org-owned rules) in system context — no tenant caller, same class as policyAlertBridge',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
+  'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',
+  'services/stripeReversalState.ts': 'system poller and verified Stripe webhook own the provider-authoritative reversal inbox',
+  'services/stripeCredentialArchive.ts': 'SEC-150 superseded-credential archive. Every write is made by a SYSTEM-context transition that is itself gated: the archive/erase writes come from savePartnerStripeKey and disconnectPartnerStripe (routes/stripeConnect/index.ts, capability-checked on every handler) and from the revocation sweep, which has no tenant caller at all. The table is never reachable from a request that has not already passed the gate, and its RLS policies additionally require breeze_current_scope() = system, so a partner-scoped write is refused by Postgres regardless.',
+  'services/systemScriptLibrary.ts': 'startup-only system script library seed (index.ts boot path); writes is_system rows with org_id/partner_id NULL; no tenant route calls it',
   'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
   'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',
 
@@ -123,21 +184,74 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/emailVerification.ts': 'verification-token lifecycle + the authenticating user\'s own columns',
   'services/officeAddin/officeAddinBindings.ts': 'per-user Entra bindings and revocation state, not partner config',
   'services/pendingEmail.ts': 'pending-email state and auth epochs for the acting user only',
+  'services/recoveryCodeAuth.ts': 'atomically consumes one recovery code belonging to the authenticating user',
+
+  // --- cross-user credential / account-lifecycle writes on `users` ----------
+  // (RMM-QA-166.) Shape 4 again, but the write is per-USER, never partner-wide
+  // configuration: these two services set only credential and account-lifecycle
+  // columns (mfa_secret/mfa_method/mfa_recovery_codes/phone, password_hash,
+  // status/disabled_reason) for ONE target user id, and they hold no partner
+  // axis of their own. Same class as the cross-user `users` entries in the
+  // routes block above (auth/invite.ts, admin/abuse.ts, system.ts): the
+  // authority is "may you administer this USER", and it is carried by the
+  // caller-facing routes — routes/users.ts (USERS_WRITE + requireMfa() +
+  // getScopedUser tenant resolution) and routes/accessReviews.ts (which DOES
+  // gate on canManagePartnerWidePolicies).
+  //
+  // Gating these on canManagePartnerWidePolicies would be actively WRONG, not
+  // merely redundant: the helper is false for `organization` scope
+  // unconditionally (partnerWideAccess.ts), and userRoutes carries no
+  // requireScope, so an org-scope admin holding USERS_WRITE would lose the
+  // ability to reset their own org user's MFA or to remove that user. Same
+  // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
+  'services/mfaFactorReset.ts':
+    "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
+  'services/mfaAssurance.ts':
+    "revokes Office bindings for exactly ONE factor-changing user id in the same transaction as that user's MFA epoch advance; the binding partner_id is only the RLS axis, never caller-selected partner-wide configuration. Self-service and scoped admin factor authority is established by each caller before this primitive",
+  'services/userNeutralization.ts':
+    "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_DELETE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
 
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
-  'services/orgImport/index.ts': 'org import creates org-axis rows; gated by organizations:write on the route',
+  'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
+  // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
+  // every write is `user_id = actor.userId` and every read/delete is scoped to
+  // the caller's own decisions. Gating it on canManagePartnerWidePolicies would
+  // mean only a partner admin could dismiss their own suggestion, which is the
+  // opposite of the intent. Same class as timeEntryService.ts above.
+  'services/timeSuggestionService.ts': 'per-technician suggestion decisions keyed on user_id (partner_id is only the RLS axis); never partner-wide config',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
+  // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
+  // construction: the clone it may insert pins `partnerId: null` +
+  // `orgId`, and the one UPDATE targets the id of a row it read under
+  // `eq(aiAgents.orgId, orgId)` + `.for('update')`. A partner baseline row
+  // is READ (locked, as the ceiling) and never written. There is also no
+  // caller to gate: it runs only as the effect of an already-approved
+  // Tier-3 four-eyes intent, whose own release re-checks the requester's
+  // ai_agents:write RBAC.
+  'services/aiAgents/supervisedKeyGrant.ts': 'grants one supervised key on the ORG row only (clone pins partner_id NULL; the update targets a row read by org_id); the partner baseline is read-locked as the ceiling, never written',
+  // P2-5 (#4192), Task 16. The mirror of the promote executor above, and
+  // ORG-axis by the same construction: the one UPDATE targets the id of a
+  // row read under `eq(aiAgents.orgId, orgId)` + `.for('update')`, and the
+  // partner baseline is read ONLY for its `kind` (pinned through the
+  // organization's own partner) and never written — narrowing a partner
+  // ceiling is a partner-level decision no automated signal from one org
+  // may make. There is no caller to gate and deliberately no RBAC check:
+  // auto-demote is ALWAYS ON, fired by the release worker's terminal CAS
+  // and the fix-watch phase-2 verdict, and it only ever REMOVES authority.
+  'services/aiAgents/supervisedKeyDemote.ts': 'revokes one supervised key from the ORG row only (the update targets a row read by org_id); the partner baseline is read for its kind and never written; always-on automatic path with no caller to gate, and it only ever removes authority',
   'services/aiAgents/managedAutomation.ts': 'seeds/syncs one agent\'s own managed automation; the owner axis is copied verbatim from the ai_agents row, never chosen by the caller, and every entry point (createAgent/updateAgent/disableAgent) has already passed assertAgentWriteAllowed — which throws PartnerWideWriteDeniedError for a partner-owned agent',
+  'services/aiAgents/scheduleService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed → PartnerWideWriteDeniedError) before every create/update/delete; partner rows additionally require a partner-wide triage agent under auth.partnerId (P2-2, #4189)',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
   'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
   'services/partnerLlmConfig.ts': 'gated at routes/aiProvider.ts — canManagePartnerWidePolicies on every handler (#3889)',
@@ -145,6 +259,32 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
+  'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
+  // W01a (#5612). cutScriptVersion's only write to `scripts` is
+  // `.set({ version, updatedAt })` on a row it just located by id and locked
+  // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
+  // create a partner-wide row nor retarget an org row into one. It is a
+  // transaction-internal helper that takes a `tx`, not a request: there is no
+  // auth context for it to consult, and adding one would mean threading auth
+  // through a function whose whole job is to snapshot a row the caller has
+  // already authorized. Every caller is gated, verified by reading each:
+  //   - routes/scripts.ts POST / (create), PUT /:id, POST /import/:id
+  //     (org-clone) and POST /:id/clone: all four carry
+  //     requirePermission(SCRIPTS_WRITE) + requireMfa(); the create path
+  //     additionally runs resolveScriptCreateScope and the PUT/DELETE paths
+  //     partnerWideScriptWriteError, both of which call
+  //     canManagePartnerWidePolicies before a partner-wide row is written.
+  //   - services/scriptWrite.ts insertScriptRow: its two callers are that
+  //     POST / handler and the bundle importer, and it resolves scope through
+  //     resolveScriptCreateScope itself.
+  //   - services/scriptClone.ts: gated as its own entry above says.
+  //   - services/scriptBundle/index.ts: reached only from
+  //     routes/scriptBundle.ts POST /import — requirePermission(SCRIPTS_WRITE)
+  //     + requireMfa(), and partnerAvailabilityError (→
+  //     canManagePartnerWidePolicies) for availability 'partner'.
+  //   - services/systemScriptLibrary.ts: boot-time library sync, run under
+  //     runWithSystemDbAccess from index.ts with no request in scope.
+  'services/scriptVersions.ts': 'bumps only scripts.version/updatedAt on a row the caller already located and authorized (never org_id/partner_id, so it cannot create or retarget a partner-wide row); a transaction-internal helper with no request auth to consult, and every caller is gated — routes/scripts.ts create/PUT/org-clone/clone behind scripts:write + MFA plus resolveScriptCreateScope / partnerWideScriptWriteError, scriptBundle behind routes/scriptBundle.ts POST /import (scripts:write + MFA + partnerAvailabilityError), systemScriptLibrary is boot-time system context',
   'services/tdSynnexDigitalBridge.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate; search caches tokens',
   'services/tdSynnexEcExpress.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate',
   'services/tdSynnexSftpSync.ts': 'credential config/test/sync gated at routes/catalog/distributors.ts partnerWideGate; worker is system context',
@@ -156,9 +296,22 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- catalog/accounting data on their own permission sets (precedent:
   //     routes/softwareInstallMethods.ts + routes/accounting/index.ts above) --
   'services/accounting/accountingConnectionService.ts': 'QBO/Xero connection lifecycle, gated by its own admin permission set (recorded exemption)',
+  'services/accounting/accountingMappingService.ts': 'accounting_entity_mappings is integration external-ref data, not a partner-wide policy table; every write route in routes/accounting/index.ts passes requireScope(partner,system) + requireMfa() + requireMappingWrite (per-entity-type admin permission), and workers/erasure run under system context',
+  'services/accounting/accountingInvoicePush.ts': 'same accounting_entity_mappings rows as accountingMappingService above, for the invoice entity type; the manual/bulk push routes pass requireScope(partner,system) + requireMfa() + INVOICES_WRITE, and the accounting-sync worker runs under system context',
+  'services/accounting/accountingPaymentPull.ts': 'QBO-signed webhook / system-context CDC backstop writes payment mapping rows and invoice_payments; there is no tenant caller to gate — the connection is resolved by id or realm fingerprint and every write carries that connection\'s (integration_id, partner_id), enforced by the composite FK (mirrors the Stripe webhook precedent)',
+  'services/accounting/accountingPaymentPush.ts': 'worker-driven outbound half of the same accounting_entity_mappings rows as accountingPaymentPull.ts above; there is no tenant caller to gate — the request helpers run inside invoiceService/stripeReconcile transactions that are already gated, the coordinator runs under system context from the accounting-sync worker, and every write carries the connection\'s (integration_id, partner_id) enforced by the composite FK',
+  'services/stripeReconcile.ts': 'Stripe-webhook reconcile path (Phase D2). The only accounting_entity_mappings write is the partial-refund DIVERGENCE flag (spec decision 9), which sets sync_status/last_error on a mapping row Breeze itself created for the refunded payment — matched by (breeze_entity_type, breeze_entity_id, breeze_origin, remote_entity_id IS NOT NULL), never by partner. There is no tenant caller to gate: the event is a signature-verified Stripe webhook running in system context, and it cannot create a mapping row or reach one belonging to a payment it was not sent for (mirrors accountingPaymentPull.ts above).',
   'services/catalogImageStorage.ts': 'catalog item images on the catalog permission set; partner-scope routes only',
   'services/catalogService.ts': 'catalog items/prices/bundles on the catalog permission set; partner-scope routes only',
   'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',
+
+  // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
+  'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with partner ownership and a fresh raw partner-member selection check for both merge participants — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
+  'services/orgArchive.ts': 'archive/restore writes run under system context from the org-lifecycle service; the HTTP surface is gated by routes/orgArchive.ts\'s requireScope(partner,system) + requireOrgWrite + MFA, partner ownership of the target, AND the caller\'s own partner_users.org_ids selection (partnerMemberMayReachOrg, fail-closed for org_access=none) — organizations is not a partner-wide policy table. Every write is scoped to one org the caller may manage; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from archiving or restoring an org they already manage.',
+  // --- partner sending domains (spec 2026-09-17 W02) -----------------------
+  'services/emailDomains/domainRelease.ts': 'releaseSendingDomainsForPartner has no caller-facing surface at all: it is invoked only by cascadeDeletePartner and finalizePartnerOffboarding, both of which run in system context on a partner already being destroyed, and it takes the partner id from those functions rather than from any request. It writes exactly two things — an outbox row and provider_domain_id = NULL — and creates no partner-owned configuration, so there is no partner-wide policy decision for canManagePartnerWidePolicies to gate.',
+  'services/emailDomains/sendingDomainService.ts': 'the partner-wide gate for every caller-facing sending-domain write lives one layer up, in routes/partnerSendingDomains.ts, which calls canManagePartnerWidePolicies on all six mutating routes; this service takes the partner id from the verified auth context its route passed, never from request input, and its remaining callers are the platform-admin routes (already behind platformAdminMiddleware + requireMfa) and the sending-domains worker, which has no caller at all',
+  'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */
@@ -221,6 +374,17 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(tableNames).toContain('clientAiPromptTemplates');
   });
 
+  // 30s, not the 5s default. Both cases below synchronously read every .ts
+  // under src/routes and src/services (~1,100 files — see collectSourceFiles
+  // above; the scan is deliberately NOT the whole of src). That is ~2s when
+  // this file runs alone, but under a full-suite run it has been observed at
+  // 13.6s — over the default, so the job fails on a TIMEOUT that says nothing
+  // about partner-wide write safety. #3928 (80b498ece) grew the scan ~2.5x by
+  // extending it from routes/** to services/**, which moved this from
+  // comfortable to borderline.
+  //
+  // The timeout is the only thing raised here: the scan and its assertions are
+  // unchanged, so a real violation still fails exactly as before.
   it('every caller-facing partner-axis write site consults the capability helper', () => {
     const violations: string[] = [];
 
@@ -244,8 +408,9 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
         'with a reason.\n' +
         violations.join('\n')
     ).toEqual([]);
-  });
+  }, 30_000);
 
+  // Same full-tree scan, same reasoning as above.
   it('the allowlist has no stale entries', () => {
     // A file that stopped mutating partner-axis tables (or moved) must leave the
     // allowlist, or the exemption silently outlives the code it excused.
@@ -257,7 +422,7 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
 
     const stale = Object.keys(ALLOWED_WITHOUT_CAPABILITY_CHECK).filter((rel) => !stillMutating.has(rel));
     expect(stale, `Remove these from ALLOWED_WITHOUT_CAPABILITY_CHECK: ${stale.join(', ')}`).toEqual([]);
-  });
+  }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {
     const undocumented = Object.entries(ALLOWED_WITHOUT_CAPABILITY_CHECK)

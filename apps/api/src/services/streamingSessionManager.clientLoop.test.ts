@@ -9,15 +9,19 @@ const { queryMock, recordUsageMock, capturedQueryArgs, settleApprovalWaitsMock }
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
+// Approval mode now resolves through the EFFECTIVE budget (#5593): partner
+// JSONB override -> org ai_budgets row -> per_step. Return auto_approve so the
+// approval-mode prompt injection is observable.
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn(() => Promise.resolve({ approvalMode: 'auto_approve' })),
+}));
+
 vi.mock('../db', () => ({
   db: {
-    // Only DB read on this path: the aiBudgets approvalMode lookup
-    // (streamingSessionManager.getOrCreate). Return auto_approve so the
-    // approval-mode prompt injection is observable.
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([{ approvalMode: 'auto_approve' }])),
+          limit: vi.fn(() => Promise.resolve([])),
         })),
       })),
     })),
@@ -37,6 +41,9 @@ vi.mock('./aiCostTracker', () => ({
   // baffling "Number of calls: 0" rather than a missing-export error.
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -87,6 +94,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: '2b2b2b2b-2222-4222-8222-222222222222',
   configVersion: 1,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 const RESULT_MSG = {
@@ -367,6 +375,10 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'platform',
+      // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
+      undefined,
+      // 6th arg: no budget reservation is attached to this legacy fixture.
+      undefined,
     );
   });
 });

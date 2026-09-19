@@ -148,9 +148,10 @@ describe('bodyLimitForPath', () => {
   });
 
   // Regression for #3482: quote block/cover image uploads. The UI advertises
-  // "PNG, JPEG, or WebP, up to 5 MB" and the route registers its own 5MB+64KB
-  // bodyLimit, but the global gate ran first and 413'd anything over 1MB with
-  // the generic "Request body too large".
+  // "PNG or JPEG, up to 5 MB" (WebP dropped in #3483 — pdfkit can't embed it)
+  // and the route registers its own 5MB+64KB bodyLimit, but the global gate
+  // ran first and 413'd anything over 1MB with the generic "Request body too
+  // large".
   it('carves out quote image uploads at the route 5MB cap (#3482)', () => {
     expect(bodyLimitForPath('/api/v1/quotes/11111111-1111-4111-8111-111111111111/images')).toEqual({
       rule: 'image-upload',
@@ -319,6 +320,13 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 1 * MB,
     note: 'route limit (256KB) is TIGHTER than the global default, so it applies as written.',
   },
+  'agents/pamObservations.ts': {
+    paths: [
+      '/api/v1/agents/agent-1/commands/11111111-1111-4111-8111-111111111111/pam-observations',
+    ],
+    globalMaxSize: 1 * MB,
+    note: 'route limit (32KB) is TIGHTER than the global default, so it applies as written.',
+  },
   'agents/processSample.ts': {
     paths: ['/api/v1/agents/agent-1/process-sample'],
     globalMaxSize: 1 * MB,
@@ -385,5 +393,50 @@ describe('route-level bodyLimit registrations vs the global gate', () => {
         ).toEqual({ file, path, maxSize: expected });
       }
     }
+  });
+});
+
+describe('ticket attachment upload carve-out (W08 #3902)', () => {
+  it('gives POST /tickets/:id/attachments 10 MiB + 64 KiB of headroom', () => {
+    const p = bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/attachments');
+    expect(p).toEqual({
+      rule: 'ticket-attachment',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Attachment too large (max 10 MB)',
+    });
+  });
+
+  it('does NOT widen the sibling comment route', () => {
+    expect(bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/comments').rule)
+      .toBe('default');
+  });
+
+  it('does not match the content sub-path', () => {
+    expect(
+      bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/attachments/22222222-2222-4333-8444-555555555555/content').rule,
+    ).toBe('default');
+  });
+});
+
+describe('org document upload carve-out (service deliverables W03)', () => {
+  const ORG = '11111111-2222-4333-8444-555555555555';
+  const DOC = '22222222-2222-4333-8444-555555555555';
+  const expected = {
+    rule: 'org-document',
+    maxSize: 10 * 1024 * 1024 + 64 * 1024,
+    error: 'Document too large (max 10 MB)',
+  };
+
+  it('gives the three multipart upload routes 10 MiB + 64 KiB of headroom', () => {
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents`)).toEqual(expected);
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}/replace`)).toEqual(expected);
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/evidence/upload`)).toEqual(expected);
+  });
+
+  it('does NOT widen the JSON siblings', () => {
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}/content`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/evidence`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/deliver`).rule).toBe('default');
   });
 });

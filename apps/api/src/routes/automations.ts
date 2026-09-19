@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -26,13 +27,18 @@ import {
   normalizeAutomationActions,
   normalizeAutomationTrigger,
   normalizeNotificationTargets,
+  replaceAutomationResourceBindings,
+  resolveAutomationReferencesForOwner,
   withWebhookDefaults,
 } from '../services/automationRuntime';
+import { AutomationReferenceAuthorizationError } from '../services/automationReferenceAuthorization';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import { cancelAutomationRun } from '../services/automationRunCancellation';
+import { MAX_GRACE_SECONDS } from '../services/scriptCancellation';
 import {
   AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
   MANAGED_AUTOMATION_ERROR_CODE,
@@ -41,6 +47,8 @@ import {
   managedAutomationOwnerIsLive,
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
+import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
+import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -51,6 +59,14 @@ const automationWebhookReplayCache = new Map<string, number>();
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAutomationReferenceDenial(error: unknown): boolean {
+  return error instanceof AutomationReferenceAuthorizationError
+    || (typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'unknown_or_unauthorized_reference');
 }
 
 function asString(value: unknown): string | undefined {
@@ -386,6 +402,11 @@ function shapeAutomationForResponse(automation: typeof automations.$inferSelect)
   };
 }
 
+function shapeRestrictedAutomationForResponse(automation: typeof automations.$inferSelect) {
+  const { runCount: _runCount, lastRunAt: _lastRunAt, ...safe } = shapeAutomationForResponse(automation);
+  return safe;
+}
+
 function toRunStatus(status: (typeof automationRuns.$inferSelect)['status']) {
   if (status === 'completed') return 'success';
   return status;
@@ -414,7 +435,9 @@ const RUN_SCRIPT_STDERR_PREVIEW_CHARS = 8_192;
 
 type RunScriptResult = {
   executionId: string;
-  scriptId: string;
+  // Nullable since 2026-10-16-100200: a proposal-backed execution has no
+  // library script.
+  scriptId: string | null;
   scriptName?: string;
   status: string;
   exitCode?: number;
@@ -447,7 +470,12 @@ function takePreview(
  * context cannot see a partner-wide script (`scripts.org_id IS NULL`), so the
  * UI falls back to a generic label rather than dropping the output row.
  */
-async function fetchRunScriptExecutions(runId: string) {
+async function fetchRunScriptExecutions(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
+  const conditions: SQL[] = [eq(scriptExecutions.automationRunId, runId)];
+  const orgCondition = auth.orgCondition?.(scriptExecutions.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
+
   const rows = await db
     .select({
       executionId: scriptExecutions.id,
@@ -463,8 +491,9 @@ async function fetchRunScriptExecutions(runId: string) {
       createdAt: scriptExecutions.createdAt,
     })
     .from(scriptExecutions)
+    .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
     .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
-    .where(eq(scriptExecutions.automationRunId, runId))
+    .where(and(...conditions))
     .orderBy(scriptExecutions.createdAt);
 
   const byDevice = new Map<string, RunScriptResult[]>();
@@ -499,7 +528,9 @@ async function fetchRunScriptExecutions(runId: string) {
  * automation_run_device_results (org_id = device's org) already scopes rows to
  * the caller's tenancy, so no extra org filter is needed here.
  */
-async function fetchRunDeviceResults(runId: string) {
+async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
+  const conditions: SQL[] = [eq(automationRunDeviceResults.runId, runId)];
+  if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
   const [rows, scriptExecutionsByDevice] = await Promise.all([
     db
       .select({
@@ -513,10 +544,10 @@ async function fetchRunDeviceResults(runId: string) {
         displayName: devices.displayName,
       })
       .from(automationRunDeviceResults)
-      .leftJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
-      .where(eq(automationRunDeviceResults.runId, runId))
+      .innerJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
+      .where(and(...conditions))
       .orderBy(desc(automationRunDeviceResults.startedAt)),
-    fetchRunScriptExecutions(runId),
+    fetchRunScriptExecutions(runId, auth, allowedSiteIds),
   ]);
 
   return rows.map((row) => {
@@ -547,6 +578,46 @@ const listAutomationsSchema = z.object({
 
 const triggerTypeSchema = z.enum(['schedule', 'event', 'webhook', 'manual']);
 
+// Validate submitted script actions separately from the tolerant runtime reader,
+// which must still accept legacy stored actions. Preserve the script_id alias.
+const scriptActionSchema = z.object({
+  type: z.literal('run_script'),
+  scriptId: z.string().min(1).optional(),
+  script_id: z.string().min(1).optional(),
+  parameters: scriptParametersSchema.optional(),
+  runAs: z.enum(['system', 'user', 'elevated']).nullish(),
+  whenOffline: z.enum(['queue', 'skip']).optional(),
+}).passthrough().refine((action) => action.scriptId !== undefined || action.script_id !== undefined, {
+  message: 'run_script requires scriptId',
+});
+
+const automationActionsSchema = z.array(z.union([
+  scriptActionSchema,
+  z.object({ type: z.string().min(1).refine((type) => type !== 'run_script') }).passthrough(),
+])).min(1);
+
+function introducesElevatedAction(actions: z.infer<typeof automationActionsSchema>, stored: unknown = []): boolean {
+  // Runtime normalization does not retain action IDs. Preserve elevation only
+  // for the same script at the same position, using the runtime's alias precedence.
+  const previous = Array.isArray(stored) ? stored : [];
+  return actions.some((action, index) => {
+    if (action.type !== 'run_script' || action.runAs !== 'elevated') return false;
+    const existing = previous[index];
+    return !isPlainRecord(existing)
+      || existing.type !== 'run_script'
+      || existing.runAs !== 'elevated'
+      || (asString(existing.scriptId) ?? asString(existing.script_id))
+        !== (asString(action.scriptId) ?? asString(action.script_id));
+  });
+}
+
+function elevatedActionRefused(c: Context) {
+  return c.json({
+    code: 'elevated_automation_action_refused',
+    error: 'A new run_script automation action may set runAs to "system" or "user" only. Elevation is a property of the saved script, not something an automation action may request. Existing elevated actions may be preserved at their stored positions.',
+  }, 400);
+}
+
 const createAutomationSchema = z.object({
   orgId: z.string().guid().optional(),
   // 'partner' creates a partner-wide ("all orgs") automation: orgId NULL,
@@ -560,7 +631,7 @@ const createAutomationSchema = z.object({
   triggerType: triggerTypeSchema.optional(),
   triggerConfig: z.unknown().optional(),
   conditions: z.unknown().optional(),
-  actions: z.unknown().optional(),
+  actions: automationActionsSchema.optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
   notificationTargets: z.unknown().optional(),
   notifyOnFailureChannelId: z.string().guid().optional(),
@@ -574,7 +645,7 @@ const updateAutomationSchema = z.object({
   triggerType: triggerTypeSchema.optional(),
   triggerConfig: z.unknown().optional(),
   conditions: z.unknown().optional(),
-  actions: z.unknown().optional(),
+  actions: automationActionsSchema.optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
   notificationTargets: z.unknown().optional(),
   notifyOnFailureChannelId: z.string().guid().optional(),
@@ -599,6 +670,7 @@ automationRoutes.get(
   zValidator('query', listAutomationsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -650,22 +722,54 @@ automationRoutes.get(
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automations)
-      .where(whereCondition);
-    const total = Number(countResult[0]?.count ?? 0);
+    let rows: Array<typeof automations.$inferSelect>;
+    let total: number;
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scanSize = 100;
+      let databaseOffset = 0;
+      total = 0;
+      rows = [];
+      while (true) {
+        const candidates = await db
+          .select()
+          .from(automations)
+          .where(whereCondition)
+          .orderBy(desc(automations.updatedAt), desc(automations.id))
+          .limit(scanSize)
+          .offset(databaseOffset);
+        if (candidates.length === 0) break;
+        // Dynamic/JSON targets require the canonical resolver. Keep resolution
+        // sequential and batch-bounded so a large definition catalog cannot
+        // fan out an unbounded Promise.all against PostgreSQL.
+        for (const automation of candidates) {
+          const check = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+          if (!check.ok) continue;
+          if (total >= offset && rows.length < limit) rows.push(automation);
+          total += 1;
+        }
+        databaseOffset += candidates.length;
+        if (candidates.length < scanSize) break;
+      }
+    } else {
+      const countResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automations)
+        .where(whereCondition);
+      total = Number(countResult[0]?.count ?? 0);
 
-    const rows = await db
-      .select()
-      .from(automations)
-      .where(whereCondition)
-      .orderBy(desc(automations.updatedAt), desc(automations.id))
-      .limit(limit)
-      .offset(offset);
+      rows = await db
+        .select()
+        .from(automations)
+        .where(whereCondition)
+        .orderBy(desc(automations.updatedAt), desc(automations.id))
+        .limit(limit)
+        .offset(offset);
+    }
 
     return c.json({
-      data: rows.map(shapeAutomationForResponse),
+      data: rows.map((automation) => permissions?.allowedSiteIds === undefined
+        ? shapeAutomationForResponse(automation)
+        : shapeRestrictedAutomationForResponse(automation)),
       pagination: { page, limit, total },
     });
   },
@@ -678,6 +782,7 @@ automationRoutes.get(
   requireValidRunId,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const runId = c.req.param('runId')!;
 
     const [run] = await db
@@ -710,11 +815,14 @@ automationRoutes.get(
         return c.json({ error: 'Automation run not found' }, 404);
       }
 
+      const [visibleRun] = await projectAutomationRunsToSites([run], permissions?.allowedSiteIds);
+      if (!visibleRun) return c.json({ error: 'Automation run not found' }, 404);
+
       return c.json({
-        ...run,
-        status: toRunStatus(run.status),
-        logs: serializeRunLogs(run.logs),
-        deviceResults: await fetchRunDeviceResults(run.id),
+        ...visibleRun,
+        status: toRunStatus(visibleRun.status),
+        logs: serializeRunLogs(visibleRun.logs),
+        deviceResults: await fetchRunDeviceResults(run.id, auth, permissions?.allowedSiteIds),
         automation: null,
         configPolicyId: run.configPolicyId,
         configItemName: run.configItemName,
@@ -726,16 +834,150 @@ automationRoutes.get(
       return c.json({ error: 'Automation run not found' }, 404);
     }
 
+    const [visibleRun] = await projectAutomationRunsToSites([run], permissions?.allowedSiteIds);
+    if (!visibleRun) return c.json({ error: 'Automation run not found' }, 404);
+
     return c.json({
-      ...run,
-      status: toRunStatus(run.status),
-      logs: serializeRunLogs(run.logs),
-      deviceResults: await fetchRunDeviceResults(run.id),
+      ...visibleRun,
+      status: toRunStatus(visibleRun.status),
+      logs: serializeRunLogs(visibleRun.logs),
+      deviceResults: await fetchRunDeviceResults(run.id, auth, permissions?.allowedSiteIds),
       automation: {
         id: automation.id,
         name: automation.name,
         orgId: automation.orgId,
       },
+    });
+  },
+);
+
+/**
+ * POST /runs/:runId/cancel — stop a running automation (#3525 W05).
+ *
+ * Same guard quartet as every other mutating automation route. This route owns
+ * ONLY authorization and the audit row; the fence, the fan-out and the
+ * honest reporting live in services/automationRunCancellation so the route, a
+ * future AI tool and any worker cannot drift.
+ */
+const cancelRunBodySchema = z.object({
+  graceSeconds: z.number().int().min(0).max(MAX_GRACE_SECONDS).optional(),
+}).optional();
+
+automationRoutes.post(
+  '/runs/:runId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
+  requireValidRunId,
+  async (c) => {
+    const auth = c.get('auth');
+    const runId = c.req.param('runId')!;
+
+    // An absent body is the normal case (the Stop button sends none), so this
+    // is hand-parsed rather than zValidator'd, which would 400 on no body at
+    // all. An out-of-range value is REJECTED rather than quietly replaced by
+    // the default: the agent is only promised 0..30s and silently turning a
+    // requested 999 into 5 would misreport what the endpoint is about to do.
+    // Mirrors POST /scripts/executions/:id/cancel exactly.
+    const rawText = await c.req.text().catch(() => '');
+    let rawBody: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: 'Malformed JSON body' }, 400);
+      }
+    }
+    const parsedBody = cancelRunBodySchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return c.json({
+        error: `graceSeconds must be an integer between 0 and ${MAX_GRACE_SECONDS}`,
+      }, 400);
+    }
+    const graceSeconds = parsedBody.data?.graceSeconds;
+
+    const [run] = await db
+      .select()
+      .from(automationRuns)
+      .where(eq(automationRuns.id, runId))
+      .limit(1);
+    if (!run) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    // OD10-B: config-policy runs are out of scope. automation_runs' RLS admits
+    // that arm only through breeze_has_org_access(cp.org_id), so partner-owned
+    // policy runs are invisible today. 404 matches the GET above.
+    if (!run.automationId) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    const automation = await getAutomationWithOrgCheck(run.automationId, auth);
+    if (!automation) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    // OD7-A: an org-scoped operator may cancel individual script executions on
+    // THEIR OWN devices (those rows carry the device's org), but must not stop
+    // a run that fans out across sibling tenants.
+    if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
+    // Site scope on top: a site-restricted user must not stop a run spanning
+    // sibling sites.
+    const siteScopeDenied = await enforceAutomationSiteScope(c, automation);
+    if (siteScopeDenied) {
+      return siteScopeDenied;
+    }
+
+    const outcome = await cancelAutomationRun({
+      runId,
+      actorId: auth.user.id,
+      actorLabel: auth.user.email,
+      graceSeconds,
+    });
+
+    if (outcome.kind === 'not_found') {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+    if (outcome.kind === 'already_terminal') {
+      // 409, matching POST /scripts/executions/:id/cancel: relabelling a run
+      // that finished on its own would be a lie.
+      return c.json({ error: `Cannot cancel a run with status: ${outcome.status}` }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.run.cancel',
+      resourceType: 'automation_run',
+      resourceId: runId,
+      resourceName: automation.name,
+      details: {
+        runId,
+        automationId: run.automationId,
+        ownerScope: automation.orgId === null ? 'partner' : 'organization',
+        // What the REQUEST achieved, never an assumed stop.
+        alreadyCancelling: outcome.alreadyCancelling,
+        actionsCancelled: outcome.actionsCancelled,
+        executionsStopped: outcome.executionsStopped,
+        executionsRequested: outcome.executionsRequested,
+        executions: outcome.executions,
+        uncancellableActions: outcome.uncancellableActions,
+        ...(graceSeconds === undefined ? {} : { graceSeconds }),
+      },
+    });
+
+    return c.json({
+      success: true,
+      run: { id: runId, status: 'cancelled' as const },
+      alreadyCancelling: outcome.alreadyCancelling,
+      actionsCancelled: outcome.actionsCancelled,
+      // Two numbers, not one: `stopped` is proven, `requested` is only asked.
+      executionsStopped: outcome.executionsStopped,
+      executionsRequested: outcome.executionsRequested,
+      executions: outcome.executions,
+      uncancellableActions: outcome.uncancellableActions,
     });
   },
 );
@@ -747,6 +989,7 @@ automationRoutes.get(
   requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const automationId = c.req.param('id')!;
 
     if (automationId === 'runs') {
@@ -756,6 +999,36 @@ automationRoutes.get(
     const automation = await getAutomationWithOrgCheck(automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    if (permissions?.allowedSiteIds !== undefined) {
+      const siteCheck = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+      if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scan = await scanProjectedAutomationRuns({
+        automationId,
+        allowedSiteIds: permissions.allowedSiteIds,
+        limit: 10,
+      });
+      const stats = {
+        totalRuns: scan.total,
+        completedRuns: scan.statusCounts.completed,
+        failedRuns: scan.statusCounts.failed,
+        partialRuns: scan.statusCounts.partial,
+      };
+      return c.json({
+        ...shapeAutomationForResponse(automation),
+        runCount: scan.total,
+        lastRunAt: scan.rows[0]?.startedAt ?? null,
+        recentRuns: scan.rows.map((run) => ({
+          ...run,
+          status: toRunStatus(run.status),
+          logs: serializeRunLogs(run.logs),
+        })),
+        statistics: stats,
+      });
     }
 
     const recentRuns = await db
@@ -800,6 +1073,7 @@ automationRoutes.get(
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const automationId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -809,27 +1083,49 @@ automationRoutes.get(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
+    if (permissions?.allowedSiteIds !== undefined) {
+      const siteCheck = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+      if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
+    }
+
     const conditions: SQL<unknown>[] = [eq(automationRuns.automationId, automationId)];
 
-    if (query.status) {
+    // Restricted callers' status is recomputed from visible child rows below;
+    // filtering on the stored org-wide status would both leak a hidden-device
+    // outcome and return rows under a contradictory status filter.
+    if (query.status && permissions?.allowedSiteIds === undefined) {
       conditions.push(eq(automationRuns.status, query.status));
     }
 
     const whereCondition = and(...conditions);
 
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automationRuns)
-      .where(whereCondition);
-    const total = Number(countResult[0]?.count ?? 0);
+    let rows: Array<typeof automationRuns.$inferSelect>;
+    let total: number;
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scan = await scanProjectedAutomationRuns({
+        automationId,
+        allowedSiteIds: permissions.allowedSiteIds,
+        offset,
+        limit,
+        status: query.status,
+      });
+      total = scan.total;
+      rows = scan.rows;
+    } else {
+      const countResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automationRuns)
+        .where(whereCondition);
+      total = Number(countResult[0]?.count ?? 0);
 
-    const rows = await db
-      .select()
-      .from(automationRuns)
-      .where(whereCondition)
-      .orderBy(desc(automationRuns.startedAt), desc(automationRuns.id))
-      .limit(limit)
-      .offset(offset);
+      rows = await db
+        .select()
+        .from(automationRuns)
+        .where(whereCondition)
+        .orderBy(desc(automationRuns.startedAt), desc(automationRuns.id))
+        .limit(limit)
+        .offset(offset);
+    }
 
     return c.json({
       data: rows.map((run) => ({
@@ -907,6 +1203,10 @@ automationRoutes.post(
       return c.json({ error: 'actions are required' }, 400);
     }
 
+    if (introducesElevatedAction(data.actions)) {
+      return elevatedActionRefused(c);
+    }
+
     // ai_triage wiring is seeded per AI agent (services/aiAgents/managedAutomation.ts)
     // and resolved through automations.managed_by_agent_id. A user-authored copy would
     // be an unmanaged automation whose action has no owning agent, and — worse — would
@@ -941,23 +1241,34 @@ automationRoutes.post(
         return siteScopeDenied;
       }
 
-      const [automation] = await db
-        .insert(automations)
-        .values({
-          id: automationId,
-          orgId: owner.orgId,
-          partnerId: owner.partnerId,
-          name: data.name,
-          description: data.description,
-          enabled: data.enabled,
-          trigger: storedTrigger,
-          conditions: data.conditions,
+      const automation = await db.transaction(async (tx) => {
+        const resolved = await resolveAutomationReferencesForOwner(
+          tx,
+          owner,
           actions,
-          onFailure: data.onFailure,
           notificationTargets,
-          createdBy: auth.user.id,
-        })
-        .returning();
+        );
+        const [created] = await tx
+          .insert(automations)
+          .values({
+            id: automationId,
+            orgId: owner.orgId,
+            partnerId: owner.partnerId,
+            name: data.name,
+            description: data.description,
+            enabled: data.enabled,
+            trigger: storedTrigger,
+            conditions: data.conditions,
+            actions,
+            onFailure: data.onFailure,
+            notificationTargets,
+            createdBy: auth.user.id,
+          })
+          .returning();
+        if (!created) return null;
+        await replaceAutomationResourceBindings(tx, created.id, owner, resolved);
+        return created;
+      });
 
       if (!automation) {
         return c.json({ error: 'Failed to create automation' }, 500);
@@ -976,6 +1287,9 @@ automationRoutes.post(
     } catch (error) {
       if (error instanceof AutomationValidationError) {
         return c.json({ error: error.message }, 400);
+      }
+      if (isAutomationReferenceDenial(error)) {
+        return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
       }
       throw error;
     }
@@ -1000,6 +1314,13 @@ async function handleUpdateAutomation(c: Context) {
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // #5289 — a row compiled from a monitor definition must be edited only by
+  // the compiler; a side edit here would silently drift from the definition
+  // until the next compile pass overwrote it.
+  if (automation.managedByMonitorId) {
+    return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
   }
 
   // Even a plain enabled toggle goes through the agent so there is one switch
@@ -1063,6 +1384,9 @@ async function handleUpdateAutomation(c: Context) {
     }
 
     if (data.actions !== undefined) {
+      if (introducesElevatedAction(data.actions, automation.actions)) {
+        return elevatedActionRefused(c);
+      }
       // Same rejection as the create route. Without it the create gate is
       // trivially bypassed: POST an ordinary automation, then PATCH the
       // ai_triage action onto it. The row is unmanaged, so the action has no
@@ -1083,6 +1407,13 @@ async function handleUpdateAutomation(c: Context) {
       );
     }
 
+    const effectiveActions = data.actions !== undefined
+      ? updates.actions as ReturnType<typeof normalizeAutomationActions>
+      : normalizeAutomationActions(automation.actions);
+    const effectiveNotificationTargets = notificationTargetsProvided
+      ? updates.notificationTargets as ReturnType<typeof normalizeNotificationTargets>
+      : normalizeNotificationTargets(automation.notificationTargets);
+
     // Site-scope gate: re-validate the post-update target set against the
     // caller's allowlist. Covers conditions/trigger changes that would widen
     // the target set beyond a site-restricted editor's sites.
@@ -1095,11 +1426,23 @@ async function handleUpdateAutomation(c: Context) {
       return siteScopeDenied;
     }
 
-    const [updated] = await db
-      .update(automations)
-      .set(updates)
-      .where(eq(automations.id, automationId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const axes = { orgId: automation.orgId, partnerId: automation.partnerId };
+      const resolved = await resolveAutomationReferencesForOwner(
+        tx,
+        axes,
+        effectiveActions,
+        effectiveNotificationTargets,
+      );
+      const [row] = await tx
+        .update(automations)
+        .set(updates)
+        .where(eq(automations.id, automationId))
+        .returning();
+      if (!row) return null;
+      await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
+      return row;
+    });
 
     if (!updated) {
       return c.json({ error: 'Automation not found' }, 404);
@@ -1118,6 +1461,9 @@ async function handleUpdateAutomation(c: Context) {
   } catch (error) {
     if (error instanceof AutomationValidationError) {
       return c.json({ error: error.message }, 400);
+    }
+    if (isAutomationReferenceDenial(error)) {
+      return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
     }
     throw error;
   }
@@ -1159,6 +1505,14 @@ automationRoutes.delete(
     const automation = await getAutomationWithOrgCheck(automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    // #5289 — see the guard in handleUpdateAutomation. Unlike the agent-managed
+    // case below, there is no soft-disable escape hatch for a monitor-managed
+    // row: it is removed by disabling/removing its monitor, which the
+    // compiler then reconciles.
+    if (automation.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
     }
 
     // Deletion is the ONE managed-row operation a user may reach, and only
@@ -1226,6 +1580,11 @@ async function triggerAutomationRun(
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // #5289 — see the guard in handleUpdateAutomation.
+  if (automation.managedByMonitorId) {
+    return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
   }
 
   // A managed trigger is alert.triggered, so a manual run has no event to bind

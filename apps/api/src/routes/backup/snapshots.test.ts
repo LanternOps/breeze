@@ -18,7 +18,9 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const authorizeResilienceResourcesMock = vi.fn();
 let authState = {
+  principal: { kind: 'user_session' as const },
   user: { id: '11111111-1111-4111-8111-111111111111', email: 'test@example.com', name: 'Test User' },
   scope: 'organization' as const,
   partnerId: null,
@@ -89,6 +91,14 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', authState);
@@ -103,6 +113,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../../middleware/auth';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 function makeSnapshot(overrides: Record<string, unknown> = {}) {
   return {
@@ -140,6 +151,7 @@ describe('snapshot routes', () => {
     updateMock.mockReset();
     updateMock.mockImplementation(() => chainMock([]));
     permissionsState = undefined;
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
       if (permissionsState) {
@@ -164,7 +176,7 @@ describe('snapshot routes', () => {
     });
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
@@ -188,6 +200,22 @@ describe('snapshot routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
+  it('filters to bare-metal-restorable snapshots when requested (W04a)', async () => {
+    const chain = chainMock([makeSnapshot({ bareMetalRestorable: true })]);
+    selectMock.mockReturnValueOnce(chain);
+
+    const res = await app.request('/backup/snapshots?bareMetalRestorable=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+    // and(...conditions) is called once with every pushed condition — the
+    // bare-metal filter must be among them, not silently dropped.
+    expect(chain.where).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps unrestricted snapshot list behavior unchanged', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({ deviceId: 'device-in' }),
@@ -206,9 +234,9 @@ describe('snapshot routes', () => {
 
   it('denies GET /snapshots/:id for a site-restricted caller when the source device is out-of-site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
       method: 'GET',
@@ -218,14 +246,12 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).not.toHaveProperty('configId');
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('returns GET /snapshots/:id for a site-restricted caller when the source device is in an allowed site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+    selectMock.mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]));
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
       method: 'GET',
@@ -251,9 +277,9 @@ describe('snapshot routes', () => {
 
   it('denies GET /snapshots/:id/browse for a site-restricted caller when the source device is out-of-site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
       method: 'GET',
@@ -263,14 +289,13 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).not.toHaveProperty('data');
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('returns GET /snapshots/:id/browse for a site-restricted caller when the source device is in an allowed site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock
       .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]))
       .mockReturnValueOnce(chainMock([{ sourcePath: 'C:/data/file.txt', size: 10, modifiedAt: null }]));
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
@@ -295,6 +320,36 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).snapshotId).toBe(SNAPSHOT_ID);
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  // D12: once backupResultPersistence.ts indexes the agent's stable
+  // originalPath (e.g. C:\assure\src\x) instead of the transient VSS
+  // shadow-copy device path, backup_snapshot_files.source_path for a Windows
+  // run is a normal Windows path, not \\?\GLOBALROOT\Device\
+  // HarddiskVolumeShadowCopyN\.... The browse tree must root it at the drive
+  // letter, never at "?" (which is what splitting the raw shadow path would
+  // have produced — normalizeSourcePath backslash-to-forward-slash turns
+  // `\\?\GLOBALROOT\...` into `//?/GLOBALROOT/...`, whose first non-empty
+  // segment is "?").
+  it('roots the browse tree at the drive letter for an indexed Windows path, never at "?"', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([
+        { sourcePath: 'C:\\assure\\src\\content\\prefix\\pick.txt', size: 42, modifiedAt: null },
+      ]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ name: 'C:', type: 'directory' });
+    expect(body.data[0].name).not.toBe('?');
+    const assure = body.data[0].children[0];
+    expect(assure).toMatchObject({ name: 'assure', type: 'directory' });
   });
 
   it('returns protection fields in snapshot responses', async () => {
@@ -329,6 +384,45 @@ describe('snapshot routes', () => {
       requestedImmutabilityEnforcement: null,
       immutabilityFallbackReason: null,
       retentionBlockedReason: 'legal_hold',
+    });
+  });
+
+  it('returns the bare-metal restorability verdict on snapshot responses', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        bareMetalRestorable: false,
+        bareMetalReasons: ['LVM volumes are not supported'],
+      }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: false,
+      bareMetalReasons: ['LVM volumes are not supported'],
+    });
+  });
+
+  it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ bareMetalRestorable: null, bareMetalReasons: null }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: null,
+      bareMetalReasons: [],
     });
   });
 

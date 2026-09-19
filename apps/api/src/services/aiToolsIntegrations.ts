@@ -16,10 +16,10 @@ import {
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { decryptForColumn } from './secretCrypto';
 import { redactUrlForLogs } from './notificationSenders/webhookSender';
 import { getWebhookWorker } from '../workers/webhookDelivery';
-import { toWorkerWebhookConfig } from '../routes/webhooks';
 
 // webhooks.url is encrypted at rest and may embed credentials. Decrypt for
 // display then strip userinfo/query/hash so the AI tool never sees a token.
@@ -257,6 +257,9 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('test_webhook', async (input, auth) => {
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const webhookId = input.webhookId as string;
 
       // Verify webhook exists and belongs to org. Select the full row — the
@@ -313,7 +316,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       };
 
       try {
-        await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
         await db

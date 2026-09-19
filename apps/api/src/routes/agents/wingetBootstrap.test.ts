@@ -37,6 +37,12 @@ vi.mock('../../db/schema', () => ({
     hostname: 'hostname',
     lastSeenIp: 'lastSeenIp',
   },
+  // #4673 W02 — agentAuthMiddleware's device select inner-joins this to
+  // resolve the org's owning MSP for `currentPartnerId`.
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -93,6 +99,8 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
     agentId: AGENT_ID,
     orgId: 'org-1',
     siteId: 'site-1',
+    // #4673 W02 — supplied by the organizations join in the auth select.
+    partnerId: 'partner-1',
     agentTokenHash: VALID_HASH,
     previousTokenHash: null,
     previousTokenExpiresAt: null,
@@ -108,11 +116,19 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
 }
 
 function buildSelectMock(result: unknown[]) {
+  // #4673 W02 — the device auth select is now
+  // `.from(devices).innerJoin(organizations, ...).where(...).limit(1)`.
+  // `innerJoin` returns the same terminal shape, so un-joined selects that
+  // go straight from `from` to `where` keep working against this mock.
+  const terminal = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(result),
+    }),
+  };
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(result),
-      }),
+      innerJoin: vi.fn().mockReturnValue(terminal),
+      ...terminal,
     }),
   } as any);
 }

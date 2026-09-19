@@ -1,0 +1,134 @@
+{
+  "taskState": {
+    "queued": "In Warteschlange",
+    "running": "Läuft",
+    "waiting": "Wartet",
+    "paused": "Pausiert",
+    "stopping": "Wird gestoppt",
+    "completed": "Abgeschlossen",
+    "partial": "Teilweise",
+    "handedOff": "Übergeben",
+    "cancelled": "Abgebrochen",
+    "failed": "Fehlgeschlagen",
+    "expired": "Abgelaufen"
+  },
+  "operatorTaskDetail": {
+    "loading": "Aufgabe wird geladen...",
+    "agent": "Bearbeitet von {{name}}",
+    "target": {
+      "label": "Ziel",
+      "none": "Kein Geräteziel"
+    },
+    "origin": {
+      "label": "Ursprung",
+      "manual": "Manuell",
+      "alert": "Warnmeldung",
+      "ticket": "Ticket",
+      "schedule": "Zeitplan",
+      "anomaly": "Anomalie",
+      "sweep": "Sweep",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "Status"
+    },
+    "phase": {
+      "investigate": "Untersuchen",
+      "plan": "Planen",
+      "execute": "Ausführen",
+      "verify": "Verifizieren",
+      "document": "Dokumentieren"
+    },
+    "waitReason": {
+      "label": "Wartet auf",
+      "approval": "Genehmigung",
+      "information": "Information",
+      "execution": "Ausführung",
+      "device": "Gerät",
+      "maintenanceWindow": "Wartungsfenster",
+      "verificationWindow": "Verifizierungsfenster"
+    },
+    "nextAction": {
+      "label": "Nächster Schritt",
+      "approveInInbox": "Im Posteingang genehmigen",
+      "answerQuestion": "Frage beantworten",
+      "waitingForDevice": "Wartet auf Gerät",
+      "waitingForMaintenanceWindow": "Wartet auf Wartungsfenster",
+      "waitingForVerificationWindow": "Wartet auf Verifizierungsfenster",
+      "waitingForExecution": "Wartet auf Ausführung",
+      "queued": "Wartet auf Zulassung",
+      "inProgress": "In Bearbeitung",
+      "paused": "Pausiert",
+      "stopping": "Wird gestoppt",
+      "handedOff": "Übergeben",
+      "none": "Nichts ausstehend"
+    },
+    "deadline": {
+      "label": "Frist",
+      "none": "Keine Frist"
+    },
+    "outcome": {
+      "label": "Ergebnis",
+      "verifiedResolved": "Verifiziert gelöst",
+      "investigationComplete": "Untersuchung abgeschlossen",
+      "reportDelivered": "Bericht geliefert",
+      "noActionNeeded": "Keine Aktion nötig",
+      "trialComplete": "Test abgeschlossen",
+      "unresolved": "Ungelöst",
+      "unknownEffect": "Unbekannte Wirkung"
+    },
+    "handoffSummary": {
+      "label": "Übergabezusammenfassung"
+    },
+    "operations": {
+      "heading": "Operationen",
+      "empty": "Noch keine Operationen.",
+      "attempt": "Versuch {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Reserviert",
+      "dispatched": "Gesendet",
+      "dispatchFailed": "Versand fehlgeschlagen",
+      "cancelled": "Abgebrochen",
+      "abandoned": "Abgebrochen"
+    },
+    "resultState": {
+      "pending": "Ausstehend",
+      "succeeded": "Erfolgreich",
+      "failed": "Fehlgeschlagen",
+      "unknown": "Unbekannt",
+      "superseded": "Ersetzt"
+    },
+    "runs": {
+      "heading": "Verknüpfte Läufe",
+      "empty": "Noch keine verknüpften Läufe."
+    },
+    "notFound": {
+      "title": "Aufgabe nicht gefunden",
+      "description": "Diese Aufgabe existiert nicht oder Sie haben keinen Zugriff darauf."
+    },
+    "errors": {
+      "load": "Die Aufgabe konnte nicht geladen werden."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Operator-Aufgaben werden geladen...",
+    "loadFailed": "Operator-Aufgaben konnten nicht geladen werden.",
+    "empty": "Keine Operator-Aufgaben für dieses Gerät."
+  },
+  "delegate": {
+    "button": "An Operator delegieren",
+    "dialogTitle": "An Operator delegieren",
+    "dialogMessage": "Der Operator untersucht das Problem und versucht es mit dem folgenden Workflow zu beheben.",
+    "orgLabel": "Organisation",
+    "deviceLabel": "Gerät",
+    "serviceNameLabel": "Dienstname",
+    "serviceNamePlaceholder": "z. B. Spooler",
+    "serviceNameError": "Geben Sie den Dienstnamen ein, um diese Aufgabe zu delegieren.",
+    "workflowLabel": "Arbeitsablauf",
+    "workflowName": "Dienstwiederherstellung",
+    "confirmLabel": "Delegieren",
+    "queued": "Aufgabe an den Operator delegiert.",
+    "failed": "Delegierung an den Operator fehlgeschlagen."
+  }
+}

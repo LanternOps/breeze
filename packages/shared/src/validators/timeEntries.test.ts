@@ -8,6 +8,12 @@ import {
 const UUID = '3f2f1d8e-1111-4222-8333-444455556666';
 
 describe('createTimeEntrySchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'billed' }).success).toBe(false);
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'no_charge' }).success).toBe(true);
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'contract' }).success).toBe(true);
+  });
   it('accepts a minimal manual entry', () => {
     const r = createTimeEntrySchema.safeParse({
       startedAt: '2026-06-11T09:00:00Z',
@@ -61,6 +67,11 @@ describe('listTimeEntriesQuerySchema', () => {
 });
 
 describe('updateTimeEntrySchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'billed' }).success).toBe(false);
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'no_charge' }).success).toBe(true);
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'contract' }).success).toBe(true);
+  });
   it('rejects empty object (at-least-one-field refine)', () => {
     expect(updateTimeEntrySchema.safeParse({}).success).toBe(false);
   });
@@ -91,6 +102,12 @@ describe('bulkApproveSchema', () => {
 });
 
 describe('ticketPartSchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    const base = { description: 'SSD', quantity: 1 };
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'billed' }).success).toBe(false);
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'no_charge' }).success).toBe(true);
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'contract' }).success).toBe(true);
+  });
   it('accepts a minimal part', () => {
     expect(ticketPartSchema.safeParse({ description: 'SSD 1TB', quantity: 1 }).success).toBe(true);
   });
@@ -102,6 +119,11 @@ describe('ticketPartSchema', () => {
 });
 
 describe('updateTicketPartSchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'billed' }).success).toBe(false);
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'no_charge' }).success).toBe(true);
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'contract' }).success).toBe(true);
+  });
   it('rejects empty object (at-least-one-field refine)', () => {
     expect(updateTicketPartSchema.safeParse({}).success).toBe(false);
   });
@@ -132,5 +154,73 @@ describe('billablesExportQuerySchema', () => {
 
   it('accepts an 11-month range (within 366-day cap)', () => {
     expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2026-12-01' }).success).toBe(true);
+  });
+});
+
+// ── W06 (#3900): provenance vocabulary + suggestion routes ───────────────────
+import {
+  TIME_ENTRY_SOURCES, timeEntrySourceSchema, suggestionsQuerySchema,
+  confirmSuggestionSchema, suggestionSignalsSchema
+} from './timeEntries';
+
+const SIG = { kind: 'remote_session', id: UUID };
+
+describe('time entry sources (W06)', () => {
+  it('is exactly the six-value vocabulary of the source migrations', () => {
+    expect([...TIME_ENTRY_SOURCES]).toEqual(['manual', 'timer', 'location', 'remote_session', 'support_session', 'ai_suggested']);
+    expect(timeEntrySourceSchema.safeParse('support_session').success).toBe(true);
+    expect(timeEntrySourceSchema.safeParse('suggestion').success).toBe(false);
+  });
+
+  it('accepts ai_suggested as a source (#4177)', () => {
+    expect(timeEntrySourceSchema.parse('ai_suggested')).toBe('ai_suggested');
+  });
+
+  it('createTimeEntrySchema / startTimerSchema never accept source (D5)', () => {
+    const created = createTimeEntrySchema.safeParse({ startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z', source: 'timer' });
+    expect(created.success && 'source' in created.data).toBe(false);
+    const started = startTimerSchema.safeParse({ source: 'location' });
+    expect(started.success && 'source' in started.data).toBe(false);
+  });
+});
+
+describe('suggestionsQuerySchema', () => {
+  it('requires a YYYY-MM-DD date and passes tz/userId through', () => {
+    expect(suggestionsQuerySchema.safeParse({ date: '2026-08-29' }).success).toBe(true);
+    expect(suggestionsQuerySchema.safeParse({ date: '2026-08-29', tz: 'Europe/Berlin', userId: UUID }).success).toBe(true);
+    expect(suggestionsQuerySchema.safeParse({ date: '29/08/2026' }).success).toBe(false);
+    expect(suggestionsQuerySchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('confirmSuggestionSchema', () => {
+  const base = { signals: [SIG], startedAt: '2026-08-29T14:02:00Z', endedAt: '2026-08-29T14:40:00Z' };
+  it('accepts a minimal confirm', () => {
+    expect(confirmSuggestionSchema.safeParse(base).success).toBe(true);
+  });
+  it('is strict: rejects source, orgId and currency', () => {
+    for (const extra of [{ source: 'remote_session' }, { orgId: UUID }, { currency: 'USD' }, { currencyCode: 'USD' }]) {
+      expect(confirmSuggestionSchema.safeParse({ ...base, ...extra }).success).toBe(false);
+    }
+  });
+  it('bounds signals to 1..20 unique remote_session refs', () => {
+    expect(confirmSuggestionSchema.safeParse({ ...base, signals: [] }).success).toBe(false);
+    expect(confirmSuggestionSchema.safeParse({ ...base, signals: [SIG, SIG] }).success).toBe(false);
+    expect(confirmSuggestionSchema.safeParse({ ...base, signals: [{ kind: 'support_session', id: UUID }] }).success).toBe(false);
+    expect(confirmSuggestionSchema.safeParse({ ...base, signals: Array.from({ length: 21 }, (_, i) => ({ kind: 'remote_session', id: `3f2f1d8e-1111-4222-8333-4444555566${String(i).padStart(2, '0')}` })) }).success).toBe(false);
+  });
+  it('allows endedAt to be omitted (server fills from the signal envelope) but rejects endedAt <= startedAt', () => {
+    expect(confirmSuggestionSchema.safeParse({ signals: [SIG], startedAt: base.startedAt }).success).toBe(true);
+    expect(confirmSuggestionSchema.safeParse({ ...base, endedAt: base.startedAt }).success).toBe(false);
+  });
+  it('ticketId may be null (explicit "no ticket")', () => {
+    expect(confirmSuggestionSchema.safeParse({ ...base, ticketId: null }).success).toBe(true);
+  });
+});
+
+describe('suggestionSignalsSchema', () => {
+  it('accepts signals only', () => {
+    expect(suggestionSignalsSchema.safeParse({ signals: [SIG] }).success).toBe(true);
+    expect(suggestionSignalsSchema.safeParse({ signals: [SIG], reason: 'x' }).success).toBe(false);
   });
 });

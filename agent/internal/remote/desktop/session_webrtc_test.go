@@ -10,8 +10,15 @@ func TestDefaultSessionPolicy(t *testing.T) {
 	if !p.ClipboardHostToViewer || !p.ClipboardViewerToHost {
 		t.Fatalf("DefaultSessionPolicy clipboard must be permissive in both directions, got %+v", p)
 	}
-	if p.IdleTimeout != 0 || p.MaxDuration != 0 {
-		t.Fatalf("DefaultSessionPolicy lifetime timers must be unset, got %+v", p)
+	// The idle timer is unset by default (0 = disabled), but MaxDuration is NOT:
+	// it defaults to the absolute 12h cap, so a policy that never sets it — or a
+	// caller that constructs the default and forgets — can never produce an
+	// unbounded remote-control session.
+	if p.IdleTimeout != 0 {
+		t.Fatalf("DefaultSessionPolicy idle timer must be unset, got %+v", p)
+	}
+	if p.MaxDuration != MaxSessionDurationCap {
+		t.Fatalf("DefaultSessionPolicy MaxDuration must be the 12h cap, got %+v", p)
 	}
 }
 
@@ -45,11 +52,31 @@ func TestShouldStopForLifetime(t *testing.T) {
 		wantReason   string
 	}{
 		{
-			name:         "both zero never stops",
+			// The 12h cap is UNCONDITIONAL: a zero-valued policy no longer means
+			// "run forever" on either decoder, and shouldStopForLifetime enforces
+			// the cap even against a policy that somehow arrived with none.
+			name:         "zero policy still stops at the 12h cap",
 			startWall:    now.Add(-100 * time.Hour),
 			lastActivity: now.Add(-100 * time.Hour),
 			policy:       SessionPolicy{},
+			wantStop:     true,
+			wantReason:   "max_session_duration_exceeded",
+		},
+		{
+			name:         "zero policy keeps running below the 12h cap",
+			startWall:    now.Add(-time.Hour),
+			lastActivity: now.Add(-time.Hour),
+			policy:       SessionPolicy{},
 			wantStop:     false,
+		},
+		{
+			// Over-cap policy is clamped here too, not just in the decoders.
+			name:         "over-cap policy is clamped back to 12h",
+			startWall:    now.Add(-13 * time.Hour),
+			lastActivity: now,
+			policy:       SessionPolicy{MaxDuration: 168 * time.Hour},
+			wantStop:     true,
+			wantReason:   "max_session_duration_exceeded",
 		},
 		{
 			name:         "max duration exceeded",

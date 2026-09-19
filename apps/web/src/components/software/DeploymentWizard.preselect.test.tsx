@@ -12,6 +12,13 @@ const ok = (payload: unknown): Response =>
   ({ ok: true, status: 200, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 function route(url: string) {
+  if (url.startsWith('/devices/options?')) {
+    const includeIds = new URL(`https://example.test${url}`).searchParams.get('includeIds')?.split(',').filter(Boolean) ?? [];
+    return ok({
+      data: includeIds.map((id, index) => ({ id, hostname: `seeded-${index + 1}`, displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null })),
+      page: { nextCursor: null, returned: includeIds.length, total: includeIds.length, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+    });
+  }
   if (url === '/software/catalog')
     return ok({ data: [{ id: 'cat-9', name: 'Huntress EDR Agent', vendor: 'Huntress', category: 'security' }] });
   if (url === '/software/catalog/cat-9/versions')
@@ -32,6 +39,8 @@ describe('DeploymentWizard preselect (initialCatalogId)', () => {
     await waitFor(() =>
       expect(screen.getAllByText('Huntress EDR Agent').length).toBeGreaterThan(0),
     );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
   });
 
   it('preselects a package-manager item that has no uploaded versions', async () => {

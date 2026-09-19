@@ -47,14 +47,34 @@
 #      Only checked in --staged mode. The whole-directory pass cannot enforce
 #      it, because the existing set violates it by construction.
 #
+#   4. --against-ref mode extends rule 3 across the fetch boundary. Rule 3
+#      (--staged) only ever compares a new migration against migrations
+#      already reachable from the branch's own HEAD — it is blind to a
+#      migration that lands on origin/main AFTER the branch was cut. That
+#      happened for real: a branch carried 2026-10-02-100001-… and passed
+#      the commit-time guard clean, while origin/main meanwhile gained
+#      2026-10-03-audit-chain-verify-range.sql, which sorts after it. CI's
+#      "Check Migrations" job (on the merge commit) would have caught it,
+#      but only after a push, a red run, a rename, and a re-push.
+#
+#      --against-ref <ref> compares every migration new on HEAD relative to
+#      <ref> (`git diff --diff-filter=A <ref>...HEAD`) against the greatest
+#      migration basename present ON <ref> (not on HEAD) and requires the
+#      former to sort strictly after the latter. It is meant to be run from a
+#      pre-push hook as `--against-ref origin/main`, AFTER the caller has
+#      fetched — this script does not fetch anything itself, so a stale local
+#      origin/main makes the check pass vacuously rather than fail; freshness
+#      is the hook's job, not this script's.
+#
 # Filename format: YYYY-MM-DD-HHMMSS-<slug>.sql is preferred for new work — the
 # time component orders same-day migrations natively and removes the need for
 # the `-a-`/`-b-` infix, whose hand-assigned letters are what produced the
 # closed-block confusion in rule 2. Date-only names remain valid.
 #
 # Usage:
-#   check-migration-naming.sh --staged   # newly ADDED staged files (pre-commit)
-#   check-migration-naming.sh            # every file in the migrations dir (CI)
+#   check-migration-naming.sh --staged             # newly ADDED staged files (pre-commit)
+#   check-migration-naming.sh                      # every file in the migrations dir (CI)
+#   check-migration-naming.sh --against-ref <ref>  # HEAD's new migrations vs <ref> (pre-push)
 #
 # The reserved-block manifest below is duplicated in apps/api/src/db/
 # autoMigrate.test.ts, which parses this array and asserts the two copies are
@@ -99,7 +119,8 @@ is_reserved_block_member() {
 # A guard that ordered differently from the runner would bless files that then
 # replay in a different order than it checked.
 committed_max_migration() {
-  git ls-tree --name-only HEAD "$MIGRATIONS_DIR/" 2>/dev/null \
+  local ref="${1:-HEAD}"
+  git ls-tree --name-only "$ref" "$MIGRATIONS_DIR/" 2>/dev/null \
     | sed 's#.*/##' \
     | grep -E '^[0-9]{4}-.*\.sql$' \
     | node -e '
@@ -178,6 +199,49 @@ if [ "${1:-}" = "--staged" ]; then
       violations=$((violations + 1))
     fi
   done <<< "$staged_added"
+elif [ "${1:-}" = "--against-ref" ]; then
+  ref="${2:-}"
+  if [ -z "$ref" ]; then
+    echo "check-migration-naming: --against-ref requires a ref argument, e.g. --against-ref origin/main." >&2
+    exit 1
+  fi
+
+  if ! git rev-parse --verify -q "${ref}^{commit}" >/dev/null; then
+    echo "check-migration-naming: ref '$ref' does not exist locally." >&2
+    echo "                        Fetch it first (e.g. 'git fetch origin main')" >&2
+    echo "                        — this script does not fetch on its own." >&2
+    exit 1
+  fi
+
+  # Migrations new on HEAD relative to $ref — i.e. what THIS branch is
+  # introducing that $ref does not have. Triple-dot diffs against the merge
+  # base, so a $ref that has since moved past a common ancestor doesn't turn
+  # every migration $ref lacks on a divergent history into a false positive.
+  if ! new_on_head="$(git diff --no-renames --diff-filter=A --name-only "$ref"...HEAD -- "$MIGRATIONS_DIR")"; then
+    echo "check-migration-naming: 'git diff $ref...HEAD' failed; refusing to pass." >&2
+    exit 1
+  fi
+
+  max_on_ref="$(committed_max_migration "$ref")"
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    case "$file" in
+      "$MIGRATIONS_DIR"/*/*) continue ;;         # optional/ is not auto-applied
+      "$MIGRATIONS_DIR"/*.sql) ;;                # only .sql is a migration
+      *) continue ;;                             # README.md etc. are not
+    esac
+    base="$(basename "$file")"
+    if [ -n "$max_on_ref" ] && ! sorts_strictly_after "$base" "$max_on_ref"; then
+      echo "  VIOLATION  $base — sorts before or equal to the newest migration on $ref." >&2
+      echo "             Newest on $ref: $max_on_ref" >&2
+      echo "             $ref gained a migration after this branch was cut that" >&2
+      echo "             this new file would replay ahead of on a fresh database." >&2
+      echo "             Remedy: rename $base to sort after $max_on_ref, e.g. a" >&2
+      echo "             YYYY-MM-DD-HHMMSS-<slug>.sql dated past it." >&2
+      violations=$((violations + 1))
+    fi
+  done <<< "$new_on_head"
 else
   # Without nullglob an unmatched glob expands to the literal pattern, `[ -f ]`
   # rejects it, and the guard exits 0 having inspected nothing. A migrations

@@ -145,6 +145,18 @@ describe('OneDriveHelperTab', () => {
     });
   });
 
+  // #5080: `featurePolicyId` means a standalone entity id — OneDrive Helper
+  // is inline settings, so it must never carry the parent CONFIG policy's id.
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(<OneDriveHelperTab {...baseProps} linkedPolicyId="parent-1" existingLink={undefined} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
+    expect(payload.featurePolicyId).toBeNull();
+  });
+
   it('adding a library via the Graph picker then saving includes it with targetingMode everyone', async () => {
     mockedStatus.mockResolvedValue(true);
     mockedLibraries.mockResolvedValue({ libraries: [graphLib()], skippedSites: [] });

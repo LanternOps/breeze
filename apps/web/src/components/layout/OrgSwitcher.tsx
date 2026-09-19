@@ -10,26 +10,23 @@ import {
 import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
 import { applyOrgSwitch, consumeSwitchToast, getOrgSwitchRedirect } from '@/lib/orgSwitch';
+import { FALLBACK_STATUS_CLASS, statusColors } from '@/lib/orgStatus';
 import { showToast } from '@/components/shared/Toast';
 import { useTranslation } from 'react-i18next';
 
 // Re-exported for callers/tests that import the redirect rule from here.
 export { getOrgSwitchRedirect };
 
-const statusColors: Record<string, string> = {
-  active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
-  trial: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
-  suspended: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
-  inactive: 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300'
-};
+// Status colours come from the shared org status map (lib/orgStatus), so the
+// pill in this header is the same pill as on the org list and record page.
 
 function StatusBadge({ status }: { status: string }) {
   const { t } = useTranslation('common');
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize',
-        statusColors[status] || statusColors.inactive
+        'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize',
+        statusColors[status as Organization['status']] ?? FALLBACK_STATUS_CLASS
       )}
     >
       {t(/* i18n-dynamic */ `layout.org.status.${status}`, { defaultValue: status })}
@@ -53,8 +50,10 @@ const SEARCH_THRESHOLD = 6;
 export default function OrgSwitcher() {
   const { t } = useTranslation('common');
   const [isOpen, setIsOpen] = useState(false);
-  // True from the moment a switch is initiated until the page reloads — shows a
-  // spinner on the trigger and disables it so the bar never silently freezes.
+  // True from the moment a switch is initiated until the soft navigation
+  // settles — shows a spinner on the trigger and disables it so the bar never
+  // silently freezes. This island is `transition:persist`, so it survives the
+  // switch and must clear the flag itself.
   const [switching, setSwitching] = useState(false);
   const [query, setQuery] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -74,7 +73,8 @@ export default function OrgSwitcher() {
   // organizations" from the transient null of a fresh session (#1423).
   const isFleet = !currentOrgId && allOrgs;
 
-  // Surface the "Switched to X" confirmation stashed before the last reload.
+  // Surface the "Switched to X" confirmation stashed before a switch that fell
+  // back to a full reload (the soft path toasts inside applyOrgSwitch).
   useEffect(() => {
     const message = consumeSwitchToast();
     if (message) showToast({ type: 'success', message });
@@ -166,10 +166,10 @@ export default function OrgSwitcher() {
   const showFleetOption = organizations.length > 1;
 
   // Apply a context change: a concrete org id, or null for fleet view. The
-  // reload (inside applyOrgSwitch) propagates the new scope everywhere at once
-  // (pages don't need to subscribe); registered detail routes (currently only
-  // device detail — see getOrgSwitchRedirect) redirect up to their list first so
-  // the new org doesn't 404 on the old org's record.
+  // soft re-navigation (inside applyOrgSwitch) remounts the page island and so
+  // propagates the new scope everywhere at once (pages don't need to
+  // subscribe); registered detail routes (see getOrgSwitchRedirect) redirect up
+  // to their list first so the new org doesn't 404 on the old org's record.
   const applyContext = async (orgId: string | null) => {
     setIsOpen(false);
     const changed = orgId ? orgId !== currentOrgId : !isFleet;
@@ -180,7 +180,11 @@ export default function OrgSwitcher() {
           name: organizations.find((o) => o.id === orgId)?.name ?? t('labels.organization')
         })
       : t('layout.org.toast.showingAll');
-    await applyOrgSwitch(orgId, message);
+    try {
+      await applyOrgSwitch(orgId, message);
+    } finally {
+      setSwitching(false);
+    }
   };
 
   return (

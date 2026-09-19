@@ -41,7 +41,13 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (_c: any, next: any) => next()
+  requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (c: any, next: any) => {
+    if ((c.get('auth') as any)?.token?.mfa !== true) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    await next();
+  },
 }));
 
 import { invoiceSettingsRoutes } from './settings';
@@ -49,6 +55,7 @@ import * as reporting from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
 import * as svc from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -56,8 +63,14 @@ function jsonBody(body: unknown) {
   return { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
 
-const PARTNER_ACTOR = { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null };
-const ORG_ACTOR = { user: { id: 'u2' }, partnerId: 'p1', orgId: ORG_ID, scope: 'organization', accessibleOrgIds: [ORG_ID] };
+const PARTNER_ACTOR = {
+  user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null,
+  partnerOrgAccess: 'all', token: { mfa: true },
+};
+const ORG_ACTOR = {
+  user: { id: 'u2' }, partnerId: 'p1', orgId: ORG_ID, scope: 'organization', accessibleOrgIds: [ORG_ID],
+  token: { mfa: true },
+};
 
 describe('billing settings routes', () => {
   beforeEach(() => {
@@ -79,6 +92,59 @@ describe('billing settings routes', () => {
       expect.objectContaining({ currencyCode: 'EUR', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14 }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  it.each(['selected', 'none'] as const)(
+    'PATCH /partner/billing-settings denies partnerOrgAccess=%s before validation or service effects',
+    async (partnerOrgAccess) => {
+      authState.value = { ...PARTNER_ACTOR, partnerOrgAccess };
+
+      const res = await invoiceSettingsRoutes.request(
+        '/partner/billing-settings',
+        jsonBody({ currencyCode: 'not-valid' }),
+      );
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /partner/billing-settings requires MFA before validation or service effects', async () => {
+    authState.value = { ...PARTNER_ACTOR, token: { mfa: false } };
+
+    const res = await invoiceSettingsRoutes.request(
+      '/partner/billing-settings',
+      jsonBody({ currencyCode: 'not-valid' }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /partner/billing-settings preserves system-scope administration', async () => {
+    authState.value = {
+      ...PARTNER_ACTOR,
+      scope: 'system',
+      partnerOrgAccess: null,
+    };
+    (svc.updatePartnerBillingSettings as any).mockResolvedValue({ currencyCode: 'USD' });
+
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+    }));
+
+    expect(res.status).toBe(200);
+    expect(svc.updatePartnerBillingSettings).toHaveBeenCalledOnce();
+  });
+
+  it('#3205 W07: PATCH /partner/billing-settings round-trips invoiceDeviceAppendix', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceDeviceAppendix: true,
+    }));
+    expect(res.status).toBe(200);
+    expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({ invoiceDeviceAppendix: true });
   });
 
   it('PATCH /partner/billing-settings rejects a bad currency code (→ 400, no service call)', async () => {

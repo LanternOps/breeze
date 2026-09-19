@@ -1,5 +1,24 @@
 # Upgrading Breeze
 
+## No action required: v0.109.0 migrations take brief locks on large tables
+
+v0.109.0 applies 53 idempotent migrations on boot. No operator action is needed,
+but two of them touch tables that grow without bound on a long-running
+self-hosted instance:
+
+- an index build over remote-session history, and
+- a validated constraint added to time entries.
+
+Both hold a brief lock while they run, so the API takes longer than usual to
+start accepting traffic — roughly in proportion to how much remote-session and
+time-entry history you hold. Back the database up first (`./scripts/backup.sh
+--db`) and upgrade during a quiet window. Migrations are forward-only: rolling
+the image tag back does not roll the schema back.
+
+Nothing else in v0.109.0 requires a configuration change. New AI agent
+capabilities remain behind `BREEZE_AI_AGENTS_ENABLED` (default `false`), and the
+worker-split container is opt-in.
+
 ## No action required: nightly job schedules were staggered
 
 Every BullMQ job registered with `repeat: { every: N }` fires on a wall-clock
@@ -186,7 +205,10 @@ Watch the API container logs for these one-time warnings. Each is a backlog item
 
 The following defaults are temporary to avoid stranding existing deployments:
 
-- `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` — **default is now `false`** as of this release. The refresh token is delivered only via the HttpOnly `breeze_refresh_token` cookie; the JSON `refreshToken` field is omitted. If an external SSO client still reads `response.refreshToken`, set `SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true` explicitly (in `/opt/breeze/.env` **and** the `api` service `environment:` block of `/opt/breeze/docker-compose.yml` — compose interpolation requires both) while you migrate it to the cookie. The flag and JSON field will be removed entirely after the Sunset date (2026-08-01).
+W07 removed the expired SSO exchange compatibility response. `/sso/exchange`
+now returns only the access token metadata and installs the refresh token through
+the HttpOnly cookie; external clients must use that cookie-based handoff.
+
 - `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` — **default flipped to `false` this release.** Inbound automation webhooks now require HMAC signing (`x-breeze-signature` + `x-breeze-timestamp`). If you still have senders using the legacy `x-automation-secret` / `x-webhook-secret` header, set this to `true` as a short-term emergency rollback while you migrate them; the flag will be removed in a future release. The `?secret=` query-string path has been removed entirely — there is no flag to re-enable it (it leaks into every access log on the path).
 - `ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn` — accepted in this release only. Next release will require either `AGENT_ENROLLMENT_SECRET` or per-key secrets.
 - Legacy enrollment-key pepper fallback (`APP_ENCRYPTION_KEY`/`JWT_SECRET`) — will be removed once existing keys are re-hashed under `ENROLLMENT_KEY_PEPPER`.

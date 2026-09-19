@@ -91,6 +91,20 @@ describe('ticket validators', () => {
     }
   });
 
+  // P2-4 (#4191), Task A10: aiDraftId relaxes the resolutionNote requirement —
+  // the draft supplies the text server-side.
+  it('changeTicketStatusSchema: status=resolved with aiDraftId (no resolutionNote) → valid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      status: 'resolved',
+      aiDraftId: '3f2f1d8e-1111-4222-8333-444455556666',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('changeTicketStatusSchema: aiDraftId must be a uuid', () => {
+    expect(changeTicketStatusSchema.safeParse({ status: 'resolved', aiDraftId: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('assign accepts a uuid or null (unassign)', () => {
     expect(assignTicketSchema.safeParse({ assigneeId: null }).success).toBe(true);
     expect(assignTicketSchema.safeParse({ assigneeId: '3f2f1d8e-1111-4222-8333-444455556666' }).success).toBe(true);
@@ -131,6 +145,7 @@ describe('ticket validators', () => {
   describe('requester fields', () => {
     const ORG = '3f2f1d8e-1111-4222-8333-444455556666';
     const PORTAL_USER = '5a6b7c8d-1234-4321-abcd-000011112222';
+    const CONTACT = '9c8d7e6f-2222-4333-8444-555566667777';
 
     it('createTicketSchema accepts a portal-user requester (submittedBy)', () => {
       const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submittedBy: PORTAL_USER });
@@ -161,6 +176,35 @@ describe('ticket validators', () => {
     it('updateTicketSchema rejects an empty submitterName (clear via null, not "")', () => {
       expect(updateTicketSchema.safeParse({ submitterName: '' }).success).toBe(false);
       expect(updateTicketSchema.safeParse({ submitterName: null }).success).toBe(true);
+    });
+
+    // #5367: the staff create/update surface can now name the canonical
+    // requester PERSON directly (`tickets.requester_contact_id`), not just a
+    // portal login. A missing field here is not a validation error — it is a
+    // SILENT DROP, because the schema strips unknown keys before the route
+    // spreads the body into `createTicket`.
+    it('createTicketSchema accepts and preserves requesterContactId', () => {
+      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', requesterContactId: CONTACT });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.requesterContactId).toBe(CONTACT);
+    });
+
+    it('createTicketSchema rejects a non-uuid requesterContactId', () => {
+      expect(createTicketSchema.safeParse({ orgId: ORG, subject: 'x', requesterContactId: 'nope' }).success).toBe(false);
+    });
+
+    it('updateTicketSchema accepts requesterContactId, incl null to clear the contact link', () => {
+      const set = updateTicketSchema.safeParse({ requesterContactId: CONTACT });
+      expect(set.success).toBe(true);
+      if (set.success) expect(set.data.requesterContactId).toBe(CONTACT);
+
+      const cleared = updateTicketSchema.safeParse({ requesterContactId: null });
+      expect(cleared.success).toBe(true);
+      if (cleared.success) expect(cleared.data.requesterContactId).toBeNull();
+    });
+
+    it('updateTicketSchema rejects a non-uuid requesterContactId', () => {
+      expect(updateTicketSchema.safeParse({ requesterContactId: 'nope' }).success).toBe(false);
     });
   });
 
@@ -282,5 +326,44 @@ describe('createTicketFromChatSchema', () => {
   it('rejects negative timeMinutes and empty subject', () => {
     expect(createTicketFromChatSchema.safeParse({ ...base, timeMinutes: -1 }).success).toBe(false);
     expect(createTicketFromChatSchema.safeParse({ ...base, subject: '' }).success).toBe(false);
+  });
+});
+
+describe('addTicketCommentSchema attachmentIds (W08)', () => {
+  const uuid = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+
+  it('defaults attachmentIds to [] and still requires content when empty', () => {
+    expect(addTicketCommentSchema.parse({ content: 'hi' })).toMatchObject({ attachmentIds: [] });
+    expect(addTicketCommentSchema.safeParse({ content: '' }).success).toBe(false);
+  });
+
+  it('allows empty content when at least one attachment id is present', () => {
+    const r = addTicketCommentSchema.safeParse({ content: '', attachmentIds: [uuid(1)] });
+    expect(r.success).toBe(true);
+  });
+
+  it('caps attachmentIds at 5 and rejects non-uuids', () => {
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: [1, 2, 3, 4, 5, 6].map(uuid) }).success).toBe(false);
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
+  });
+});
+
+describe('ticket category default time entry minutes', () => {
+  describe.each([
+    ['create', ticketCategoryInputSchema, { name: 'Hardware' }],
+    ['update', ticketCategoryInputSchema.partial(), {}]
+  ] as const)('%s', (_operation, schema, base) => {
+    it.each([1, 30, 1440, null])('preserves %s', (defaultTimeEntryMinutes) => {
+      expect(schema.parse({ ...base, defaultTimeEntryMinutes }))
+        .toHaveProperty('defaultTimeEntryMinutes', defaultTimeEntryMinutes);
+    });
+
+    it('allows omission without injecting a default', () => {
+      expect(schema.parse(base)).not.toHaveProperty('defaultTimeEntryMinutes');
+    });
+
+    it.each([0, -1, 1441, 1.5, '30', true])('rejects %s', (defaultTimeEntryMinutes) => {
+      expect(schema.safeParse({ ...base, defaultTimeEntryMinutes }).success).toBe(false);
+    });
   });
 });

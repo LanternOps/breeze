@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -24,13 +25,16 @@ var (
 	procNetUserSetInfo          = netapi32.NewProc("NetUserSetInfo")
 	procNetLocalGroupAddMembers = netapi32.NewProc("NetLocalGroupAddMembers")
 	procNetLocalGroupDelMembers = netapi32.NewProc("NetLocalGroupDelMembers")
+	procNetUserGetLocalGroups   = netapi32.NewProc("NetUserGetLocalGroups")
 )
 
 const (
-	userInfoLevel1    = 1
-	userInfoLevel1003 = 1003
-	userInfoLevel1008 = 1008
-	localGroupLevel0  = 0
+	userInfoLevel1     = 1
+	userInfoLevel1003  = 1003
+	userInfoLevel1008  = 1008
+	localGroupLevel0   = 0
+	maxPreferredLength = 0xffffffff
+	lgIncludeIndirect  = 0x0001
 
 	userPrivUser = 1
 
@@ -43,9 +47,9 @@ const (
 	accountEnabledFlags  = ufNormalAccount | ufPasswdCantChange | ufDontExpirePassword
 
 	nerrSuccess        = 0
-	nerrUserNotFound   = 2221
 	nerrUserExists     = 2224
 	nerrUserNotInGroup = 2237
+	// nerrUserNotFound lives in absent.go alongside IsAccountAbsent.
 
 	errorMemberInAlias    = 1378
 	errorMemberNotInAlias = 1377
@@ -76,6 +80,10 @@ type userInfo1008 struct {
 
 type localGroupMembersInfo0 struct {
 	SID *windows.SID
+}
+
+type localGroupUsersInfo0 struct {
+	Name *uint16
 }
 
 func (*windowsManager) EnsureProvisioned() error {
@@ -135,26 +143,47 @@ func (*windowsManager) Promote(ctx context.Context) (Credential, error) {
 }
 
 func (*windowsManager) Demote(ctx context.Context) error {
+	_, err := (&windowsManager{}).Deprovision(ctx)
+	return err
+}
+
+func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := removeFromAdministrators(AccountName); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
 	password, err := GeneratePassword(defaultPasswordLength)
 	if err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
 	if err := setPassword(AccountName, password); err != nil {
-		return err
+		return cleanIfAbsent(err)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
-	return setUserFlags(AccountName, accountDisabledFlags)
+	// removeFromAdministrators already maps an absent account to nil.
+	if err := removeFromAdministrators(AccountName); err != nil {
+		return AccountEvidence{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return AccountEvidence{}, err
+	}
+	if err := setUserFlags(AccountName, accountDisabledFlags); err != nil {
+		return cleanIfAbsent(err)
+	}
+	return (&windowsManager{}).VerifyClean(ctx)
+}
+
+func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return AccountEvidence{}, err
+	}
+	enabled, err := accountEnabled(AccountName)
+	if err != nil {
+		return cleanIfAbsent(err)
+	}
+	inAdministrators, err := accountInAdministrators(AccountName)
+	return evidenceAfterAdminProbe(enabled, inAdministrators, err)
 }
 
 func netUserAddDisabled(username, password string) error {
@@ -225,7 +254,13 @@ func netUserSetInfo(namePtr *uint16, level uint32, info unsafe.Pointer) error {
 		uintptr(unsafe.Pointer(&parmErr)),
 	)
 	if status != nerrSuccess {
-		return fmt.Errorf("NetUserSetInfo level %d failed: %w", level, syscall.Errno(status))
+		// This call named the elevation account, so NERR_UserNotFound here is
+		// proof the account itself is gone.
+		err := fmt.Errorf("NetUserSetInfo level %d failed: %w", level, syscall.Errno(status))
+		if uint32(status) == nerrUserNotFound {
+			return absentAccountErr(err)
+		}
+		return err
 	}
 	return nil
 }
@@ -246,7 +281,10 @@ func addToAdministrators(username string) error {
 func removeFromAdministrators(username string) error {
 	status, err := localGroupMembersCall(procNetLocalGroupDelMembers, username)
 	if err != nil {
-		if errors.Is(err, windows.ERROR_NONE_MAPPED) {
+		// Nothing to remove from a group if the account itself is gone. Only
+		// the tagged failure counts: an alias-lookup failure carries the same
+		// errno and must stay an error.
+		if errors.Is(err, errAccountAbsent) {
 			return nil
 		}
 		return err
@@ -260,6 +298,10 @@ func removeFromAdministrators(username string) error {
 }
 
 func localGroupMembersCall(proc *syscall.LazyProc, username string) (uint32, error) {
+	// NOT an absence signal: the builtin Administrators alias is a different
+	// principal, and its lookup fails with the same ERROR_NONE_MAPPED. Reading
+	// that as "the elevation account is absent" would report a machine that
+	// cannot resolve its own Administrators group as clean.
 	groupName, err := administratorsGroupName()
 	if err != nil {
 		return 0, err
@@ -270,6 +312,10 @@ func localGroupMembersCall(proc *syscall.LazyProc, username string) (uint32, err
 	}
 	userSID, _, _, err := windows.LookupSID("", username)
 	if err != nil {
+		// This lookup DID name the elevation account.
+		if IsAccountAbsent(err) {
+			return 0, absentAccountErr(fmt.Errorf("LookupSID %s failed: %w", username, err))
+		}
 		return 0, err
 	}
 	info := localGroupMembersInfo0{SID: userSID}
@@ -296,6 +342,67 @@ func administratorsGroupName() (string, error) {
 		return "", fmt.Errorf("LookupAccountSid %s returned empty account name", adminAliasSID)
 	}
 	return account, nil
+}
+
+func accountEnabled(username string) (bool, error) {
+	namePtr, err := windows.UTF16PtrFromString(username)
+	if err != nil {
+		return false, err
+	}
+	var buffer *byte
+	if err := windows.NetUserGetInfo(nil, namePtr, userInfoLevel1, &buffer); err != nil {
+		wrapped := fmt.Errorf("NetUserGetInfo %s failed: %w", username, err)
+		if IsAccountAbsent(err) {
+			return false, absentAccountErr(wrapped)
+		}
+		return false, wrapped
+	}
+	defer windows.NetApiBufferFree(buffer)
+	info := (*userInfo1)(unsafe.Pointer(buffer))
+	return info.Flags&ufAccountDisable == 0, nil
+}
+
+func accountInAdministrators(username string) (bool, error) {
+	namePtr, err := windows.UTF16PtrFromString(username)
+	if err != nil {
+		return false, err
+	}
+	// NOT an absence signal: this resolves the builtin Administrators alias,
+	// not the elevation account. Its failure must propagate as a real error.
+	adminName, err := administratorsGroupName()
+	if err != nil {
+		return false, err
+	}
+	var buffer *byte
+	var entriesRead, totalEntries uint32
+	status, _, _ := procNetUserGetLocalGroups.Call(
+		0,
+		uintptr(unsafe.Pointer(namePtr)),
+		uintptr(localGroupLevel0),
+		uintptr(lgIncludeIndirect),
+		uintptr(unsafe.Pointer(&buffer)),
+		uintptr(maxPreferredLength),
+		uintptr(unsafe.Pointer(&entriesRead)),
+		uintptr(unsafe.Pointer(&totalEntries)),
+	)
+	if uint32(status) != nerrSuccess {
+		err := fmt.Errorf("NetUserGetLocalGroups %s failed: %w", username, syscall.Errno(status))
+		if uint32(status) == nerrUserNotFound {
+			return false, absentAccountErr(err)
+		}
+		return false, err
+	}
+	if buffer == nil {
+		return false, nil
+	}
+	defer windows.NetApiBufferFree(buffer)
+	groups := unsafe.Slice((*localGroupUsersInfo0)(unsafe.Pointer(buffer)), entriesRead)
+	for _, group := range groups {
+		if group.Name != nil && strings.EqualFold(windows.UTF16PtrToString(group.Name), adminName) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hideAccountFromLogon(username string) error {

@@ -119,9 +119,16 @@ function hasActiveFilters(filters: ActiveFilters | null): boolean {
 
 interface AuditLogViewerProps {
   timezone?: string;
+  /**
+   * The organization record's Activity tab (#5075 W02): when set, every
+   * request pins THIS org via `orgIdOverride` rather than the OrgSwitcher's
+   * ambient scope, so the tab always shows the record's own activity even
+   * while the switcher points elsewhere.
+   */
+  orgId?: string;
 }
 
-export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
+export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps) {
   const { t } = useTranslation('admin');
   const formatAuditAction = useAuditActionFormatter();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
@@ -177,7 +184,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       }
 
       const endpoint = params.has('q') ? '/audit-logs/search' : '/audit-logs';
-      const response = await fetchWithAuth(`${endpoint}?${params.toString()}`);
+      const response = await fetchWithAuth(`${endpoint}?${params.toString()}`, { orgIdOverride: orgId });
 
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
@@ -201,7 +208,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [t]);
+  }, [t, orgId]);
 
   useEffect(() => {
     fetchAuditLogs(currentPage, activeFilters);
@@ -264,7 +271,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
 
   const handleExportLogs = async () => {
     try {
-      const response = await fetchWithAuth('/audit-logs/export');
+      const response = await fetchWithAuth('/audit-logs/export', { orgIdOverride: orgId });
 
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });

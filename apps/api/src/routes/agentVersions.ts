@@ -10,12 +10,20 @@ import {
   requireMfa,
   requirePermission,
   requireScope,
+  type AuthContext,
 } from "../middleware/auth";
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
-import { getGithubReleaseVersion } from "../services/binarySource";
+import { getBinarySource, getGithubReleaseVersion } from "../services/binarySource";
+import {
+  getPromotedComponentVersion,
+  getPromotedAgentVersionForDisplay,
+} from "../services/promotedAgentVersion";
+import { getOrgAgentVersionPinsBatch } from "../services/orgAgentVersionPins";
 import { PERMISSIONS } from "../services/permissions";
 import {
   verifyReleaseArtifactManifestAsset,
@@ -77,6 +85,13 @@ const latestQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
   component: componentEnum.optional().default("agent"),
+});
+
+// Issue #5285: comma-separated orgIds for GET /agent-versions/effective. A
+// generous but bounded cap (below) keeps one caller from turning this into an
+// unbounded fan-out; the query itself is otherwise as cheap as GET /orgs.
+const effectiveVersionsQuerySchema = z.object({
+  orgIds: z.string().min(1),
 });
 
 const downloadParamsSchema = z.object({
@@ -467,10 +482,18 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 // is distinct from `helper` (the Tauri Helper app). It has its own route; it
 // was omitted here originally, so the agent fell back to the github URL and the
 // host check rejected the user-helper auto-update (#1878, sibling of #646).
+//
+// `version` (#5159) pins the redirect to one exact release instead of the
+// promoted one. Without it the response's checksum (read from the requested
+// agent_versions row) and the route's bytes (the promoted row) can be
+// different builds — which is precisely what happens to an org running a
+// pinned pilot version under AGENT_AUTO_PROMOTE=false, leaving every device
+// stuck in "Updating" on an unfixable size/checksum mismatch.
 function buildServerRelativeAgentDownloadUrl(
   dbPlatform: string,
   architecture: string,
   component: string,
+  version?: string,
 ): string | null {
   if (
     component !== "agent" &&
@@ -486,19 +509,34 @@ function buildServerRelativeAgentDownloadUrl(
     return null;
   }
   const os = dbPlatformToRouteOs(dbPlatform);
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
   if (component === "helper") {
-    return `${origin}/api/v1/agents/download/helper/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/helper/${os}/${architecture}${query}`;
   }
   if (component === "user-helper") {
-    return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}${query}`;
   }
   if (component === "watchdog") {
-    return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}${query}`;
   }
   if (component === "backup") {
-    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}${query}`;
   }
-  return `${origin}/api/v1/agents/download/${os}/${architecture}`;
+  return `${origin}/api/v1/agents/download/${os}/${architecture}${query}`;
+}
+
+// Which version (if any) to pin the server-relative download URL to.
+//
+// Only BINARY_SOURCE=github can honour a pin: that branch of the download
+// route builds a per-tag GitHub asset URL. Local mode streams the single
+// build baked into the binaries volume and has nothing to select from, so
+// passing a version there would only turn a working download into a 409.
+// The "unknown" sentinel (binarySync's locally-registered rows with no
+// version file) is not a release tag either — see getRegisteredComponentVersion.
+function downloadUrlVersionPin(version: string): string | undefined {
+  if (getBinarySource() !== "github") return undefined;
+  if (version === "unknown") return undefined;
+  return version;
 }
 
 export async function validateReleaseManifest(args: {
@@ -650,6 +688,62 @@ export async function validateReleaseManifest(args: {
   return { ok: true };
 }
 
+// GET /agent-versions/effective?orgIds=a,b,c — issue #5285. The Devices list
+// "Agent Version" column needs each visible org's EFFECTIVE agent-version
+// target (its agentVersionPins.agent pin, or the globally promoted version
+// when unpinned) to colour-code device rows by relation to it. Resolved ONCE
+// per page load across every visible org (this one request), never per row —
+// the caller (DevicesPage) calls this after loading /orgs, not per device.
+//
+// Mounted BEFORE the "/:version/download" family below (this file has no
+// "/:orgId"-shaped route to collide with, but keeping static paths ahead of
+// param routes is the house style in this file).
+agentVersionRoutes.get(
+  "/effective",
+  authMiddleware,
+  requireScope("organization", "partner", "system"),
+  zValidator("query", effectiveVersionsQuerySchema),
+  async (c) => {
+    const auth = c.get("auth") as AuthContext;
+    const { orgIds: orgIdsParam } = c.req.valid("query");
+
+    // Silently drop an orgId the caller cannot access rather than 403ing the
+    // whole request — a stale/foreign id on the query string (e.g. a device
+    // row from an org the caller lost access to mid-session) should not sink
+    // every other org's badge, and dropping it never confirms or denies that
+    // the id exists (same posture as GET /orgs' accessible-scope filter).
+    // Capped well above any real page's distinct-org count so one caller
+    // can't turn this into an unbounded fan-out.
+    const requested = [
+      ...new Set(
+        orgIdsParam
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      ),
+    ].slice(0, 200);
+    const allowed = requested.filter((id) => auth.canAccessOrg(id));
+
+    if (allowed.length === 0) {
+      return c.json({ data: {} });
+    }
+
+    // The pin batch is per-org; the promoted fallback is edition-wide, so it
+    // is resolved ONCE for the whole request regardless of org count.
+    const [pinsByOrg, promoted] = await Promise.all([
+      getOrgAgentVersionPinsBatch(allowed),
+      getPromotedAgentVersionForDisplay(),
+    ]);
+
+    const data: Record<string, string | null> = {};
+    for (const orgId of allowed) {
+      data[orgId] = pinsByOrg[orgId]?.agent ?? promoted;
+    }
+
+    return c.json({ data });
+  },
+);
+
 // GET /agent-versions/latest - Get latest version info for platform/arch
 // This endpoint is public (no auth) so agents can check for updates
 agentVersionRoutes.get(
@@ -683,6 +777,15 @@ agentVersionRoutes.get(
           eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
+      // MUST match the tiebreak in services/promotedAgentVersion.ts, which
+      // resolves the bytes these checksums are verified against (#3499).
+      // Nothing enforces one promoted row per (component, platform, arch,
+      // edition) — the invariant is maintained by demote-then-insert, not a
+      // unique constraint — so if only one of the two ordered, a duplicate
+      // isLatest row would make them select DIFFERENT rows and hand out a
+      // checksum for a release the download route does not serve. That is
+      // #3499 all over again, and silent.
+      .orderBy(desc(agentVersions.createdAt))
       .limit(1);
 
     if (!latestVersion) {
@@ -698,6 +801,11 @@ agentVersionRoutes.get(
       platform,
       arch,
       component,
+      // Pin to the exact row this checksum came from. The promoted row IS what
+      // the versionless route resolves, so this is normally the same release —
+      // but pinning removes the last way the two can select different rows
+      // (a duplicate isLatest row breaking the ORDER BY tiebreak).
+      downloadUrlVersionPin(latestVersion.version),
     );
 
     return c.json({
@@ -787,33 +895,51 @@ agentVersionRoutes.get(
       );
     }
 
+    // #5159: pin the server-relative URL to the version that was actually
+    // requested, so the bytes the download route redirects to are the same
+    // release as the checksum/manifest returned below. Before this, the URL
+    // was versionless and the route served the PROMOTED release — fine while
+    // the pin and the promotion agreed, and an unfixable checksum mismatch
+    // whenever they did not (an org agentVersionPins pilot under
+    // AGENT_AUTO_PROMOTE=false, which resolvePinnedUpgradeTarget deliberately
+    // allows, #2124).
+    const versionPin = downloadUrlVersionPin(versionInfo.version);
+
     // breeze-backup is version-slaved to the agent but requested by EXACT
     // version (unlike agent/helper/watchdog, which always want "latest").
-    // The versionless /download/backup/:os/:arch route can only ever serve
-    // whatever the server currently considers latest (BINARY_VERSION /
-    // BREEZE_VERSION — see binarySource.getGithubReleaseVersion). Rewriting
-    // to that route for a NON-current backup version would hand an agent
-    // healing to an older pinned version newer bytes than it asked for; the
-    // updater verifies checksum+manifest against the pinned version and
-    // fails safe, but can never actually heal. So for component=backup only,
-    // rewrite exclusively when this row IS the exact version the versionless
-    // route would serve — it matches the server's own pinned version
-    // (getGithubReleaseVersion). isLatest is NOT sufficient: production runs
-    // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
-    // isLatest rows can still point at the still-rolling-out fleet version X.
-    // An agent pinned to X would then get rewritten to the versionless route,
-    // which serves Y's bytes — checksum verification fails fleet-wide for the
-    // entire deploy-to-promote window. Every other component keeps the
-    // unconditional rewrite.
-    const backupVersionIsServableByVersionlessRoute =
-      versionInfo.component !== "backup" ||
-      versionInfo.version === getGithubReleaseVersion();
+    // When the URL carries no version pin, the versionless route can only ever
+    // serve ONE release, so rewriting a NON-servable backup version to it
+    // would hand an agent healing to an older pinned version different bytes
+    // than it asked for; the updater verifies checksum+manifest against the
+    // pinned version and fails safe, but can never actually heal. So for
+    // component=backup only, and only when the URL cannot be pinned, rewrite
+    // exclusively when this row IS the one that route serves.
+    //
+    // A version pin makes the question moot: the route then resolves that
+    // exact row (getRegisteredComponentVersion) rather than the promoted one.
+    // What remains is local mode, where the route streams the single build in
+    // the binaries volume — the env-resolved version, which is what this guard
+    // has always compared against there.
+    let backupVersionIsServableByVersionlessRoute = true;
+    if (!versionPin && versionInfo.component === "backup") {
+      const versionlessRouteServes =
+        getBinarySource() === "github"
+          ? ((await getPromotedComponentVersion(
+              "backup",
+              dbPlatformToRouteOs(versionInfo.platform),
+              versionInfo.architecture,
+            )) ?? getGithubReleaseVersion())
+          : getGithubReleaseVersion();
+      backupVersionIsServableByVersionlessRoute =
+        versionInfo.version === versionlessRouteServes;
+    }
 
     const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
       ? buildServerRelativeAgentDownloadUrl(
           versionInfo.platform,
           versionInfo.architecture,
           versionInfo.component,
+          versionPin,
         )
       : null;
 
@@ -985,8 +1111,48 @@ agentVersionRoutes.post(
       // short registration instead of assuming a clean sync.
       return c.json(result);
     } catch (err) {
+      // A guard refusal (#4262) is not a routine sync failure: it means the
+      // release host resolved to a private/loopback/link-local address, which
+      // is a DNS-hijack signal. Left in the generic branch it became a 422 with
+      // no server-side trace at all — no log, no Sentry (writeRouteAudit only
+      // runs on success), so nobody could reconstruct it later. Log and
+      // escalate, and answer 502: the fault is upstream, not in the request.
+      // The response deliberately does NOT echo err.resolvedIps — internal
+      // addresses stay in the server-side log.
+      if (err instanceof SsrfBlockedError) {
+        console.error(
+          `[agentVersions] sync-github REFUSED by the SSRF guard (host=${err.hostname ?? "?"}, resolved=${err.resolvedIps?.join(", ") ?? "n/a"})`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "ssrf-blocked",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error:
+              "Release sync refused: the release host resolved to a private or link-local address. Check DNS and egress on the API host.",
+          },
+          502,
+        );
+      }
+      if (err instanceof ResponseTooLargeError) {
+        console.error(
+          `[agentVersions] sync-github aborted: response exceeded the ${err.maxBytes}-byte ceiling`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "response-too-large",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error: `Release sync aborted: the release host returned a body over the ${err.maxBytes}-byte limit.`,
+          },
+          502,
+        );
+      }
       const msg = err instanceof Error ? err.message : String(err);
       const status = msg.includes("GitHub API error") ? 502 : 422;
+      console.error(`[agentVersions] sync-github failed: ${msg}`);
       return c.json({ error: msg }, status);
     }
   },

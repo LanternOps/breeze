@@ -43,8 +43,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   // common path needs no client fetch at all.
   //
   // The fetch below is the fallback for an API that predates that field. It
-  // reads GET /portal/branding, which resolves by verified custom domain and so
-  // 404s on the shared hosted domain — fine as a fallback, not as the source.
+  // reads GET /portal/branding, which is authenticated and org-scoped; it 404s
+  // only when the org has never saved portal settings, in which case defaults
+  // apply — fine as a fallback, not as the source.
   const payloadBranding = detail?.branding;
   const [fetchedBranding, setFetchedBranding] = useState<BrandingConfig | null>(null);
   const branding: DocBranding | null = payloadBranding
@@ -64,6 +65,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
+  const [payTerminal, setPayTerminal] = useState(false);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
   const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending' | 'failed'>('idle');
 
@@ -183,8 +185,10 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
       // Terminal condition (online payment unavailable / invoice not payable). Show the
       // server's reason verbatim — "Please try again" would mislead since a retry won't help.
       setPayError(result.error || 'Online payment is not available for this invoice.');
+      setPayTerminal(true);
     } else {
       setPayError(result.error || 'Could not start the payment. Please try again.');
+      setPayTerminal(false);
     }
     setPaying(false);
   };
@@ -268,7 +272,18 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         </div>
       )}
       {payError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-pay-error">{payError}</div>
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint" data-testid="invoice-pay-error">
+          <p className="font-medium">{payError}</p>
+          {/* A terminal 409 leaves a dead button; the customer still has a bill.
+              Name the next step so the page does not end on a refusal. */}
+          {payTerminal && (
+            <p className="mt-1 text-foreground/80" data-testid="invoice-pay-next-step">
+              {branding?.partnerName
+                ? `Ask ${branding.partnerName} how to pay this invoice — they can take payment another way.`
+                : 'Ask your IT team how to pay this invoice — they can take payment another way.'}
+            </p>
+          )}
+        </div>
       )}
       {downloadError && (
         <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">{downloadError}</div>
@@ -313,6 +328,14 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                     <td className="px-4 py-3 text-foreground sm:px-5">
                       {title}
                       {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                      {l.ticketNumber && (
+                        <div
+                          className="mt-0.5 text-xs text-muted-foreground"
+                          data-testid={`invoice-line-ticket-${index}`}
+                        >
+                          Ticket #{l.ticketNumber}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

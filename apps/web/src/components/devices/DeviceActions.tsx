@@ -20,6 +20,9 @@ import {
 import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
+import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
+import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -95,9 +98,25 @@ function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
   }
 }
 
+/**
+ * Extra answers a confirm dialog collected from the operator (#3987). Today
+ * only Remove has one: whether to queue the agent uninstall. Passed through to
+ * the page-level handler, which turns it into the DELETE body.
+ */
+export interface DeviceActionOptions {
+  uninstallAgent?: boolean;
+  /**
+   * Set by a page-owned confirm dialog to mean "this already passed a gate,
+   * execute it" (#5023). Never sent by an action trigger — a handler keying on
+   * its absence is therefore gated for every present and future caller, which
+   * is the same guarantee `uninstallAgent`'s absence gives Remove.
+   */
+  confirmed?: boolean;
+}
+
 type DeviceActionsProps = {
   device: Device;
-  onAction?: (action: string, device: Device) => void;
+  onAction?: (action: string, device: Device, opts?: DeviceActionOptions) => void | Promise<void>;
   compact?: boolean;
 };
 
@@ -123,7 +142,9 @@ type ModalConfigEntry = {
 // than a bespoke modal. `destructive` = irreversible/offline-inducing; everything
 // else is `warning`.
 function getModalConfig(
-  type: Exclude<ModalType, "none">,
+  // `decommission` is deliberately absent: RemoveDeviceDialog owns the Remove
+  // copy (#3987) because Remove asks a question rather than posing a yes/no.
+  type: Exclude<ModalType, "none" | "decommission">,
   device: Device,
   t: DeviceTranslation,
 ): ModalConfigEntry {
@@ -155,32 +176,21 @@ function getModalConfig(
         confirmLabel: t("deviceActions.confirm.shutdown.confirm"),
         variant: "destructive",
       };
+    // RMM-QA-176 D10: only EXIT still confirms. Entry needs a reason, a
+    // duration and possibly a step-up factor, none of which a yes/no confirm
+    // can collect — `handleAction` routes it to the parent's
+    // MaintenanceModeDialog instead, so this case is only reached for exit.
+    // (The `deviceActions.confirm.enterMaintenance.*` keys stay in the locale
+    // files: nothing else reads them, and deleting a key across eight locales
+    // to re-add it later is churn.)
     case "maintenance":
-      return device.status === "maintenance"
-        ? {
-            title: t("deviceActions.confirm.exitMaintenance.title"),
-            message: t("deviceActions.confirm.exitMaintenance.message", {
-              hostname: device.hostname,
-            }),
-            confirmLabel: t("deviceActions.confirm.exitMaintenance.confirm"),
-            variant: "warning",
-          }
-        : {
-            title: t("deviceActions.confirm.enterMaintenance.title"),
-            message: t("deviceActions.confirm.enterMaintenance.message", {
-              hostname: device.hostname,
-            }),
-            confirmLabel: t("deviceActions.confirm.enterMaintenance.confirm"),
-            variant: "warning",
-          };
-    case "decommission":
       return {
-        title: t("deviceActions.confirm.decommission.title"),
-        message: t("deviceActions.confirm.decommission.message", {
+        title: t("deviceActions.confirm.exitMaintenance.title"),
+        message: t("deviceActions.confirm.exitMaintenance.message", {
           hostname: device.hostname,
         }),
-        confirmLabel: t("deviceActions.confirm.decommission.confirm"),
-        variant: "destructive",
+        confirmLabel: t("deviceActions.confirm.exitMaintenance.confirm"),
+        variant: "warning",
       };
     case "install-homebrew":
       return {
@@ -229,7 +239,9 @@ export default function DeviceActions({
       action === "reboot" ||
       action === "reboot_safe_mode" ||
       action === "shutdown" ||
-      action === "maintenance" ||
+      // Entry falls THROUGH to the parent (see getModalConfig); only exit
+      // confirms here.
+      (action === "maintenance" && isInMaintenance(device)) ||
       action === "decommission" ||
       action === "clear-sessions" ||
       action === "install-homebrew"
@@ -248,12 +260,17 @@ export default function DeviceActions({
     }
   };
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (opts?: DeviceActionOptions) => {
     if (modalType === "none") return;
 
     setLoading(true);
     try {
-      await onAction?.(modalType, device);
+      // Only Remove collects an answer. Forwarding a bare `undefined` for every
+      // other action would change its call arity for no reason, so the two
+      // shapes stay distinct.
+      await (opts
+        ? onAction?.(modalType, device, opts)
+        : onAction?.(modalType, device));
       setModalType("none");
     } finally {
       setLoading(false);
@@ -267,7 +284,9 @@ export default function DeviceActions({
   };
 
   const modalCfg =
-    modalType === "none" ? null : getModalConfig(modalType, device, t);
+    modalType === "none" || modalType === "decommission"
+      ? null
+      : getModalConfig(modalType, device, t);
 
   // Same JSX, testids, and handlers rendered by both the compact and full
   // menu below — computed once so the two variants can't drift.
@@ -437,7 +456,7 @@ export default function DeviceActions({
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === "maintenance"
+                {isInMaintenance(device)
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
@@ -447,11 +466,20 @@ export default function DeviceActions({
           )}
         </div>
 
-        {modalCfg && (
+        {modalType === "decommission" ? (
+          <RemoveDeviceDialog
+            open
+            targets={[{ hostname: device.hostname, status: device.status }]}
+            onClose={closeModal}
+            onConfirm={(choice) => void handleConfirm(choice)}
+            isLoading={loading}
+            confirmTestId="device-actions-remove-confirm"
+          />
+        ) : modalCfg && (
           <ConfirmDialog
             open
             onClose={closeModal}
-            onConfirm={handleConfirm}
+            onConfirm={() => void handleConfirm()}
             title={modalCfg.title}
             message={modalCfg.message}
             confirmLabel={modalCfg.confirmLabel}
@@ -491,6 +519,19 @@ export default function DeviceActions({
           <Play className="h-4 w-4" />
           {t("deviceActions.runScript")}{" "}
         </button>
+        {/* W08 of #5205 (#5246). Renders nothing unless the AI Operator flags
+            are on, so this row is unchanged for every deployment that has not
+            enabled the feature (decision D2: internal/test orgs only). No
+            `online` gate: a task is durable work with its own deadline, not an
+            immediate command — the coordinator waits for the device rather
+            than the technician having to. */}
+        <DelegateToOperatorButton
+          orgId={device.orgId}
+          deviceId={device.id}
+          deviceLabel={device.displayName || device.hostname}
+          orgLabel={device.orgName}
+          source={{ kind: "device", id: device.id }}
+        />
         <ConnectDesktopButton
           deviceId={device.id}
           disabled={!online}
@@ -567,6 +608,26 @@ export default function DeviceActions({
                 <Power className="h-4 w-4" />
                 {t("deviceActions.shutdown")}{" "}
               </button>
+              <hr className="my-1" />
+              {/* #4936: maintenance is a DB flag, not an agent command, so it
+                  carries no `!online` gate of its own — it is the action you
+                  want immediately before the Reboot above. Same label logic and
+                  same ConfirmDialog route as the "…" menu entry. NOTE: the
+                  Power BUTTON keeps its pre-existing `!online` gate (#2013), so
+                  for a device already in maintenance this dropdown cannot open
+                  and exit stays on the "…" menu; relaxing that gate is pinned by
+                  test and deliberately not touched here. */}
+              <button
+                type="button"
+                data-testid="device-power-action-maintenance"
+                onClick={() => handleAction("maintenance")}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <Shield className="h-4 w-4" />
+                {isInMaintenance(device)
+                  ? t("deviceActions.exitMaintenance")
+                  : t("deviceActions.enterMaintenance")}
+              </button>
             </div>
           )}
         </div>
@@ -601,7 +662,7 @@ export default function DeviceActions({
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === "maintenance"
+                {isInMaintenance(device)
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
@@ -655,11 +716,20 @@ export default function DeviceActions({
         </div>
       </div>
 
-      {modalCfg && (
+      {modalType === "decommission" ? (
+        <RemoveDeviceDialog
+          open
+          targets={[{ hostname: device.hostname, status: device.status }]}
+          onClose={closeModal}
+          onConfirm={(choice) => void handleConfirm(choice)}
+          isLoading={loading}
+          confirmTestId="device-actions-remove-confirm"
+        />
+      ) : modalCfg && (
         <ConfirmDialog
           open
           onClose={closeModal}
-          onConfirm={handleConfirm}
+          onConfirm={() => void handleConfirm()}
           title={modalCfg.title}
           message={modalCfg.message}
           confirmLabel={modalCfg.confirmLabel}

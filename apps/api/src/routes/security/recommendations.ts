@@ -12,12 +12,14 @@ import {
   getRecommendationStatusMap,
   buildBe9Recommendations
 } from './helpers';
+import { requireSecurityReadAccess } from './readAuthorization';
 
 export const recommendationsRoutes = new Hono();
 
 recommendationsRoutes.get(
   '/recommendations',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', recommendationsQuerySchema),
   async (c) => {
     const auth = c.get('auth');

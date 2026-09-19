@@ -59,6 +59,8 @@ describe('permissions catalog routes', () => {
       expect(keys).toContain('devices:read');
       expect(keys).toContain('audit:read');
       expect(keys).toContain('alerts:acknowledge');
+      expect(keys).toContain('backup:cross_site_restore');
+      expect(keys).toContain('workspace:credentials');
 
       // Labels are present and cover every resource/action used.
       expect(typeof body.resourceLabels).toBe('object');
@@ -67,6 +69,15 @@ describe('permissions catalog routes', () => {
         expect(body.resourceLabels[p.resource]).toBeTruthy();
         expect(body.actionLabels[p.action]).toBeTruthy();
       }
+      expect(body.actionLabels.cross_site_restore).toBe('Cross-Site Restore');
+      expect(body.resourceLabels.workspace).toBe('Workspace');
+
+      // W02: the agreements resource must carry a human label, or the role
+      // editor renders a raw `agreements` string in the resource column.
+      expect(keys).toContain('agreements:read');
+      expect(keys).toContain('agreements:write');
+      expect(body.resourceLabels.agreements).toBe('Agreements');
+      expect(body.actionLabels.credentials).toBe('Manage Credentials');
     });
 
     it('rejects unauthenticated requests', async () => {

@@ -23,6 +23,7 @@ import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent, EVENT_TYPES } from '../services/eventBus';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -880,6 +881,7 @@ async function scheduleRepeatSyncAllJob(): Promise<void> {
 
 export async function initializeDnsSyncJob(): Promise<void> {
   dnsSyncWorker = createDnsSyncWorker();
+  attachWorkerObservability(dnsSyncWorker, 'dnsSyncWorker');
 
   dnsSyncWorker.on('error', (error) => {
     console.error('[DnsSyncJob] Worker error:', error);

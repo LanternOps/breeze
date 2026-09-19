@@ -49,7 +49,10 @@ function detail(status: ContractStatus): ContractDetailData {
     lines: [
       {
         id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed services',
-        catalogItemId: null, unitPrice: '500.00', manualQuantity: null, siteId: null, taxable: false,
+        catalogItemId: null, unitPrice: '500.00', manualQuantity: null,
+        includedQuantity: null, overageMode: null, overageUnitPrice: null,
+        siteId: null, siteName: null, site: null, deviceRoles: null,
+        deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: false,
         sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
       },
     ],
@@ -60,7 +63,7 @@ function detail(status: ContractStatus): ContractDetailData {
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
-  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [] } }));
+  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null, overages: [] } }));
 });
 
 describe('ContractDetail — permission gating', () => {

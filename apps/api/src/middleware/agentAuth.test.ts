@@ -28,6 +28,11 @@ vi.mock('../db/schema', () => ({
     lastSeenIp: 'lastSeenIp',
     mtlsCertSerialNumber: 'mtlsCertSerialNumber',
   },
+  // #4673 W02 — the device auth select inner-joins this for the owning MSP.
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
   // Security remediation Wave 5, Task 6 — services/agentCertificateBinding.ts
   // (imported transitively via agentAuthMiddleware) reads this table.
   deviceMtlsCertificates: {
@@ -276,11 +281,19 @@ const VALID_TOKEN = 'brz_test_token';
 const VALID_HASH = sha(VALID_TOKEN);
 
 function buildSelectMock(result: unknown[]) {
+  // #4673 W02 — the device auth select is now
+  // `.from(devices).innerJoin(organizations, ...).where(...).limit(1)`.
+  // `innerJoin` returns the same terminal shape so callers that do NOT join
+  // (the certificate-binding lookups) keep working against this mock.
+  const terminal = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(result),
+    }),
+  };
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(result),
-      }),
+      innerJoin: vi.fn().mockReturnValue(terminal),
+      ...terminal,
     }),
   } as any);
 }
@@ -291,6 +304,10 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
     agentId: 'agent-1',
     orgId: 'org-1',
     siteId: 'site-1',
+    // #4673 W02 — the device auth select now inner-joins `organizations` to
+    // pull the owning MSP's partner id. `organizations.partner_id` is NOT
+    // NULL, so a real join always yields a value here.
+    partnerId: 'partner-1',
     agentTokenHash: VALID_HASH,
     previousTokenHash: null,
     previousTokenExpiresAt: null,
@@ -417,6 +434,60 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #6097 — the eventlogs submit route's BullMQ log-forwarding enqueue was
+  // discovered running inside the request-long wrap, pinning a pooled
+  // connection idle-in-transaction across the Redis round trip on every
+  // forwarded submit. The handler now self-manages its own short org-scoped
+  // contexts (see routes/agents/eventlogs.ts), so the middleware must NOT
+  // also wrap the whole request in its own request-long org transaction.
+  it('skips the request-long org wrap for the self-managed eventlogs route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/eventlogs' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // #6130 — the elevation-requests ingest route's per-device rateLimiter Redis
+  // round-trip ran inside the request-long wrap. The handler now opens its own
+  // org-scoped context after the limiter decides (routes/agents/elevationRequests.ts),
+  // so the middleware must NOT open one for it.
+  it('skips the request-long org wrap for the self-managed elevation-requests route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/elevation-requests' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // Negative control for the anchoring: a same-named segment under an
+  // extension mount must still get the request-long wrap.
+  it('a crafted elevation-requests TAIL under an extension mount keeps the request DB context', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/elevation-requests',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // The command RESULT route ends in `result`, not `commands` — it must keep
   // the request-long org wrap.
   it('keeps the request-long org wrap for the command result route', async () => {
@@ -436,6 +507,137 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   });
 });
 
+// #4673 Wave 2 (#4675) — populate `currentPartnerId` on the agent DB context.
+//
+// Wave 1 shipped a SELECT-only RLS branch
+// `(org_id IS NULL AND partner_id = public.breeze_current_partner_id())` across
+// the whole configuration-policy chain. That branch reads the
+// `breeze.current_partner_id` GUC, which `db/index.ts` SET LOCALs from
+// `DbAccessContext.currentPartnerId`. The agent context hard-coded that field
+// to `null`, so for agents the branch could never be true and partner-wide
+// config was invisible — which is exactly why the agent-facing resolvers had to
+// escape to a system context (`withPartnerWideVisibility`).
+//
+// These tests pin BOTH halves of the fix and, just as importantly, the part
+// that must NOT change: the GUC feeds SELECT-only policies, so `partnerId`
+// widens READS to the device's own MSP and nothing else. `accessiblePartnerIds`
+// stays `[]`, which is what gates `breeze_has_partner_access` — the partner-AXIS
+// (write-capable) predicate. If a future edit "helpfully" fills
+// `accessiblePartnerIds` too, agents gain write targeting on partner-axis tables;
+// the assertion below is the tripwire for that.
+describe('agentAuthMiddleware - currentPartnerId population (#4673 W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: Date.now() + 60_000,
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('sets currentPartnerId on the request-long org context from the device org partner', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(dbContext.currentPartnerId).toBe('partner-1');
+    expect(dbContext.scope).toBe('organization');
+    expect(dbContext.orgId).toBe('org-1');
+  });
+
+  it('does NOT widen the partner-AXIS write capability when populating currentPartnerId', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    // The read branch is SELECT-only; the write axis must stay empty.
+    expect(dbContext.accessiblePartnerIds).toEqual([]);
+    expect(dbContext.accessibleOrgIds).toEqual(['org-1']);
+  });
+
+  // The four SELF_MANAGED_DB_CONTEXT_ACTIONS routes (heartbeat, reliability,
+  // commands, eventlogs) skip the request-long wrap and hand-build their own
+  // org context. They can only populate `currentPartnerId` if the middleware
+  // surfaces the partner id on the agent context — so it must be there even
+  // on the routes where the middleware itself opens no transaction at all.
+  it('surfaces partnerId on the agent context for the self-managed heartbeat route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    // Middleware opened no wrap of its own for this route ...
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    // ... so the handler must be able to build one itself.
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+    expect((c.get('agent') as unknown as { orgId: string }).orgId).toBe('org-1');
+  });
+
+  it('surfaces partnerId on the agent context for the self-managed reliability route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/reliability' });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+  });
+
+  it('surfaces partnerId on the agent context for the self-managed eventlogs route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/eventlogs' });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+  });
+
+  // Devices in a DIFFERENT org must carry THAT org's partner, never a stale or
+  // hard-coded one. A join that silently resolved to the wrong row would hand an
+  // agent read visibility into a foreign MSP's partner-wide config — the exact
+  // cross-tenant shape this whole chain exists to prevent.
+  it('carries the joined partner id of the device own org, not a fixed value', async () => {
+    buildSelectMock([makeDevice({ orgId: 'org-9', partnerId: 'partner-9' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(dbContext.currentPartnerId).toBe('partner-9');
+    expect(dbContext.orgId).toBe('org-9');
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-9');
+  });
+});
+
 // Security remediation Wave 5, Task 6 — the shared certificate/device
 // binding decision (services/agentCertificateBinding.ts) runs inside
 // agentAuthMiddleware after bearer + tenant-status checks. Sequenced select
@@ -445,12 +647,18 @@ const ACTIVE_SERIAL = 'AABBCCDDEEFF00112233';
 const OTHER_SERIAL = '00112233AABBCCDDEEFF';
 
 function queueSelectOnce(rows: unknown[]) {
+  // See buildSelectMock — `.innerJoin(...)` must be chainable for the device
+  // auth select (#4673 W02) without disturbing the un-joined lookups.
+  const terminal = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(rows),
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+    }),
+  };
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
-        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
-      }),
+      innerJoin: vi.fn().mockReturnValue(terminal),
+      ...terminal,
     }),
   } as any);
 }
@@ -600,7 +808,8 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
     '/api/v1/agents/agent-1/heartbeat',
     '/api/v1/agents/agent-1/commands',
     '/api/v1/agents/agent-1/commands/cmd-1/result',
-    '/api/v1/agents/agent-1/rotate-token',
+    // NOTE: `rotate-token` (the MINT half) is deliberately absent — #3997
+    // took it off the TENANT drain surface too. `rotate-token/confirm` stays.
     '/api/v1/agents/agent-1/rotate-token/confirm',
     '/api/v1/agents/agent-1/logs',
   ];
@@ -619,6 +828,8 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
   }
 
   const blockedPaths = [
+    // #3997 — the credential MINT is off the tenant drain surface.
+    '/api/v1/agents/agent-1/rotate-token',
     '/api/v1/agents/agent-1/hardware',
     '/api/v1/agents/agent-1/software',
     '/api/v1/agents/agent-1/config',
@@ -691,7 +902,7 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
 //   L1  — the auth gate itself (denied unless the shared predicate says drain)
 //   L1b — role: main agent only, never the watchdog credential
 //   L2  — the route surface a draining device gets (heartbeat/commands/result/
-//         logs/rotate-token, and NOTHING else — the layer that keeps
+//         logs, and NOTHING else — the layer that keeps
 //         recovery-key ingest, PAM elevation, inventory and every extension
 //         `<prefix>/agent/:id/*` route shut)
 //   L3  — one derived command-type allowlist on the agent context
@@ -946,6 +1157,9 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     ['recovery-keys', '/api/v1/agents/agent-1/security/recovery-keys'],
     // PAM elevation requests.
     ['elevation-requests', '/api/v1/agents/agent-1/elevation-requests'],
+    // PAM reconciliation ownership reads are intentionally unavailable while
+    // either tenant or device drain has narrowed the agent surface.
+    ['pam-reconciliation-bindings', '/api/v1/agents/agent-1/pam/reconciliation-bindings'],
     // Inventory push.
     ['inventory (hardware)', '/api/v1/agents/agent-1/hardware'],
     ['inventory (software)', '/api/v1/agents/agent-1/software'],
@@ -1196,20 +1410,61 @@ describe('agentAuthMiddleware - rotate-token is off the device drain surface (#3
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  it('a TENANT drain keeps rotate-token (the #2774 surface is unchanged)', async () => {
-    // The two drain kinds have different action sets on purpose. An offboarding
-    // customer's machines are legitimately alive and still need rotations to
-    // complete; a removed machine does not.
+  it('a TENANT drain ALSO refuses rotate-token (#3997 — the mint is off both surfaces)', async () => {
+    // #3997: the device-axis reasoning applies verbatim to the tenant axis.
+    // Nothing revokes a credential minted inside the window — the abort paths
+    // (`abortOrganizationOffboarding` / `abortPartnerOffboarding`) cancel the
+    // queued uninstalls and never sever agent credentials — so a rotation
+    // performed during the drain becomes the LIVE credential set the moment
+    // the offboarding is aborted and the tenant comes back active.
     vi.mocked(getAgentTenantState).mockResolvedValue('draining');
     vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
     buildSelectMock([makeDevice({ status: 'online' })]);
 
     const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+  });
+
+  it('a TENANT drain still allows rotate-token/confirm (#3997 keeps #2774 mid-stage rotations unstranded)', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/rotate-token/confirm',
+    });
     const next = vi.fn().mockResolvedValue(undefined);
 
     await agentAuthMiddleware(c, next);
 
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('the two drain action sets are now identical, so their intersection is neither set narrowed away (#3997)', async () => {
+    // Guards the composition, not a path: BOTH_DRAINS_ALLOWED_ACTIONS is the
+    // intersection of two sets that are now equal, so a tenant-draining
+    // removed device keeps the full drain surface rather than collapsing to {}.
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    for (const path of [
+      '/api/v1/agents/agent-1/heartbeat',
+      '/api/v1/agents/agent-1/commands',
+      '/api/v1/agents/agent-1/logs',
+    ]) {
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+      await agentAuthMiddleware(c, next);
+      expect(next, path).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

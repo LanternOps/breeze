@@ -14,6 +14,7 @@ import { useFeatureLink } from "./useFeatureLink";
 import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
 import AlertRuleTestModal from "./AlertRuleTestModal";
+import RationaleField from "./RationaleField";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 // The exact metric-name domain the API threshold evaluator resolves
@@ -83,6 +84,9 @@ type AlertItem = {
   titleTemplate?: string;
   messageTemplate?: string;
   sortOrder?: number;
+  /** Fleet Designer W03 (#5653): why this rule exists; null/undefined for a
+   *  manually-authored rule. */
+  rationale?: string | null;
 };
 const defaultItem: AlertItem = {
   name: "",
@@ -570,7 +574,7 @@ export default function AlertRuleTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "alert_rule",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "alert_rule");
@@ -584,7 +588,7 @@ export default function AlertRuleTab({
     clearError();
     const result = await save(null, {
       featureType: "alert_rule",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "alert_rule");
@@ -1260,6 +1264,12 @@ export default function AlertRuleTab({
                       </label>
                     </div>
                   </div>
+
+                  <RationaleField
+                    value={item.rationale}
+                    onChange={(rationale) => updateItem(index, { rationale })}
+                    testId={`alert-rule-rationale-${index}`}
+                  />
 
                   {/* Test against a real device. Disabled while the rule holds a
                       condition the write schema rejects: the server would refuse

@@ -9,6 +9,14 @@ vi.mock('../../services/contractService', () => ({
   deleteDraftContract: vi.fn(),
   addContractLineToContract: vi.fn(),
   removeContractLine: vi.fn(),
+  updateContractLine: vi.fn(),
+  contractLineAuditDetails: vi.fn((audit: any) => ({
+    contractLineId: audit.contractLineId,
+    lineType: audit.lineType,
+    ...(audit.changedFields !== undefined ? { changedFields: audit.changedFields } : {}),
+    ...(audit.oldUnitPrice !== undefined ? { oldUnitPrice: audit.oldUnitPrice } : {}),
+    ...(audit.newUnitPrice !== undefined ? { newUnitPrice: audit.newUnitPrice } : {}),
+  })),
   activateContract: vi.fn(),
   pauseContract: vi.fn(),
   resumeContract: vi.fn(),
@@ -16,6 +24,12 @@ vi.mock('../../services/contractService', () => ({
   generateDueInvoice: vi.fn(),
   computeContractEstimate: vi.fn(),
   changeContractCurrency: vi.fn()
+}));
+
+// #3205 W03: the three line routes now audit. Stub the durable audit chain so
+// route tests assert the CALL, not the persistence path.
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
 }));
 
 // Mock db context helpers used by /generate route.
@@ -61,6 +75,8 @@ vi.mock('../../middleware/auth', () => ({
 import { contractRoutes } from './index';
 import * as svc from '../../services/contractService';
 import { ContractServiceError } from '../../services/contractTypes';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { contractLineRoutes } from './lines';
 
 function app() {
   // contractRoutes already applies authMiddleware internally
@@ -196,11 +212,208 @@ describe('contract line routes', () => {
     expect(svc.addContractLineToContract).not.toHaveBeenCalled();
   });
 
-  it('DELETE /:id/lines/:lineId removes a line', async () => {
-    (svc.removeContractLine as any).mockResolvedValue({ ok: true });
+  it('POST /:id/lines accepts a per_device_role line and forwards deviceRoles (#3205)', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID });
+    const res = await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: true, deviceRoles: ['switch', 'router'] })
+    });
+    expect(res.status).toBe(200);
+    expect((svc.addContractLineToContract as any).mock.calls[0][1]).toMatchObject({ lineType: 'per_device_role', deviceRoles: ['switch', 'router'] });
+  });
+
+  it('POST /:id/lines accepts a valid allowance line and 400s on each violation (#3205 W04)', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID });
+    const post = (body: unknown) => app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const ok = {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    };
+    expect((await post(ok)).status).toBe(200);
+    for (const bad of [
+      { ...ok, overageMode: undefined, overageUnitPrice: undefined },
+      { ...ok, includedQuantity: undefined },
+      { ...ok, includedQuantity: '0' },
+      { ...ok, includedQuantity: '25.5' },
+      { ...ok, overageMode: 'flag' },
+      { ...ok, lineType: 'flat' },
+    ]) {
+      expect((await post(bad)).status).toBe(400);
+    }
+    expect(svc.addContractLineToContract).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /:id/lines rejects a per_device_role line without deviceRoles (400, no service call)', async () => {
+    const res = await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: true })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /:id/lines/:lineId forwards (contractId, lineId, patch, actor) and returns the line', async () => {
+    (svc.updateContractLine as any).mockResolvedValue({
+      line: { id: LINE_ID, description: 'Renamed', site: null, deviceGroup: null },
+      audit: { orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'flat', changedFields: ['description'] },
+    });
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'Renamed' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.description).toBe('Renamed');
+    expect(svc.updateContractLine).toHaveBeenCalledWith(CONTRACT_ID, LINE_ID, { description: 'Renamed' }, expect.anything());
+  });
+
+  it('PATCH rejects a body containing lineType, with no service call', async () => {
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'Renamed', lineType: 'flat' }),
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateContractLine).not.toHaveBeenCalled();
+  });
+
+  it('PATCH rejects a non-GUID lineId param, with no service call', async () => {
+    const res = await app().request(`/${CONTRACT_ID}/lines/not-a-guid`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'Renamed' }),
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateContractLine).not.toHaveBeenCalled();
+  });
+
+  it('PATCH renders a ContractServiceError with code and details intact', async () => {
+    (svc.updateContractLine as any).mockRejectedValue(
+      new ContractServiceError('bad patch', 400, 'INVALID_LINE_PATCH', { issues: [{ path: 'siteId', message: 'nope' }] }),
+    );
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ siteId: null }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad patch', code: 'INVALID_LINE_PATCH', details: { issues: [{ path: 'siteId', message: 'nope' }] } });
+  });
+
+  it('PATCH maps a 409 INVALID_STATE through handleContractError', async () => {
+    (svc.updateContractLine as any).mockRejectedValue(new ContractServiceError('not editable', 409, 'INVALID_STATE'));
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ description: 'x' }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('INVALID_STATE');
+  });
+
+  // ---- audit -------------------------------------------------------------
+  it('writes contract.line.updated once, against the CONTRACT id', async () => {
+    (svc.updateContractLine as any).mockResolvedValue({
+      line: { id: LINE_ID },
+      audit: { orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'flat', changedFields: ['unitPrice'], oldUnitPrice: '10.00', newUnitPrice: '12.00' },
+    });
+    await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ unitPrice: '12.00' }),
+    });
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect((writeRouteAudit as any).mock.calls[0][1]).toEqual({
+      orgId: ORG_ID, action: 'contract.line.updated', resourceType: 'contract',
+      resourceId: CONTRACT_ID, resourceName: 'Acme MSA',
+      details: { contractLineId: LINE_ID, lineType: 'flat', changedFields: ['unitPrice'], oldUnitPrice: '10.00', newUnitPrice: '12.00' },
+    });
+  });
+
+  it('writes NO audit event when the service reports changedFields: []', async () => {
+    (svc.updateContractLine as any).mockResolvedValue({
+      line: { id: LINE_ID },
+      audit: { orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'flat', changedFields: [] },
+    });
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ description: 'same' }),
+    });
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('POST writes contract.line.added with the new price', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({
+      id: LINE_ID, orgId: ORG_ID, lineType: 'flat', unitPrice: '150.00', contractName: 'Acme MSA',
+    });
+    await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'flat', description: 'Monthly fee', unitPrice: '150.00', taxable: true }),
+    });
+    expect((writeRouteAudit as any).mock.calls[0][1]).toMatchObject({
+      action: 'contract.line.added', resourceType: 'contract', resourceId: CONTRACT_ID,
+      resourceName: 'Acme MSA',
+      details: { contractLineId: LINE_ID, lineType: 'flat', newUnitPrice: '150.00' },
+    });
+  });
+
+  it('DELETE returns { ok: true } and writes contract.line.removed', async () => {
+    (svc.removeContractLine as any).mockResolvedValue({
+      orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'per_seat',
+    });
     const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ok: true } });
     expect(svc.removeContractLine).toHaveBeenCalledWith(CONTRACT_ID, LINE_ID, expect.anything());
+    expect((writeRouteAudit as any).mock.calls[0][1]).toMatchObject({
+      action: 'contract.line.removed', details: { contractLineId: LINE_ID, lineType: 'per_seat' },
+    });
+  });
+
+  it('DELETE returns 404 when the service throws LINE_NOT_FOUND', async () => {
+    (svc.removeContractLine as any).mockRejectedValue(new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND'));
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('LINE_NOT_FOUND');
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  // The suite stubs requirePermission, so a real 403 cannot be asserted here.
+  // What CAN be pinned is that PATCH is registered behind the same middleware
+  // chain as its siblings — scopes, writePerm, param validator (+ the json
+  // validator PATCH alone carries) — so it cannot ship unguarded.
+  it('PATCH is registered behind the same scope and permission middleware as DELETE, plus a body validator', () => {
+    const onPath = contractLineRoutes.routes.filter((r) => r.path === '/:id/lines/:lineId');
+    const patch = onPath.filter((r) => r.method === 'PATCH');
+    const del = onPath.filter((r) => r.method === 'DELETE');
+    expect(del.length).toBeGreaterThan(0);
+    expect(patch).toHaveLength(del.length + 1);
+  });
+
+  // Decision 6's no-free-text rule, enforced at the boundary that persists it.
+  it.each([
+    ['contract.line.added'],
+    ['contract.line.updated'],
+    ['contract.line.removed'],
+  ])('the %s details object carries no free text', async (action) => {
+    const AUDIT = { orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'flat' };
+    if (action === 'contract.line.added') {
+      (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID, orgId: ORG_ID, lineType: 'flat', unitPrice: '1.00' });
+      await app().request(`/${CONTRACT_ID}/lines`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ lineType: 'flat', description: 'Secret name', unitPrice: '1.00', taxable: false }),
+      });
+    } else if (action === 'contract.line.updated') {
+      (svc.updateContractLine as any).mockResolvedValue({ line: { id: LINE_ID }, audit: { ...AUDIT, changedFields: ['description'] } });
+      await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ description: 'Secret name' }),
+      });
+    } else {
+      (svc.removeContractLine as any).mockResolvedValue(AUDIT);
+      await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
+    }
+    const details = (writeRouteAudit as any).mock.calls[0][1].details as Record<string, unknown>;
+    const allowed = ['contractLineId', 'lineType', 'changedFields', 'oldUnitPrice', 'newUnitPrice'];
+    expect(Object.keys(details).every((k) => allowed.includes(k))).toBe(true);
+    expect(JSON.stringify(details)).not.toContain('Secret name');
   });
 });
 
@@ -268,6 +481,33 @@ describe('contract generate route', () => {
     expect(svc.generateDueInvoice).toHaveBeenCalledWith(CONTRACT_ID);
   });
 
+  it('POST /:id/generate returns overages verbatim (#3205 W04)', async () => {
+    (svc.getContract as any).mockResolvedValue({ id: CONTRACT_ID, status: 'active' });
+    const overages = [{ contractLineId: LINE_ID, invoiceLineId: 'invoice-line-overage-1', description: 'Endpoints', counted: 30, included: 25, overage: 5, mode: 'bill' }];
+    const generated = {
+      generated: true, invoiceId: 'inv-1', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages,
+    };
+    (svc.generateDueInvoice as any).mockResolvedValue(generated);
+    const res = await app().request(`/${CONTRACT_ID}/generate`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: {
+      generated: true,
+      invoiceId: 'inv-1',
+      autoIssue: false,
+      priceBookGaps: [],
+      uncoveredDevices: null,
+      overages: [{
+        contractLineId: LINE_ID,
+        invoiceLineId: 'invoice-line-overage-1',
+        description: 'Endpoints',
+        counted: 30,
+        included: 25,
+        overage: 5,
+        mode: 'bill',
+      }],
+    } });
+  });
+
   it('POST /:id/generate maps a CONTRACT_NOT_FOUND to 404 (authorize gate fires)', async () => {
     (svc.getContract as any).mockRejectedValue(
       new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND')
@@ -303,6 +543,47 @@ describe('contract generate route', () => {
       lines: [{ lineId: LINE_ID, lineType: 'per_device', quantity: 9, value: '450.00', live: true }],
     } });
     expect(svc.computeContractEstimate).toHaveBeenCalledWith(CONTRACT_ID, expect.objectContaining({ partnerId: 'p1' }));
+  });
+
+  it('GET /:id/estimate returns the allowance fields and overages verbatim (#3205 W04)', async () => {
+    const estimate = {
+      currencyCode: 'USD', periodTotal: '250.00',
+      lines: [{
+        lineId: LINE_ID, lineType: 'per_device', quantity: 25, value: '250.00', live: true,
+        counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00',
+      }],
+      uncoveredDevices: null,
+      overages: [{ contractLineId: LINE_ID, invoiceLineId: null, description: 'Endpoints', counted: 26, included: 25, overage: 1, mode: 'flag' }],
+    };
+    (svc.computeContractEstimate as any).mockResolvedValue(estimate);
+    const res = await app().request(`/${CONTRACT_ID}/estimate`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: {
+      currencyCode: 'USD',
+      periodTotal: '250.00',
+      lines: [{
+        lineId: LINE_ID,
+        lineType: 'per_device',
+        quantity: 25,
+        value: '250.00',
+        live: true,
+        counted: 26,
+        included: 25,
+        overage: 1,
+        overageMode: 'flag',
+        overageValue: '0.00',
+      }],
+      uncoveredDevices: null,
+      overages: [{
+        contractLineId: LINE_ID,
+        invoiceLineId: null,
+        description: 'Endpoints',
+        counted: 26,
+        included: 25,
+        overage: 1,
+        mode: 'flag',
+      }],
+    } });
   });
 });
 

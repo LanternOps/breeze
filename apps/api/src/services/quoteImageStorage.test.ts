@@ -12,7 +12,7 @@ vi.mock('./urlSafety', async (importActual) => {
   return { ...actual, safeFetch: vi.fn() };
 });
 
-import { fetchRemoteImage, RemoteImageError, MAX_QUOTE_IMAGE_SIZE_BYTES } from './quoteImageStorage';
+import { fetchRemoteImage, RemoteImageError, MAX_QUOTE_IMAGE_SIZE_BYTES, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from './quoteImageStorage';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
 const safeFetchMock = vi.mocked(safeFetch);
@@ -20,6 +20,10 @@ const safeFetchMock = vi.mocked(safeFetch);
 // A minimal but valid PNG magic-byte header (>= 12 bytes) so the real
 // sniffImageMime recognizes it.
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+
+// A minimal but valid WebP "RIFF....WEBP" header (>= 12 bytes) so the real
+// sniffImageMime recognizes it as image/webp.
+const WEBP = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
 
 // Minimal stub of just the Response surface fetchRemoteImage uses (`ok`,
 // `headers.get`, `arrayBuffer`). Avoids undici recomputing a real Response's
@@ -64,6 +68,20 @@ describe('fetchRemoteImage', () => {
   it('rejects bytes that are not a supported image even if the URL claims one', async () => {
     safeFetchMock.mockResolvedValue(res(Buffer.from('<!doctype html><html></html>')));
     await expect(fetchRemoteImage('https://cdn/looks-like.png')).rejects.toMatchObject({ reason: 'not_image' });
+  });
+
+  // #3483: pdfkit (the quote PDF renderer) can only embed PNG/JPEG — doc.image()
+  // throws on WebP, and the render loop's catch-and-continue silently dropped
+  // the image from the exported PDF with no error surfaced anywhere. Reject it
+  // here, at the URL-import boundary, with a message that tells the author why
+  // and what to do instead — rather than accepting bytes sniffImageMime happily
+  // recognizes as a real image, only to have them vanish downstream.
+  it('rejects a real WebP image with a clear message, distinct from "not an image"', async () => {
+    safeFetchMock.mockResolvedValue(res(WEBP));
+    await expect(fetchRemoteImage('https://cdn/photo.webp')).rejects.toMatchObject({
+      reason: 'not_image',
+      message: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE,
+    });
   });
 
   it('rejects a buffer over the 5 MB cap', async () => {

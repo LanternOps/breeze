@@ -58,6 +58,7 @@ describe('warranty provider request throttling (#3201)', () => {
 
   it('Lenovo: acquires the limiter on every request when configured', async () => {
     vi.stubEnv('LENOVO_API_KEY', 'test-client-id');
+    vi.stubEnv('LENOVO_WARRANTY_ENABLED', '');
     await lenovoProvider.lookup(['a']);
     await lenovoProvider.lookup(['b']);
     expect(lenovoAcquire).toHaveBeenCalledTimes(2);
@@ -65,6 +66,7 @@ describe('warranty provider request throttling (#3201)', () => {
 
   it('Lenovo: no API key → no vendor calls and no acquire', async () => {
     vi.stubEnv('LENOVO_API_KEY', '');
+    vi.stubEnv('LENOVO_WARRANTY_ENABLED', '');
     await lenovoProvider.lookup(['a', 'b', 'c']);
     expect(lenovoAcquire).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

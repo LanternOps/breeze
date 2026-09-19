@@ -39,8 +39,9 @@ import type { RegisterableExtensionWebAsset } from './webAssets';
  * these tests need no database, no filesystem, and never import
  * `@breeze/ext-workspace` themselves:
  * the built-in LIST is itself a port, so a fixture extension stands in for the
- * real one. Only the last suite (`BUILTIN_EXTENSION_NAMES`) looks at the real
- * registration, and only at its name.
+ * real one. Only the `BUILTIN_EXTENSION_NAMES` suite looks at the real
+ * registration: it pins the static registry fields and resolves the manifest
+ * once to catch name drift.
  *
  * The in-memory state backend mirrors the Drizzle backend's semantics: a fresh
  * row is born `enabled: true` /
@@ -174,6 +175,7 @@ function fixtureModule(): BreezeExtensionV1 {
 function fixtureBuiltin(overrides: Partial<BuiltinExtension> = {}): BuiltinExtension {
   return {
     module: fixtureModule(),
+    name: NAME,
     manifest: fixtureManifest(),
     packageDir: 'ee/demo-builtin',
     packageName: '@breeze/ext-demo-builtin',
@@ -240,7 +242,9 @@ function createHarness(overrides: {
     builtins: overrides.builtins ?? [fixtureBuiltin()],
     createMigrationSql: () => { migrationSqlOpens.count += 1; return null; },
     runMigrations: async () => {},
+    checkMigrationParity: async () => {},
     publishTenancy: (manifest) => { calls.push('tenancy'); publishedTenancy.push(manifest); },
+    builtinEverMigrated: async () => false,
     existingDeclaredTables: async () => { calls.push('probe'); return []; },
     ...(overrides.realStage ? {} : {
       stageExtension: async (_module: BreezeExtensionV1, manifest: ExtensionManifestV1) => {
@@ -252,6 +256,7 @@ function createHarness(overrides: {
       calls.push('validate');
       validatedTenancy.push({ name, tenancy });
     },
+    validatePublicTables: async () => {},
     registerRateLimitSkip: (prefix) => { rateLimitPrefixes.push(prefix); },
     webDistExists: () => true,
     readWebDist: () => FIXTURE_WEB_ASSET,
@@ -272,6 +277,11 @@ function createHarness(overrides: {
     calls.push('migration');
     await runMigrations(builtin, sql, stateStore);
   };
+  const checkMigrationParity = ports.checkMigrationParity!;
+  ports.checkMigrationParity = async (builtin, sql) => {
+    calls.push('migration');
+    await checkMigrationParity(builtin, sql);
+  };
 
   return {
     registry,
@@ -282,7 +292,7 @@ function createHarness(overrides: {
     registeredWebAssets,
     publishedTenancy,
     validatedTenancy,
-    load: () => loadBuiltinExtensions({ registry, stateStore, ports }),
+    load: (mode?: 'full' | 'worker') => loadBuiltinExtensions({ registry, stateStore, ports, mode }),
   };
 }
 
@@ -339,6 +349,64 @@ describe('loadBuiltinExtensions', () => {
     expect(h.registry.get(NAME)?.enabled).toBe(false);
     expect(setEnabled).not.toHaveBeenCalled();
     expect((await stateStore.get(NAME))?.enabled).toBe(false);
+  });
+
+  // Regression for #3468: `activeVersion` must be written to
+  // `installed_extensions` only AFTER `registry.activate()` succeeds, not
+  // observed alongside `configuredVersion` before it runs. Two real built-ins
+  // registered, the second sharing the first's `routeNamespace` so
+  // `ExtensionContributionRegistry.activate` genuinely throws (a real
+  // namespace-collision failure, not a mocked one) partway through the second
+  // builtin's staged pipeline.
+  it('a mid-pipeline activation failure on the second built-in leaves the first correctly active and records no phantom activeVersion for the second', async () => {
+    const NAME_2 = 'demo-builtin-2';
+    const VERSION_2 = '2.0.0';
+    const ENABLE_ENV_VAR_2 = 'BREEZE_DEMO_BUILTIN_2_ENABLED';
+    const builtin2 = fixtureBuiltin({
+      name: NAME_2,
+      enableEnvVar: ENABLE_ENV_VAR_2,
+      // Same NAMESPACE as the first builtin (fixtureManifest's default) —
+      // ExtensionContributionRegistry.activate() throws a real "route
+      // namespace already owned" error for this, once the first builtin is
+      // already active.
+      manifest: fixtureManifest({ name: NAME_2, version: VERSION_2 }),
+    });
+
+    process.env[ENABLE_ENV_VAR_2] = 'true';
+    try {
+      const h = createHarness({ builtins: [fixtureBuiltin(), builtin2] });
+
+      await expect(h.load()).rejects.toThrow(/route namespace .* is already owned by extension "demo-builtin"/i);
+
+      // Full pipeline ran for builtin 1, and got as far as 'activate' (where
+      // it throws) for builtin 2 — nothing downstream of that ran for it.
+      expect(h.calls).toEqual([
+        'migration', 'tenancy', 'stage', 'validate', 'activate', 'web',
+        'migration', 'tenancy', 'stage', 'validate', 'activate',
+      ]);
+
+      // Built-in 1: unaffected by built-in 2's later failure — still
+      // correctly activated with its real active version recorded.
+      const snapshot1 = h.registry.get(NAME);
+      expect(snapshot1?.enabled).toBe(true);
+      expect(snapshot1?.version).toBe(VERSION);
+      const row1 = await h.stateStore.get(NAME);
+      expect(row1?.activeVersion).toBe(VERSION);
+      expect(row1?.lifecycleState).toBe('active');
+
+      // Built-in 2: activate() threw, so it never reached the registry, and
+      // — this is the bug this test guards against — `installed_extensions`
+      // must NOT claim an active version that was never actually activated.
+      // upsertObserved ran (before activate) and seeded configuredVersion,
+      // but recordActive (after activate) never ran.
+      expect(h.registry.get(NAME_2)).toBeUndefined();
+      const row2 = await h.stateStore.get(NAME_2);
+      expect(row2?.configuredVersion).toBe(VERSION_2);
+      expect(row2?.activeVersion).toBeNull();
+      expect(row2?.lifecycleState).toBe('discovered');
+    } finally {
+      delete process.env[ENABLE_ENV_VAR_2];
+    }
   });
 
   it('registers agent rate-limit skip prefixes when agentRoutes is true', async () => {
@@ -460,6 +528,66 @@ describe('loadBuiltinExtensions', () => {
     expect(h.calls).toEqual(['migration']);
     expect(h.registry.get(NAME)).toBeUndefined();
     expect(await h.stateStore.get(NAME)).toBeNull();
+  });
+});
+
+/**
+ * `mode: 'worker'` (wave 3.5d-b, #4086) — the counterpart pipeline for a
+ * `BREEZE_ROLE=worker` process: parity-check-never-apply instead of
+ * migrate, and no web-asset registration (a worker has no HTTP server to
+ * serve it from). Everything else (publish tenancy, stage, validate, seed
+ * state, activate) runs identically to `'full'`.
+ */
+describe('loadBuiltinExtensions — mode: worker', () => {
+  enableFixtureBuiltin();
+
+  it('runs parity-check instead of migrate, activates, and skips web-asset registration', async () => {
+    const h = createHarness();
+    await h.load('worker');
+
+    // Same phase order as 'full', minus the trailing 'web' step.
+    expect(h.calls).toEqual(['migration', 'tenancy', 'stage', 'validate', 'activate']);
+    expect(h.registeredWebAssets).toEqual([]);
+
+    const snapshot = h.registry.get(NAME);
+    expect(snapshot?.enabled).toBe(true);
+    expect(snapshot?.version).toBe(VERSION);
+
+    const row = await h.stateStore.get(NAME);
+    expect(row?.enabled).toBe(true);
+    expect(row?.activeVersion).toBe(VERSION);
+    expect(row?.lifecycleState).toBe('active');
+  });
+
+  it('never calls runMigrations (the apply path) in worker mode', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const h = createHarness({ ports: { runMigrations } });
+    await h.load('worker');
+    expect(runMigrations).not.toHaveBeenCalled();
+  });
+
+  it('aborts boot when the built-in is not at migration parity', async () => {
+    const boom = new Error(
+      '[extensions] built-in "demo-builtin" is not at migration parity on a worker-role process ' +
+        '(missing from ledger: demo-builtin/0001-init.sql) — an api/all-role process must apply its migrations first',
+    );
+    const h = createHarness({ ports: { checkMigrationParity: async () => { throw boom; } } });
+
+    await expect(h.load('worker')).rejects.toBe(boom);
+
+    // Aborted AT the parity-check phase: nothing downstream ran.
+    expect(h.calls).toEqual(['migration']);
+    expect(h.registry.get(NAME)).toBeUndefined();
+    expect(await h.stateStore.get(NAME)).toBeNull();
+  });
+
+  it('defaults to full mode when `mode` is omitted', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const checkMigrationParity = vi.fn(async () => {});
+    const h = createHarness({ ports: { runMigrations, checkMigrationParity } });
+    await h.load();
+    expect(runMigrations).toHaveBeenCalledTimes(1);
+    expect(checkMigrationParity).not.toHaveBeenCalled();
   });
 });
 
@@ -739,6 +867,120 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
   });
 });
 
+describe('loadBuiltinExtensions — disabled built-in with an unreadable manifest (#3470)', () => {
+  afterEach(() => {
+    delete process.env[ENABLE_ENV_VAR];
+  });
+
+  function unreadableBuiltin(manifestError: Error): BuiltinExtension {
+    const builtin = fixtureBuiltin();
+    Object.defineProperty(builtin, 'manifest', {
+      get() {
+        throw manifestError;
+      },
+    });
+    return builtin;
+  }
+
+  function captureWarnings() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+
+  it('continues when the ledger shows the disabled built-in never migrated', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const builtinEverMigrated = vi.fn(async () => false);
+    const existingDeclaredTables = vi.fn(async () => []);
+    const warn = captureWarnings();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated, existingDeclaredTables },
+      });
+
+      await expect(h.load()).resolves.toBeUndefined();
+
+      expect(h.publishedTenancy).toEqual([]);
+      expect(h.validatedTenancy).toEqual([]);
+      expect(existingDeclaredTables).not.toHaveBeenCalled();
+      expect(builtinEverMigrated).toHaveBeenCalledWith(NAME);
+
+      // The ordinary skip line still comes first, at warn.
+      const warnings = warn.mock.calls.map((args) => args.join(' '));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('builtin_extension_disabled');
+
+      // The continue-on-an-inference line is ERROR, not warn: it is the only
+      // branch here that proceeds without proof, so it must not sit at the same
+      // level as the routine "this built-in is switched off" line.
+      const errors = error.mock.calls.map((args) => args.join(' '));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('builtin_extension_manifest_unavailable');
+      expect(errors[0]).toContain(`"extension":"${NAME}"`);
+      expect(errors[0]).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+      // The assumption the skip rests on is named in the line itself, so an
+      // operator reading it knows what would invalidate it.
+      expect(errors[0]).toContain('migration ledger is intact');
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('fails when the disabled built-in has applied migrations', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated: async () => true },
+      });
+
+      const error = await h.load().then(() => null, (caught: unknown) => caught as Error);
+      expect(error?.message).toContain(NAME);
+      expect(error?.message).toContain(ENABLE_ENV_VAR);
+      expect(error?.message).toContain('tenancy');
+      expect(error?.message).toContain('cascades');
+      expect(error?.cause).toBe(manifestError);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fails closed when the migration-ledger probe itself throws', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const probeError = new Error('ledger connection refused');
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated: async () => { throw probeError; } },
+      });
+
+      const error = await h.load().then(() => null, (caught: unknown) => caught as Error);
+      expect(error?.message).toContain(NAME);
+      expect(error?.message).toContain('manifest was also unavailable');
+      expect(error?.message).toContain('cannot decide whether it left tables behind');
+      expect(error?.cause).toBe(probeError);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('propagates the manifest error without a ledger probe when the built-in is enabled', async () => {
+    process.env[ENABLE_ENV_VAR] = 'true';
+    const manifestError = new Error('manifest fixture is unreadable');
+    const builtinEverMigrated = vi.fn(async () => false);
+    const h = createHarness({
+      builtins: [unreadableBuiltin(manifestError)],
+      ports: { builtinEverMigrated },
+    });
+
+    await expect(h.load()).rejects.toBe(manifestError);
+    expect(builtinEverMigrated).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * Restores the `/helper/*` auth coverage that was dropped along with the
  * workspace legacy manifest: the gateway keys core helper auth off the
@@ -793,7 +1035,7 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
    * renaming it silently would leave every one of those switching nothing.
    */
   it('gates the workspace built-in on BREEZE_WORKSPACE_ENABLED, default off', () => {
-    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
     expect(workspace?.enableEnvVar).toBe('BREEZE_WORKSPACE_ENABLED');
 
     const previous = process.env.BREEZE_WORKSPACE_ENABLED;
@@ -818,8 +1060,27 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
    * against the real registry entry, not a fixture.
    */
   it('keeps workspace /helper/* behind core helper auth', () => {
-    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
     expect(workspace?.helperRoutes).toBe(true);
+  });
+
+  /**
+   * The static `name` is what the disabled path probes the migration ledger
+   * with when the manifest cannot be read, so it MUST match the shipped
+   * `manifest.name`. `defineBuiltin` already enforces that at resolution time —
+   * which is exactly why the assertion here is `not.toThrow()` and not an
+   * equality check: an equality check could never observe a mismatch, because
+   * the getter throws before returning one. What this test contributes is
+   * FORCING that resolution against the REAL ee/workspace/manifest.json (every
+   * other suite in this file uses a fixture and never touches `.manifest` on
+   * the real registry), so a drift between the two lands here at test time
+   * instead of at boot.
+   */
+  it('resolves the real workspace manifest against the static registry name', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
+    expect(workspace).toBeDefined();
+    expect(() => workspace!.manifest).not.toThrow();
+    expect(workspace!.manifest.name).toBe('workspace');
   });
 });
 
@@ -884,4 +1145,76 @@ describe('built-in tenancy participates in the tenant-export contract', () => {
     expect(sources?.columns['root_path']?.decision).toBe('include');
     expect(sources?.columns['display_name']?.decision).toBe('include');
   });
+});
+
+
+describe('final public-table tenancy gate (#4283)', () => {
+  it.each(['full', 'worker'] as const)('awaits the sweep and propagates failure in %s mode', async (mode) => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'true');
+    const error = new Error('unprefixed_documents belongs to no manifest');
+    const sweep = vi.fn(async () => { throw error; });
+    const h = createHarness({ ports: { validatePublicTables: sweep } });
+    await expect(h.load(mode)).rejects.toBe(error);
+    expect(sweep).toHaveBeenCalledExactlyOnceWith([fixtureManifest().tenancy]);
+  });
+
+  it('sweeps only after all enabled and persisted disabled declarations are available', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'true');
+    const disabledTenancy = {
+      ...fixtureManifest().tenancy,
+      orgCascadeDeleteTables: ['retired_present', 'retired_missing'],
+    };
+    const h = createHarness({
+      builtins: [fixtureBuiltin(), fixtureBuiltin({
+        name: 'retired', enableEnvVar: 'BREEZE_RETIRED_TEST_ENABLED',
+        manifest: fixtureManifest({ name: 'retired', tenancy: disabledTenancy }),
+      })],
+      ports: {
+        existingDeclaredTables: async () => ['retired_present'],
+        validatePublicTables: async (tenancies) => {
+          expect(h.publishedTenancy).toHaveLength(2);
+          expect(tenancies).toEqual(h.publishedTenancy.map((m) => m.tenancy));
+          expect(tenancies[0]!.orgCascadeDeleteTables).toEqual(['retired_present']);
+        },
+      },
+    });
+    await h.load();
+  });
+
+  it('sweeps a disabled-only partial schema without opening the migration pool', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'false');
+    const sweep = vi.fn(async () => {});
+    const h = createHarness({
+      builtins: [fixtureBuiltin({ manifest: fixtureManifest({ tenancy: {
+        ...fixtureManifest().tenancy, orgCascadeDeleteTables: ['demo-builtin_present', 'demo-builtin_missing'],
+      } }) })],
+      ports: { existingDeclaredTables: async () => ['demo-builtin_present'], validatePublicTables: sweep },
+    });
+    await h.load();
+    expect(sweep).toHaveBeenCalledExactlyOnceWith([h.publishedTenancy[0]!.tenancy]);
+    expect(h.migrationSqlOpens.count).toBe(0);
+  });
+
+  it('does not sweep a stock installation with no persisted extension tables', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'false');
+    const sweep = vi.fn(async () => {});
+    const h = createHarness({ ports: { validatePublicTables: sweep } });
+    await h.load();
+    expect(sweep).not.toHaveBeenCalled();
+  });
+});
+
+
+it('does not treat a disabled built-in shared core table as an installed extension', async () => {
+  vi.stubEnv(ENABLE_ENV_VAR, 'false');
+  const sweep = vi.fn(async () => {});
+  const h = createHarness({
+    builtins: [fixtureBuiltin({ manifest: fixtureManifest({ tenancy: {
+      ...fixtureManifest().tenancy, orgCascadeDeleteTables: ['memory_blocks'],
+    } }) })],
+    ports: { existingDeclaredTables: async () => ['memory_blocks'], validatePublicTables: sweep },
+  });
+  await h.load();
+  expect(h.publishedTenancy).toHaveLength(1);
+  expect(sweep).not.toHaveBeenCalled();
 });

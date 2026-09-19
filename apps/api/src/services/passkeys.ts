@@ -59,7 +59,11 @@ type ChallengeRecord = {
   userId: string;
   challenge: string;
   createdAt: string;
+  authEpoch?: number;
+  mfaEpoch?: number;
 };
+
+type RegistrationEpochs = { authEpoch: number; mfaEpoch: number };
 
 export class PasskeyChallengeError extends Error {
   constructor(message: string) {
@@ -85,6 +89,7 @@ export function resolveWebAuthnConfig(): WebAuthnConfig {
 
 export async function generatePasskeyRegistrationOptions(input: {
   user: PasskeyUser;
+  epochs: RegistrationEpochs;
   existingPasskeys?: StoredPasskeyCredential[];
   timeout?: number;
 }): Promise<Awaited<ReturnType<typeof generateRegistrationOptions>>> {
@@ -107,16 +112,17 @@ export async function generatePasskeyRegistrationOptions(input: {
     }
   } satisfies GenerateRegistrationOptionsOpts);
 
-  await storePasskeyChallenge('registration', input.user.id, options.challenge);
+  await storePasskeyChallenge('registration', input.user.id, options.challenge, input.epochs);
   return options;
 }
 
 export async function verifyPasskeyRegistration(input: {
   userId: string;
+  epochs: RegistrationEpochs;
   response: VerifyRegistrationResponseOpts['response'];
 }): Promise<Awaited<ReturnType<typeof verifyRegistrationResponse>>> {
   const config = resolveWebAuthnConfig();
-  const challenge = await consumePasskeyChallenge('registration', input.userId);
+  const challenge = await consumePasskeyChallenge('registration', input.userId, input.epochs);
 
   return verifyRegistrationResponse({
     response: input.response,
@@ -220,7 +226,8 @@ export function passkeyToWebAuthnCredential(
 async function storePasskeyChallenge(
   purpose: PasskeyPurpose,
   userId: string,
-  challenge: string
+  challenge: string,
+  epochs?: RegistrationEpochs,
 ): Promise<void> {
   const redis = getRedis();
   if (!redis) {
@@ -231,13 +238,14 @@ async function storePasskeyChallenge(
     purpose,
     userId,
     challenge,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    ...epochs,
   };
 
   await redis.setex(passkeyChallengeKey(purpose, userId), CHALLENGE_TTL_SECONDS, JSON.stringify(record));
 }
 
-async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string): Promise<string> {
+async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string, epochs?: RegistrationEpochs): Promise<string> {
   const redis = getRedis();
   if (!redis) {
     throw new PasskeyChallengeError('Redis unavailable while reading passkey challenge');
@@ -256,6 +264,13 @@ async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string):
     const record = JSON.parse(raw) as ChallengeRecord;
     if (record.purpose !== purpose || record.userId !== userId || typeof record.challenge !== 'string') {
       throw new Error('mismatched challenge record');
+    }
+    // Registration carries password proof from /options. A reset invalidates
+    // that proof even when Redis cleanup fails or a delayed writer restores it.
+    if (purpose === 'registration' && (!epochs
+      || !Number.isSafeInteger(record.authEpoch) || !Number.isSafeInteger(record.mfaEpoch)
+      || record.authEpoch !== epochs.authEpoch || record.mfaEpoch !== epochs.mfaEpoch)) {
+      throw new Error('registration challenge expired after an authentication change');
     }
     return record.challenge;
   } catch (err) {

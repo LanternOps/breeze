@@ -181,6 +181,7 @@
     "title": "Başlık",
     "severity": "Önem",
     "status": "Durum",
+    "aiVerdict": "Yapay Zeka Değerlendirmesi",
     "triggered": "Tetiklendi",
     "actions": "Eylemler",
     "noAlertsMatchYourFilters": "Filtrelerinizle eşleşen uyarı yok.",
@@ -521,6 +522,25 @@
     "deleteFailed": "Şablon silinemedi.",
     "deleted": "Şablon silindi"
   },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Eylem gerekli",
+      "transient_self_healed": "Kendi kendine düzeldi",
+      "recurring_pattern": "Tekrarlayan model",
+      "duplicate_of_group": "Yinelenen",
+      "needs_human": "İnsan incelemesi gerekli"
+    },
+    "confidence": "%{{pct}} güven",
+    "feedbackUp": "Bu değerlendirme yararlıydı",
+    "feedbackDown": "Bu değerlendirme yararlı değildi",
+    "feedbackThanks": "Geri bildiriminiz için teşekkürler",
+    "feedbackTaken": "Bu değerlendirme için zaten geri bildirim verildi",
+    "feedbackFailed": "Geri bildirim kaydedilemedi",
+    "feedbackBy": "Geri bildiren: {{name}}",
+    "hideNoise": "Yapay zeka tarafından işaretlenen gürültüyü gizle",
+    "suggestionPending": "Yapay zeka bir eylem önerdi — Onaylar'da inceleyin",
+    "none": "Henüz yapay zeka değerlendirmesi yok"
+  },
   "alertsPage": {
     "loadingAlerts": "Uyarılar yükleniyor...",
     "tryAgain": "Tekrar deneyin",
@@ -598,6 +618,7 @@
     "tabs": {
       "alerts": "Uyarılar",
       "correlations": "Korelasyonlar",
+      "monitors": "Monitörler",
       "rules": "Kurallar",
       "channels": "Kanallar"
     }

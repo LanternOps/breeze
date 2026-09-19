@@ -367,8 +367,10 @@ export async function assertExtensionTenancyRls(
  *
  * This closes it without trusting the prefix: anything left over after
  * subtracting core's tables and every extension's declarations is, by
- * elimination, an undeclared extension table. Only runs when an extension is
- * actually installed, so a stock Breeze deploy can never be bricked by it.
+ * elimination, an undeclared extension table. `loadBuiltinExtensions` calls it
+ * after collecting every declaration, before API/worker startup continues. The
+ * loader runs it when a built-in is enabled or a disabled built-in has existing
+ * non-shared declared tables; shared core tables alone do not enable the sweep.
  *
  * Residual (tracked separately): a table created in a NON-public schema is still
  * out of reach. Closing that means recording table ownership at migration time

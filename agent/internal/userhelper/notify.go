@@ -8,8 +8,13 @@ type Notifier interface {
 	Close() error
 }
 
+// showNotificationFn is the platform toast seam, mirroring showConsentDialogFn
+// and showNotifyPromptFn. Tests swap it so the notify handler's routing can be
+// asserted without shelling out to PowerShell/osascript/notify-send.
+var showNotificationFn = showNotificationOS
+
 // showNotification sends a desktop notification. Platform-specific.
 // Returns true if the notification was delivered.
 func showNotification(req ipc.NotifyRequest) bool {
-	return showNotificationOS(req)
+	return showNotificationFn(req)
 }

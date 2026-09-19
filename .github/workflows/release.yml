@@ -39,28 +39,43 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Export the runtime Dockerfile's compiled files. The publisher consumes
+      # these exact artifacts through a named context before create-release runs.
+      - name: Build and export API distribution
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: .node-version
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build API
-        run: pnpm build --filter=@breeze/api
+          context: .
+          file: apps/api/Dockerfile
+          target: release-dist
+          outputs: type=local,dest=${{ runner.temp }}/api-release
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: |
+            type=gha,scope=server-api-build
+            type=gha,scope=server-api
+          cache-to: type=gha,mode=max,scope=server-api-build
 
       - name: Upload API artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: api-dist
-          path: apps/api/dist
+          path: ${{ runner.temp }}/api-release/apps/api/dist
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload built-in workspace web bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: api-workspace-dist
+          path: ${{ runner.temp }}/api-release/ee/workspace/dist
+          if-no-files-found: error
           retention-days: 30
 
   build-web:
@@ -72,34 +87,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: .node-version
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Get version from tag
-        id: web-version
+        id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Web
-        env:
-          PUBLIC_APP_VERSION: ${{ steps.web-version.outputs.version }}
-        run: pnpm build --filter=@breeze/web
+      # Export the runtime Dockerfile's compiled files. The publisher consumes
+      # these exact artifacts through a named context before create-release runs.
+      - name: Build and export Web distribution
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          target: release-dist
+          outputs: type=local,dest=${{ runner.temp }}/web-release
+          build-args: |
+            PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: |
+            type=gha,scope=server-web-build
+            type=gha,scope=server-web
+          cache-to: type=gha,mode=max,scope=server-web-build
 
       - name: Upload Web artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: web-dist
-          path: apps/web/dist
+          path: ${{ runner.temp }}/web-release/apps/web/dist
+          if-no-files-found: error
           retention-days: 30
 
   build-agent:
@@ -255,6 +271,89 @@ jobs:
             exit 1
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
+
+  # Bare-metal recovery media (W04b): breeze-recovery-linux-<arch>.iso, a
+  # Debian bookworm live-build image carrying breeze-backup and the guided
+  # recovery-console. amd64 is required (create-release refuses to publish
+  # without it); arm64 is continue-on-error until proven stable in CI (W08
+  # promotes it to required). See agent/recovery-media/.
+  build-recovery-media:
+    name: Build recovery media (${{ matrix.arch }})
+    needs: [build-agent]
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Get version from tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download breeze-backup (linux/${{ matrix.arch }})
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-backup-linux-${{ matrix.arch }}
+          path: dist/
+
+      - name: Install live-build toolchain
+        run: |
+          # `lb config`/`lb build` themselves now run inside a
+          # debian:bookworm container (see "Build ISO" below) — Ubuntu's
+          # own live-build fork (3.0~a57-based, bundled with ubuntu-latest)
+          # rejects flags Debian's live-build accepts (e.g. --bootloaders),
+          # which reddened PR #5588's Recovery media E2E CI job even though
+          # the identical build.sh invocation passed locally under
+          # Docker's debian:bookworm. live-build/debootstrap/
+          # squashfs-tools/grub-efi-*-bin/mtools/dosfstools are therefore
+          # unused on the runner now (they run inside the container).
+          # qemu-user-static/binfmt-support stay: they register the
+          # binfmt_misc handler in the RUNNER's kernel that lets an amd64
+          # host execute the arm64 chroot's postinst/trigger scripts under
+          # emulation during `lb build` — a host-kernel concern the
+          # container image can't provide for itself, so it has to be
+          # installed out here regardless of where `lb build` itself runs.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+
+      - name: Build ISO
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          chmod +x "dist/breeze-backup-linux-$ARCH"
+          # grub-efi-arm64-bin is a foreign-architecture package on this
+          # amd64 container — Debian's arm64 apt archive carries it, the
+          # native amd64 one doesn't — so `dpkg --add-architecture arm64`
+          # + a second `apt-get update` must happen before apt can even
+          # see it, on EITHER leg (installing it is a no-op on the amd64
+          # leg, which never references it, but one shared script is
+          # simpler than branching on $ARCH here).
+          docker run --rm --privileged \
+            -e ARCH="$ARCH" -e BUILD_VERSION="$BUILD_VERSION" \
+            -v "$PWD":/src -w /src/agent debian:bookworm bash -c '
+              dpkg --add-architecture arm64 &&
+              apt-get update -qq &&
+              apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates cpio >/dev/null &&
+              ./recovery-media/build.sh --arch "$ARCH" --breeze-backup "../dist/breeze-backup-linux-$ARCH" --version "$BUILD_VERSION" --out ../out/ &&
+              bash recovery-media/build_test.sh "../out/breeze-recovery-linux-$ARCH.iso"
+            '
+          sudo chown -R "$(id -u):$(id -g)" out/
+
+      - name: Upload recovery media artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-recovery-linux-${{ matrix.arch }}
+          path: out/breeze-recovery-linux-${{ matrix.arch }}.iso*
+          retention-days: 30
 
   build-windows-unsigned:
     name: Build Windows Agent Binaries (unsigned)
@@ -544,7 +643,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
-    needs: [build-agent]
+    # validate-release-lineage: this job codesigns/notarizes with the Apple
+    # secrets — it must not run against a tag whose lineage hasn't been
+    # validated yet.
+    needs: [build-agent, validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -835,7 +937,11 @@ jobs:
 
       - name: Verify macOS signatures and notarization
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
           if [ "${{ vars.ENABLE_MACOS_SIGNING }}" != "true" ]; then
             echo "::error::ENABLE_MACOS_SIGNING must be true for tag releases."
             exit 1
@@ -867,12 +973,22 @@ jobs:
             fi
           done
 
+          mkdir -p attest
+          : > attest/macos-pkg.tsv
           for pkg in staging/*.pkg; do
             [ -f "$pkg" ] || continue
-            pkgutil --check-signature "$pkg"
+            scripts/release/attest-macos-pkg.sh \
+              "$pkg" "$(basename "$pkg")" \
+              "$APPLE_INSTALLER_IDENTITY" "$APPLE_TEAM_ID" \
+              >> attest/macos-pkg.tsv
             xcrun stapler validate "$pkg"
             spctl -a -vv -t install "$pkg"
           done
+
+          [ "$(wc -l < attest/macos-pkg.tsv | tr -d ' ')" -eq 2 ] || {
+            echo "::error::expected publisher attestations for both macOS agent packages"
+            exit 1
+          }
 
       - name: Upload .pkg darwin/amd64
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -886,6 +1002,14 @@ jobs:
         with:
           name: breeze-agent-darwin-arm64-pkg
           path: staging/breeze-agent-darwin-arm64.pkg
+          retention-days: 30
+
+      - name: Upload macOS package publisher attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-pkg-attestation
+          path: attest/macos-pkg.tsv
+          if-no-files-found: error
           retention-days: 30
 
       - name: Cleanup keychain
@@ -994,6 +1118,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+    # validate-release-lineage: this job signs the Tauri updater bundle with
+    # TAURI_SIGNING_PRIVATE_KEY — it must not run against a tag whose
+    # lineage hasn't been validated yet. sign-windows-tauri-{azure,sslcom}
+    # (which Authenticode-sign the MSI this job produces) already depend on
+    # build-viewer, so they inherit this transitively.
+    needs: [validate-release-lineage]
     strategy:
       fail-fast: false
       matrix:
@@ -1040,7 +1170,7 @@ jobs:
           exit 1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1054,7 +1184,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/viewer/src-tauri -> target
 
@@ -1198,7 +1328,7 @@ jobs:
           exit 1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1212,7 +1342,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/helper/src-tauri -> target
 
@@ -1276,6 +1406,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
+    # validate-release-lineage: this job codesigns (TAURI_SIGNING_PRIVATE_KEY
+    # + Apple signing identity) and notarizes the DMG — it must not run
+    # against a tag whose lineage hasn't been validated yet.
+    needs: [validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1283,7 +1417,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1297,7 +1431,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/viewer/src-tauri -> target
 
@@ -1413,6 +1547,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
+    # validate-release-lineage: this job codesigns (Apple signing identity)
+    # and notarizes the DMG — it must not run against a tag whose lineage
+    # hasn't been validated yet.
+    needs: [validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1420,7 +1558,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1434,7 +1572,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/helper/src-tauri -> target
 
@@ -1594,7 +1732,7 @@ jobs:
           }
 
       - name: Azure Login (OIDC)
-        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -1899,7 +2037,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2057,6 +2195,40 @@ jobs:
           path: latest.json
           retention-days: 30
 
+  validate-release-lineage:
+    name: Validate Release Lineage
+    runs-on: ubuntu-latest
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+      && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
+    permissions:
+      contents: read
+    outputs:
+      channel: ${{ steps.lineage.outputs.channel }}
+      tag: ${{ steps.lineage.outputs.tag }}
+      tag_sha: ${{ steps.lineage.outputs.tag_sha }}
+    steps:
+      - name: Checkout full release history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve authoritative main ref
+        run: git rev-parse --verify 'origin/main^{commit}'
+
+      - name: Classify exact release lineage
+        id: lineage
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          bash scripts/release/check-release-lineage.sh \
+            --tag "$RELEASE_TAG" \
+            --main-ref origin/main \
+            --candidate-registry-ref origin/main
+
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
@@ -2110,14 +2282,16 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
+    needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
+      && needs.validate-release-lineage.result == 'success'
       && needs.build-api.result == 'success'
       && needs.build-web.result == 'success'
       && needs.build-agent.result == 'success'
+      && needs.build-recovery-media.result == 'success'
       && needs.release-integrity-gate.result == 'success'
       && needs.build-windows-unsigned.result == 'success'
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
@@ -2129,6 +2303,13 @@ jobs:
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
       && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
       && (needs.merge-viewer-update-manifest.result == 'success' || needs.merge-viewer-update-manifest.result == 'skipped')
+      && needs.build-binaries-image.result == 'success'
+      && needs.build-docker-api.result == 'success'
+      && needs.build-docker-web.result == 'success'
+      && needs.build-docker-portal.result == 'success'
+      && needs.build-docker-m365-graph-read-executor.result == 'success'
+      && needs.build-docker-m365-graph-actions-executor.result == 'success'
+      && needs.build-docker-m365-communications-executor.result == 'success'
       && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
     permissions:
       contents: write
@@ -2142,8 +2323,24 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation,breeze-recovery-*}'
           merge-multiple: false
+
+      - name: Download release image metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: release-image-metadata
+          pattern: 'release-image-*'
+          merge-multiple: true
+
+      - name: Validate complete release image set
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          node scripts/release/release-image-manifest.mjs collect \
+            --directory release-image-metadata \
+            --source-commit "$SOURCE_COMMIT" \
+            --output release-images.json
 
       - name: Prepare release assets
         env:
@@ -2195,6 +2392,19 @@ jobs:
               cp "$dir"/* release-assets/
             fi
           done
+
+          # Copy recovery media (W04b). arm64 is continue-on-error in
+          # build-recovery-media, so its artifact may legitimately be
+          # missing — only amd64 is required.
+          for dir in artifacts/breeze-recovery-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+          if [ ! -f release-assets/breeze-recovery-linux-amd64.iso ]; then
+            echo "missing required release asset: breeze-recovery-linux-amd64.iso" >&2
+            exit 1
+          fi
 
           # Copy viewer update manifest
           if [ -d "artifacts/viewer-latest-json" ] && [ -f "artifacts/viewer-latest-json/latest.json" ]; then
@@ -2303,6 +2513,29 @@ jobs:
                   f"unexpected Windows signing provider: {windows_signing_provider!r}"
               )
 
+          pkg_attestation_path = Path("artifacts/macos-pkg-attestation/macos-pkg.tsv")
+          if not pkg_attestation_path.is_file():
+              raise SystemExit(
+                  "macOS package publisher attestation is missing — refusing to describe packages as trusted"
+              )
+          pkg_publishers = {}
+          for line in pkg_attestation_path.read_text(encoding="utf8").splitlines():
+              fields = line.split("\t")
+              if len(fields) != 4:
+                  raise SystemExit(f"malformed macOS package publisher attestation: {line!r}")
+              name, trust, signing_identity, signing_team_id = fields
+              if name in pkg_publishers:
+                  raise SystemExit(f"duplicate macOS package publisher attestation: {name}")
+              if trust != "macos-developer-id-notarization-required":
+                  raise SystemExit(f"unexpected macOS package trust attestation for {name}: {trust!r}")
+              if not re.fullmatch(r"[A-Z0-9]{10}", signing_team_id):
+                  raise SystemExit(f"invalid macOS package signing team ID for {name}")
+              if not signing_identity.startswith("Developer ID Installer: ") or not signing_identity.endswith(
+                  f" ({signing_team_id})"
+              ):
+                  raise SystemExit(f"invalid macOS package signing identity for {name}")
+              pkg_publishers[name] = (signing_identity, signing_team_id)
+
           assets = []
           for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
               if not path.is_file() or path.name in excluded:
@@ -2321,6 +2554,13 @@ jobs:
               }
               if is_signing_input(path.name):
                   entry["intendedUse"] = "signing-input"
+              if path.name.endswith(".pkg"):
+                  publisher = pkg_publishers.get(path.name)
+                  if publisher is None:
+                      raise SystemExit(
+                          f"macOS package {path.name} has no publisher attestation"
+                      )
+                  entry["signingIdentity"], entry["signingTeamId"] = publisher
               # Which CA actually vouched for this artifact. Recorded only where
               # Authenticode is required, so a provider switch is auditable from
               # the signed manifest rather than only from workflow logs.
@@ -2331,12 +2571,22 @@ jobs:
                   entry["signingProvider"] = windows_signing_provider
               assets.append(entry)
 
+          unexpected_pkg_attestations = sorted(set(pkg_publishers) - {a["name"] for a in assets})
+          if unexpected_pkg_attestations:
+              raise SystemExit(
+                  "publisher attestations do not match release assets: "
+                  f"{unexpected_pkg_attestations}"
+              )
+          with open("release-images.json") as image_fh:
+              images = json.load(image_fh)
+
           manifest = {
               "schemaVersion": 1,
               "repository": os.environ["GITHUB_REPOSITORY"],
               "release": os.environ["GITHUB_REF_NAME"],
               "sourceCommit": os.environ["SOURCE_COMMIT"],
               "assets": assets,
+              "images": images,
           }
           (release_dir / "release-artifact-manifest.json").write_text(
               json.dumps(manifest, indent=2, sort_keys=True) + "\n"
@@ -2557,6 +2807,15 @@ jobs:
           cd release-assets
           sha256sum * > checksums.txt
 
+      - name: Upload signed release image manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-release-image-manifest
+          path: |
+            release-assets/release-artifact-manifest.json
+            release-assets/release-artifact-manifest.json.ed25519
+          retention-days: 90
+
       - name: Verify release asset integrity requirements
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -2610,7 +2869,7 @@ jobs:
           echo "Verified $asset_count release assets against checksums.txt"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: release-assets/*
           generate_release_notes: true
@@ -2619,8 +2878,9 @@ jobs:
           # servers syncing published releases) see nothing until it is
           # explicitly published — used when a release must be verified and
           # coordinated with out-of-band deployment steps before going live.
-          # Publish with: gh release edit <tag> --draft=false
-          draft: ${{ vars.RELEASE_DRAFT_FIRST == 'true' }}
+          # Publish only through the guarded release-promotion.yml workflow;
+          # see docs/runbooks/2026-08-29-release-lineage-promotion.md.
+          draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' }}
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2628,7 +2888,7 @@ jobs:
   build-binaries-image:
     name: Build & Push Binaries Init Image
     runs-on: ubuntu-latest
-    needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, create-release]
+    needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -2640,7 +2900,6 @@ jobs:
       && needs.build-helper.result == 'success'
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
       && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -2702,39 +2961,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/binaries
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-            type=sha
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
 
-      - name: Build and push binaries image
+      - name: Build and push unadvertised binaries digest
+        id: push-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: staging/
           file: docker/Dockerfile.binaries
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/binaries,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=server-binaries
+          cache-to: type=gha,mode=max,scope=server-binaries
+
+      - name: Record signed-manifest input
+        env:
+          IMAGE_DIGEST: ${{ steps.push-image.outputs.digest }}
+        run: |
+          node scripts/release/release-image-manifest.mjs record \
+            --name binaries --repository "${IMAGE_BASE}/binaries" \
+            --digest "$IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output binaries.json
+
+      - name: Upload binaries image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-binaries
+          path: binaries.json
+          retention-days: 90
 
   build-docker-api:
     name: Build & Push API Docker Image
     runs-on: ubuntu-latest
-    needs: [build-api, create-release]
+    needs: [build-api]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
       && needs.build-api.result == 'success'
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -2748,7 +3017,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: api-dist
-          path: apps/api/dist
+          path: ${{ runner.temp }}/release-dist/apps/api/dist
+
+      - name: Download built-in workspace web bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: api-workspace-dist
+          path: ${{ runner.temp }}/release-dist/ee/workspace/dist
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -2764,40 +3039,53 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-            type=sha
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
 
-      - name: Build and push API image
+      - name: Build and push unadvertised API digest
+        id: push-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: apps/api/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          build-contexts: |
+            release-dist=${{ runner.temp }}/release-dist
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/api,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=server-api-build
+            type=gha,scope=server-api
+          cache-to: type=gha,mode=max,scope=server-api
+
+      - name: Record signed-manifest input
+        env:
+          IMAGE_DIGEST: ${{ steps.push-image.outputs.digest }}
+        run: |
+          node scripts/release/release-image-manifest.mjs record \
+            --name api --repository "${IMAGE_BASE}/api" \
+            --digest "$IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output api.json
+
+      - name: Upload API image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-api
+          path: api.json
+          retention-days: 90
 
   build-docker-m365-graph-read-executor:
     name: Build & Push M365 Graph Read Executor Image
     runs-on: ubuntu-latest
-    needs: [create-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -2840,8 +3128,8 @@ jobs:
           context: .
           file: apps/m365-graph-read-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-graph-read-executor
+          cache-to: type=gha,mode=max,scope=server-m365-graph-read-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -2851,49 +3139,30 @@ jobs:
           format: 'table'
           exit-code: '1'
 
-      # Promote the already-scanned manifest. imagetools only creates tag
-      # references; it never rebuilds or mutates the image layers.
-      - name: Promote scanned executor digest
-        env:
-          EXECUTOR_REPOSITORY: ${{ env.IMAGE_BASE }}/m365-graph-read-executor
-          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          VERSION="${RELEASE_REF_NAME#v}"
-          SHORT_SHA="${RELEASE_SHA::7}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Executor image promotion requires an exact semver release tag" >&2
-            exit 1
-          fi
-          docker buildx imagetools create \
-            --tag "${EXECUTOR_REPOSITORY}:${VERSION}" \
-            --tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}" \
-            "${EXECUTOR_REPOSITORY}@${EXECUTOR_IMAGE_DIGEST}"
-
       - name: Record executor digest
         env:
           EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
         run: |
-          test -n "$EXECUTOR_IMAGE_DIGEST"
-          printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-graph-read-executor-image-digest.txt
+          node scripts/release/release-image-manifest.mjs record \
+            --name m365-graph-read-executor \
+            --repository "${IMAGE_BASE}/m365-graph-read-executor" \
+            --digest "$EXECUTOR_IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output m365-graph-read-executor.json
 
       - name: Upload executor digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: m365-graph-read-executor-image-digest
-          path: m365-graph-read-executor-image-digest.txt
+          name: release-image-m365-graph-read-executor
+          path: m365-graph-read-executor.json
           retention-days: 90
 
   build-docker-m365-graph-actions-executor:
     name: Build & Push M365 Graph Actions Executor Image
     runs-on: ubuntu-latest
-    needs: [create-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -2936,8 +3205,8 @@ jobs:
           context: .
           file: apps/m365-graph-actions-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-actions-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-graph-actions-executor
+          cache-to: type=gha,mode=max,scope=server-m365-graph-actions-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -2947,49 +3216,30 @@ jobs:
           format: 'table'
           exit-code: '1'
 
-      # Promote the already-scanned manifest. imagetools only creates tag
-      # references; it never rebuilds or mutates the image layers.
-      - name: Promote scanned executor digest
-        env:
-          EXECUTOR_REPOSITORY: ${{ env.IMAGE_BASE }}/m365-graph-actions-executor
-          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          VERSION="${RELEASE_REF_NAME#v}"
-          SHORT_SHA="${RELEASE_SHA::7}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Executor image promotion requires an exact semver release tag" >&2
-            exit 1
-          fi
-          docker buildx imagetools create \
-            --tag "${EXECUTOR_REPOSITORY}:${VERSION}" \
-            --tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}" \
-            "${EXECUTOR_REPOSITORY}@${EXECUTOR_IMAGE_DIGEST}"
-
       - name: Record executor digest
         env:
           EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
         run: |
-          test -n "$EXECUTOR_IMAGE_DIGEST"
-          printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-graph-actions-executor-image-digest.txt
+          node scripts/release/release-image-manifest.mjs record \
+            --name m365-graph-actions-executor \
+            --repository "${IMAGE_BASE}/m365-graph-actions-executor" \
+            --digest "$EXECUTOR_IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output m365-graph-actions-executor.json
 
       - name: Upload executor digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: m365-graph-actions-executor-image-digest
-          path: m365-graph-actions-executor-image-digest.txt
+          name: release-image-m365-graph-actions-executor
+          path: m365-graph-actions-executor.json
           retention-days: 90
 
   build-docker-m365-communications-executor:
     name: Build & Push M365 Communications Executor Image
     runs-on: ubuntu-latest
-    needs: [create-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -3032,8 +3282,8 @@ jobs:
           context: .
           file: apps/m365-communications-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-communications-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-communications-executor
+          cache-to: type=gha,mode=max,scope=server-m365-communications-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -3043,50 +3293,32 @@ jobs:
           format: 'table'
           exit-code: '1'
 
-      # Promote the already-scanned manifest. imagetools only creates tag
-      # references; it never rebuilds or mutates the image layers.
-      - name: Promote scanned executor digest
-        env:
-          EXECUTOR_REPOSITORY: ${{ env.IMAGE_BASE }}/m365-communications-executor
-          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          VERSION="${RELEASE_REF_NAME#v}"
-          SHORT_SHA="${RELEASE_SHA::7}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Executor image promotion requires an exact semver release tag" >&2
-            exit 1
-          fi
-          docker buildx imagetools create \
-            --tag "${EXECUTOR_REPOSITORY}:${VERSION}" \
-            --tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}" \
-            "${EXECUTOR_REPOSITORY}@${EXECUTOR_IMAGE_DIGEST}"
-
       - name: Record executor digest
         env:
           EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
         run: |
-          test -n "$EXECUTOR_IMAGE_DIGEST"
-          printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-communications-executor-image-digest.txt
+          node scripts/release/release-image-manifest.mjs record \
+            --name m365-communications-executor \
+            --repository "${IMAGE_BASE}/m365-communications-executor" \
+            --digest "$EXECUTOR_IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output m365-communications-executor.json
 
       - name: Upload executor digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: m365-communications-executor-image-digest
-          path: m365-communications-executor-image-digest.txt
+          name: release-image-m365-communications-executor
+          path: m365-communications-executor.json
           retention-days: 90
 
   build-docker-web:
     name: Build & Push Web Docker Image
     runs-on: ubuntu-latest
-    needs: [build-web, create-release]
+    needs: [build-web]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
       && needs.build-web.result == 'success'
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -3100,7 +3332,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: web-dist
-          path: apps/web/dist
+          path: ${{ runner.temp }}/release-dist/apps/web/dist
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -3116,40 +3348,53 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/web
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-            type=sha
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
 
-      - name: Build and push Web image
+      - name: Build and push unadvertised Web digest
+        id: push-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: apps/web/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          build-contexts: |
+            release-dist=${{ runner.temp }}/release-dist
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/web,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=server-web-build
+            type=gha,scope=server-web
+          cache-to: type=gha,mode=max,scope=server-web
+
+      - name: Record signed-manifest input
+        env:
+          IMAGE_DIGEST: ${{ steps.push-image.outputs.digest }}
+        run: |
+          node scripts/release/release-image-manifest.mjs record \
+            --name web --repository "${IMAGE_BASE}/web" \
+            --digest "$IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output web.json
+
+      - name: Upload Web image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-web
+          path: web.json
+          retention-days: 90
 
   build-docker-portal:
     name: Build & Push Portal Docker Image
     runs-on: ubuntu-latest
-    needs: [create-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
-      && needs.create-release.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -3169,28 +3414,138 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/portal
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-            type=sha
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
 
-      - name: Build and push Portal image
+      - name: Build and push unadvertised Portal digest
+        id: push-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: apps/portal/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/portal,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             PORTAL_BASE_PATH=/portal
             PUBLIC_API_URL=
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-portal
+          cache-to: type=gha,mode=max,scope=server-portal
+
+      - name: Record signed-manifest input
+        env:
+          IMAGE_DIGEST: ${{ steps.push-image.outputs.digest }}
+        run: |
+          node scripts/release/release-image-manifest.mjs record \
+            --name portal --repository "${IMAGE_BASE}/portal" \
+            --digest "$IMAGE_DIGEST" --source-commit "$GITHUB_SHA" \
+            --output portal.json
+
+      - name: Upload Portal image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-portal
+          path: portal.json
+          retention-days: 90
+
+  promote-signed-release-images:
+    name: Promote signed ${{ matrix.image.name }} image
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && needs.create-release.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: api, moving_channels: true }
+          - { name: web, moving_channels: true }
+          - { name: portal, moving_channels: true }
+          - { name: binaries, moving_channels: true }
+          - { name: m365-graph-read-executor, moving_channels: false }
+          - { name: m365-graph-actions-executor, moving_channels: false }
+          - { name: m365-communications-executor, moving_channels: false }
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download signed release image manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-release-image-manifest
+          path: signed-release-image-manifest
+
+      - name: Verify signed image inventory and select exact digest
+        env:
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+          IMAGE_NAME: ${{ matrix.image.name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RELEASE: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          manifest="signed-release-image-manifest/release-artifact-manifest.json"
+          signature="signed-release-image-manifest/release-artifact-manifest.json.ed25519"
+          node scripts/release/release-image-manifest.mjs verify \
+            --manifest "$manifest" --signature "$signature" \
+            --expected-repository "$EXPECTED_REPOSITORY" \
+            --expected-release "$EXPECTED_RELEASE"
+          node - "$manifest" "$IMAGE_NAME" "$GITHUB_ENV" <<'NODE'
+          const { readFileSync, appendFileSync } = require('node:fs');
+          const [manifestPath, imageName, githubEnv] = process.argv.slice(2);
+          const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+          const image = manifest.images.find((entry) => entry.name === imageName);
+          if (!image) throw new Error(`signed image ${imageName} is missing`);
+          appendFileSync(githubEnv, `SIGNED_IMAGE_REPOSITORY=${image.repository}\nSIGNED_IMAGE_DIGEST=${image.digest}\n`);
+          NODE
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote exact signed digest
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+          MOVING_CHANNELS: ${{ matrix.image.moving_channels }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_REF_NAME#v}"
+          SHORT_SHA="${RELEASE_SHA::7}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Image promotion requires an exact semver release tag" >&2
+            exit 1
+          fi
+          tags=(
+            --tag "${SIGNED_IMAGE_REPOSITORY}:${VERSION}"
+            --tag "${SIGNED_IMAGE_REPOSITORY}:sha-${SHORT_SHA}"
+          )
+          if [[ "$MOVING_CHANNELS" == "true" ]]; then
+            MAJOR="${VERSION%%.*}"
+            remainder="${VERSION#*.}"
+            MINOR="${remainder%%.*}"
+            tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:${MAJOR}.${MINOR}")
+            tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:${MAJOR}")
+            if [[ "$VERSION" != *-* ]]; then
+              tags+=(--tag "${SIGNED_IMAGE_REPOSITORY}:latest")
+            fi
+          fi
+          docker buildx imagetools create \
+            "${tags[@]}" \
+            "${SIGNED_IMAGE_REPOSITORY}@${SIGNED_IMAGE_DIGEST}"

@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -116,6 +117,8 @@ const (
 	CmdSecurityThreatRemove     = "security_threat_remove"
 	CmdSecurityThreatRestore    = "security_threat_restore"
 	CmdSensitiveDataScan        = "sensitive_data_scan"
+	CmdPeripheralPolicySyncV2   = "peripheral_policy_sync_v2"
+	CmdAgentRollbackV1          = "agent_rollback_v1"
 	CmdEncryptionCollectKeys    = "encryption_collect_keys"
 	CmdEncryptionRotateKey      = "encryption_rotate_key"
 	CmdEncryptFile              = "encrypt_file"
@@ -241,6 +244,8 @@ const (
 	// Server-pushed only; handled by internal/pamactuator on Windows and
 	// a no-op stub on other platforms.
 	CmdActuateElevation = "actuate_elevation"
+	CmdPamApplyV2       = "pam_apply_v2"
+	CmdPamCleanupV2     = "pam_cleanup_v2"
 )
 
 // CommandResult represents the result of a command execution
@@ -252,11 +257,30 @@ type CommandResult struct {
 	// Failure paths that never spawn a process must set a synthetic nonzero
 	// exit code (NewErrorResult uses 1) so `exit_code = 0` always means "a
 	// process ran and exited cleanly".
-	ExitCode   int    `json:"exitCode"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	Error      string `json:"error,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	Error    string `json:"error,omitempty"`
+	// Result carries structured output for the HTTP command-result transport.
+	// Most handlers leave it nil, in which case WebSocket conversion
+	// (toWSCommandResult, agent/internal/heartbeat/heartbeat.go) independently
+	// reparses JSON stdout to avoid duplicating large generic results on that
+	// wire. A handler that DOES set Result explicitly (e.g. the script
+	// handler's #2698 customFieldWrites envelope) wins over that reparse on
+	// the WebSocket leg too — set it only for structured output the transport
+	// must carry verbatim, not as a general-purpose duplicate of Stdout.
+	Result     any   `json:"result,omitempty"`
+	DurationMs int64 `json:"durationMs,omitempty"`
+	// #3525 cancellation marker. Set by the script handler when this execution
+	// ended because a script_cancel killed it. Top-level (a sibling of Status
+	// and ExitCode, not nested under Result) because that is where the server's
+	// result handler reads them: they are the ONLY proof that lets a racing
+	// script result close the execution as `cancelled` rather than preserving
+	// its natural outcome as `unconfirmed` (OD9-C). CancelledByCommandID names
+	// the script_cancel command responsible, so a stale or retried cancel is
+	// never credited with a kill it did not do.
+	Cancelled            bool   `json:"cancelled,omitempty"`
+	CancelledByCommandID string `json:"cancelledByCommandId,omitempty"`
 	// RFC3339Nano timestamp captured by the agent at the moment the command's
 	// primary work began. Set by command handlers that care about the server-
 	// side reconstruction (e.g. software_install). Empty when not applicable.
@@ -769,4 +793,45 @@ func GetPayloadStringSlice(payload map[string]any, key string) []string {
 		}
 	}
 	return result
+}
+
+// GetPayloadObjectSlice reads a JSON array of objects from a command payload —
+// e.g. the SNMP poll command's `oidSpecs`. Same contract as
+// GetPayloadStringSlice: a missing key, a non-array value, or a nil payload all
+// yield nil, and members of the wrong shape are dropped rather than failing the
+// whole command. A server that sends junk must not take the agent down with it.
+func GetPayloadObjectSlice(payload map[string]any, key string) []map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	slice, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(slice))
+	for _, v := range slice {
+		if obj, ok := v.(map[string]any); ok {
+			result = append(result, obj)
+		}
+	}
+	if dropped := len(slice) - len(result); dropped > 0 {
+		slog.Warn("dropped malformed payload object entries", "key", key, "dropped", dropped)
+	}
+	return result
+}
+
+// GetPayloadObject reads a single JSON object from a command payload — e.g. the
+// SNMP poll command's `limits`. Returns nil for a missing key or a non-object
+// value, so callers fall back to their own defaults.
+func GetPayloadObject(payload map[string]any, key string) map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
 }

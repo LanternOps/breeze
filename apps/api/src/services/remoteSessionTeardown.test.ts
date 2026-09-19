@@ -16,22 +16,35 @@ const h = vi.hoisted(() => {
     whereCalls: 0,
     whereArgs: [] as any[],
     deviceRowsResult: [] as Array<{ id: string; agentId: string | null }>,
+    mode: 'update' as 'update' | 'select',
   };
   const chain: Record<string, any> = {};
-  for (const m of ['update', 'set', 'select', 'from']) {
-    chain[m] = vi.fn(() => chain);
-  }
+  chain.update = vi.fn(() => { state.mode = 'update'; return chain; });
+  chain.set = vi.fn(() => chain);
+  chain.select = vi.fn(() => { state.mode = 'select'; return chain; });
+  chain.from = vi.fn(() => chain);
   chain.where = vi.fn((arg: unknown) => {
     state.whereArgs.push(arg);
     state.whereCalls += 1;
     // 1st where() = UPDATE (fluent); 2nd+ = device SELECT terminal.
-    return state.whereCalls >= 2 ? Promise.resolve(state.deviceRowsResult) : chain;
+    return state.mode === 'select' ? Promise.resolve(state.deviceRowsResult) : chain;
   });
   chain.returning = vi.fn();
 
   return {
     chain,
     state,
+    // The durable relay, not the socket-local send: teardown must reach the
+    // agent even when its command socket lives on another API instance.
+    dispatchCommandToAgent: vi.fn(
+      async (_agentId?: string, _command?: { payload: { sessionId: string } }) => ({
+        status: 'sent',
+        via: 'relay',
+      }),
+    ),
+    // The socket-local send is still the tunnel path's transport (main), so the
+    // harness keeps both: `dispatchCommandToAgent` for desktop/terminal stops,
+    // `sendCommandToAgent` for `tunnel_close`.
     sendCommandToAgent: vi.fn(),
     revokeViewerSession: vi.fn().mockResolvedValue(undefined),
     captureException: vi.fn(),
@@ -39,16 +52,23 @@ const h = vi.hoisted(() => {
     // THIS instance (and was closed, incl. its own terminal_stop). Default
     // false = not local, so the teardown falls back to signalling the agent.
     closeTerminalSession: vi.fn().mockReturnValue(false),
+    closeTunnelSession: vi.fn().mockReturnValue(false),
   };
 });
 
 // Capture drizzle operator calls as inspectable tagged objects so a test can
 // assert WHICH status predicate the UPDATE targets (active-only vs ne-disconnected).
+// `sql` is a fake tagged-template stand-in: `terminalIntentSet` (SEC-038 W03)
+// calls it to build the generation-bump / termination-phase SQL fragments that
+// ride along in every terminal `.set()` — without it, `terminalIntentSet`
+// throws "No sql export" and every disconnect silently degrades to
+// TEARDOWN_FAILED.
 vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => ({ op: 'and', args }),
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   ne: (col: unknown, val: unknown) => ({ op: 'ne', col, val }),
   inArray: (col: unknown, vals: unknown) => ({ op: 'inArray', col, vals }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings: [...strings], values }),
 }));
 
 vi.mock('../db', () => ({
@@ -65,12 +85,28 @@ vi.mock('../db/schema', () => ({
     userId: 'remote_sessions.user_id',
     status: 'remote_sessions.status',
     endedAt: 'remote_sessions.ended_at',
+    // SEC-038 W03 terminal-intent contract columns — `terminalIntentSet` reads
+    // these to build the `sql` fragments in every terminal `.set()`.
+    desktopStartGeneration: 'remote_sessions.desktop_start_generation',
+    terminalGeneration: 'remote_sessions.terminal_generation',
+    terminationPhase: 'remote_sessions.termination_phase',
+  },
+  tunnelSessions: {
+    id: 'tunnel_sessions.id',
+    type: 'tunnel_sessions.type',
+    deviceId: 'tunnel_sessions.device_id',
+    userId: 'tunnel_sessions.user_id',
+    status: 'tunnel_sessions.status',
+    endedAt: 'tunnel_sessions.ended_at',
   },
   devices: { id: 'devices.id', agentId: 'devices.agent_id' },
 }));
 
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: (...args: unknown[]) => h.dispatchCommandToAgent(...(args as [])),
+}));
 vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: (...args: unknown[]) => h.sendCommandToAgent(...args),
+  sendCommandToAgent: (...args: unknown[]) => h.sendCommandToAgent(...(args as [])),
 }));
 
 vi.mock('./viewerTokenRevocation', () => ({
@@ -87,6 +123,10 @@ vi.mock('../routes/terminalWs', () => ({
   closeTerminalSession: (...args: unknown[]) => h.closeTerminalSession(...args),
 }));
 
+vi.mock('../routes/tunnelWs', () => ({
+  closeTunnelSession: (...args: unknown[]) => h.closeTunnelSession(...args),
+}));
+
 import {
   terminateUserRemoteSessions,
   terminateDeviceRemoteSessions,
@@ -96,12 +136,30 @@ import {
 /**
  * Seed the UPDATE ... RETURNING result (disconnected rows) and the device
  * SELECT ... WHERE result (agent resolution).
+ *
+ * `toTerminalSessionRow` (SEC-038 W03) throws if a returned row has no
+ * `terminalGeneration`, so every row gets a default bigint generation and
+ * `pending` phase unless the caller overrides them.
  */
 function seed(
-  rows: Array<{ id: string; type: string; deviceId: string }>,
+  rows: Array<{
+    id: string;
+    type: string;
+    deviceId: string;
+    status?: string;
+    terminalGeneration?: bigint;
+    terminationPhase?: string;
+  }>,
   deviceRows: Array<{ id: string; agentId: string | null }>,
 ) {
-  h.chain.returning.mockResolvedValueOnce(rows);
+  h.chain.returning.mockResolvedValueOnce(
+    rows.map((row) => ({
+      status: 'disconnected',
+      terminalGeneration: 1n,
+      terminationPhase: 'pending',
+      ...row,
+    })),
+  );
   h.state.deviceRowsResult = deviceRows;
 }
 
@@ -111,18 +169,18 @@ describe('terminateUserRemoteSessions', () => {
     h.state.whereCalls = 0;
     h.state.whereArgs = [];
     h.state.deviceRowsResult = [];
+    h.state.mode = 'update';
     // Re-establish fluent defaults wiped by clearAllMocks.
-    h.chain.update.mockImplementation(() => h.chain);
+    h.chain.update.mockImplementation(() => { h.state.mode = 'update'; return h.chain; });
     h.chain.set.mockImplementation(() => h.chain);
-    h.chain.select.mockImplementation(() => h.chain);
+    h.chain.select.mockImplementation(() => { h.state.mode = 'select'; return h.chain; });
     h.chain.from.mockImplementation(() => h.chain);
     h.chain.where.mockImplementation((arg: unknown) => {
       h.state.whereArgs.push(arg);
       h.state.whereCalls += 1;
-      return h.state.whereCalls >= 2
-        ? Promise.resolve(h.state.deviceRowsResult)
-        : h.chain;
+      return h.state.mode === 'select' ? Promise.resolve(h.state.deviceRowsResult) : h.chain;
     });
+    h.chain.returning.mockResolvedValue([]);
     h.revokeViewerSession.mockResolvedValue(undefined);
     h.closeTerminalSession.mockReturnValue(false);
   });
@@ -162,23 +220,34 @@ describe('terminateUserRemoteSessions', () => {
     const result = await terminateUserRemoteSessions('u1');
 
     expect(result).toBe(2);
-    expect(h.chain.update).toHaveBeenCalledTimes(1);
+    expect(h.chain.update).toHaveBeenCalledTimes(2);
+    // SEC-038 W03: every terminal `.set()` now also carries the generation-bump
+    // and termination-phase fragments from `terminalIntentSet` alongside the
+    // writer's own columns.
     expect(h.chain.set).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'disconnected' }),
+      expect.objectContaining({
+        status: 'disconnected',
+        endedAt: expect.any(Date),
+        desktopStartGeneration: expect.anything(),
+        terminalGeneration: expect.anything(),
+        terminationPhase: expect.anything(),
+      }),
     );
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s2');
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(2);
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
-      id: 'desk-stop-s1',
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
+    // The stop command id/payload now bind the terminal generation the row
+    // committed at (SEC-038 W03) — `1` here is the seeded default generation.
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: 'desk-stop-s1-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's1' },
+      payload: { sessionId: 's1', terminalGeneration: '1' },
     });
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-2', {
-      id: 'desk-stop-s2',
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-2', {
+      id: 'desk-stop-s2-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's2' },
+      payload: { sessionId: 's2', terminalGeneration: '1' },
     });
     expect(h.captureException).not.toHaveBeenCalled();
   });
@@ -200,7 +269,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(result).toBe(2);
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     // file_transfer has no stream; desktop has no agent → no OS-level teardown.
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(h.closeTerminalSession).not.toHaveBeenCalled();
   });
 
@@ -219,7 +288,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.closeTerminalSession).toHaveBeenCalledWith('s1');
     // closeTerminalSession owns the terminal_stop when the socket is local.
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('falls back to terminal_stop via the agent when the terminal socket is NOT on this instance', async () => {
@@ -235,8 +304,8 @@ describe('terminateUserRemoteSessions', () => {
 
     expect(result).toBe(1);
     expect(h.closeTerminalSession).toHaveBeenCalledWith('s1');
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(1);
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: 'term-stop-s1',
       type: 'terminal_stop',
       payload: { sessionId: 's1' },
@@ -250,9 +319,30 @@ describe('terminateUserRemoteSessions', () => {
 
     expect(result).toBe(0);
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     // The device-resolution SELECT must not run when nothing was disconnected.
     expect(h.chain.select).not.toHaveBeenCalled();
+  });
+
+  it('disconnects and revokes live tunnels when user authority is removed', async () => {
+    h.chain.returning
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 't1', type: 'vnc', deviceId: 'd1' }]);
+    h.state.deviceRowsResult = [{ id: 'd1', agentId: 'agent-1' }];
+
+    const result = await terminateUserRemoteSessions('u1');
+
+    expect(result).toBe(1);
+    expect(h.revokeViewerSession).toHaveBeenCalledWith('t1');
+    expect(h.closeTunnelSession).toHaveBeenCalledWith('t1');
+    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: 'tun-close-t1',
+      type: 'tunnel_close',
+      payload: { tunnelId: 't1' },
+    });
+    const tunnelWhere = h.state.whereArgs.find((arg) =>
+      arg?.args?.some((part: any) => part?.col === 'tunnel_sessions.user_id'));
+    expect(tunnelWhere).toBeDefined();
   });
 
   it('still processes the other sessions and returns the count when one viewer revoke rejects (best-effort)', async () => {
@@ -273,7 +363,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(result).toBe(2);
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     // Both desktop sessions still get their stop_desktop signal.
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(2);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
   });
 
   it('returns the TEARDOWN_FAILED sentinel and reports to Sentry without propagating when the bulk disconnect throws', async () => {
@@ -287,7 +377,111 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.captureException).toHaveBeenCalledWith(expect.any(Error));
     // Best-effort side effects never ran.
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Concurrency: each dispatchCommandToAgent carries a 5 s ack deadline, and
+  // this teardown runs INLINE inside routes/users.ts role-change / membership
+  // removal and routes/admin/abuse.ts partner suspend. Serial awaits turn N
+  // revoked sessions into N*5 s of request latency.
+  // -------------------------------------------------------------------------
+
+  it('dispatches stop_desktop for different sessions concurrently, not one after another', async () => {
+    seed(
+      [
+        { id: 's1', type: 'desktop', deviceId: 'd1' },
+        { id: 's2', type: 'desktop', deviceId: 'd2' },
+        { id: 's3', type: 'desktop', deviceId: 'd3' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+        { id: 'd3', agentId: 'agent-3' },
+      ],
+    );
+
+    // Deferred dispatches: nothing resolves until we release them, so the only
+    // way all three can be entered is if the loop did not await row-by-row.
+    let entered = 0;
+    const release: Array<() => void> = [];
+    h.dispatchCommandToAgent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          entered += 1;
+          release.push(() => resolve({ status: 'sent', via: 'relay' }));
+        }),
+    );
+
+    const pending = terminateUserRemoteSessions('u1');
+    await vi.waitFor(() => expect(entered).toBe(3));
+    // All three dispatches are in flight while ZERO have resolved.
+    expect(release).toHaveLength(3);
+
+    for (const r of release) r();
+    await expect(pending).resolves.toBe(3);
+  });
+
+  it('keeps closeTerminalSession before the terminal_stop fallback within a row while rows run in parallel', async () => {
+    seed(
+      [
+        { id: 't1', type: 'terminal', deviceId: 'd1' },
+        { id: 't2', type: 'terminal', deviceId: 'd2' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+      ],
+    );
+
+    const order: string[] = [];
+    const closeRelease: Array<() => void> = [];
+    h.closeTerminalSession.mockImplementation((id: string) => {
+      order.push(`close:${id}`);
+      return new Promise((resolve) => closeRelease.push(() => resolve(false)));
+    });
+    h.dispatchCommandToAgent.mockImplementation(async (_agentId, command) => {
+      order.push(`dispatch:${command!.payload.sessionId}`);
+      return { status: 'sent', via: 'relay' };
+    });
+
+    const pending = terminateUserRemoteSessions('u1');
+    // Both rows reach their close() before either resolves → rows are parallel.
+    await vi.waitFor(() => expect(order).toHaveLength(2));
+    expect(order.slice(0, 2)).toEqual(['close:t1', 'close:t2']);
+
+    for (const r of closeRelease) r();
+    await expect(pending).resolves.toBe(2);
+    // ...and inside each row the fallback still runs AFTER the local close.
+    expect(order.slice(2).sort()).toEqual(['dispatch:t1', 'dispatch:t2']);
+  });
+
+  it('logs and continues when one row\'s stop_desktop dispatch rejects', async () => {
+    seed(
+      [
+        { id: 's1', type: 'desktop', deviceId: 'd1' },
+        { id: 's2', type: 'desktop', deviceId: 'd2' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+      ],
+    );
+    const err = new Error('relay down');
+    h.dispatchCommandToAgent.mockImplementation(async (_agentId, command) => {
+      if (command!.payload.sessionId === 's1') throw err;
+      return { status: 'sent', via: 'relay' };
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(terminateUserRemoteSessions('u1')).resolves.toBe(2);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      '[remoteSessionTeardown] Failed to send stop_desktop for session s1:',
+      err,
+    );
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
+    consoleError.mockRestore();
   });
 });
 
@@ -297,17 +491,17 @@ describe('terminateDeviceRemoteSessions', () => {
     h.state.whereCalls = 0;
     h.state.whereArgs = [];
     h.state.deviceRowsResult = [];
-    h.chain.update.mockImplementation(() => h.chain);
+    h.state.mode = 'update';
+    h.chain.update.mockImplementation(() => { h.state.mode = 'update'; return h.chain; });
     h.chain.set.mockImplementation(() => h.chain);
-    h.chain.select.mockImplementation(() => h.chain);
+    h.chain.select.mockImplementation(() => { h.state.mode = 'select'; return h.chain; });
     h.chain.from.mockImplementation(() => h.chain);
     h.chain.where.mockImplementation((arg: unknown) => {
       h.state.whereArgs.push(arg);
       h.state.whereCalls += 1;
-      return h.state.whereCalls >= 2
-        ? Promise.resolve(h.state.deviceRowsResult)
-        : h.chain;
+      return h.state.mode === 'select' ? Promise.resolve(h.state.deviceRowsResult) : h.chain;
     });
+    h.chain.returning.mockResolvedValue([]);
     h.revokeViewerSession.mockResolvedValue(undefined);
     h.closeTerminalSession.mockReturnValue(false);
   });
@@ -333,10 +527,10 @@ describe('terminateDeviceRemoteSessions', () => {
 
     expect(result).toBe(1);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
-      id: 'desk-stop-s1',
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: 'desk-stop-s1-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's1' },
+      payload: { sessionId: 's1', terminalGeneration: '1' },
     });
   });
 
@@ -347,7 +541,7 @@ describe('terminateDeviceRemoteSessions', () => {
 
     expect(result).toBe(0);
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(h.chain.select).not.toHaveBeenCalled();
   });
 

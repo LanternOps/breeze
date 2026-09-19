@@ -289,56 +289,10 @@ func buildServerName(instanceName string) string {
 	return `.\` + instanceName
 }
 
-// runSqlcmd executes a T-SQL query via sqlcmd and returns the output.
-func runSqlcmd(serverName, query string) (string, error) {
-	sqlcmdPath, err := findSqlcmd()
-	if err != nil {
-		return "", err
-	}
-
-	cmd := exec.Command(sqlcmdPath, "-S", serverName, "-E", "-Q", query, "-W", "-h", "-1", "-s", "|")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("sqlcmd: %w: %s", err, string(out))
-	}
-
-	return string(out), nil
-}
-
-// findSqlcmd locates sqlcmd.exe on PATH or in known install directories.
-func findSqlcmd() (string, error) {
-	// Try PATH first
-	if path, err := exec.LookPath("sqlcmd.exe"); err == nil {
-		return path, nil
-	}
-
-	// Common install locations
-	knownPaths := []string{
-		`C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\SQLCMD.EXE`,
-		`C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\130\Tools\Binn\SQLCMD.EXE`,
-		`C:\Program Files\Microsoft SQL Server\110\Tools\Binn\SQLCMD.EXE`,
-		`C:\Program Files\Microsoft SQL Server\150\Tools\Binn\SQLCMD.EXE`,
-		`C:\Program Files\Microsoft SQL Server\160\Tools\Binn\SQLCMD.EXE`,
-	}
-	for _, p := range knownPaths {
-		if _, statErr := exec.LookPath(p); statErr == nil {
-			return p, nil
-		}
-	}
-
-	return "", ErrSqlcmdNotFound
-}
-
-// parseSqlcmdSingleValue extracts the first non-empty line from sqlcmd output.
-func parseSqlcmdSingleValue(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "(") {
-			return line
-		}
-	}
-	return ""
-}
+// runSqlcmd, findSqlcmd (the -C trust-cert fallback and sqlcmd.exe lookup
+// path list), and parseSqlcmdSingleValue now live in sqlcmd.go, shared with
+// backup.go and restore.go, and carry no build tag so their logic has real
+// test coverage on every platform.
 
 // parseDatabaseList parses the tabular output of the database query.
 func parseDatabaseList(output string) []SQLDatabase {

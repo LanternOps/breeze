@@ -35,6 +35,7 @@ function mockParent(overrides: Record<string, unknown> = {}) {
     name: 'Add device installer',
     orgId: 'org-1',
     siteId: 'site-1',
+    credentialGeneration: 1,
     maxUsage: null,
     usageCount: 0,
     // deliberately near-dead: the transient 60-min parent, 59 min in
@@ -44,7 +45,9 @@ function mockParent(overrides: Record<string, unknown> = {}) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([parent]),
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue([parent]),
+        }),
       }),
     }),
   } as any);
@@ -52,11 +55,16 @@ function mockParent(overrides: Record<string, unknown> = {}) {
 }
 
 function mockInsert() {
+  let captured: Record<string, unknown> | undefined;
   vi.mocked(db.insert).mockReturnValueOnce({
-    values: (v: Record<string, unknown>) => ({
-      returning: async () => [{ id: 'tok-1', ...v }],
-    }),
+    values: (v: Record<string, unknown>) => {
+      captured = v;
+      return {
+        returning: async () => [{ id: 'tok-1', ...v }],
+      };
+    },
   } as any);
+  return () => captured;
 }
 
 describe('issueBootstrapTokenForKey', () => {
@@ -66,6 +74,24 @@ describe('issueBootstrapTokenForKey', () => {
     // the permissive default every test.
     clampTtlToCapMock.mockReset();
     clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) => ttlMinutes);
+  });
+
+  it('snapshots the SHARE-locked parent credential generation onto the token', async () => {
+    mockParent({ credentialGeneration: 7 });
+    const insertedValues = mockInsert();
+
+    await issueBootstrapTokenForKey({
+      parentEnrollmentKeyId: 'parent-1',
+      createdByUserId: 'user-1',
+      usageKind: 'capacity',
+    });
+
+    expect(insertedValues()).toEqual(
+      expect.objectContaining({
+        parentEnrollmentKeyId: 'parent-1',
+        parentCredentialGeneration: 7,
+      }),
+    );
   });
 
   it('honours ttlMinutes even when the parent expires sooner (#2775)', async () => {

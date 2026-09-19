@@ -16,9 +16,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 
-const { queryMock, capturedMcpArgs } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   capturedMcpArgs: [] as Array<{ getAuth: () => unknown }>,
+  capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -64,6 +65,13 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (s: unknown) => s,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+vi.mock('./toolSources/sdkBridge', () => ({
+  buildTenantSdkTools: vi.fn((_descriptors: unknown, _getAuth: unknown, getOrgId: () => string) => {
+    capturedTenantSdkToolArgs.push({ getOrgId });
+    return [];
+  }),
+  tenantMcpToolNames: vi.fn(() => []),
+}));
 
 import { StreamingSessionManager, buildDeviceBoundSessionAuth } from './streamingSessionManager';
 import { buildOrgAccessClosures, dbAccessContextFromAuth } from '../middleware/auth';
@@ -75,6 +83,7 @@ const DEVICE_ORG = 'bbbbbbbb-1111-4222-8333-444455556666';
 const PARTNER_ID = 'cccccccc-1111-4222-8333-444455556666';
 const DEVICE_ID = 'dddddddd-1111-4222-8333-444455556666';
 const USER_ID = 'eeeeeeee-1111-4222-8333-444455556666';
+const MOVED_DEVICE_ORG = 'ffffffff-1111-4222-8333-444455556666';
 
 /**
  * Partner-scope login: orgId is null (partner tokens never carry one) and
@@ -202,6 +211,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
   beforeEach(() => {
     vi.clearAllMocks();
     capturedMcpArgs.length = 0;
+    capturedTenantSdkToolArgs.length = 0;
     queryMock.mockImplementation(() => ({
       // Never-yielding stream: the background processor just parks.
       async *[Symbol.asyncIterator]() {
@@ -240,8 +250,16 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     expect(toolAuth.orgId ?? toolAuth.accessibleOrgIds?.[0]).toBe(DEVICE_ORG);
     // RBAC / rate limits / audit still see the RAW login auth — narrowing must
     // not flip a dual-membership tech from their partner role to an org role.
-    expect(session.auth).toBe(rawAuth);
-    expect(session.toolAuth).not.toBe(rawAuth);
+    // The session auth is the raw login auth PLUS the minted AI origin
+    // (#5022 W01) — never narrowed. Identity-compare the fields that matter
+    // rather than the object reference.
+    expect(session.auth).toMatchObject({
+      orgId: rawAuth.orgId,
+      scope: rawAuth.scope,
+      partnerId: rawAuth.partnerId,
+      user: rawAuth.user,
+    });
+    expect(session.toolAuth).not.toBe(session.auth);
   });
 
   it('re-narrows the refreshed auth on follow-up messages (never reverts to login scope)', async () => {
@@ -271,6 +289,99 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     expect(toolAuth.accessibleOrgIds).toEqual([DEVICE_ORG]);
   });
 
+  it('mints an ai_assistant origin on the session auth and the tool auth (#5022 W01)', async () => {
+    const session = await manager.getOrCreate(
+      'sess-origin-mint',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    const expected = { kind: 'ai_assistant', sessionId: 'sess-origin-mint' };
+    expect(session.auth.aiOrigin).toEqual(expected);
+    expect(session.toolAuth.aiOrigin).toEqual(expected);
+    expect((capturedMcpArgs[0]!.getAuth() as AuthContext).aiOrigin).toEqual(expected);
+  });
+
+  it('re-mints the origin on the REFRESHED auth, so a follow-up message is still attributed', async () => {
+    await manager.getOrCreate(
+      'sess-origin-refresh',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    // Second message: a FRESH request auth with no origin on it at all.
+    const session = await manager.getOrCreate(
+      'sess-origin-refresh',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    const expected = { kind: 'ai_assistant', sessionId: 'sess-origin-refresh' };
+    expect(session.auth.aiOrigin).toEqual(expected);
+    expect(session.toolAuth.aiOrigin).toEqual(expected);
+  });
+
+  // #6023 follow-up: execute.ts now threads the tenant-tool `targetOrgId`
+  // (sourced from this getOrgId thunk) into the DISPATCH-TIME owner-predicate
+  // reload, not just audit labeling. `session.orgId` is a readonly field set
+  // once at session creation and never refreshed on reuse — unlike
+  // `session.toolAuth`, which the reuse branch explicitly re-narrows to the
+  // CURRENT device org every turn (see the block above, #3087). If the
+  // tenant-tool thunk read the stale `session.orgId` instead of the FRESH
+  // `session.toolAuth.orgId`, a device that moved to a different org
+  // mid-session would keep dispatching an org-owned tool under its OLD org's
+  // credentials.
+  it('the tenant-tool targetOrgId thunk tracks the device\'s CURRENT org across reuse, not the org captured at session creation', async () => {
+    const movableAuth = {
+      ...makePartnerAuth(),
+      accessibleOrgIds: [LOGIN_ORG, DEVICE_ORG, MOVED_DEVICE_ORG],
+      ...buildOrgAccessClosures([LOGIN_ORG, DEVICE_ORG, MOVED_DEVICE_ORG]),
+    } as unknown as AuthContext;
+
+    // Session created while the device is in DEVICE_ORG.
+    await manager.getOrCreate(
+      'sess-org-move',
+      { ...DB_SESSION, orgId: DEVICE_ORG, deviceId: DEVICE_ID },
+      movableAuth,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    expect(capturedTenantSdkToolArgs).toHaveLength(1);
+    expect(capturedTenantSdkToolArgs[0]!.getOrgId()).toBe(DEVICE_ORG);
+
+    // Follow-up message after the device has moved to MOVED_DEVICE_ORG. The
+    // in-memory session is REUSED (mcpServer/buildTenantSdkTools is not
+    // rebuilt), so the thunk captured above must itself reflect the move.
+    await manager.getOrCreate(
+      'sess-org-move',
+      { ...DB_SESSION, orgId: MOVED_DEVICE_ORG, deviceId: DEVICE_ID },
+      movableAuth,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    // Still only ONE buildTenantSdkTools call (session reused, not rebuilt) —
+    // the SAME thunk instance must now report the moved org.
+    expect(capturedTenantSdkToolArgs).toHaveLength(1);
+    expect(capturedTenantSdkToolArgs[0]!.getOrgId()).toBe(MOVED_DEVICE_ORG);
+  });
+
   it('leaves non-device sessions untouched (partner techs keep fleet-wide reach in general chat)', async () => {
     const auth = makePartnerAuth();
     const session = await manager.getOrCreate(
@@ -284,7 +395,14 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     );
 
     expect(session.deviceId).toBeNull();
-    expect(capturedMcpArgs[0]!.getAuth()).toBe(auth);
-    expect(session.toolAuth).toBe(auth);
+    // No device narrowing: tool auth IS the session auth (which now also
+    // carries the minted ai_assistant origin, #5022 W01).
+    expect(capturedMcpArgs[0]!.getAuth()).toBe(session.toolAuth);
+    expect(session.toolAuth).toBe(session.auth);
+    expect(session.toolAuth).toMatchObject({
+      orgId: auth.orgId,
+      scope: auth.scope,
+      partnerId: auth.partnerId,
+    });
   });
 });
