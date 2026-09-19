@@ -72,6 +72,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import { db } from '../../db';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { filesystemRoutes } from './filesystem';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
@@ -540,6 +541,69 @@ describe('device filesystem routes', () => {
     expect(body.success).toBe(false);
     expect(body.error).toBe('all cleanup actions failed');
     expect(body.data.actions[0].status).toBe('failed');
+  });
+
+  // Defect: `dispatchedPaths` counted an agent-guard rejection as
+  // never-dispatched, so an all-rejected run returned 400 BEFORE the run insert
+  // and the audit — commands had reached the device with no row and no trail.
+  it('persists and audits a run when every dispatched path came back rejected by the agent guard', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'failed',
+      error: 'cleanup guard rejected: a.tmp is a symlink',
+    } as never);
+    const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-guard' }]) });
+    vi.mocked(db.insert).mockReturnValue({ values } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    // Consistent with runCleanupExecution's own outcome: nothing completed or
+    // partial, so the run is `failed` and takes the existing all-failed shape.
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.data.cleanupRunId).toBe('run-guard');
+    expect(body.data.counts.rejected).toBe(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'device.filesystem.cleanup.execute' }),
+    );
+  });
+
+  it('still returns 400 without a run or an audit when nothing was ever dispatched', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/NEVER-PREVIEWED.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('records the executedActions envelope, not a bare array', async () => {

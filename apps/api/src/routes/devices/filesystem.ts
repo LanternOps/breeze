@@ -6,6 +6,7 @@ import {
   MIN_AGENT_VERSION_CLEANUP_GUARD,
   agentSupportsCleanupGuard,
   runCleanupExecution,
+  wasDispatched,
 } from '../../services/filesystemCleanupExecution';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
@@ -444,12 +445,15 @@ filesystemRoutes.post(
       skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
     };
     const dispatchedPaths = outcome.actions
-      .filter((action) => action.status !== 'rejected')
+      .filter(wasDispatched)
       .map((action) => action.path);
 
     if (dispatchedPaths.length === 0) {
-      // Every requested path was refused. Reporting WHICH and WHY is the point
-      // of defect 10's fix: the old route dropped non-candidates silently.
+      // NOTHING left the API — every path failed the plan/rule/denied-root
+      // screening. Reporting WHICH and WHY is the point of defect 10's fix: the
+      // old route dropped non-candidates silently. An agent-guard rejection is
+      // NOT in this branch: that command reached the device, so it must be
+      // persisted and audited below.
       return failJson(c, 'No valid cleanup paths selected from latest previewable candidates', 400, {
         actions: outcome.actions,
         rejectedPaths: outcome.rejectedPaths,

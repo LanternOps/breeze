@@ -16,6 +16,7 @@ import {
   MIN_AGENT_VERSION_CLEANUP_GUARD,
   agentSupportsCleanupGuard,
   runCleanupExecution,
+  wasDispatched,
 } from './filesystemCleanupExecution';
 import { db } from '../db';
 import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
@@ -376,10 +377,13 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
       };
       const dispatchedPaths = outcome.actions
-        .filter((action) => action.status !== 'rejected')
+        .filter(wasDispatched)
         .map((action) => action.path);
 
       if (dispatchedPaths.length === 0) {
+        // NOTHING left the API. An agent-guard rejection means the command DID
+        // reach the device, so it falls through to the run insert below rather
+        // than short-circuiting here.
         // Every requested path was refused. Say WHICH — the old handler
         // returned a bare "No valid cleanup candidates selected" with no list,
         // so the model could not tell a typo from a rule rejection.

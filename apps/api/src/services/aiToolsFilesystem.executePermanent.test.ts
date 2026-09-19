@@ -217,6 +217,31 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     expect(result.minAgentVersion).toBe('0.115.0');
   });
 
+  // Defect: `dispatchedPaths` treated an agent-guard rejection as
+  // never-dispatched, so an all-rejected run short-circuited into the "no
+  // valid candidates" branch BEFORE the run insert — the command had already
+  // reached the device with no run row to show for it.
+  it('persists a run when every dispatched path came back rejected by the agent guard', async () => {
+    executeCommand.mockResolvedValue({
+      status: 'failed',
+      error: 'cleanup guard rejected: a.tmp is a symlink',
+    });
+
+    const raw = await getDiskCleanupTool().handler(
+      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      makeAuth(),
+    );
+    const result = JSON.parse(raw);
+
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    // Consistent with runCleanupExecution's own outcome: nothing completed or
+    // partial, so the run is `failed`, matching the route's all-failed shape.
+    expect(result.status).toBe('failed');
+    expect(result.counts.rejected).toBe(1);
+    expect(dbMockState.insertedRuns).toHaveLength(1);
+    expect(dbMockState.insertedRuns[0]).toMatchObject({ status: 'failed' });
+  });
+
   it('keeps the W01 input schema unchanged — no path, no cleanupRunId', () => {
     const properties = getDiskCleanupTool().definition.input_schema.properties as Record<string, unknown>;
     // Both arrive in W05 with the rest of §9; W01 unifies the EXECUTION path only.

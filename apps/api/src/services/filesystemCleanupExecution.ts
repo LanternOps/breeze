@@ -214,6 +214,19 @@ export function mapFileDeleteStatus(
   return 'completed';
 }
 
+/**
+ * Did this action's command actually reach the device?
+ *
+ * `agent_guard` is a rejection the AGENT made, which means the command was
+ * dispatched and the device acted on it. The other three reasons are API-side
+ * screening, so nothing ever left. Treating them alike made an all-rejected run
+ * return 400 before the run row and the audit were written — commands on the
+ * device with no record of them (spec §10).
+ */
+export function wasDispatched(action: Pick<CleanupExecutionAction, 'status' | 'reason'>): boolean {
+  return action.status !== 'rejected' || action.reason === 'agent_guard';
+}
+
 type Rejection = { reason: CleanupRejectionReason };
 
 function screen(
