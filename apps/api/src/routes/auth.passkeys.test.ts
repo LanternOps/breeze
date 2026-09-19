@@ -2027,7 +2027,7 @@ describe('passkey MFA auth routes', () => {
           orgId: 'org-5',
           partnerId: 'partner-2',
           scope: 'organization',
-          token: { sid: 'session-123', mfa: true, aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
+          token: { sid: 'session-123', mfa: true, mfa_src: 'factor', aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
         });
         return next();
       }) as never);
@@ -2054,6 +2054,8 @@ describe('passkey MFA auth routes', () => {
         partnerId: 'partner-2',
         scope: 'organization',
         mfa: true,
+        // Carried verbatim from the caller's signed token, never recomputed.
+        mfaSrc: 'factor',
         mobileDeviceId: 'signed-device-1',
       });
       expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -2105,6 +2107,10 @@ describe('passkey MFA auth routes', () => {
       expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
       const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
       expect(input).toMatchObject({ userId: 'user-123', revokeReason: 'passkey-delete' });
+      // This caller's token predates the claim, so the re-mint carries none —
+      // absent stays absent, it is never recomputed into a source.
+      expect(input.identity).toMatchObject({ mfa: true });
+      expect(input.identity.mfaSrc).toBeUndefined();
       expect(input.recoveryCodes).toBeUndefined();
       expect(input.recoveryCodeHashes).toBeUndefined();
     });

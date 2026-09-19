@@ -4099,7 +4099,7 @@ describe('auth routes', () => {
           user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
           token: {
             sid: 'family-123', sub: 'user-123', type: 'access',
-            aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+            aep: 4, mep: 9, mfa: true, mfa_src: 'policy' as const, mdid: 'signed-device-1', roleId: 'role-7',
           },
           orgId: 'org-5',
           partnerId: 'partner-2',
@@ -4129,6 +4129,9 @@ describe('auth routes', () => {
         partnerId: 'partner-2',
         scope: 'organization',
         mfa: true,
+        // Carried verbatim from the caller's signed token — a factor write
+        // re-mints the assurance it was given, never a better one.
+        mfaSrc: 'policy',
         mobileDeviceId: 'signed-device-1',
       });
       expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -4337,7 +4340,7 @@ describe('auth routes', () => {
             user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
             token: {
               sid: 'family-123', sub: 'user-123', type: 'access',
-              aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+              aep: 4, mep: 9, mfa: true, mfa_src: 'policy' as const, mdid: 'signed-device-1', roleId: 'role-7',
             },
             orgId: 'org-5',
             partnerId: 'partner-2',
@@ -4360,6 +4363,9 @@ describe('auth routes', () => {
           partnerId: 'partner-2',
           scope: 'organization',
           mfa: true,
+          // Carried verbatim from the caller's signed token — a factor write
+          // re-mints the assurance it was given, never a better one.
+          mfaSrc: 'policy',
           mobileDeviceId: 'signed-device-1',
         });
         expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -4389,6 +4395,8 @@ describe('auth routes', () => {
         expect(res.status).toBe(200);
         const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
         expect(input.identity.mfa).toBe(false);
+        // Not assured ⇒ no source, whatever the prior token said.
+        expect(input.identity.mfaSrc).toBeUndefined();
       });
 
       // Post-commit: the factor is already gone, so a failure installing the

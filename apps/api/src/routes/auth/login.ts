@@ -1113,6 +1113,10 @@ loginRoutes.post('/refresh', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: ENABLE_2FA ? payload.mfa : false,
+    // Carry the assurance SOURCE forward exactly as the binding below: a
+    // refresh re-issues what the prior signed token said, never recomputes it,
+    // and never upgrades 'policy' to 'factor'. Absent stays absent.
+    mfaSrc: ENABLE_2FA && payload.mfa ? payload.mfa_src : undefined,
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
