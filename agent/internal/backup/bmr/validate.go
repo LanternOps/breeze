@@ -276,29 +276,3 @@ func enabledSystemdUnitsFromStaging(stagingDir string) ([]string, error) {
 	}
 	return parseSystemdEnabledUnits(data), nil
 }
-
-// parseSystemdEnabledUnits extracts unit names from the output of
-// `systemctl list-unit-files --type=service`, keeping only units whose
-// STATE column reads exactly "enabled".
-//
-// KNOWN DUPLICATION (intentional, see the plan doc's Wave 2 file list and
-// Wave 5's reconciliation note): a sibling wave's restore_linux_logic.go
-// independently adds a same-purpose `parseEnabledServices` helper to drive
-// the actual service-restore step. This package cannot import or reuse that
-// helper here without editing restore_linux.go, which is out of scope for
-// this change (owned by that wave). The two parsers must be kept in sync on
-// the parsing rule (STATE column == "enabled") until a follow-up
-// consolidates them into one shared helper.
-func parseSystemdEnabledUnits(data []byte) []string {
-	var units []string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		if fields[1] == "enabled" {
-			units = append(units, fields[0])
-		}
-	}
-	return units
-}
