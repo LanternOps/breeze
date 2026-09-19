@@ -551,7 +551,10 @@
         "description": "Status, SLAs, categorias, formulários",
         "linkCta": "Gerenciar configurações de tickets →"
       },
-      "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
+      "sendingDomains": {
+        "label": "Endereços de envio",
+        "description": "Envie e-mails do seu próprio domínio"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "Os registros DNS foram removidos.",
     "failedUnknown": "A verificação não foi concluída.",
     "retry": "Tentar de novo",
+    "removeTitle": "Remover o domínio de envio?",
     "removeConfirm": "Remover {{domain}}? O e-mail dele volta para o remetente padrão do Breeze.",
     "removeConfirmUnmanaged": "Remover {{domain}} do Breeze? O domínio continua na conta do seu provedor de e-mail — o Breeze nunca apaga um domínio que não criou.",
     "removeStarted": "Removendo o domínio.",

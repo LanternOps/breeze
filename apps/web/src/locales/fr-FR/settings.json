@@ -551,7 +551,10 @@
         "description": "Statuts, SLA, catégories, formulaires",
         "linkCta": "Gérer les paramètres de tickets →"
       },
-      "sendingDomains": { "label": "Adresses d'expédition", "description": "Envoyez vos e-mails depuis votre propre domaine" },
+      "sendingDomains": {
+        "label": "Adresses d'expédition",
+        "description": "Envoyez vos e-mails depuis votre propre domaine"
+      },
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "Les enregistrements DNS ont été supprimés.",
     "failedUnknown": "La vérification n'a pas abouti.",
     "retry": "Réessayer",
+    "removeTitle": "Retirer le domaine d'envoi ?",
     "removeConfirm": "Supprimer {{domain}} ? Ses e-mails repassent sur l'expéditeur Breeze standard.",
     "removeConfirmUnmanaged": "Retirer {{domain}} de Breeze ? Le domaine reste dans le compte de votre fournisseur d'e-mail : Breeze ne supprime jamais un domaine qu'il n'a pas créé.",
     "removeStarted": "Suppression du domaine en cours.",

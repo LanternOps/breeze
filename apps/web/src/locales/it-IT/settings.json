@@ -551,7 +551,10 @@
         "description": "Stati, SLA, categorie, moduli",
         "linkCta": "Gestisci impostazioni ticket →"
       },
-      "sendingDomains": { "label": "Indirizzi mittente", "description": "Invia email dal tuo dominio" },
+      "sendingDomains": {
+        "label": "Indirizzi mittente",
+        "description": "Invia email dal tuo dominio"
+      },
       "aiBudgets": {
         "label": "Budget AI",
         "description": "Limiti di spesa AI"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "I record DNS sono stati rimossi.",
     "failedUnknown": "La verifica non si è conclusa.",
     "retry": "Riprova",
+    "removeTitle": "Rimuovere il dominio di invio?",
     "removeConfirm": "Rimuovere {{domain}}? La sua posta torna al mittente standard di Breeze.",
     "removeConfirmUnmanaged": "Rimuovere {{domain}} da Breeze? Il dominio resta nell'account del tuo fornitore di posta: Breeze non elimina mai un dominio che non ha creato.",
     "removeStarted": "Rimozione del dominio in corso.",

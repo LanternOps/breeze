@@ -551,7 +551,10 @@
         "description": "Status, SLAs, Kategorien, Formulare",
         "linkCta": "Ticketing-Einstellungen verwalten →"
       },
-      "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
+      "sendingDomains": {
+        "label": "Absenderadressen",
+        "description": "E-Mails von Ihrer eigenen Domain senden"
+      },
       "aiBudgets": {
         "label": "KI-Budgets",
         "description": "KI-Ausgabenlimits"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "Die DNS-Einträge wurden entfernt.",
     "failedUnknown": "Die Prüfung wurde nicht abgeschlossen.",
     "retry": "Erneut versuchen",
+    "removeTitle": "Sendedomain entfernen?",
     "removeConfirm": "{{domain}} entfernen? Mail dafür geht wieder über den Standardabsender von Breeze.",
     "removeConfirmUnmanaged": "{{domain}} aus Breeze entfernen? Die Domain bleibt im Konto Ihres E-Mail-Anbieters — Breeze löscht nie eine Domain, die es nicht selbst angelegt hat.",
     "removeStarted": "Die Domain wird entfernt.",

@@ -551,7 +551,10 @@
         "description": "Estados, SLA, categorías, formularios",
         "linkCta": "Administrar configuración de tickets →"
       },
-      "sendingDomains": { "label": "Direcciones de envío", "description": "Envía correos desde tu propio dominio" },
+      "sendingDomains": {
+        "label": "Direcciones de envío",
+        "description": "Envía correos desde tu propio dominio"
+      },
       "aiBudgets": {
         "label": "AI Presupuestos",
         "description": "límites de gasto AI"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "Se quitaron los registros DNS.",
     "failedUnknown": "La verificación no se completó.",
     "retry": "Intentar otra vez",
+    "removeTitle": "¿Quitar el dominio de envío?",
     "removeConfirm": "¿Quitar {{domain}}? Su correo vuelve al remitente estándar de Breeze.",
     "removeConfirmUnmanaged": "¿Quitar {{domain}} de Breeze? El dominio se queda en la cuenta de tu proveedor de correo: Breeze nunca borra un dominio que no creó.",
     "removeStarted": "Quitando el dominio.",

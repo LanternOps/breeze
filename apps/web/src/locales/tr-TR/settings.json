@@ -551,7 +551,10 @@
         "description": "Durumlar, SLA'lar, kategoriler, formlar",
         "linkCta": "Bilet ayarlarını yönet →"
       },
-      "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
+      "sendingDomains": {
+        "label": "Gönderen adresleri",
+        "description": "E-postaları kendi alan adınızdan gönderin"
+      },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
@@ -652,6 +655,7 @@
     "failedDnsRemoved": "DNS kayıtları kaldırıldı.",
     "failedUnknown": "Doğrulama tamamlanmadı.",
     "retry": "Yeniden dene",
+    "removeTitle": "Gönderim alan adı kaldırılsın mı?",
     "removeConfirm": "{{domain}} kaldırılsın mı? Bu alan adının postası Breeze'in standart göndereni üzerinden gider.",
     "removeConfirmUnmanaged": "{{domain}} Breeze'den kaldırılsın mı? Alan adı e-posta sağlayıcısı hesabınızda kalır — Breeze kendi oluşturmadığı bir alan adını asla silmez.",
     "removeStarted": "Alan adı kaldırılıyor.",

@@ -652,6 +652,7 @@
     "failedDnsRemoved": "The DNS records were removed.",
     "failedUnknown": "Verification did not finish.",
     "retry": "Try again",
+    "removeTitle": "Remove sending domain?",
     "removeConfirm": "Remove {{domain}}? Email for it goes back to the standard Breeze sender.",
     "removeConfirmUnmanaged": "Remove {{domain}} from Breeze? The domain stays in your email provider account — Breeze never deletes a domain it did not create.",
     "removeStarted": "Removing the domain.",
