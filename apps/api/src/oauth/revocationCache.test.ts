@@ -6,7 +6,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 // against a live local Redis, so unmock here.
 vi.unmock('../services/redis');
 
-const { closeRedis } = await vi.importActual<typeof import('../services/redis')>('../services/redis');
+// NOTE: a static top-level `import { REDIS_CLIENT_BASE_OPTIONS } from
+// '../services/redis'` would resolve to the global setup.ts mock (which
+// doesn't export it) rather than the real module, since the mock is already
+// resolved by the time `vi.unmock` above runs. Pull it from the same
+// `importActual` call as `closeRedis` so it's the real value.
+const { closeRedis, REDIS_CLIENT_BASE_OPTIONS } = await vi.importActual<typeof import('../services/redis')>('../services/redis');
 const { isJtiRevoked, revokeJti } = await vi.importActual<typeof import('./revocationCache')>('./revocationCache');
 
 describe('revocationCache fail-closed', () => {
@@ -122,6 +127,7 @@ const oldRedisUrl = process.env.REDIS_URL;
 
 async function canReachRedis(): Promise<boolean> {
   const redis = new Redis(redisUrl, {
+    ...REDIS_CLIENT_BASE_OPTIONS,
     connectTimeout: 200,
     lazyConnect: true,
     maxRetriesPerRequest: 0,
@@ -147,7 +153,7 @@ describeIfRedis('revocationCache', () => {
 
   beforeAll(() => {
     process.env.REDIS_URL = redisUrl;
-    redis = new Redis(redisUrl);
+    redis = new Redis(redisUrl, { ...REDIS_CLIENT_BASE_OPTIONS });
   });
 
   beforeEach(async () => {

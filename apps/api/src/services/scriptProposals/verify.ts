@@ -7,7 +7,7 @@ import { captureException } from '../sentry';
 export type VerificationOutcome = 'verified' | 'verification_failed' | 'unknown';
 
 export const SCRIPT_VERIFY_QUEUE = 'script-verify';
-/** The single job name on the queue; the worker asserts it (bullmqValidation). */
+/** Execution verification job name; reconciliation uses a separate scheduled name. */
 export const SCRIPT_VERIFY_JOB_NAME = 'verify';
 export const SCRIPT_VERIFY_MAX_ATTEMPTS = 3;
 /** 3 attempts over 20 minutes (spec §4.9): t=0, t=10m, t=20m. */
@@ -171,10 +171,10 @@ export async function evaluateVerificationClaim(
 // Queue accessor + enqueue
 // ---------------------------------------------------------------------------
 
-let verifyQueue: Queue<ScriptVerifyJobData> | null = null;
-export function getScriptVerifyQueue(): Queue<ScriptVerifyJobData> {
+let verifyQueue: Queue<ScriptVerifyJobData | { type: 'reconcile' }> | null = null;
+export function getScriptVerifyQueue(): Queue<ScriptVerifyJobData | { type: 'reconcile' }> {
   if (!verifyQueue) {
-    verifyQueue = new Queue<ScriptVerifyJobData>(SCRIPT_VERIFY_QUEUE, { connection: getBullMQConnection() });
+    verifyQueue = new Queue<ScriptVerifyJobData | { type: 'reconcile' }>(SCRIPT_VERIFY_QUEUE, { connection: getBullMQConnection() });
   }
   return verifyQueue;
 }

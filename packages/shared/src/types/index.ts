@@ -815,6 +815,7 @@ export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
 export * from './deviceFunction';
+export * from './sendingDomains';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 export * from './aiAgentImpactMeasured';
@@ -855,6 +856,7 @@ export * from './vulnerabilityManagementReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalChromeAccent';
 export * from './portalService';
 
 // ============================================

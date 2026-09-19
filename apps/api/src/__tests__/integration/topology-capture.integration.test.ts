@@ -9,7 +9,7 @@ import { createTopologyTenant, orgContext } from './topology-fixtures';
 import { enqueueTopologyChange, parseLegacyTopologyEvent, type TopologyChangeInput } from '../../services/topology/legacyCapture';
 
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext(orgContext(orgId), action);
-const captureMigration = '2026-10-17-150200-topology-legacy-capture.sql';
+const captureMigration = '2026-10-20-150200-topology-legacy-capture.sql';
 type Scope = { orgId: string; siteId: string };
 async function manual(scope: Scope, id = crypto.randomUUID()) {
   await scoped(scope.orgId, () => db.execute(sql`INSERT INTO topology_manual_nodes (id, org_id, site_id, label, role)

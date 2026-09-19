@@ -95,7 +95,9 @@
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
-    "serviceManagement": "Servis yönetimi"
+    "serviceManagement": "Servis yönetimi",
+    "ticketing": "Bilet Sistemi",
+    "deliverableTemplates": "Teslimat Şablonları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

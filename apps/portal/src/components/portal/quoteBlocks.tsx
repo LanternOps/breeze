@@ -70,6 +70,7 @@ function PricingTable({
   testId,
   taxRate,
   showTax,
+  showSubtotal = false,
   buildUrl,
 }: {
   lines: QuoteLine[];
@@ -78,6 +79,9 @@ function PricingTable({
   testId: string;
   taxRate: number;
   showTax: boolean;
+  /** The block's "Show subtotal" toggle. The technician preview and the PDF
+   *  honour it; the customer must see the same document. */
+  showSubtotal?: boolean;
   /** Resolves a server-built relative line-image path into a fetchable URL. */
   buildUrl: (path: string) => PublicApiPath;
 }) {
@@ -88,6 +92,12 @@ function PricingTable({
     rows: lines.filter((l) => (l.recurrence || 'one_time') === g.key),
   })).filter((g) => g.rows.length > 0);
   const groupColSpan = showTax ? 5 : 4;
+  // Opt-in per-table subtotal, summed from THIS table's rows and split by
+  // recurrence, joined with " + " — the same shape as the document footer
+  // (apps/web QuoteDocument.tsx PricingTable).
+  const subtotalParts = showSubtotal
+    ? grouped.map((g) => `${money(g.rows.reduce((sum, l) => sum + Number(l.lineTotal), 0), currency)}${g.suffix}`)
+    : [];
 
   return (
     <div className="overflow-hidden rounded-lg border bg-card" data-testid={testId}>
@@ -168,6 +178,18 @@ function PricingTable({
               </Fragment>
             ))}
           </tbody>
+          {subtotalParts.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 bg-muted/20" data-testid={`quote-table-subtotal-${testId.replace(/^quote-lines-/, '')}`}>
+                <td className="px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5" colSpan={groupColSpan - 1}>
+                  Subtotal
+                </td>
+                <td className="text-figures whitespace-nowrap px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5">
+                  {subtotalParts.join(' + ')}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>
@@ -383,6 +405,7 @@ export function QuoteBlocks({
           testId={`quote-lines-${block.id}`}
           taxRate={taxRate}
           showTax={showTax}
+          showSubtotal={content.showSubtotal === true}
           buildUrl={buildUrl}
         />
       );

@@ -22,8 +22,12 @@ vi.mock('@/lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'organization' })
 }));
 
+const scriptFormPropsSpy = vi.fn();
 vi.mock('./ScriptForm', () => ({
-  default: () => <div>script form</div>
+  default: (props: unknown) => {
+    scriptFormPropsSpy(props);
+    return <div>script form</div>;
+  }
 }));
 
 const showToastMock = vi.fn();
@@ -130,5 +134,31 @@ describe('ScriptEditPage duplicate action (#4887)', () => {
 
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(navigateToMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ScriptEditPage form seeding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('falls back to the Custom category when the saved script has none (loose-file imports)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/scripts/script-1') return makeJsonResponse({ ...baseScript, category: null });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptEditPage scriptId="script-1" />);
+
+    await waitFor(() => {
+      const calls = scriptFormPropsSpy.mock.calls as Array<[{ defaultValues?: { category?: unknown } }]>;
+      expect(calls.some(([p]) => p.defaultValues?.category === 'Custom')).toBe(true);
+    });
+    expect(
+      (scriptFormPropsSpy.mock.calls as Array<[{ defaultValues?: { category?: unknown } }]>).some(
+        ([p]) => p.defaultValues?.category === null
+      )
+    ).toBe(false);
   });
 });

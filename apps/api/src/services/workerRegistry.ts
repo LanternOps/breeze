@@ -1437,6 +1437,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeToolSourceDiscoveryWorkers, shutdown: m.shutdownToolSourceDiscoveryWorkers };
     },
   },
+  {
+    // Partner sending domains W03. The ONE place that calls the email-domain
+    // provider (spec §2). `initializeSendingDomainsWorker` returns before
+    // constructing anything when EMAIL_DOMAINS_PROVIDER is unset, which is the
+    // default — hence the matching 'sending_domains_configured' readiness rule.
+    // placement 'global': the module's runtime import closure (domainSync ->
+    // providerRegistry/adapters -> services/email.ts, opsAlerts, partnerTrust,
+    // auditEvents, db, redis) reaches neither routes/agentWs.ts nor
+    // services/agentCommandAwait.ts.
+    name: 'sendingDomainsWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/sendingDomainsWorker');
+      return { init: m.initializeSendingDomainsWorker, shutdown: m.shutdownSendingDomainsWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

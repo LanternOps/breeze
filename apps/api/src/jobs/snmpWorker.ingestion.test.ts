@@ -240,6 +240,129 @@ describe('processPollResults — protocol 2 ingestion (spec §7.3)', () => {
     expect(captured.updateSets[0]!.lastPollAttemptedAt).toBeInstanceOf(Date);
   });
 
+  /**
+   * #6108 — a poll's metrics go in as ONE multi-row INSERT, so a single value
+   * that overflows its column aborted the statement with 22001 and lost EVERY
+   * metric from that poll, silently. The agent reported success, so #6066's
+   * last_error never fired either.
+   */
+  describe('over-long values must not cost the whole poll (#6108)', () => {
+    const LONG_INSTANCE = '1.4.' + '255.'.repeat(60) + '1'; // > 200 chars
+
+    it('drops only the unstorable row and still persists the good ones', async () => {
+      selectResults = deviceRow() as unknown[][];
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [
+          { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', value: 1, timestamp: '2026-09-16T12:00:00.000Z' },
+          {
+            oid: '1.3.6.1.2.1.4.24.7.1.7',
+            baseOid: '1.3.6.1.2.1.4.24.7.1.7',
+            instance: LONG_INSTANCE,
+            name: 'inetCidrRouteIfIndex',
+            value: 2,
+            timestamp: '2026-09-16T12:00:00.000Z',
+          },
+          { oid: '1.3.6.1.2.1.2.2.1.10.1', name: 'ifInOctets', value: 3, timestamp: '2026-09-16T12:00:00.000Z' },
+        ],
+      });
+
+      const rows = captured.insertValues[0] as Record<string, unknown>[];
+      expect(rows.map((r) => r.oid)).toEqual(['1.3.6.1.2.1.1.3.0', '1.3.6.1.2.1.2.2.1.10.1']);
+    });
+
+    it('reports the drop through last_error so the device page stops showing a clean poll', async () => {
+      selectResults = deviceRow() as unknown[][];
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [
+          { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', value: 1, timestamp: '2026-09-16T12:00:00.000Z' },
+          { oid: '1.3.6.1.2.1.4.24.7.1.7', instance: LONG_INSTANCE, name: 'route', value: 2, timestamp: '2026-09-16T12:00:00.000Z' },
+        ],
+      });
+
+      // A real value did arrive, so the poll still counts as a success...
+      expect(captured.updateSets[0]).toMatchObject({ lastStatus: 'online', consecutiveFailures: 0 });
+      // ...but the loss is recorded rather than silent.
+      expect(String(captured.updateSets[0]!.lastError)).toContain('Dropped 1 unstorable metric row');
+      expect(String(captured.updateSets[0]!.lastError)).toContain('instance is 245 chars (max 200)');
+      expect(captured.updateSets[0]!.lastErrorAt).toBeInstanceOf(Date);
+      expect(String(captured.updateSets[0]!.lastError).length).toBeLessThanOrEqual(500);
+    });
+
+    it('a poll whose every row is unstorable inserts nothing and does not clear the backoff', async () => {
+      selectResults = deviceRow() as unknown[][];
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [{ oid: '1.3.6.1.2.1.4.24.7.1.7', instance: LONG_INSTANCE, name: 'route', value: 2, timestamp: '2026-09-16T12:00:00.000Z' }],
+      });
+
+      expect(captured.insertValues).toHaveLength(0);
+      expect(captured.updateSets[0]).toMatchObject({ lastStatus: 'warning' });
+      expect(captured.updateSets[0]).not.toHaveProperty('consecutiveFailures');
+      expect(String(captured.updateSets[0]!.lastError)).toContain('instance');
+    });
+
+    it('an over-long oid drops that row too', async () => {
+      selectResults = deviceRow() as unknown[][];
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [
+          { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', value: 1, timestamp: '2026-09-16T12:00:00.000Z' },
+          { oid: '1.3.6.1.' + '255.'.repeat(60) + '1', name: 'huge', value: 2, timestamp: '2026-09-16T12:00:00.000Z' },
+        ],
+      });
+
+      const rows = captured.insertValues[0] as Record<string, unknown>[];
+      expect(rows).toHaveLength(1);
+      expect(String(captured.updateSets[0]!.lastError)).toContain('oid');
+    });
+
+    it('clips an over-long name instead of dropping the row — the name is display text, not identity', async () => {
+      selectResults = deviceRow() as unknown[][];
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [{ oid: '1.3.6.1.2.1.1.3.0', name: 'n'.repeat(140), value: 1, timestamp: '2026-09-16T12:00:00.000Z' }],
+      });
+
+      const rows = captured.insertValues[0] as Record<string, unknown>[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.name).toBe('n'.repeat(100));
+      expect(captured.updateSets[0]).not.toHaveProperty('lastError');
+    });
+
+    it('a 110-char IPv6 route instance — the shape found on the lab rig — is stored, not dropped', async () => {
+      selectResults = deviceRow() as unknown[][];
+      const realWorldInstance = '2.16.32.1.13.184.0.0.0.0.0.0.0.0.0.0.0.1.64.2.16.32.1.13.184.0.0.0.0.0.0.0.0.0.0.0.2.0.2.16.32.1.13.184.0.0';
+      expect(realWorldInstance.length).toBeGreaterThan(64);
+
+      await processPollResults({
+        type: 'process-poll-results',
+        deviceId: DEVICE,
+        metrics: [{
+          oid: '1.3.6.1.2.1.4.24.7.1.7', baseOid: '1.3.6.1.2.1.4.24.7.1.7',
+          instance: realWorldInstance, name: 'inetCidrRouteIfIndex', value: 2,
+          timestamp: '2026-09-16T12:00:00.000Z',
+        }],
+      });
+
+      const rows = captured.insertValues[0] as Record<string, unknown>[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.instance).toBe(realWorldInstance);
+      expect(captured.updateSets[0]).not.toHaveProperty('lastError');
+    });
+  });
+
   it('an empty metrics array leaves the device status alone', async () => {
     selectResults = deviceRow() as unknown[][];
     await processPollResults({ type: 'process-poll-results', deviceId: DEVICE, metrics: [] });

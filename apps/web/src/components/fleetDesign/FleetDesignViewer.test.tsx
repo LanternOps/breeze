@@ -7,9 +7,9 @@ import { useDesignSelection } from './useDesignSelection';
 /** Fleet Designer W04 (#5654) — renders the viewer with a real selection
  *  hook underneath (rather than a hand-rolled stub) so toggling a checkbox
  *  exercises the actual auto-select rules, not a mock of them. */
-function Harness({ outcome }: { outcome: FleetDesignOutcome }) {
+function Harness({ outcome, unavailable }: { outcome: FleetDesignOutcome; unavailable?: string[] }) {
   const selection = useDesignSelection(new Set());
-  return <FleetDesignViewer outcome={outcome} selection={selection} />;
+  return <FleetDesignViewer outcome={outcome} selection={selection} unavailable={unavailable} />;
 }
 
 const OUTCOME: FleetDesignOutcome = {
@@ -143,5 +143,27 @@ describe('FleetDesignViewer', () => {
 
     const coveredRow = screen.getByTestId('fleet-design-legacy-row-legacy-2');
     expect(coveredRow.textContent).toContain('New backup policy');
+  });
+});
+
+describe('unavailable evidence', () => {
+  it.each([
+    ['org', 'Organization'], ['devices', 'Devices'], ['software', 'Software inventory'],
+    ['services', 'System services'], ['network', 'Network evidence'], ['posture', 'Security posture'],
+    ['health', 'Fleet health'], ['configuration', 'Configuration'], ['automation', 'Automation evidence'],
+    ['logs', 'Event logs'], ['counts', 'Activity counts'], ['precursors', 'Early warning indicators'],
+    ['approvedDesign', 'Drift since the approved design'], ['drift', 'Drift since the approved design'],
+  ])('shows an explicit not-measured panel for %s', (key, title) => {
+    render(<Harness outcome={OUTCOME} unavailable={[key]} />);
+    const panel = screen.getByTestId(`fleet-design-section-${key}-not-measured`);
+    expect(panel).toHaveTextContent(title);
+    expect(panel).toHaveTextContent('Not measured');
+    expect(screen.getByTestId('fleet-design-section-found')).toHaveTextContent('12 devices found');
+  });
+
+  it('does not mark evidence as unmeasured in older summaries', () => {
+    render(<Harness outcome={OUTCOME} />);
+    expect(screen.queryByTestId('fleet-design-section-drift-not-measured')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('fleet-design-section-approvedDesign-not-measured')).not.toBeInTheDocument();
   });
 });

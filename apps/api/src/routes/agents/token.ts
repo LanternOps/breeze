@@ -83,11 +83,54 @@ const ROTATION_CONFLICT_CODES = {
   PENDING_ROTATION_UNCONFIRMED: 'pending_rotation_unconfirmed',
 } as const;
 
+/**
+ * #3997 — the drain refusal code, deliberately NOT a member of
+ * `ROTATION_CONFLICT_CODES` above.
+ *
+ * That vocabulary is the #2894 contract for 409 rotation CONFLICTS: every
+ * member describes the state of a rotation the agent has to reconcile, every
+ * member ships as a 409, and every member is classified terminal-or-retryable
+ * against a hardcoded switch in `agent/pkg/api/client.go` (guarded by
+ * token.conflictCodes.test.ts). A drain refusal is none of those things. It is
+ * an AUTHORIZATION refusal — 403, matching the middleware's own
+ * `tenant_offboarding` 403 for the same condition — it says nothing about any
+ * rotation's state, and the agent has nothing to reconcile: there is no staged
+ * set to keep or discard, so terminal-vs-retryable does not apply.
+ *
+ * Registering it in the 409 vocabulary would have put a 403 inside a
+ * 409-only contract and forced a Go-side terminal classification for a
+ * distinction that has no meaning here.
+ */
+export const ROTATION_REFUSED_DRAINING_CODE = 'tenant_or_device_draining';
+
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
   const agent = c.get('agent') as AgentAuthContext;
   if (agent.role !== 'agent') {
     return c.json({ error: 'Agent credential role mismatch' }, 403);
+  }
+
+  // #3997 / #3986 — Layer 2: a DRAINING tenant or device must not mint
+  // credentials, restated here rather than trusted to the middleware alone.
+  // agentAuthMiddleware already refuses `rotate-token` for both drain kinds
+  // (TENANT_DRAIN_ALLOWED_ACTIONS / DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS),
+  // but that refusal is a path allowlist one edit away from being re-widened,
+  // and NOTHING revokes what this route mints: the offboarding ABORT paths
+  // cancel the queued uninstalls without severing credentials, `POST
+  // /devices/:id/restore` touches no token hash, and there is no expiry
+  // sweeper for staged hashes. A credential minted inside a drain window
+  // therefore becomes the live one the moment the tenant is reinstated or the
+  // device restored. The one flow the drain surface must protect — an agent
+  // finishing a rotation it staged BEFORE the drain — goes through
+  // `/rotate-token/confirm`, which stays open and is unaffected by this guard.
+  if (agent.tenantDraining || agent.deviceUninstallDraining) {
+    return c.json(
+      {
+        error: 'Credential rotation is unavailable while this tenant or device is draining',
+        code: ROTATION_REFUSED_DRAINING_CODE,
+      },
+      403
+    );
   }
 
   // PART A — superseded (previous-token) credentials must not renew themselves.

@@ -316,6 +316,8 @@ const EXPECTED_NAMES = [
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
+  // Partner sending domains W03 (#6183).
+  'sendingDomainsWorker',
 ];
 
 // ---------------------------------------------------------------------------

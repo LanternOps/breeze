@@ -13,6 +13,7 @@ vi.mock('../../services/stripeSessionRevocation', () => ({
   abandonInvoiceSessionRevocation: vi.fn(),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.9' }));
 vi.mock('../../db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }),
@@ -34,13 +35,14 @@ import { invoiceStripeRoutes } from './stripe';
 import * as checkout from '../../services/invoiceCheckout';
 import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const payLink = vi.mocked(checkout.createInvoicePayLink);
 
 function app() {
   const a = new Hono();
-  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
+  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1', email: 'op@example.com' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
   a.route('/', invoiceStripeRoutes);
   return a;
 }
@@ -114,6 +116,26 @@ describe('POST /invoices/:id/stripe-sessions/abandon', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { abandoned: 2 } });
     expect(abandon).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: ID, reason: 'Stripe account closed by the bank' }));
+  });
+
+  // #5611 item 3: the service is the ONE audit writer for an abandon. The route
+  // used to write a second `invoice.stripe_session_abandoned` row on top of the
+  // service's, so every abandon showed up twice in the audit log. The route now
+  // hands the service its request snapshot (IP / UA) instead, so the single row
+  // keeps the forensic context the route row used to carry.
+  it('does not write a second audit row — it passes the request snapshot to the service', async () => {
+    abandon.mockResolvedValue({ abandoned: 1, orgId: 'org-1' });
+    const res = await app().request(`/${ID}/stripe-sessions/abandon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'user-agent': 'breeze-test/1' },
+      body: JSON.stringify({ reason: 'Stripe account closed by the bank' }),
+    });
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(abandon).toHaveBeenCalledWith(expect.objectContaining({
+      actorEmail: 'op@example.com',
+      request: { ip: '203.0.113.9', userAgent: 'breeze-test/1' },
+    }));
   });
 
   it('refuses a missing or throwaway reason — the record of WHY must outlive the operator', async () => {

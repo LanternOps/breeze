@@ -103,6 +103,10 @@ vi.mock('./config/env', () => ({
   abuseSignalsEnabled: mocks.abuseSignalsEnabled,
   eventDispatchMode: mocks.eventDispatchMode,
   AI_AGENTS_ENABLED: false,
+  // W03: bootWorker now passes sendingDomainsConfigured into
+  // declareExpectedConsumers, and isPartnerLaneConfigured() reads the
+  // EMAIL_DOMAINS_* config, which consults isHosted() for its send-cap default.
+  isHosted: () => false,
 }));
 vi.mock('./config/validate', () => ({ validateConfig: mocks.validateConfig }));
 vi.mock('./services/sentry', () => ({

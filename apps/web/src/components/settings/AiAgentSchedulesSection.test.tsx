@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import type { AiAgentEffectiveScheduleDto } from '@breeze/shared';
 
 const fetchWithAuth = vi.fn();
@@ -108,6 +109,7 @@ beforeEach(() => {
   fetchWithAuth.mockReset();
   showToast.mockReset();
   currentUser = { canManagePartnerWide: true };
+  useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, aiAgentsSweepAct: true }, loaded: true });
 });
 
 describe('AiAgentSchedulesSection', () => {
@@ -1062,6 +1064,71 @@ describe('AiAgentSchedulesSection "All orgs" chip (#4187 UI critique 3)', () => 
 // merely rejected — the server also refuses it (`act_mode_org_cannot_arm`),
 // but that refusal is the last line of defence, not the UI's contract.
 describe('AiAgentSchedulesSection act mode (#4442 W04)', () => {
+  it.each([false, true])('gates arming on deployment flag %s', async (enabled) => {
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, aiAgentsSweepAct: enabled } });
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    const toggle = screen.getByTestId('ai-agent-schedule-act-mode');
+    expect((toggle as HTMLButtonElement).disabled).toBe(!enabled);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', String(enabled));
+    if (!enabled) {
+      const hint = screen.getByTestId('ai-agent-schedule-act-mode-disabled-hint');
+      expect(hint).toHaveTextContent('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED');
+      expect(toggle).toHaveAttribute('aria-describedby', hint.id);
+    }
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(lastMutation().method).toBe('POST');
+    expect(lastMutation().body).toMatchObject({ actMode: enabled });
+  });
+
+  it('preserves stored arming when editing cron with the deployment flag off', async () => {
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, aiAgentsSweepAct: false } });
+    mockList([{ ...BASELINE, actMode: true }]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(screen.getByTestId('ai-agent-schedule-act-mode')).toBeDisabled();
+    expect(screen.queryByTestId('ai-agent-schedule-act-mode-scope-note')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(lastMutation().method).toBe('PATCH');
+    expect(lastMutation().body).toMatchObject({ cron: '0 4 * * *' });
+    expect(lastMutation().body).not.toHaveProperty('actMode');
+  });
+
+  it('omits act mode from org override PATCHes when the deployment flag is off', async () => {
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, aiAgentsSweepAct: false } });
+    mockList([{
+      ...BASELINE,
+      actMode: true,
+      override: { id: 'o-1', enabled: true, sweepKinds: BASELINE.sweepKinds, actMode: null },
+    }]);
+    render(<AiAgentSchedulesSection {...orgProps} />);
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-override-s-1'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-enabled'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(lastMutation().method).toBe('PATCH');
+    expect(lastMutation().body).toMatchObject({ enabled: false });
+    expect(lastMutation().body).not.toHaveProperty('actMode');
+  });
+
+  it('displays stored arming with the disabled deployment hint', async () => {
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, aiAgentsSweepAct: false } });
+    mockList([{ ...BASELINE, actMode: true }]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    const toggle = screen.getByTestId('ai-agent-schedule-act-mode');
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    const hint = screen.getByTestId('ai-agent-schedule-act-mode-disabled-hint');
+    expect(hint).toHaveTextContent('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED');
+    expect(toggle).toHaveAttribute('aria-describedby', hint.id);
+  });
+
   it('shows the partner baseline editor an Act mode toggle, off by default on create', async () => {
     mockList([]);
     render(<AiAgentSchedulesSection {...partnerProps} />);
