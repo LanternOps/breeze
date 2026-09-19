@@ -278,6 +278,7 @@ describe('agent routes', () => {
     vi.mocked(db.insert).mockImplementation(() => defaultInsertChain() as any);
     vi.mocked(db.update).mockImplementation(() => defaultUpdateChain() as any);
     vi.mocked(db.transaction).mockReset();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(db as never));
     app = new Hono();
     app.route('/agents', agentRoutes);
   });

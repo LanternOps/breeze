@@ -757,7 +757,7 @@
     "volumesLoading": "Caricamento volumi...",
     "volumesEmpty": "Nessun volume analizzabile segnalato per questo dispositivo.",
     "failedToFetchVolumes": "Impossibile recuperare i volumi",
-    "volumeOsBadge": "OS",
+    "volumeOsBadge": "SO",
     "volumeUsedOfTotal": "{{used}} di {{total}} in uso",
     "volumeCapacityUnknown": "Capacità sconosciuta",
     "volumeNeverScanned": "Mai scansionato",

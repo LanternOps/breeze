@@ -1,3 +1,4 @@
+import scanPathFixtures from '../fixtures/scanPath.json';
 import { describe, expect, it } from 'vitest';
 import { normalizeScanPath, osRootScanPath } from './scanPath';
 
@@ -107,5 +108,11 @@ describe('normalizeScanPath — the property the database key depends on', () =>
   it('keeps two different volumes on two different keys', () => {
     expect(normalizeScanPath('windows', 'd:\\')).not.toBe(normalizeScanPath('windows', 'c:\\'));
     expect(normalizeScanPath('linux', '/data')).not.toBe(normalizeScanPath('linux', '/'));
+  });
+});
+
+describe('normalizeScanPath — shared migration fixtures', () => {
+  it.each(scanPathFixtures)('$osType: $input', ({ osType, input, expected }) => {
+    expect(normalizeScanPath(osType, input)).toBe(expected);
   });
 });

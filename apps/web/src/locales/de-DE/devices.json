@@ -757,7 +757,7 @@
     "volumesLoading": "Datenträger werden geladen...",
     "volumesEmpty": "Für dieses Gerät wurden keine scanbaren Datenträger gemeldet.",
     "failedToFetchVolumes": "Datenträger konnten nicht abgerufen werden",
-    "volumeOsBadge": "OS",
+    "volumeOsBadge": "BS",
     "volumeUsedOfTotal": "{{used}} von {{total}} belegt",
     "volumeCapacityUnknown": "Kapazität unbekannt",
     "volumeNeverScanned": "Nie gescannt",

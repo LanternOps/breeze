@@ -7,7 +7,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 const registered = new Map<string, { handler: (input: Record<string, unknown>, auth: unknown) => Promise<string> }>();
 
+const contextState = vi.hoisted(() => ({ outside: false, scoped: false }));
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn(async (fn) => {
+    contextState.outside = true;
+    try { return await fn(); } finally { contextState.outside = false; }
+  }),
+  withDbAccessContext: vi.fn(async (_context, fn) => {
+    contextState.scoped = true;
+    try { return await fn(); } finally { contextState.scoped = false; }
+  }),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]) })) })),
@@ -21,7 +30,8 @@ vi.mock('../db/schema', () => new Proxy({}, {
   get: (_t, prop: string) => (prop === 'then' ? undefined : { name: prop }),
   has: () => true,
 }));
-vi.mock('./aiDispatch', () => ({ aiExecuteCommand: vi.fn() }));
+vi.mock('./aiDispatch', () => ({ aiExecuteCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })), aiQueueCommandForExecution: vi.fn() }));
+vi.mock('./commandQueue', () => ({ waitForCommandResult: vi.fn() }));
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({
     snapshotId: 'snap-1', estimatedBytes: 0, candidateCount: 0, categories: [], candidates: [],
@@ -30,15 +40,18 @@ vi.mock('./filesystemAnalysis', () => ({
   getLatestFilesystemCleanupSnapshot: vi.fn(),
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(),
+  setFilesystemScanGeneration: vi.fn(),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash'],
 }));
 
-import { db } from '../db';
-import { aiExecuteCommand } from './aiDispatch';
+import { db, withDbAccessContext } from '../db';
+import { aiQueueCommandForExecution } from './aiDispatch';
+import { waitForCommandResult } from './commandQueue';
 import {
   getLatestFilesystemCleanupSnapshot,
   getLatestFilesystemSnapshot,
   saveFilesystemSnapshot,
+  setFilesystemScanGeneration,
 } from './filesystemAnalysis';
 import { registerFilesystemTools } from './aiToolsFilesystem';
 
@@ -50,6 +63,11 @@ const AUTH = {
 } as never;
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(setFilesystemScanGeneration).mockReset();
+  vi.mocked(waitForCommandResult).mockReset();
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-scan' } } as never);
+  vi.mocked(waitForCommandResult).mockResolvedValue({ status: 'completed', result: { status: 'completed', stdout: '{}' } } as never);
   registered.clear();
   registerFilesystemTools(registered as never);
 });
@@ -78,10 +96,9 @@ describe('analyze_disk_usage — path (spec §9)', () => {
     expect(JSON.parse(raw).scanPath).toBe('D:\\');
   });
 
-  it('sends the normalised path to the agent and saves the snapshot under it', async () => {
+  it('registers the generation before waiting and leaves persistence to the result handler', async () => {
     withDevice('windows');
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null as never);
-    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', stdout: '{}' } as never);
     vi.mocked(saveFilesystemSnapshot).mockResolvedValue({
       id: 'snap-new', capturedAt: new Date(), trigger: 'on_demand', partial: false,
       summary: {}, largestFiles: [], largestDirs: [], tempAccumulation: [],
@@ -91,24 +108,40 @@ describe('analyze_disk_usage — path (spec §9)', () => {
 
     await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true, path: 'd:/' }, AUTH);
 
-    expect(aiExecuteCommand).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
       AUTH, 'analyze_disk_usage', DEVICE_ID, 'filesystem_analysis',
       expect.objectContaining({ path: 'D:\\', autoContinue: false }),
       expect.anything(),
     );
-    const [, , , scanPath] = vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
-    expect(scanPath).toBe('D:\\');
+    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'org-1', 'D:\\', 'cmd-scan');
+    expect(vi.mocked(setFilesystemScanGeneration).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(waitForCommandResult).mock.invocationCallOrder[0]!);
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('commits the generation before polling outside the ambient transaction', async () => {
+    withDevice('windows');
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null);
+    vi.mocked(setFilesystemScanGeneration).mockImplementationOnce(async () => {
+      expect(contextState).toEqual({ outside: true, scoped: true });
+    });
+    vi.mocked(waitForCommandResult).mockImplementationOnce(async () => {
+      expect(contextState).toEqual({ outside: true, scoped: false });
+      return { status: 'completed', result: { status: 'completed', stdout: '{}' } } as never;
+    });
+    await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] }, expect.any(Function),
+    );
   });
 
   it('defaults to the OS root, which counts as root-scoped', async () => {
     withDevice('linux');
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null as never);
-    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', stdout: '{}' } as never);
     vi.mocked(saveFilesystemSnapshot).mockResolvedValue(null as never);
 
     await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
 
-    expect(aiExecuteCommand).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
       AUTH, 'analyze_disk_usage', DEVICE_ID, 'filesystem_analysis',
       expect.objectContaining({ path: '/', autoContinue: true }),
       expect.anything(),

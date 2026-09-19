@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { captureException } from '../../services/sentry';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 import type { commandResultSchema } from './schemas';
@@ -8,19 +10,21 @@ import type { commandResultSchema } from './schemas';
  * previously mocked everywhere, so its behavior was unguarded.
  */
 
-const { dbMock, insertValuesMock, selectQueue } = vi.hoisted(() => {
+const { dbMock, insertValuesMock, selectQueue, whereMock } = vi.hoisted(() => {
   const selectQueue: unknown[][] = [];
   const shift = () => selectQueue.shift() ?? [];
   const insertValuesMock = vi.fn();
 
+  const whereMock = vi.fn();
   const dbMock = {
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock)),
     select: vi.fn(() => {
       const rows = shift();
       const terminal = Object.assign(Promise.resolve(rows), {
         limit: vi.fn().mockResolvedValue(rows),
         orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
       });
-      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(terminal) }) };
+      return { from: vi.fn().mockReturnValue({ where: vi.fn((condition: unknown) => { whereMock(condition); return terminal; }) }) };
     }),
     insert: vi.fn(() => ({
       values: vi.fn((vals: unknown) => {
@@ -32,7 +36,7 @@ const { dbMock, insertValuesMock, selectQueue } = vi.hoisted(() => {
     })),
   };
 
-  return { dbMock, insertValuesMock, selectQueue };
+  return { dbMock, insertValuesMock, selectQueue, whereMock };
 });
 
 vi.mock('../../db', () => ({
@@ -102,6 +106,7 @@ function result(): z.infer<typeof commandResultSchema> {
 beforeEach(() => {
   vi.clearAllMocks();
   selectQueue.length = 0;
+  dbMock.transaction.mockImplementation(async (fn) => fn(dbMock));
   vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('claimed');
   vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({ ok: true });
   vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
@@ -152,7 +157,7 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
 
     await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
 
-    expect(saveFilesystemSnapshot).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'on_demand', '/', expect.any(Object));
+    expect(saveFilesystemSnapshot).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'on_demand', '/', expect.any(Object), dbMock);
   });
 
   it('drops a non-completed result without writing anything', async () => {
@@ -185,9 +190,9 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     await handleFilesystemAnalysisCommandResult(windowsCommand('d:/'), result(), ORG_ID);
 
     expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
-      DEVICE_ID, ORG_ID, 'on_demand', 'D:\\', expect.any(Object),
+      DEVICE_ID, ORG_ID, 'on_demand', 'D:\\', expect.any(Object), dbMock,
     );
-    expect(getFilesystemScanState).toHaveBeenCalledWith(DEVICE_ID, 'D:\\');
+    expect(getFilesystemScanState).toHaveBeenCalledWith(DEVICE_ID, 'D:\\', dbMock);
     const [dev, org, scanPath] = vi.mocked(upsertFilesystemScanState).mock.calls[0]!;
     expect(dev).toBe(DEVICE_ID);
     expect(org).toBe(ORG_ID);
@@ -203,7 +208,7 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     await handleFilesystemAnalysisCommandResult(windowsCommand(undefined), result(), ORG_ID);
 
     expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
-      DEVICE_ID, ORG_ID, 'on_demand', 'C:\\', expect.any(Object),
+      DEVICE_ID, ORG_ID, 'on_demand', 'C:\\', expect.any(Object), dbMock,
     );
   });
 
@@ -286,7 +291,7 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     await handleFilesystemAnalysisCommandResult(windowsCommand('d:/'), result(), ORG_ID);
 
     expect(claimFilesystemScanGeneration).toHaveBeenCalledWith(
-      DEVICE_ID, 'D:\\', '00000000-0000-4000-8000-0000000000cc',
+      DEVICE_ID, 'D:\\', '00000000-0000-4000-8000-0000000000cc', dbMock, ORG_ID,
     );
   });
 
@@ -310,9 +315,12 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
       expect.objectContaining({ path: 'D:\\', resumeAttempt: 1 }),
       expect.anything(),
     );
+    const probe = new PgDialect().sqlToQuery(whereMock.mock.calls[2]![0]);
+    expect(probe.sql).toContain("->>'path' =");
+    expect(probe.params).toContain('D:\\');
     // And the continuation records its OWN generation, or its result is
     // dropped as superseded the moment it comes back.
-    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'D:\\', 'resume-1');
+    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'D:\\', 'resume-1');
   });
 
   it('writes nothing at all when the device row cannot be resolved', async () => {
@@ -325,3 +333,39 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     expect(upsertFilesystemScanState).not.toHaveBeenCalled();
   });
 });
+
+ describe('result persistence transaction and drop telemetry', () => {
+  it('rolls back a failed write and permits redelivery', async () => {
+    let applied = false;
+    const tx = { marker: 'transaction', select: dbMock.select };
+    dbMock.transaction.mockImplementation(async (fn) => {
+      const before = applied;
+      try { return await fn(tx); } catch (error) { applied = before; throw error; }
+    });
+    vi.mocked(claimFilesystemScanGeneration).mockImplementation(async () => {
+      if (applied) return 'already_applied';
+      applied = true;
+      return 'claimed';
+    });
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ summary: {} });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
+    vi.mocked(saveFilesystemSnapshot).mockRejectedValueOnce(new Error('write failed')).mockResolvedValue(null);
+    selectQueue.push([{ osType: 'linux' }], [], [{ osType: 'linux' }], []);
+    await expect(handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID)).rejects.toThrow('write failed');
+    await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
+    expect(saveFilesystemSnapshot).toHaveBeenCalledTimes(2);
+    expect(claimFilesystemScanGeneration).toHaveBeenLastCalledWith(DEVICE_ID, '/', expect.any(String), tx, ORG_ID);
+    expect(saveFilesystemSnapshot).toHaveBeenLastCalledWith(DEVICE_ID, ORG_ID, 'on_demand', '/', expect.any(Object), tx);
+    expect(upsertFilesystemScanState).toHaveBeenLastCalledWith(DEVICE_ID, ORG_ID, '/', expect.any(Object), tx);
+  });
+
+  it.each(['superseded', 'already_applied', 'unknown device', 'unparseable stdout'])(
+    'captures %s with the command id', async (reason) => {
+      selectQueue.push(reason === 'unknown device' ? [] : [{ osType: 'linux' }]);
+      if (reason === 'unparseable stdout') vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({});
+      if (reason === 'superseded' || reason === 'already_applied') vi.mocked(claimFilesystemScanGeneration).mockResolvedValue(reason);
+      await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('00000000-0000-4000-8000-0000000000cc') }));
+    },
+  );
+ });

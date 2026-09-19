@@ -18,7 +18,7 @@ import {
   runCleanupExecution,
   wasDispatched,
 } from './filesystemCleanupExecution';
-import { db } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -29,10 +29,11 @@ import {
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
   parseFilesystemAnalysisStdout,
-  saveFilesystemSnapshot,
+  setFilesystemScanGeneration,
   safeCleanupCategories,
 } from './filesystemAnalysis';
-import { aiExecuteCommand } from './aiDispatch';
+import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
+import { waitForCommandResult } from './commandQueue';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -177,11 +178,12 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // second volume's scan simply does not self-resume from the AI lane.
       const isRootScopedScan = scanPath === osRootScanPath(osType);
 
-      let snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
+      const snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
+      let freshPayload: Record<string, unknown> | null = null;
 
       if (refresh || !snapshot) {
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
-        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
+        const queued = await aiQueueCommandForExecution(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
           trigger: 'on_demand',
           path: scanPath,
           maxDepth: input.maxDepth,
@@ -192,7 +194,23 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           timeoutSeconds: input.timeoutSeconds,
           autoContinue: isRootScopedScan,
           resumeAttempt: 0,
-        }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true });
+        }, { userId: auth.user.id, preferHeartbeat: true });
+        if (!queued.command) {
+          return JSON.stringify({ error: queued.error || 'Failed to queue filesystem analysis' });
+        }
+        const commandId = queued.command.id;
+        const completed = await runOutsideDbContext(async () => {
+          // Commit the registration before polling: a held outer transaction
+          // would block the result handler's claim on this same state row.
+          await withDbAccessContext({
+            scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+          }, () => setFilesystemScanGeneration(deviceId, access.device.orgId, scanPath, commandId));
+          return waitForCommandResult(commandId, timeoutMs);
+        });
+        const commandResult = completed.result;
+        if (!commandResult) {
+          return JSON.stringify({ error: 'Filesystem analysis returned no result' });
+        }
 
         if (commandResult.status !== 'completed') {
           return JSON.stringify({ error: commandResult.error || 'Filesystem analysis failed' });
@@ -213,30 +231,46 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
             error: 'Filesystem analysis returned no parseable result; no snapshot was stored. Retry the scan.',
           });
         }
-        snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', scanPath, parsed);
+        freshPayload = parsed;
       }
 
-      if (!snapshot) {
+      if (!snapshot && !freshPayload) {
         return JSON.stringify({ message: 'No filesystem analysis available. Try refresh=true.' });
       }
 
-      const cleanupPreview = buildCleanupPreview(snapshot);
+      // The shared command-result handler owns persistence. Render this command's
+      // payload directly: its handler may still be committing, and rereading the
+      // latest snapshot here could return the previous scan.
+      const resultSnapshot = freshPayload ? {
+        id: '', capturedAt: new Date(), trigger: 'on_demand', partial: freshPayload.partial === true,
+        summary: freshPayload.summary ?? {},
+        largestFiles: freshPayload.topLargestFiles ?? [],
+        largestDirs: freshPayload.topLargestDirectories ?? [],
+        tempAccumulation: freshPayload.tempAccumulation ?? [],
+        oldDownloads: freshPayload.oldDownloads ?? [],
+        unrotatedLogs: freshPayload.unrotatedLogs ?? [],
+        trashUsage: freshPayload.trashUsage ?? [],
+        duplicateCandidates: freshPayload.duplicateCandidates ?? [],
+        cleanupCandidates: freshPayload.cleanupCandidates ?? [],
+        errors: freshPayload.errors ?? [],
+      } : snapshot!;
+      const cleanupPreview = buildCleanupPreview(resultSnapshot);
       return JSON.stringify({
         scanPath,
         snapshot: {
-          id: snapshot.id,
-          capturedAt: snapshot.capturedAt,
-          trigger: snapshot.trigger,
-          partial: snapshot.partial,
-          summary: snapshot.summary,
-          topLargestFiles: snapshot.largestFiles,
-          topLargestDirectories: snapshot.largestDirs,
-          tempAccumulation: snapshot.tempAccumulation,
-          oldDownloads: snapshot.oldDownloads,
-          unrotatedLogs: snapshot.unrotatedLogs,
-          trashUsage: snapshot.trashUsage,
-          duplicateCandidates: snapshot.duplicateCandidates,
-          errors: snapshot.errors,
+          id: freshPayload ? null : resultSnapshot.id,
+          capturedAt: resultSnapshot.capturedAt,
+          trigger: resultSnapshot.trigger,
+          partial: resultSnapshot.partial,
+          summary: resultSnapshot.summary,
+          topLargestFiles: resultSnapshot.largestFiles,
+          topLargestDirectories: resultSnapshot.largestDirs,
+          tempAccumulation: resultSnapshot.tempAccumulation,
+          oldDownloads: resultSnapshot.oldDownloads,
+          unrotatedLogs: resultSnapshot.unrotatedLogs,
+          trashUsage: resultSnapshot.trashUsage,
+          duplicateCandidates: resultSnapshot.duplicateCandidates,
+          errors: resultSnapshot.errors,
         },
         cleanupPreview: {
           estimatedBytes: cleanupPreview.estimatedBytes,

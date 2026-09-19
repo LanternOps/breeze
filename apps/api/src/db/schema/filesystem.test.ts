@@ -55,6 +55,8 @@ describe('filesystem schema — the scan-path axis (spec §4)', () => {
     );
     expect(byName.get('scan_path')?.notNull).toBe(false);
     // The filesystem_analysis command id owning the current run (amendment 18).
+    expect(byName.get('last_applied_command_id')).toBeDefined();
+    expect(byName.get('last_applied_command_id')!.notNull).toBe(false);
     expect(byName.get('scan_generation')).toBeDefined();
     expect(byName.get('scan_generation')!.notNull).toBe(false);
   });
@@ -89,7 +91,7 @@ describe('filesystem schema — the scan-path axis (spec §4)', () => {
 describe('tenant export policy — W02 columns', () => {
   const expected: Array<[string, string[]]> = [
     ['device_filesystem_snapshots', ['scan_path']],
-    ['device_filesystem_scan_state', ['scan_path', 'scan_generation']],
+    ['device_filesystem_scan_state', ['scan_path', 'scan_generation', 'last_applied_command_id']],
     ['device_filesystem_cleanup_runs', ['scan_path', 'kind', 'command_id']],
   ];
 

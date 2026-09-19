@@ -1528,7 +1528,7 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
 }
 
 export async function maybeQueueThresholdFilesystemAnalysis(
-  device: Pick<typeof devices.$inferSelect, 'id' | 'osType'>,
+  device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
@@ -1592,7 +1592,7 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   }).returning({ id: deviceCommands.id });
 
   if (thresholdCommand) {
-    await setFilesystemScanGeneration(device.id, path, thresholdCommand.id);
+    await setFilesystemScanGeneration(device.id, device.orgId, path, thresholdCommand.id);
   }
 
   return {
@@ -1618,6 +1618,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unparseable stdout`));
     // A completed scan whose stdout is empty or non-JSON produces no snapshot,
     // which surfaces to the user as an empty Disk Cleanup tab with no error.
     console.warn(
@@ -1638,6 +1639,7 @@ export async function handleFilesystemAnalysisCommandResult(
     .limit(1);
 
   if (!deviceRow) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unknown device`));
     console.warn(
       `[agents/helpers] filesystem_analysis command ${command.id} has no devices row for ${command.deviceId}; no snapshot written`
     );
@@ -1650,91 +1652,91 @@ export async function handleFilesystemAnalysisCommandResult(
   // command queued by the PREVIOUS release land on the right key too.
   const scanPath = normalizeScanPath(osType, asString(payload.path) ?? osRootScanPath(osType));
 
-  // Claim this volume's scan generation BEFORE anything is written (spec §13
-  // #18). `claimed` is the only outcome that owns the row; `absent` applies
-  // anyway rather than losing a completed scan to a bookkeeping row that does
-  // not exist yet. `superseded` and `already_applied` are dropped, which is
-  // what makes application exclusive and idempotent.
-  const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id);
-  if (claim === 'superseded' || claim === 'already_applied') {
-    console.warn(
-      `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}, path ${scanPath}) dropped: ${claim}`
-    );
-    return;
-  }
-
-  // The scan-state read and the disk-usage read are independent; run them
-  // together. The disk figure is only consumed by the scan-state upsert below.
-  const [currentState, diskRows] = await Promise.all([
-    getFilesystemScanState(command.deviceId, scanPath),
-    db
-      .select({
-        mountPoint: deviceDisks.mountPoint,
-        usedPercent: deviceDisks.usedPercent,
-      })
-      .from(deviceDisks)
-      .where(eq(deviceDisks.deviceId, command.deviceId))
-      .limit(64),
-  ]);
-
-  // Defect 8: match the SCANNED volume's own disk row. The old code took
-  // `LIMIT 1` — an arbitrary row — so a `D:\` scan recorded `C:`'s 80% as D's
-  // baseline and every later `D:\` scan read a huge delta and forced a full
-  // rescan. No match means no figure, which means the next scan takes a
-  // baseline rather than comparing against an unrelated disk.
-  const matchedDisk = diskRows.find(
-    (disk) => normalizeScanPath(osType, disk.mountPoint) === scanPath
-  );
-  const currentDiskUsedPercent =
-    typeof matchedDisk?.usedPercent === 'number' ? matchedDisk.usedPercent : null;
-
-  const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
-  const mergedPayload = scanMode === 'baseline'
-    ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
-    : parsed;
-  const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
-  const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
-  const snapshotPayload = hasCheckpoint
-    ? {
-      ...mergedPayload,
-      partial: true,
-      reason: `checkpoint pending ${pendingDirs.length} directories`,
-      checkpoint: { pendingDirs },
-      scanMode,
+  // A savepoint inside the request context rolls back the receipt along with
+  // both writes, even when the caller catches a post-processing failure.
+  const persisted = await db.transaction(async (tx) => {
+    const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id, tx, orgId);
+    if (claim === 'superseded' || claim === 'already_applied') {
+      captureException(new Error(`filesystem_analysis command ${command.id} dropped: ${claim}`));
+      return null;
     }
-    : {
-      ...mergedPayload,
-      scanMode,
-    };
 
-  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, scanPath, snapshotPayload);
+    // The scan-state read and the disk-usage read are independent; run them
+    // together. The disk figure is only consumed by the scan-state upsert below.
+    const [currentState, diskRows] = await Promise.all([
+      getFilesystemScanState(command.deviceId, scanPath, tx),
+      tx
+        .select({
+          mountPoint: deviceDisks.mountPoint,
+          usedPercent: deviceDisks.usedPercent,
+        })
+        .from(deviceDisks)
+        .where(eq(deviceDisks.deviceId, command.deviceId))
+        .limit(64),
+    ]);
 
-  const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
-  const mergedHotDirectories = Array.from(
-    new Set([
-      ...hotFromRun,
-      ...readHotDirectories(currentState?.hotDirectories, 24),
-    ])
-  ).slice(0, 24);
+    // Defect 8: match the SCANNED volume's own disk row. The old code took
+    // `LIMIT 1` — an arbitrary row — so a `D:\` scan recorded `C:`'s 80% as D's
+    // baseline and every later `D:\` scan read a huge delta and forced a full
+    // rescan. No match means no figure, which means the next scan takes a
+    // baseline rather than comparing against an unrelated disk.
+    const matchedDisk = diskRows.find(
+      (disk) => normalizeScanPath(osType, disk.mountPoint) === scanPath
+    );
+    const currentDiskUsedPercent =
+      typeof matchedDisk?.usedPercent === 'number' ? matchedDisk.usedPercent : null;
 
-  // Baseline completion is defined solely by having no pending checkpoint
-  // directories left to resume. The snapshot's `partial` flag must NOT gate
-  // this: `partial` is also set (and stays sticky across merges) for routine
-  // max-depth truncation, which is not a resumable condition — folding it in
-  // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
-  // forced every subsequent scan back to a full baseline and defeated the
-  // incremental hot-directory path.
-  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
-  await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
-    lastRunMode: scanMode,
-    lastBaselineCompletedAt: baselineCompleted
-      ? new Date()
-      : currentState?.lastBaselineCompletedAt ?? null,
-    lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
-    checkpoint: hasCheckpoint ? { pendingDirs } : {},
-    aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
-    hotDirectories: mergedHotDirectories,
+    const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
+    const mergedPayload = scanMode === 'baseline'
+      ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
+      : parsed;
+    const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
+    const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
+    const snapshotPayload = hasCheckpoint
+      ? {
+        ...mergedPayload,
+        partial: true,
+        reason: `checkpoint pending ${pendingDirs.length} directories`,
+        checkpoint: { pendingDirs },
+        scanMode,
+      }
+      : {
+        ...mergedPayload,
+        scanMode,
+      };
+
+    await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, scanPath, snapshotPayload, tx);
+
+    const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
+    const mergedHotDirectories = Array.from(
+      new Set([
+        ...hotFromRun,
+        ...readHotDirectories(currentState?.hotDirectories, 24),
+      ])
+    ).slice(0, 24);
+
+    // Baseline completion is defined solely by having no pending checkpoint
+    // directories left to resume. The snapshot's `partial` flag must NOT gate
+    // this: `partial` is also set (and stays sticky across merges) for routine
+    // max-depth truncation, which is not a resumable condition — folding it in
+    // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
+    // forced every subsequent scan back to a full baseline and defeated the
+    // incremental hot-directory path.
+    const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
+    await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
+      lastRunMode: scanMode,
+      lastBaselineCompletedAt: baselineCompleted
+        ? new Date()
+        : currentState?.lastBaselineCompletedAt ?? null,
+      lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
+      checkpoint: hasCheckpoint ? { pendingDirs } : {},
+      aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
+      hotDirectories: mergedHotDirectories,
+    }, tx);
+    return { hasCheckpoint, pendingDirs };
   });
+  if (!persisted) return;
+  const { hasCheckpoint, pendingDirs } = persisted;
 
   if (!hasCheckpoint || scanMode !== 'baseline') {
     return;
@@ -1788,7 +1790,7 @@ export async function handleFilesystemAnalysisCommandResult(
     }
   );
   if (queued.command) {
-    await setFilesystemScanGeneration(command.deviceId, scanPath, queued.command.id);
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, queued.command.id);
     return;
   }
 
@@ -1801,7 +1803,7 @@ export async function handleFilesystemAnalysisCommandResult(
   }).returning({ id: deviceCommands.id });
 
   if (fallbackCommand) {
-    await setFilesystemScanGeneration(command.deviceId, scanPath, fallbackCommand.id);
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, fallbackCommand.id);
   }
 }
 

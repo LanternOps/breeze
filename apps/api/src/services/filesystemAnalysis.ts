@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   deviceFilesystemSnapshots,
@@ -18,6 +18,8 @@ export type FilesystemCleanupCandidate = {
   reason?: string;
   modifiedAt?: string;
 };
+
+type FilesystemDb = Pick<typeof db, 'insert' | 'select' | 'update'>;
 
 type AnyObject = Record<string, unknown>;
 type Numberish = number | string | null | undefined;
@@ -70,12 +72,13 @@ export async function saveFilesystemSnapshot(
   orgId: string,
   trigger: FilesystemSnapshotTrigger,
   scanPath: string,
-  payload: AnyObject
+  payload: AnyObject,
+  executor: FilesystemDb = db
 ) {
   const summary = asRecord(payload.summary) ?? {};
   const partial = asBoolean(payload.partial, false);
 
-  const [snapshot] = await db
+  const [snapshot] = await executor
     .insert(deviceFilesystemSnapshots)
     .values({
       deviceId,
@@ -141,8 +144,8 @@ export async function getLatestFilesystemCleanupSnapshot(deviceId: string, scanP
   return snapshot ?? null;
 }
 
-export async function getFilesystemScanState(deviceId: string, scanPath: string) {
-  const [state] = await db
+export async function getFilesystemScanState(deviceId: string, scanPath: string, executor: FilesystemDb = db) {
+  const [state] = await executor
     .select()
     .from(deviceFilesystemScanState)
     .where(and(
@@ -165,14 +168,9 @@ export async function upsertFilesystemScanState(
     checkpoint?: unknown;
     aggregate?: unknown;
     hotDirectories?: unknown;
-    /**
-     * Deliberately absent from this type. The generation is owned by
-     * `setFilesystemScanGeneration` (producers) and
-     * `claimFilesystemScanGeneration` (the handler), both of which are plain
-     * UPDATEs. Letting it ride along on the upsert would let the handler's
-     * final write resurrect a generation it had just claimed.
-     */
-  }
+    // Generation and receipt are owned by the claim, never by this upsert.
+  },
+  executor: FilesystemDb = db
 ) {
   const now = new Date();
   const insertValues: typeof deviceFilesystemScanState.$inferInsert = {
@@ -200,7 +198,7 @@ export async function upsertFilesystemScanState(
   if (updates.aggregate !== undefined) updateSet.aggregate = updates.aggregate;
   if (updates.hotDirectories !== undefined) updateSet.hotDirectories = updates.hotDirectories;
 
-  const [state] = await db
+  const [state] = await executor
     .insert(deviceFilesystemScanState)
     .values(insertValues)
     .onConflictDoUpdate({
@@ -471,72 +469,59 @@ export function readPlanScanPath(plan: unknown): string | null {
   return asString(record?.scanPath);
 }
 
-/**
- * Records which `filesystem_analysis` command owns the current run for this
- * volume (spec §13 #18). Called by every producer right after queuing: the
- * scan route, the threshold queue, and the auto-resume continuation.
- *
- * A plain UPDATE, never an upsert. A first-ever scan has no scan-state row
- * yet, and inventing one here would need an orgId the threshold path does not
- * hold; the result handler's `absent` branch covers that case by applying the
- * result rather than dropping it.
- */
+/** Register the producer even when this is the volume's first scan. */
 export async function setFilesystemScanGeneration(
   deviceId: string,
+  orgId: string,
   scanPath: string,
   commandId: string
 ): Promise<void> {
-  await db
-    .update(deviceFilesystemScanState)
-    .set({ scanGeneration: commandId, updatedAt: new Date() })
-    .where(and(
-      eq(deviceFilesystemScanState.deviceId, deviceId),
-      eq(deviceFilesystemScanState.scanPath, scanPath),
-    ));
+  await db.insert(deviceFilesystemScanState)
+    .values({ deviceId, orgId, scanPath, scanGeneration: commandId })
+    .onConflictDoUpdate({
+      target: [deviceFilesystemScanState.deviceId, deviceFilesystemScanState.scanPath],
+      set: { scanGeneration: commandId, updatedAt: new Date() },
+    });
 }
 
 export type ScanGenerationClaim = 'claimed' | 'superseded' | 'already_applied' | 'absent';
 
 /**
- * Claims the right to apply `commandId`'s result to this volume's scan state
- * (spec §13 #18). One conditional UPDATE does both jobs:
- *
- *  - EXCLUSIVITY — two scans of the same volume can be in flight at once (an
- *    auto-resume continuation plus a user-triggered rescan, or two operators).
- *    Only the command the row currently names can claim it, so a superseded
- *    scan can no longer overwrite a newer run's checkpoint with a stale
- *    frontier.
- *  - IDEMPOTENCY — the claim NULLS the generation, so a duplicate delivery of
- *    the same command id finds nothing to claim and is dropped.
- *
- * `absent` (no state row) applies the result deliberately: a device whose
- * state row has not been created yet, or was removed, must not lose a
- * completed scan to a bookkeeping row that never existed.
- *
- * NOTE: this guards RESULT APPLICATION only. A scan queued between the claim
- * and the handler's final `upsertFilesystemScanState` can still have its row
- * overwritten by the older run's checkpoint — the pre-existing last-writer-wins
- * window, unchanged by this wave and much narrower than the one it closes.
+ * Claim and persist using the SAME transaction. The row lock serializes
+ * producers/results until persistence commits; a rollback restores the receipt.
+ * orgId lets legacy results create a missing row before claiming, so concurrent
+ * first deliveries serialize on the unique key too.
  */
 export async function claimFilesystemScanGeneration(
   deviceId: string,
   scanPath: string,
-  commandId: string
+  commandId: string,
+  executor: FilesystemDb = db,
+  orgId?: string
 ): Promise<ScanGenerationClaim> {
-  const claimed = await db
+  let created = false;
+  if (orgId) {
+    const inserted = await executor.insert(deviceFilesystemScanState)
+      .values({ deviceId, orgId, scanPath })
+      .onConflictDoNothing({ target: [deviceFilesystemScanState.deviceId, deviceFilesystemScanState.scanPath] })
+      .returning({ deviceId: deviceFilesystemScanState.deviceId });
+    created = inserted.length > 0;
+  }
+  const claimed = await executor
     .update(deviceFilesystemScanState)
-    .set({ scanGeneration: null, updatedAt: new Date() })
+    .set({ scanGeneration: null, lastAppliedCommandId: commandId, updatedAt: new Date() })
     .where(and(
       eq(deviceFilesystemScanState.deviceId, deviceId),
       eq(deviceFilesystemScanState.scanPath, scanPath),
-      eq(deviceFilesystemScanState.scanGeneration, commandId),
+      or(eq(deviceFilesystemScanState.scanGeneration, commandId), isNull(deviceFilesystemScanState.scanGeneration)),
+      sql`${deviceFilesystemScanState.lastAppliedCommandId} IS DISTINCT FROM ${commandId}`,
     ))
     .returning({ deviceId: deviceFilesystemScanState.deviceId });
 
-  if (claimed.length > 0) return 'claimed';
+  if (claimed.length > 0) return created ? 'absent' : 'claimed';
 
-  const [state] = await db
-    .select({ scanGeneration: deviceFilesystemScanState.scanGeneration })
+  const [state] = await executor
+    .select({ scanGeneration: deviceFilesystemScanState.scanGeneration, lastAppliedCommandId: deviceFilesystemScanState.lastAppliedCommandId })
     .from(deviceFilesystemScanState)
     .where(and(
       eq(deviceFilesystemScanState.deviceId, deviceId),
@@ -545,5 +530,5 @@ export async function claimFilesystemScanGeneration(
     .limit(1);
 
   if (!state) return 'absent';
-  return state.scanGeneration === null ? 'already_applied' : 'superseded';
+  return state.lastAppliedCommandId === commandId ? 'already_applied' : 'superseded';
 }

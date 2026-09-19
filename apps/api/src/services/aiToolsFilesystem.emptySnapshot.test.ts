@@ -15,6 +15,8 @@ const dbMockState = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn((_context, fn) => fn()),
   db: {
     select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
@@ -36,6 +38,8 @@ const commandResult = vi.hoisted(() => ({ value: { status: 'completed', stdout: 
 
 vi.mock('./commandQueue', () => ({
   executeCommand: vi.fn(async () => commandResult.value),
+  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'cmd-scan' } })),
+  waitForCommandResult: vi.fn(async () => ({ status: 'completed', result: commandResult.value })),
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
 
@@ -51,6 +55,7 @@ vi.mock('./filesystemAnalysis', () => ({
       return {};
     }
   }),
+  setFilesystemScanGeneration: vi.fn(),
   saveFilesystemSnapshot: vi.fn(async () => ({ id: 'snap-1' })),
   safeCleanupCategories: ['temp_files'],
 }));
@@ -104,13 +109,14 @@ describe('analyze_disk_usage empty-snapshot guard', () => {
     expect(JSON.parse(raw).error).toContain('no parseable result');
   });
 
-  it('still stores a real payload', async () => {
+  it('returns a real payload without writing a second snapshot', async () => {
     commandResult.value = {
       status: 'completed',
       stdout: JSON.stringify({ path: '/', summary: { filesScanned: 10 }, cleanupCandidates: [] }),
     };
     const raw = await getTool('analyze_disk_usage').handler({ deviceId: DEVICE_ID, refresh: true }, makeAuth());
-    expect(saveFilesystemSnapshot).toHaveBeenCalledTimes(1);
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(JSON.parse(raw).snapshot.summary.filesScanned).toBe(10);
     expect(JSON.parse(raw).error).toBeUndefined();
   });
 });

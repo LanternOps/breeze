@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceFilesystemTab from './DeviceFilesystemTab';
@@ -34,7 +34,7 @@ function snapshotFor(scanPath: string) {
       id: `snap-${scanPath}`, scanPath, capturedAt: '2026-09-19T09:00:00.000Z',
       trigger: 'on_demand', partial: false, reason: null, path: scanPath, scanMode: 'baseline',
       summary: { filesScanned: 10 },
-      topLargestFiles: [], topLargestDirectories: [], tempAccumulation: [],
+      topLargestFiles: [] as Array<{ path: string; sizeBytes: number }>, topLargestDirectories: [], tempAccumulation: [],
       oldDownloads: [], unrotatedLogs: [], trashUsage: [],
       duplicateCandidates: [], cleanupCandidates: [], errors: [],
     },
@@ -160,5 +160,93 @@ describe('DeviceFilesystemTab — volume picker mount (spec §8)', () => {
 
     await waitFor(() => expect(screen.getByTestId('volume-picker-error')).toBeInTheDocument());
     await waitFor(() => expect(snapshotRequestPaths()).toContain('C:\\'));
+  });
+});
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function previewFor(scanPath: string) {
+  return { success: true, data: {
+    cleanupRunId: 'run-old', scanPath, estimatedBytes: 4096, candidateCount: 1,
+    categories: [], candidates: [{ path: 'old-volume-candidate', category: 'temp_files', sizeBytes: 4096 }],
+  } };
+}
+
+describe('DeviceFilesystemTab — in-flight volume isolation', () => {
+  it('ignores a cleanup preview that completes after switching volumes', async () => {
+    const preview = deferredResponse();
+    const normal = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url, options) => url.includes('/cleanup-preview')
+      ? preview.promise : normal(url, options));
+    render(<DeviceFilesystemTab deviceId="device-1" osType="windows" />);
+    await waitFor(() => expect(screen.getByTestId('filesystem-preview-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('filesystem-preview-button'));
+    fireEvent.click(screen.getAllByTestId('volume-chip')[1]!);
+    await waitFor(() => expect(snapshotRequestPaths()).toContain('D:\\'));
+    await act(async () => { preview.resolve(jsonResponse(previewFor('C:\\'))); });
+    expect(screen.queryByText('old-volume-candidate')).not.toBeInTheDocument();
+    expect(screen.getByTestId('filesystem-preview-button')).toBeEnabled();
+  });
+
+  it('ignores a scan completion and its old-volume snapshot after switching volumes', async () => {
+    const completion = deferredResponse();
+    const normal = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url, options) => {
+      if (url.includes('/filesystem/scan')) return Promise.resolve(jsonResponse({ data: { commandId: 'scan-old' } }));
+      if (url.includes('/commands/scan-old')) return completion.promise;
+      return normal(url, options);
+    });
+    render(<DeviceFilesystemTab deviceId="device-1" osType="windows" />);
+    await waitFor(() => expect(screen.getByTestId('filesystem-analyze-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('filesystem-analyze-button'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url.includes('/commands/scan-old'))).toBe(true));
+    fireEvent.click(screen.getAllByTestId('volume-chip')[1]!);
+    await waitFor(() => expect(snapshotRequestPaths()).toContain('D:\\'));
+    const rootReads = snapshotRequestPaths().filter((path) => path === 'C:\\').length;
+    await act(async () => { completion.resolve(jsonResponse({ data: { id: 'scan-old', status: 'completed' } })); });
+    expect(snapshotRequestPaths().filter((path) => path === 'C:\\')).toHaveLength(rootReads);
+    expect(screen.queryByTestId('filesystem-scan-banner')).not.toBeInTheDocument();
+  });
+
+  it('ignores an old snapshot refresh that resolves after the new volume loads', async () => {
+    render(<DeviceFilesystemTab deviceId="device-1" osType="windows" />);
+    await waitFor(() => expect(screen.getByTestId('volume-picker')).toBeInTheDocument());
+    const oldSnapshot = deferredResponse();
+    const normal = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url, options) => url.includes('/filesystem?') && url.includes('C%3A')
+      ? oldSnapshot.promise : normal(url, options));
+    fireEvent.click(screen.getByRole('button', { name: /^Refresh$/ }));
+    fireEvent.click(screen.getAllByTestId('volume-chip')[1]!);
+    await waitFor(() => expect(screen.getByTestId('volume-picker')).toBeInTheDocument());
+    const stale = snapshotFor('C:\\');
+    stale.data.topLargestFiles = [{ path: 'stale-root-file', sizeBytes: 1024 }];
+    await act(async () => { oldSnapshot.resolve(jsonResponse(stale)); });
+    expect(screen.queryByText('stale-root-file')).not.toBeInTheDocument();
+  });
+
+  it('clears the existing snapshot and cleanup preview when selecting a volume with no snapshot', async () => {
+    const normal = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url, options) => {
+      if (url.includes('/cleanup-preview')) return Promise.resolve(jsonResponse(previewFor('C:\\')));
+      if (url.includes('/filesystem?')) {
+        if (url.includes('D%3A')) return Promise.resolve(jsonResponse({ data: null }));
+        const root = snapshotFor('C:\\');
+        root.data.topLargestFiles = [{ path: 'root-only-file', sizeBytes: 1024 }];
+        return Promise.resolve(jsonResponse(root));
+      }
+      return normal(url, options);
+    });
+    render(<DeviceFilesystemTab deviceId="device-1" osType="windows" />);
+    await waitFor(() => expect(screen.getByText('root-only-file')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('filesystem-preview-button'));
+    await waitFor(() => expect(screen.getByText('old-volume-candidate')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByTestId('volume-chip')[1]!);
+    await waitFor(() => expect(screen.getByTestId('filesystem-preview-button')).toBeDisabled());
+    expect(screen.queryByText('root-only-file')).not.toBeInTheDocument();
+    expect(screen.queryByText('old-volume-candidate')).not.toBeInTheDocument();
   });
 });

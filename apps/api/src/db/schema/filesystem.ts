@@ -97,11 +97,12 @@ export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state',
    * The `filesystem_analysis` command id that started the run currently owning
    * this row (spec §13 #18). Producers set it when queuing
    * (`setFilesystemScanGeneration`); the result handler CLAIMS it with a
-   * conditional update that nulls it, which makes result application both
-   * exclusive (a superseded scan cannot overwrite a newer checkpoint) and
-   * idempotent (a duplicate delivery of the same command id is dropped).
+   * conditional update. The separate receipt below identifies duplicates;
+   * a NULL generation remains claimable for legacy/unregistered commands.
    */
   scanGeneration: uuid('scan_generation'),
+  /** Last successfully persisted command; written in the snapshot transaction. */
+  lastAppliedCommandId: uuid('last_applied_command_id'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   lastRunMode: text('last_run_mode').notNull().default('baseline'),
   lastBaselineCompletedAt: timestamp('last_baseline_completed_at'),

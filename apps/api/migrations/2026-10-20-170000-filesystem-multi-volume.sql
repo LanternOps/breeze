@@ -53,20 +53,22 @@ AS $fn$
     WHEN raw_path ~ '(^|[\\/])\.\.?([\\/]|$)'
       THEN raw_path
     WHEN os_type = 'windows' THEN (
-      -- '/' -> '\', collapse runs of separators, upper-case the drive letter,
-      -- then drop a trailing separator unless the path IS a volume root.
-      -- The replacement '\\' is a SQL literal of TWO backslashes, which
-      -- regexp_replace's replacement parser reads as ONE literal backslash; a
-      -- lone '\' there would be read as an escape introducer.
+      -- Preserve UNC's two leading separators before collapsing the rest.
+      -- Bare drives and drive-relative inputs both become absolute roots.
       SELECT CASE
-               WHEN d ~ '^[A-Za-z]:\\$' THEN d
+               WHEN d ~ '^[A-Za-z]:\\$' OR d = '\\' THEN d
                WHEN length(d) > 1 AND right(d, 1) = '\' THEN left(d, length(d) - 1)
                ELSE d
              END
         FROM (
-          SELECT CASE WHEN w ~ '^[A-Za-z]:' THEN upper(left(w, 1)) || substr(w, 2) ELSE w END AS d
+          SELECT CASE WHEN w ~ '^[A-Za-z]:'
+                      THEN upper(left(w, 1)) || ':\' || ltrim(substr(w, 3), '\')
+                      ELSE w END AS d
             FROM (
-              SELECT regexp_replace(replace(btrim(raw_path), '/', '\'), '\\{2,}', '\\', 'g') AS w
+              SELECT CASE WHEN left(slashed, 2) = '\\'
+                          THEN '\\' || regexp_replace(ltrim(slashed, '\'), '\\{2,}', '\\', 'g')
+                          ELSE regexp_replace(slashed, '\\{2,}', '\\', 'g') END AS w
+                FROM (SELECT replace(btrim(raw_path), '/', '\') AS slashed) s0
             ) w0
         ) d0
     )
@@ -92,6 +94,7 @@ DO $$
 DECLARE
   n bigint;
   verbatim_rows bigint;
+  skipped_rows bigint;
 BEGIN
   -- 425 of 442 public tables are FORCE ROW LEVEL SECURITY, which binds the
   -- table OWNER — the role migrations run as. Without this election the UPDATE
@@ -113,9 +116,13 @@ BEGIN
    WHERE d.id = s.device_id
      AND s.scan_path IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN
-    RAISE WARNING 'backfilled % device_filesystem_snapshots.scan_path (% stored verbatim: recorded path carries a dot segment)', n, verbatim_rows;
-  END IF;
+  RAISE WARNING 'backfilled % device_filesystem_snapshots.scan_path (% stored verbatim: recorded path carries a dot segment)', n, verbatim_rows;
+
+  SELECT count(*) INTO skipped_rows
+    FROM public.device_filesystem_snapshots s
+   WHERE s.scan_path IS NULL
+     AND NOT EXISTS (SELECT 1 FROM public.devices d WHERE d.id = s.device_id);
+  RAISE WARNING 'skipped % device_filesystem_snapshots rows because the device row is missing', skipped_rows;
 END $$;
 
 -- scan_path remains nullable here (§13 #7). W03 contracts it.
@@ -143,10 +150,16 @@ ALTER TABLE public.device_filesystem_scan_state
 ALTER TABLE public.device_filesystem_scan_state
   ADD COLUMN IF NOT EXISTS scan_generation uuid;
 
+-- Durable receipt: NULL generation is also valid for pre-W02 dispatches, so
+-- duplicate results are identified by command id independently of ownership.
+ALTER TABLE public.device_filesystem_scan_state
+  ADD COLUMN IF NOT EXISTS last_applied_command_id uuid;
+
 DO $$
 DECLARE
   matched_rows bigint;
   reset_rows bigint;
+  skipped_rows bigint;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
@@ -159,7 +172,7 @@ BEGIN
      SET scan_path = n.scan_path
     FROM public.devices d,
          LATERAL (
-           SELECT s.scan_path
+           SELECT s.scan_path, NULLIF(btrim(s.raw_payload->>'path'), '') AS original_path
              FROM public.device_filesystem_snapshots s
             WHERE s.device_id = d.id
               AND s.scan_path IS NOT NULL
@@ -168,6 +181,7 @@ BEGIN
          ) n
    WHERE d.id = st.device_id
      AND st.scan_path IS NULL
+     AND n.original_path IS NOT NULL
      AND (
        n.scan_path = public.breeze_w02_normalize_scan_path(d.os_type::text, NULL)
        OR EXISTS (
@@ -199,10 +213,14 @@ BEGIN
      AND st.scan_path IS NULL;
   GET DIAGNOSTICS reset_rows = ROW_COUNT;
 
-  IF matched_rows > 0 OR reset_rows > 0 THEN
-    RAISE WARNING 'backfilled % device_filesystem_scan_state rows from their newest snapshot volume', matched_rows;
-    RAISE WARNING 'reset % device_filesystem_scan_state rows to the OS root and cleared checkpoint/aggregate/hot_directories (volume unknown)', reset_rows;
-  END IF;
+  RAISE WARNING 'backfilled % device_filesystem_scan_state rows from their newest snapshot volume', matched_rows;
+  RAISE WARNING 'reset % device_filesystem_scan_state rows to the OS root and cleared checkpoint/aggregate/hot_directories (volume unknown)', reset_rows;
+
+  SELECT count(*) INTO skipped_rows
+    FROM public.device_filesystem_scan_state st
+   WHERE st.scan_path IS NULL
+     AND NOT EXISTS (SELECT 1 FROM public.devices d WHERE d.id = st.device_id);
+  RAISE WARNING 'skipped % device_filesystem_scan_state rows because the device row is missing', skipped_rows;
 END $$;
 
 -- scan_path remains nullable here (§13 #7). W03 contracts it.

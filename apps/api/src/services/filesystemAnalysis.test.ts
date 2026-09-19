@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -203,18 +204,49 @@ describe('scan generation (spec §13 #18)', () => {
     } as never);
   }
 
-  it('setFilesystemScanGeneration updates the row and never inserts one', async () => {
-    const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn().mockReturnValue({ where });
-    vi.mocked(db.update).mockReturnValue({ set } as never);
+  it('creates first-volume state and replaces the generation on conflict', async () => {
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    vi.mocked(db.insert).mockReturnValue({ values } as never);
+    await setFilesystemScanGeneration('device-1', 'org-1', 'D:\\', 'cmd-1');
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'device-1', orgId: 'org-1', scanPath: 'D:\\', scanGeneration: 'cmd-1' }));
+    expect(onConflictDoUpdate).toHaveBeenCalledWith(expect.objectContaining({ set: expect.objectContaining({ scanGeneration: 'cmd-1' }) }));
+  });
 
-    await setFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1');
+  it('accepts a NULL generation and excludes only the same applied command', async () => {
+    const { where, set } = mockUpdateReturning([{ deviceId: 'device-1' }]);
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-2')).resolves.toBe('claimed');
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/scan_generation" is null/i);
+    expect(query.sql).toMatch(/last_applied_command_id" IS DISTINCT FROM/i);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ lastAppliedCommandId: 'cmd-2' }));
+  });
 
-    // A plain UPDATE, not an upsert: a first-ever scan has no state row yet,
-    // and the handler's `absent` branch covers that case by applying the
-    // result rather than dropping it.
-    expect(db.insert).not.toHaveBeenCalled();
-    expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: 'cmd-1' }));
+  it('applies two first scans in order, including an unregistered legacy result', async () => {
+    // The first scan creates state; a later legacy command has no registered
+    // generation. Evaluate the generated predicate against that steady state.
+    let state: { scanGeneration: string | null; lastAppliedCommandId: string | null } | null = null;
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({
+      onConflictDoNothing: vi.fn(() => ({ returning: vi.fn(async () => {
+        if (state) return [];
+        state = { scanGeneration: null, lastAppliedCommandId: null };
+        return [{ deviceId: 'device-1' }];
+      }) })),
+    })) } as never);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn((updates) => ({
+      where: vi.fn((predicate) => ({ returning: vi.fn(async () => {
+        const query = new PgDialect().sqlToQuery(predicate);
+        const command = query.params[2];
+        const acceptsNull = /scan_generation" is null/i.test(query.sql);
+        if (!state || (state.scanGeneration !== command && !(acceptsNull && state.scanGeneration === null)) || state.lastAppliedCommandId === command) return [];
+        state = { ...state, ...updates };
+        return [{ deviceId: 'device-1' }];
+      }) })),
+    })) } as never);
+    vi.mocked(db.select).mockImplementation(() => ({ from: () => ({ where: () => ({ limit: async () => state ? [state] : [] }) }) }) as never);
+    await expect(claimFilesystemScanGeneration('device-1', '/', 'cmd-1', db, 'org-1')).resolves.toBe('absent');
+    await expect(claimFilesystemScanGeneration('device-1', '/', 'cmd-2', db, 'org-1')).resolves.toBe('claimed');
+    expect(state).toMatchObject({ scanGeneration: null, lastAppliedCommandId: 'cmd-2' });
   });
 
   it('claims the generation when the command id matches, clearing it in the same statement', async () => {
@@ -222,7 +254,7 @@ describe('scan generation (spec §13 #18)', () => {
 
     await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('claimed');
 
-    // Nulling it IS the idempotency marker: the same command cannot claim twice.
+    // The applied command is the idempotency marker, independently of the generation.
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: null }));
   });
 
@@ -237,7 +269,7 @@ describe('scan generation (spec §13 #18)', () => {
     // The claim nulled the generation the first time round, so the second
     // delivery finds a row with no generation and must NOT re-apply.
     mockUpdateReturning([]);
-    mockSelectRows([{ scanGeneration: null }]);
+    mockSelectRows([{ scanGeneration: null, lastAppliedCommandId: 'cmd-1' }]);
 
     await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('already_applied');
   });

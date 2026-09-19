@@ -753,11 +753,11 @@
     "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
-    "volumes": "Volumes",
+    "volumes": "Volumes de stockage",
     "volumesLoading": "Chargement des volumes...",
     "volumesEmpty": "Aucun volume analysable signalé pour cet appareil.",
     "failedToFetchVolumes": "Impossible de récupérer les volumes",
-    "volumeOsBadge": "OS",
+    "volumeOsBadge": "SE",
     "volumeUsedOfTotal": "{{used}} sur {{total}} utilisés",
     "volumeCapacityUnknown": "Capacité inconnue",
     "volumeNeverScanned": "Jamais analysé",

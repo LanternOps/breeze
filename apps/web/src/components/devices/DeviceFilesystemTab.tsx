@@ -290,6 +290,12 @@ export default function DeviceFilesystemTab({
   // Seed with the OS root so the tab still works if the volumes call fails.
   const [selectedScanPath, setSelectedScanPath] = useState<string>(() => osRootScanPath(osType));
 
+  // Each selection has its own identity, including switching away and back.
+  // Async work may finish after abort, so check ownership before updating UI.
+  const selection = useMemo(() => ({ deviceId, scanPath: selectedScanPath }), [deviceId, selectedScanPath]);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
   // Keep the selection when offered; otherwise use the OS volume or first chip.
   useEffect(() => {
     if (volumes.length === 0) return;
@@ -302,7 +308,12 @@ export default function DeviceFilesystemTab({
   useEffect(() => {
     setCleanupPreview(null);
     setSnapshot(null);
-  }, [selectedScanPath]);
+    setScanCommand(null);
+    setActionLoading(null);
+    setRefreshing(false);
+    setError(undefined);
+    pollAbortRef.current?.abort();
+  }, [selection]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<"scan" | "preview" | null>(
@@ -327,6 +338,11 @@ export default function DeviceFilesystemTab({
       pollAbortRef.current?.abort();
     };
   }, []);
+
+  const isCurrentSelection = useCallback(
+    () => mountedRef.current && selectionRef.current === selection,
+    [selection],
+  );
 
   const [thresholdEvents, setThresholdEvents] = useState<ThresholdEvent[]>([]);
   const [scanCommand, setScanCommand] = useState<{
@@ -381,21 +397,23 @@ export default function DeviceFilesystemTab({
           fetchSnapshot(),
           fetchThresholdEvents(),
         ]);
+        if (!isCurrentSelection()) return;
         setSnapshot(latestSnapshot);
         setThresholdEvents(events);
       } catch (err) {
+        if (!isCurrentSelection()) return;
         setError(
           err instanceof Error
             ? err.message
             : t("deviceFilesystemTab.failedToLoadFilesystemStatus"),
         );
       } finally {
-        if (!silent) {
+        if (!silent && isCurrentSelection()) {
           setLoading(false);
         }
       }
     },
-    [fetchSnapshot, fetchThresholdEvents, t],
+    [fetchSnapshot, fetchThresholdEvents, isCurrentSelection, t],
   );
 
   const pollScanCommand = useCallback(
@@ -425,6 +443,7 @@ export default function DeviceFilesystemTab({
         }
 
         const body = await response.json();
+        if (signal.aborted || !isCurrentSelection()) return;
         const command = (body.data ?? null) as CommandDetail | null;
         if (!command) {
           throw new Error(t("deviceFilesystemTab.scanCommandNotFound"));
@@ -463,7 +482,7 @@ export default function DeviceFilesystemTab({
       if (signal.aborted) return;
       throw new Error(t("deviceFilesystemTab.scanStillRunning"));
     },
-    [deviceId, t],
+    [deviceId, isCurrentSelection, t],
   );
 
   useEffect(() => {
@@ -499,6 +518,7 @@ export default function DeviceFilesystemTab({
         onUnauthorized: UNAUTHORIZED,
       });
 
+      if (controller.signal.aborted || !isCurrentSelection()) return;
       const commandId =
         typeof body?.data?.commandId === "string" ? body.data.commandId : null;
       if (!commandId) {
@@ -511,12 +531,13 @@ export default function DeviceFilesystemTab({
         Math.max(120_000, (timeoutSeconds + 90) * 1000),
         controller.signal,
       );
-      if (controller.signal.aborted || !mountedRef.current) return;
+      if (controller.signal.aborted || !isCurrentSelection()) return;
       setCleanupPreview(null);
       await Promise.all([loadAll(true), reloadVolumes()]);
+      if (!isCurrentSelection()) return;
       setScanCommand(null);
     } catch (err) {
-      if (controller.signal.aborted || !mountedRef.current) return;
+      if (controller.signal.aborted || !isCurrentSelection()) return;
       handleActionError(err, t("deviceFilesystemTab.filesystemScanFailed"));
       setError(
         err instanceof Error
@@ -525,9 +546,9 @@ export default function DeviceFilesystemTab({
       );
       setScanCommand(null);
     } finally {
-      if (mountedRef.current) setActionLoading(null);
+      if (isCurrentSelection()) setActionLoading(null);
     }
-  }, [deviceId, loadAll, selectedScanPath, pollScanCommand, reloadVolumes, t]);
+  }, [deviceId, isCurrentSelection, loadAll, selectedScanPath, pollScanCommand, reloadVolumes, t]);
 
   const runCleanupPreview = useCallback(async () => {
     setActionLoading("preview");
@@ -542,10 +563,10 @@ export default function DeviceFilesystemTab({
         errorFallback: t("deviceFilesystemTab.cleanupPreviewFailed"),
         onUnauthorized: UNAUTHORIZED,
       });
-      if (!mountedRef.current) return;
+      if (!isCurrentSelection()) return;
       setCleanupPreview((body?.data ?? null) as FilesystemCleanupPreview | null);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!isCurrentSelection()) return;
       handleActionError(err, t("deviceFilesystemTab.cleanupPreviewFailed"));
       setError(
         err instanceof Error
@@ -553,9 +574,9 @@ export default function DeviceFilesystemTab({
           : t("deviceFilesystemTab.cleanupPreviewFailed"),
       );
     } finally {
-      if (mountedRef.current) setActionLoading(null);
+      if (isCurrentSelection()) setActionLoading(null);
     }
-  }, [deviceId, selectedScanPath, t]);
+  }, [deviceId, isCurrentSelection, selectedScanPath, t]);
 
   // Bring the preview panel into view once it renders. Optional-chain the
   // method so jsdom (no scrollIntoView impl) doesn't throw in tests.
@@ -646,7 +667,7 @@ export default function DeviceFilesystemTab({
               onClick={async () => {
                 setRefreshing(true);
                 await loadAll(true);
-                setRefreshing(false);
+                if (isCurrentSelection()) setRefreshing(false);
               }}
               disabled={refreshing}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"

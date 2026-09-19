@@ -10,17 +10,24 @@
  *     src/__tests__/integration/filesystemMultiVolumeMigration.integration.test.ts
  */
 import './setup';
+import scanPathFixtures from '../../../../../packages/shared/src/fixtures/scanPath.json';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
+import {
+  claimFilesystemScanGeneration,
+  getFilesystemScanState,
+  saveFilesystemSnapshot,
+  upsertFilesystemScanState,
+} from '../../services/filesystemAnalysis';
 
 const MIGRATION = '2026-10-20-170000-filesystem-multi-volume.sql';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-async function seedDevice(osType: 'windows' | 'linux') {
+async function seedDevice(osType: 'windows' | 'linux' | 'macos') {
   const db = getTestDb();
   const partner = await createPartner({});
   const org = await createOrganization({ partnerId: partner!.id });
@@ -60,22 +67,20 @@ async function scanPathOf(snapshotId: string): Promise<string | null> {
   return rows[0]?.scan_path ?? null;
 }
 
-/**
- * W02 leaves both `scan_path` columns NULLABLE (expand/contract, spec §13 #7),
- * so a pre-migration row can be seeded directly — no constraint has to be
- * dropped and put back, and nothing this suite does is visible to another
- * suite even momentarily. When W03's contract migration lands, THIS is the
- * helper that has to come back.
- */
-async function clearScanPaths(ids: string[]) {
-  if (ids.length === 0) return;
-  await getTestDb().execute(sql`
-    UPDATE device_filesystem_snapshots SET scan_path = NULL
-     WHERE id = ANY(${sql.raw(`ARRAY['${ids.join("','")}']::uuid[]`)})
-  `);
-}
-
 describe('2026-10-20-170000 — snapshot scan_path backfill', () => {
+  runDb('matches the shared runtime normalizer fixture table', async () => {
+    const snapshots: Array<{ id: string; expected: string }> = [];
+    for (const fixture of scanPathFixtures) {
+      const { deviceId, orgId } = await seedDevice(fixture.osType as 'windows' | 'linux' | 'macos');
+      const id = await seedPreMigrationSnapshot(deviceId, orgId, fixture.input);
+      snapshots.push({ id, expected: fixture.expected });
+    }
+    await replayMigration(MIGRATION);
+    for (const { id, expected } of snapshots) {
+      expect(await scanPathOf(id)).toBe(expected);
+    }
+  });
+
   runDb('normalises a Windows path: lower-case drive, mixed separators, repeats, trailing slash', async () => {
     const { deviceId, orgId } = await seedDevice('windows');
     const id = await seedPreMigrationSnapshot(deviceId, orgId, 'c:/Users//Todd/');
@@ -183,7 +188,7 @@ describe('2026-10-20-170000 — scan-state key and the rest of the shape', () =>
   async function scanStateOf(deviceId: string) {
     const rows = (await getTestDb().execute(sql`
       SELECT scan_path, checkpoint, aggregate, hot_directories,
-             last_baseline_completed_at, last_disk_used_percent, scan_generation
+             last_baseline_completed_at, last_disk_used_percent, scan_generation, last_applied_command_id
         FROM device_filesystem_scan_state WHERE device_id = ${deviceId}
     `)) as unknown as Array<Record<string, unknown>>;
     return rows[0]!;
@@ -197,7 +202,7 @@ describe('2026-10-20-170000 — scan-state key and the rest of the shape', () =>
     const db = getTestDb();
     await db.execute(sql`
       INSERT INTO device_disks (device_id, org_id, mount_point, fs_type, total_gb, used_gb, free_gb, used_percent)
-      VALUES (${deviceId}, ${orgId}, 'd:/', 'NTFS', 2000, 100, 1900, 5)
+      VALUES (${deviceId}, ${orgId}, 'D:', 'NTFS', 2000, 100, 1900, 5)
     `);
     await seedPreMigrationSnapshot(deviceId, orgId, 'D:\\');
     await seedLegacyScanState(deviceId, orgId, 'D:\\media');
@@ -250,6 +255,25 @@ describe('2026-10-20-170000 — scan-state key and the rest of the shape', () =>
     expect(state.last_disk_used_percent).toBe(71);
   });
 
+  runDb.each([null, '', '   '])('PASS B: a newest snapshot with an unverifiable original path (%s) clears state', async (rawPath) => {
+    const { deviceId, orgId } = await seedDevice('windows');
+    // An older valid snapshot must not verify the newest unknown scan either.
+    const older = await seedPreMigrationSnapshot(deviceId, orgId, 'C:\\');
+    await getTestDb().execute(sql`
+      UPDATE device_filesystem_snapshots SET captured_at = '2020-01-01T00:00:00Z' WHERE id = ${older}
+    `);
+    await seedPreMigrationSnapshot(deviceId, orgId, rawPath);
+    await seedLegacyScanState(deviceId, orgId, 'D:\\media');
+
+    await replayMigration(MIGRATION);
+
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_path).toBe('C:\\');
+    expect(state.checkpoint).toEqual({});
+    expect(state.aggregate).toEqual({});
+    expect(state.hot_directories).toEqual([]);
+  });
+
   runDb('PASS B: a device with no snapshots at all falls back to the OS root with state cleared', async () => {
     const { deviceId, orgId } = await seedDevice('linux');
     await seedLegacyScanState(deviceId, orgId, '/data');
@@ -261,13 +285,22 @@ describe('2026-10-20-170000 — scan-state key and the rest of the shape', () =>
     expect(state.hot_directories).toEqual([]);
   });
 
-  runDb('adds scan_generation, nullable and initially unset', async () => {
+  runDb('adds scan_generation and last_applied_command_id, nullable and initially unset', async () => {
     const { deviceId, orgId } = await seedDevice('linux');
     await seedLegacyScanState(deviceId, orgId, '/data');
 
     await replayMigration(MIGRATION);
 
-    expect((await scanStateOf(deviceId)).scan_generation).toBeNull();
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_generation).toBeNull();
+    expect(state.last_applied_command_id).toBeNull();
+    const commandId = randomUUID();
+    await getTestDb().execute(sql`
+      UPDATE device_filesystem_scan_state SET last_applied_command_id = ${commandId}
+       WHERE device_id = ${deviceId}
+    `);
+    await replayMigration(MIGRATION);
+    expect((await scanStateOf(deviceId)).last_applied_command_id).toBe(commandId);
   });
 
   runDb('replaces the single-column primary key with a UNIQUE INDEX over (device_id, scan_path)', async () => {
@@ -371,7 +404,9 @@ describe('2026-10-20-170000 — scan-state key and the rest of the shape', () =>
     await expect(db.execute(sql`
       INSERT INTO device_filesystem_cleanup_runs (device_id, org_id, kind)
       VALUES (${deviceId}, ${orgId}, 'registry')
-    `)).rejects.toThrow(/device_filesystem_cleanup_runs_kind_chk/);
+    `)).rejects.toMatchObject({
+      cause: { code: '23514', constraint_name: 'device_filesystem_cleanup_runs_kind_chk' },
+    });
   });
 
   runDb('carries the running cleanup-run status label', async () => {
@@ -425,3 +460,95 @@ async function seedPreMigrationSnapshotOrExisting(deviceId: string, orgId: strin
   `)) as unknown as Array<{ id: string }>;
   return rows[0]!.id;
 }
+
+
+describe('filesystem scan generation — live transactional persistence', () => {
+  runDb('distinguishes all four outcomes, including a claimable NULL generation', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    const db = getTestDb();
+    const first = randomUUID();
+    const second = randomUUID();
+    const newer = randomUUID();
+    expect(await db.transaction((tx) => claimFilesystemScanGeneration(deviceId, '/', first, tx, orgId))).toBe('absent');
+    expect(await db.transaction((tx) => claimFilesystemScanGeneration(deviceId, '/', first, tx, orgId))).toBe('already_applied');
+    expect(await db.transaction((tx) => claimFilesystemScanGeneration(deviceId, '/', second, tx, orgId))).toBe('claimed');
+    await db.execute(sql`
+      UPDATE device_filesystem_scan_state SET scan_generation = ${newer}
+       WHERE device_id = ${deviceId} AND scan_path = '/'
+    `);
+    expect(await db.transaction((tx) => claimFilesystemScanGeneration(deviceId, '/', randomUUID(), tx, orgId))).toBe('superseded');
+    expect(await db.transaction((tx) => claimFilesystemScanGeneration(deviceId, '/', newer, tx, orgId))).toBe('claimed');
+  });
+
+  runDb('applies two previously unregistered first scans in order and records the newest receipt', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    const db = getTestDb();
+    const commands = [randomUUID(), randomUUID()];
+    for (const [index, commandId] of commands.entries()) {
+      await db.transaction(async (tx) => {
+        expect(await claimFilesystemScanGeneration(deviceId, '/', commandId, tx, orgId))
+          .toBe(index === 0 ? 'absent' : 'claimed');
+        await saveFilesystemSnapshot(deviceId, orgId, 'on_demand', '/', { commandId }, tx);
+        await upsertFilesystemScanState(deviceId, orgId, '/', { aggregate: { commandId } }, tx);
+      });
+    }
+    const state = await getFilesystemScanState(deviceId, '/', db);
+    expect(state?.lastAppliedCommandId).toBe(commands[1]);
+    expect(state?.aggregate).toEqual({ commandId: commands[1] });
+    const snapshots = await db.execute(sql`
+      SELECT raw_payload->>'commandId' AS command_id FROM device_filesystem_snapshots
+       WHERE device_id = ${deviceId} AND scan_path = '/'
+    `);
+    expect(snapshots.map((row) => row.command_id).sort()).toEqual([...commands].sort());
+  });
+
+  runDb('rolls back a failed write and accepts redelivery of the same command', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    const db = getTestDb();
+    const commandId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO device_filesystem_scan_state (device_id, org_id, scan_path, scan_generation)
+      VALUES (${deviceId}, ${orgId}, '/', ${commandId})
+    `);
+    await expect(db.transaction(async (tx) => {
+      expect(await claimFilesystemScanGeneration(deviceId, '/', commandId, tx, orgId)).toBe('claimed');
+      await saveFilesystemSnapshot(deviceId, orgId, 'on_demand', '/', { commandId }, tx);
+      // Force a real persistence error AFTER the snapshot insert. The receipt
+      // and snapshot must both disappear when this transaction rolls back.
+      await tx.execute(sql`UPDATE device_filesystem_scan_state SET scan_generation = 'not-a-uuid'::uuid
+        WHERE device_id = ${deviceId}`);
+    })).rejects.toMatchObject({ cause: { code: '22P02' } });
+    const beforeRetry = await getFilesystemScanState(deviceId, '/', db);
+    expect(beforeRetry?.scanGeneration).toBe(commandId);
+    expect(beforeRetry?.lastAppliedCommandId).toBeNull();
+    await db.transaction(async (tx) => {
+      expect(await claimFilesystemScanGeneration(deviceId, '/', commandId, tx, orgId)).toBe('claimed');
+      await saveFilesystemSnapshot(deviceId, orgId, 'on_demand', '/', { commandId }, tx);
+      await upsertFilesystemScanState(deviceId, orgId, '/', { checkpoint: {} }, tx);
+    });
+    expect((await getFilesystemScanState(deviceId, '/', db))?.lastAppliedCommandId).toBe(commandId);
+    const snapshots = await db.execute(sql`
+      SELECT count(*)::int AS n FROM device_filesystem_snapshots WHERE device_id = ${deviceId}
+    `);
+    expect(snapshots[0]?.n).toBe(1);
+  });
+
+  runDb('serializes concurrent first deliveries of the same command before snapshot writes', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    const db = getTestDb();
+    const commandId = randomUUID();
+    const deliver = () => db.transaction(async (tx) => {
+      const claim = await claimFilesystemScanGeneration(deviceId, '/', commandId, tx, orgId);
+      if (claim === 'claimed' || claim === 'absent') {
+        await saveFilesystemSnapshot(deviceId, orgId, 'on_demand', '/', { commandId }, tx);
+        await upsertFilesystemScanState(deviceId, orgId, '/', { checkpoint: {} }, tx);
+      }
+      return claim;
+    });
+    expect((await Promise.all([deliver(), deliver()])).sort()).toEqual(['absent', 'already_applied']);
+    const snapshots = await db.execute(sql`
+      SELECT count(*)::int AS n FROM device_filesystem_snapshots WHERE device_id = ${deviceId}
+    `);
+    expect(snapshots[0]?.n).toBe(1);
+  });
+});

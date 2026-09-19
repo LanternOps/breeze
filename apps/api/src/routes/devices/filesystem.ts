@@ -67,6 +67,7 @@ const cleanupPreviewBodySchema = z.object({
 });
 
 const cleanupExecuteBodySchema = z.object({
+  path: z.string().min(1).max(2048).optional(),
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
   // When set, the selection is validated against the exact candidate set the
   // user previewed in this cleanup run, rather than re-derived from whatever
@@ -305,9 +306,8 @@ filesystemRoutes.post(
       return c.json({ success: false, error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
     }
 
-    // Claiming this command's generation prevents stale results overwriting
-    // state. This UPDATE is a no-op for a first scan with no state row yet.
-    await setFilesystemScanGeneration(deviceId, scanPath, queued.command.id);
+    // Register the volume before accepting its result, including its first scan.
+    await setFilesystemScanGeneration(deviceId, device.orgId, scanPath, queued.command.id);
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -416,7 +416,7 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { paths, cleanupRunId } = c.req.valid('json');
+    const { paths, cleanupRunId, path } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -430,7 +430,7 @@ filesystemRoutes.post(
 
     // Resolve the authoritative candidate set. When the caller pins a cleanup
     // run, use exactly the candidates it previewed; otherwise fall back to the
-    // OS root snapshot's safe candidates.
+    // selected volume snapshot's safe candidates.
     let candidates: FilesystemCleanupCandidate[];
     let scanPath: string;
     let sourceSnapshotId: string | null = null;
@@ -465,7 +465,10 @@ filesystemRoutes.post(
       // Prefer the column, then legacy plan metadata, then the OS root.
       scanPath = run.scanPath ?? readPlanScanPath(run.plan) ?? osRootScanPath(osType);
     } else {
-      scanPath = osRootScanPath(osType);
+      if (!path && (await listFilesystemVolumes(deviceId, osType)).length > 1) {
+        return failJson(c, 'volume_required', 400);
+      }
+      scanPath = normalizeScanPath(osType, path ?? osRootScanPath(osType));
       const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
       if (!snapshot) {
         return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);

@@ -108,6 +108,31 @@ describe('device filesystem routes', () => {
     app.route('/devices', filesystemRoutes);
   });
 
+  it('requires a volume for unpinned cleanup on a multi-volume device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', osType: 'windows' } as never);
+    vi.mocked(listFilesystemVolumes).mockResolvedValue([{ scanPath: 'C:\\' }, { scanPath: 'D:\\' }] as never);
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['D:\\Temp\\a.tmp'] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'volume_required' });
+    expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an explicit volume for unpinned cleanup', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', osType: 'windows' } as never);
+    vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue(null as never);
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'd:', paths: ['D:\\Temp\\a.tmp'] }),
+    });
+    expect(res.status).toBe(404);
+    expect(getLatestFilesystemCleanupSnapshot).toHaveBeenCalledWith(deviceId, 'D:\\');
+    expect(listFilesystemVolumes).not.toHaveBeenCalled();
+  });
+
   it('returns latest filesystem snapshot', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({
@@ -140,15 +165,6 @@ describe('device filesystem routes', () => {
     vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
     vi.mocked(readHotDirectories).mockReturnValue([]);
     vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      })
-    } as never);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: {
         id: 'cmd-1',
@@ -746,19 +762,6 @@ describe('device filesystem routes', () => {
   describe('POST /devices/:id/filesystem/scan — per-volume (spec §5.1)', () => {
     const windowsDevice = { id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'windows' };
 
-    beforeEach(() => {
-      // Keep the legacy fullest-disk read valid so regressions fail on behavior.
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ usedPercent: 80 }]),
-            }),
-          }),
-        }),
-      } as never);
-    });
-
     function twoWindowsVolumes(usedPercentC = 80, usedPercentD = 5) {
       return [
         { mountPoint: 'C:\\', scanPath: 'C:\\', fsType: 'NTFS', totalGb: 500, usedGb: 400, freeGb: 100, usedPercent: usedPercentC, isOsRoot: true, scanState: null, latestSnapshot: null },
@@ -884,7 +887,7 @@ describe('device filesystem routes', () => {
         body: JSON.stringify({ path: 'D:\\' }),
       });
 
-      expect(setFilesystemScanGeneration).toHaveBeenCalledWith(deviceId, 'D:\\', 'cmd-gen');
+      expect(setFilesystemScanGeneration).toHaveBeenCalledWith(deviceId, 'org-123', 'D:\\', 'cmd-gen');
     });
 
     it('does not record a generation when the command could not be queued', async () => {
