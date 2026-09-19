@@ -5,7 +5,6 @@
  * Supports custom headers, authentication, and payload templates.
  */
 
-import { isIP } from 'net';
 import {
   isAlwaysBlockedIp,
   isPrivateIp,
@@ -13,6 +12,7 @@ import {
   safeFetch,
   SsrfBlockedError
 } from '../urlSafety';
+import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../ipRanges';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
@@ -111,7 +111,12 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
     return errors;
   }
 
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  // Shared with every other URL validator (`ipRanges.classifyNonRoutableHostname`)
+  // so the list of loopback aliases cannot drift between them. `.internal` is
+  // deliberately NOT refused: a self-host operator may name an on-LAN receiver in
+  // a corporate `.internal` zone, and the address checks below still apply to it.
+  const hostnameKind = classifyNonRoutableHostname(hostname);
+  if (hostnameKind === 'loopback' || hostnameKind === 'mdns-local' || hostnameKind === 'metadata') {
     errors.push('Webhook URL cannot target localhost or local network hostnames');
   }
 
@@ -120,8 +125,12 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
   // metadata and CGNAT (100.64/10) — the ranges that are never a legitimate
   // receiver. Without the opt-in, `isPrivateIp` refuses every private range.
   const blocked = allowPrivate ? isAlwaysBlockedIp : isPrivateIp;
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0 && blocked(hostname)) {
+  // `isIpLiteralHost` recognises the `inet_aton` short/octal/hex spellings of an
+  // IPv4 address as literals too, and `canonicalIpLiteral` hands the classifier
+  // the dotted-quad they name — a `net.isIP` gate would route them to the DNS
+  // branch instead of classifying them here.
+  const literal = isIpLiteralHost(hostname) ? canonicalIpLiteral(hostname) : null;
+  if (literal !== null && blocked(literal)) {
     errors.push(
       allowPrivate
         ? 'Webhook URL cannot target loopback, link-local, metadata, or CGNAT addresses'
@@ -135,8 +144,8 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
   if (
     allowPrivate &&
     parsed.protocol === 'http:' &&
-    ipVersion !== 0 &&
-    !isRfc1918OrUla(hostname)
+    literal !== null &&
+    !isRfc1918OrUla(literal)
   ) {
     errors.push('Webhook URL may only use plain http for private (RFC1918/ULA) addresses');
   }
@@ -158,8 +167,8 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
   }
 
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0) {
+  if (isIpLiteralHost(hostname)) {
+    // Already classified by the synchronous validator above; nothing to resolve.
     return errors;
   }
 
