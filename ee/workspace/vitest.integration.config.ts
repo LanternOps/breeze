@@ -7,7 +7,7 @@ import { config } from 'dotenv';
 // DATABASE_URL_APP directly via the job env, and locally the suites fall
 // back to the shared :5433 test-stack defaults baked into each
 // *.integration.test.ts.
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {

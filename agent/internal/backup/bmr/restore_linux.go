@@ -394,7 +394,7 @@ func (r *linuxRestorer) reinstallDnf(listPath string) error {
 // restoreServices re-enables systemd services from the collector's
 // `systemctl list-unit-files --type=service` capture at
 // services/systemd.txt, restricted to units whose STATE was "enabled"
-// (parseEnabledServices in restore_linux_logic.go). When root is non-empty
+// (parseSystemdEnabledUnits in restore_linux_logic.go). When root is non-empty
 // (an offline apply under a mounted-but-not-booted tree — see
 // RestoreSystemStateOffline), each unit is enabled via
 // `systemctl --root=<root> enable <unit>` instead of the live-system form.
@@ -410,7 +410,7 @@ func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 		return fmt.Errorf("read %s: %w", listPath, err)
 	}
 
-	services := parseEnabledServices(data)
+	services := parseSystemdEnabledUnits(data)
 	if len(services) == 0 {
 		slog.Info("bmr: service list contained no enabled units, skipping service restore")
 		return nil

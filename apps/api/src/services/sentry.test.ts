@@ -781,7 +781,9 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // Phase D2. Paths are resolved against THIS file's directory (services/),
     // so the two worker files reach out of it.
     ['accounting/accountingPaymentPush.ts', 12], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
-    ['../jobs/accountingSyncWorker.ts', 2],
+    // #6082: the sync-mapping terminal-failure path (`AccountingMappingError`)
+    // added a third tag-bearing capture (`accounting_entity_id`).
+    ['../jobs/accountingSyncWorker.ts', 3],
     ['../jobs/accountingReconcileWorker.ts', 5],
     // #5126: the same #4828/Phase D2 defect in the pull-back path — every
     // captureException in accountingPaymentPull.ts tagged camelCase keys

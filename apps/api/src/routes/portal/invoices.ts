@@ -223,8 +223,9 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // SEC-150 producer gate — twin of createInvoicePayLink's. A session minted
   // while a revocation is in flight would not be covered by that revocation, so
   // the customer is asked to retry rather than handed a link nobody can kill.
+  // Elects its own system scope — never wrap it in a bare context here (#5611).
   try {
-    await withSystemDbAccessContext(() => assertNoPendingRevocation(inv.id));
+    await assertNoPendingRevocation(inv.id);
   } catch (err) {
     if (err instanceof InvoiceServiceError && err.code === REVOCATION_PENDING_CODE) {
       return c.json({ error: err.message, code: REVOCATION_PENDING_CODE }, 409);
@@ -289,6 +290,10 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // v1 is card-only. Restricting payment_method_types keeps the recorded
     // invoice_payments.method ('card') accurate and avoids enabling async/
     // delayed-settlement methods (which would land as 'unpaid' on completion).
+    // CARD-ONLY IS ALSO A REVOCATION CONTRACT (#5611): `expireOneSession` in
+    // services/stripeSessionRevocation.ts maps a `complete` + `unpaid` session
+    // to `revoked` on the strength of this pin. Adding a delayed method here
+    // requires changing that mapping first. Mirror: services/invoiceCheckout.ts.
     payment_method_types: ['card'],
     line_items: [{
       price_data: {

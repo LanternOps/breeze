@@ -255,6 +255,26 @@ describe('M365MailboxCard', () => {
     );
   });
 
+  it('renders the sanitized verification reason under the failed status', async () => {
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({
+        connections: [
+          {
+            id: 'c1',
+            mailboxAddress: 'support@a.com',
+            displayName: null,
+            status: 'error',
+            lastPolledAt: null,
+            lastMessageAt: null,
+            verificationError: 'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
+          },
+        ],
+      }),
+    );
+    render(<M365MailboxCard />);
+    expect(await screen.findByText('Mailbox verification failed: Graph 403 (ErrorAccessDenied)')).toBeInTheDocument();
+  });
+
   it('Disconnect calls the delete endpoint', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(

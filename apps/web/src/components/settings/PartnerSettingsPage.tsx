@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AtSign,
   Bell,
   Blocks,
   Building2,
@@ -30,6 +31,7 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
+import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
 import PartnerModulesCard from './PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
@@ -49,7 +51,8 @@ import type {
   InheritableBrandingSettings,
   InheritableAiBudgetSettings,
   InheritableRemoteAccessSettings,
-  IpAllowlistStatus
+  IpAllowlistStatus,
+  SendingDomainsCapabilityDto
 } from '@breeze/shared';
 import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
@@ -57,8 +60,11 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
+import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
+import { fetchSendingDomains } from '@/lib/api/sendingDomains';
+import { isTabVisible } from './sendingDomains/domainView';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'modules';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'sendingDomains' | 'modules';
 
 type Partner = {
   id: string;
@@ -115,6 +121,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
       { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
+      { key: 'sendingDomains', hash: 'sending-domains', label: 'partnerSettingsPage.tabs.sendingDomains.label', description: 'partnerSettingsPage.tabs.sendingDomains.description', icon: AtSign, selfSaving: true },
       { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
     ],
@@ -156,7 +163,7 @@ function getTabFromHash(): TabKey | null {
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Login Branding) persist independently and are never "dirty"
 // from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider' | 'modules'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider' | 'sendingDomains' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -215,6 +222,11 @@ export default function PartnerSettingsPage() {
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
+  // Capability only: the tab does its own full read. `checked` distinguishes
+  // "not fetched yet" from "fetched and this instance has no provider", so a
+  // deep link to #sending-domains does not bounce to Company mid-flight.
+  const [sendingDomainsCapability, setSendingDomainsCapability] = useState<SendingDomainsCapabilityDto | null>(null);
+  const [sendingDomainsChecked, setSendingDomainsChecked] = useState(false);
 
   // Dirty tracking: a per-tab serialized snapshot of the saveable form state,
   // compared against the baseline captured after fetch (and reset after save).
@@ -323,6 +335,14 @@ export default function PartnerSettingsPage() {
         .then(r => (r.ok ? r.json() : Promise.reject(new Error('pinnable fetch failed'))))
         .then((p: PinnableVersions) => setPinnableVersions(p))
         .catch(() => setPinnableVersions(null));
+
+      // Best-effort: decides whether the Sender Addresses tab appears at all.
+      // A 404 means EMAIL_DOMAINS_PROVIDER is unset on this instance — the
+      // default everywhere — and the tab stays hidden.
+      fetchSendingDomains()
+        .then((result) => setSendingDomainsCapability(result.supported ? (result.data.capability ?? null) : null))
+        .catch(() => setSendingDomainsCapability(null))
+        .finally(() => setSendingDomainsChecked(true));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('partnerSettingsPage.genericError'));
     } finally {
@@ -373,6 +393,26 @@ export default function PartnerSettingsPage() {
     const canonical = `#${TAB_BY_KEY[key].hash}`;
     if (window.location.hash !== canonical) window.location.hash = canonical;
   };
+
+  const sendingDomainsVisible = isTabVisible(sendingDomainsCapability);
+
+  // TAB_GROUPS stays a module constant so HASH_TO_TAB keeps resolving
+  // `#sending-domains`; visibility is applied to the rendered nav only.
+  const visibleGroups = useMemo(
+    () => TAB_GROUPS.map(group => ({
+      ...group,
+      tabs: group.tabs.filter(tab => tab.key !== 'sendingDomains' || sendingDomainsVisible),
+    })),
+    [sendingDomainsVisible]
+  );
+
+  // A bookmark to a tab this instance hides falls back to Company — but only
+  // once the capability read has actually settled.
+  useEffect(() => {
+    if (sendingDomainsChecked && !sendingDomainsVisible && activeTab === 'sendingDomains') {
+      setActiveTab('company');
+    }
+  }, [sendingDomainsChecked, sendingDomainsVisible, activeTab]);
 
   const handleSave = async () => {
     // Block a malformed maintenance window client-side (issue #1963) so the
@@ -461,6 +501,9 @@ export default function PartnerSettingsPage() {
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
       setPartner(updated);
+      // Lets layout islands that read partner settings (MfaPolicyOffBanner)
+      // re-check without a page navigation.
+      window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // The just-sent values are now the persisted state.
       setBaseline(currentSnapshot);
     } catch (err) {
@@ -565,7 +608,7 @@ export default function PartnerSettingsPage() {
 
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
-          groups={TAB_GROUPS.map(group => ({
+          groups={visibleGroups.map(group => ({
             label: t(/* i18n-dynamic */ group.label),
             items: group.tabs.map(tab => ({ ...tab, label: t(/* i18n-dynamic */ tab.label), description: t(/* i18n-dynamic */ tab.description), dirty: !!dirtyTabs[tab.key] })),
           }))}
@@ -702,6 +745,12 @@ export default function PartnerSettingsPage() {
               </a>
             </div>
           )}
+
+          {/* Custom sender addresses: partner sending domains, DNS records,
+              per-stream sender identities and the test send. Self-contained
+              with its own load/save, so the top-level "Save Settings" button
+              does not apply here. */}
+          {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
         </div>
       </div>
     </div>

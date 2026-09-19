@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -188,30 +189,23 @@ func collectDeviceAdjacency(client *snmppoll.SNMPClient, sourceIP string) Device
 // collectAdjacencyFor is the per-host network seam (stubbed in tests).
 var collectAdjacencyFor = collectDeviceAdjacencyForHost
 
-// collectDeviceAdjacencyForHost connects via the first usable community and walks LLDP/CDP.
-func collectDeviceAdjacencyForHost(ip string, communities []string, timeout time.Duration) DeviceAdjacency {
+// collectDeviceAdjacencyForHost connects via the first usable credential and walks LLDP/CDP.
+func collectDeviceAdjacencyForHost(ip string, creds []SNMPCredential, timeout time.Duration) DeviceAdjacency {
 	empty := DeviceAdjacency{SourceDeviceIP: ip, Lldp: []LldpNeighbor{}, Cdp: []CdpNeighbor{}, Fdb: []FdbEntry{}}
-	for _, community := range communities {
-		community = strings.TrimSpace(community)
-		if community == "" {
+	for _, cred := range creds {
+		if !cred.usable() {
 			continue
 		}
-		cfg := snmppoll.SNMPClientConfig{Target: ip, Timeout: timeout}
-		if strings.HasPrefix(strings.ToLower(community), "v3:") {
-			cfg.Version = snmppoll.Version3
-			cfg.Auth = snmppoll.SNMPAuth{Username: strings.TrimPrefix(community, "v3:")}
-		} else {
-			cfg.Version = snmppoll.Version2c
-			cfg.Auth = snmppoll.SNMPAuth{Community: community}
-		}
-		client, err := snmppoll.NewClient(cfg)
+		client, err := snmppoll.NewClient(cred.clientConfig(ip, timeout))
 		if err != nil {
+			slog.Debug("SNMP adjacency connect failed", "target", ip, "credential", cred.Describe(),
+				"class", classifySNMPProbeError(err), "error", err)
 			continue
 		}
 		adj := collectDeviceAdjacency(client, ip)
 		client.Close()
 		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 {
-			adj.Fdb = collectFdbEntries(ip, communities, timeout)
+			adj.Fdb = collectFdbEntries(ip, creds, timeout)
 			return adj
 		}
 	}
@@ -222,8 +216,8 @@ func collectDeviceAdjacencyForHost(ip string, communities []string, timeout time
 // converts the snmppoll assembler output into the discovery FdbEntry contract.
 // Returns an empty (non-nil) slice on any SNMP error so the adjacency block
 // always carries a `fdb` array.
-func collectFdbEntries(ip string, communities []string, timeout time.Duration) []FdbEntry {
-	raw := collectFdbForDevice(ip, communities, timeout)
+func collectFdbEntries(ip string, creds []SNMPCredential, timeout time.Duration) []FdbEntry {
+	raw := collectFdbForDevice(ip, creds, timeout)
 	out := make([]FdbEntry, 0, len(raw))
 	for _, e := range raw {
 		out = append(out, FdbEntry{

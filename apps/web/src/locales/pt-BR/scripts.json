@@ -1393,7 +1393,14 @@
     "resultSummary": "{{imported}} importados, {{renamed}} renomeados, {{versioned}} versionados, {{skipped}} ignorados, {{failed}} com falha",
     "scriptCount": "{{count}} scripts no pacote",
     "statusInvalid": "Inválido",
-    "exportLimit": "Você pode exportar até {{max}} scripts por pacote."
+    "exportLimit": "Você pode exportar até {{max}} scripts por pacote.",
+    "importDoneTitle": "Importação concluída",
+    "importDoneNothing": "Nada foi importado",
+    "importDoneOpen": "Abrir script",
+    "resultActionImported": "Importado",
+    "resultActionRenamed": "Renomeado de {{name}}",
+    "resultActionVersioned": "Adicionado como nova versão",
+    "resultOpen": "Abrir"
   },
   "testRunner": {
     "title": "Execução de teste",

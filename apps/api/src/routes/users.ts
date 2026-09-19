@@ -44,7 +44,13 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remote
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { resetAllFactorsAndInvalidate, sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
-import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import {
+  combineMfaPolicyFacts,
+  getScopeSecuritySettings,
+  getEffectiveMfaPolicy,
+  type MfaSecuritySettings,
+} from '../services/mfaPolicy';
+import { previewMfaEnrollmentGrace, resolveMfaGraceDays } from '../services/mfaEnrollmentGrace';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
 
@@ -1060,6 +1066,77 @@ async function annotateMfaProtected<T extends { id: string; mfaEnabled: boolean 
   return rows.map((row) => ({ ...row, mfaProtected: row.mfaEnabled === true || withPasskey.has(row.id) }));
 }
 
+/** One of these per row on the Admin → Users list MFA status column (#5690). */
+export type MfaStatusColumn = 'enrolled' | 'pending' | 'overdue' | 'not_required';
+
+/**
+ * #5690 — derives the Admin → Users list MFA status column from facts already
+ * in hand: `mfaProtected` (from `annotateMfaProtected`, above) plus each row's
+ * `roleForceMfa`, `mfaEpoch` and persisted grace columns. One settings read
+ * for the whole scope (`getScopeSecuritySettings`), not one per row, and
+ * `previewMfaEnrollmentGrace` (read-only — never grants) rather than
+ * `evaluateMfaEnrollmentGrace`, because a GET must not have the side effect of
+ * granting enrolment windows to every role-forced user it lists.
+ *
+ * Reuses `combineMfaPolicyFacts` — the same rule `getEffectiveMfaPolicy`
+ * applies at login/middleware — so this column can never disagree with live
+ * enforcement about whether a user is actually gated right now.
+ */
+function annotateMfaStatus<
+  T extends {
+    id: string;
+    mfaEnabled: boolean;
+    mfaProtected: boolean;
+    roleForceMfa: boolean;
+    mfaEpoch: number;
+    mfaEnrollmentDeadline: Date | string | null;
+    mfaEnrollmentGraceGrantedAt: Date | string | null;
+  }
+>(rows: T[], security: MfaSecuritySettings | undefined): Array<
+  Omit<T, 'roleForceMfa' | 'mfaEpoch' | 'mfaEnrollmentDeadline' | 'mfaEnrollmentGraceGrantedAt'> & {
+    mfaStatus: MfaStatusColumn;
+    mfaEnrollmentDeadline: string | null;
+  }
+> {
+  const graceDays = resolveMfaGraceDays(security);
+  const now = new Date();
+  return rows.map((row) => {
+    const { roleForceMfa, mfaEpoch, mfaEnrollmentDeadline, mfaEnrollmentGraceGrantedAt, ...rest } = row;
+    const toDate = (v: Date | string | null) => (v == null ? null : v instanceof Date ? v : new Date(v));
+    const grace = previewMfaEnrollmentGrace({
+      hasFactor: row.mfaProtected,
+      mfaEpoch,
+      deadline: toDate(mfaEnrollmentDeadline),
+      grantedAt: toDate(mfaEnrollmentGraceGrantedAt),
+      graceDays,
+      now,
+    });
+    const policy = combineMfaPolicyFacts({ roleForceMfa, security, grace });
+
+    // NOTE: during an active grace window `combineMfaPolicyFacts` intentionally
+    // reports `required: false` (that's what keeps the live enforcement gate
+    // from biting) — so `graceWindow === 'active'` must be checked BEFORE
+    // `required`, not after, or a pending user would misreport as
+    // `not_required`.
+    let mfaStatus: MfaStatusColumn;
+    if (row.mfaProtected) {
+      mfaStatus = 'enrolled';
+    } else if (policy.source.graceWindow === 'active') {
+      mfaStatus = 'pending';
+    } else if (!policy.required) {
+      mfaStatus = 'not_required';
+    } else {
+      mfaStatus = 'overdue';
+    }
+
+    return {
+      ...rest,
+      mfaStatus,
+      mfaEnrollmentDeadline: mfaStatus === 'pending' ? (policy.pendingEnrollment?.deadline ?? null) : null,
+    };
+  });
+}
+
 userRoutes.get(
   '/',
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
@@ -1076,8 +1153,12 @@ userRoutes.get(
           status: users.status,
           lastLoginAt: users.lastLoginAt,
           mfaEnabled: users.mfaEnabled,
+          mfaEpoch: users.mfaEpoch,
+          mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
+          mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
           roleId: roles.id,
           roleName: roles.name,
+          roleForceMfa: roles.forceMfa,
           orgAccess: partnerUsers.orgAccess,
           orgIds: partnerUsers.orgIds
         })
@@ -1086,7 +1167,13 @@ userRoutes.get(
         .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
         .where(eq(partnerUsers.partnerId, scopeContext.partnerId));
 
-      return c.json({ data: await annotateMfaProtected(data) });
+      const withProtected = await annotateMfaProtected(data);
+      const security = await getScopeSecuritySettings({
+        scope: 'partner',
+        partnerId: scopeContext.partnerId,
+        orgId: null,
+      });
+      return c.json({ data: annotateMfaStatus(withProtected, security) });
     }
 
     const data = await db
@@ -1097,8 +1184,12 @@ userRoutes.get(
         status: users.status,
         lastLoginAt: users.lastLoginAt,
         mfaEnabled: users.mfaEnabled,
+        mfaEpoch: users.mfaEpoch,
+        mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
+        mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
         roleId: roles.id,
         roleName: roles.name,
+        roleForceMfa: roles.forceMfa,
         siteIds: organizationUsers.siteIds,
         deviceGroupIds: organizationUsers.deviceGroupIds
       })
@@ -1107,7 +1198,13 @@ userRoutes.get(
       .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
       .where(eq(organizationUsers.orgId, scopeContext.orgId));
 
-    return c.json({ data: await annotateMfaProtected(data) });
+    const withProtected = await annotateMfaProtected(data);
+    const security = await getScopeSecuritySettings({
+      scope: 'organization',
+      orgId: scopeContext.orgId,
+      partnerId: null,
+    });
+    return c.json({ data: annotateMfaStatus(withProtected, security) });
   }
 );
 
@@ -1212,6 +1309,34 @@ userRoutes.post(
     const rolePermissionError = await validateAssignableRole(c, auth, role);
     if (rolePermissionError) {
       return c.json({ error: rolePermissionError }, 403);
+    }
+
+    // Write-time ownership check on a 'selected' org list. The ids are
+    // persisted verbatim into partner_users.org_ids and become the invitee's
+    // organization allowlist, so every one of them must be an organization of
+    // the CALLER's partner. Downstream access resolution re-scopes by partner,
+    // but a foreign id must never be stored in the first place (defense in
+    // depth + data integrity). Absent and foreign ids get the same answer so
+    // the probe is not a cross-partner existence oracle.
+    //
+    // Reach: this SELECT runs under the caller's own request DB context, so
+    // RLS (`breeze_has_org_access(id)`) bounds it to the orgs the caller can
+    // see — for the full-access partner member the router gate above requires,
+    // that is every active/trial, non-deleted org of the partner. A suspended
+    // or soft-deleted in-partner org is therefore refused too. Deliberate:
+    // an inviter cannot grant an invitee an org the inviter cannot see, and
+    // the failure mode is fail-closed. Do NOT lift this probe into a system
+    // context to "fix" that.
+    if (scopeContext.scope === 'partner' && (data.orgAccess ?? 'none') === 'selected') {
+      const requestedOrgIds = [...new Set(data.orgIds ?? [])];
+      const ownedOrgs = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, scopeContext.partnerId), inArray(organizations.id, requestedOrgIds)));
+      const owned = new Set(ownedOrgs.map((o) => o.id));
+      if (requestedOrgIds.some((id) => !owned.has(id))) {
+        return c.json({ error: 'One or more organizations are not part of your partner' }, 403);
+      }
     }
 
     const normalizedEmail = data.email.toLowerCase();
@@ -1340,7 +1465,7 @@ userRoutes.post(
         }
 
         const orgAccess = data.orgAccess ?? 'none';
-        const orgIds = orgAccess === 'selected' ? data.orgIds ?? [] : null;
+        const orgIds = orgAccess === 'selected' ? [...new Set(data.orgIds ?? [])] : null;
 
         const [link] = await tx
           .insert(partnerUsers)

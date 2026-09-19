@@ -6,7 +6,7 @@ import { eq, sql, desc, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, isInteractiveUserSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
@@ -18,7 +18,7 @@ import {
 } from '../../services/deviceMaintenanceLease';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { getUserEpochs } from '../../services/authEpochs';
-import { lockMaintenanceAssurance } from '../../services/maintenanceAuthorization';
+import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
@@ -393,7 +393,7 @@ commandsRoutes.post(
     let results: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }>;
     try {
       results = await db.transaction(async (tx) => {
-        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+        if (grantBinding && (!(await lockActorAssurance(tx, auth, grantBinding))
           || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
           throw new MaintenanceStepUpConsumedError();
         }
@@ -617,25 +617,6 @@ const STEP_UP_REQUIRED_BODY = { error: 'Step-up required', code: 'STEP_UP_REQUIR
 class MaintenanceStepUpConsumedError extends Error {}
 
 /**
- * "A human must be doing this" — UNCONDITIONAL, on entry AND exit
- * (RMM-QA-176 D1). NOT redundant with requireMfa(): API-key and MCP-OAuth
- * contexts are built with `token: {}` (routes/mcpServer.ts:2246), and
- * hasSatisfiedMfa returns true for ANY context when ENABLE_2FA is off — so on
- * such a deployment the MFA gate would ADMIT a machine principal. This gate is
- * what makes "API-key denial with zero state change" independent of MFA
- * configuration. Placed before the device lookup so a denial costs no query.
- */
-function requireInteractiveSession(): MiddlewareHandler {
-  return async (c: Context, next: Next) => {
-    const auth = c.get('auth') as AuthContext | undefined;
-    if (!auth || !isInteractiveUserSession(auth)) {
-      return c.json({ error: 'Interactive user session required' }, 403);
-    }
-    return next();
-  };
-}
-
-/**
  * Entry and extension need an assured session; EXIT deliberately does not —
  * "keep exit safely available" (D3). Sits AFTER zValidator so `enable` is
  * parsed, not read off an unvalidated body.
@@ -759,7 +740,7 @@ commandsRoutes.post(
       const result = await db.transaction(async (tx) => {
         // Consume INSIDE the transaction, before the write: a grant burned by a
         // racing request must abort this one with no row change.
-        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+        if (grantBinding && (!(await lockActorAssurance(tx, auth, grantBinding))
           || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
           throw new MaintenanceStepUpConsumedError();
         }

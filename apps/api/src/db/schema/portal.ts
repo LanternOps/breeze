@@ -18,6 +18,11 @@ export const portalBranding = pgTable('portal_branding', {
   primaryColor: varchar('primary_color', { length: 50 }),
   secondaryColor: varchar('secondary_color', { length: 50 }),
   accentColor: varchar('accent_color', { length: 50 }),
+  // Curated chrome-accent preset key (packages/shared/src/types/
+  // portalChromeAccent.ts). Null = default ('spruce'). Distinct from
+  // accentColor above: that's a free-form legacy color, this is a validated
+  // key the portal maps to pre-checked light/dark tokens.
+  chromeAccent: varchar('chrome_accent', { length: 20 }),
   customDomain: varchar('custom_domain', { length: 255 }),
   domainVerified: boolean('domain_verified').notNull().default(false),
   welcomeMessage: text('welcome_message'),

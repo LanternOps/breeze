@@ -367,3 +367,26 @@ describe('ReportRunList', () => {
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
 });
+
+describe('ReportRunList — hardware lifecycle link', () => {
+  it('renders a ruled link row under the title when given a lifecycleHref, and nothing otherwise', () => {
+    const { unmount } = render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const link = screen.getByTestId('reports-lifecycle-card');
+    expect(link).toHaveAttribute('href', '/portal/devices#lifecycle');
+    expect(link.className).not.toContain('bg-card');
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+    expect(screen.queryByTestId('reports-lifecycle-card')).toBeNull();
+  });
+});
+
+describe('ReportRunList — lifecycle row padding', () => {
+  it('gives the hover wash side padding while keeping the text on the column edge', () => {
+    render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const cls = screen.getByTestId('reports-lifecycle-card').className;
+    expect(cls).toMatch(/\bpx-4\b/);
+    expect(cls).toMatch(/-mx-4\b/);
+  });
+});

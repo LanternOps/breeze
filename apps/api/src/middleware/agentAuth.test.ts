@@ -453,6 +453,41 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #6130 — the elevation-requests ingest route's per-device rateLimiter Redis
+  // round-trip ran inside the request-long wrap. The handler now opens its own
+  // org-scoped context after the limiter decides (routes/agents/elevationRequests.ts),
+  // so the middleware must NOT open one for it.
+  it('skips the request-long org wrap for the self-managed elevation-requests route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/elevation-requests' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // Negative control for the anchoring: a same-named segment under an
+  // extension mount must still get the request-long wrap.
+  it('a crafted elevation-requests TAIL under an extension mount keeps the request DB context', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/elevation-requests',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // The command RESULT route ends in `result`, not `commands` — it must keep
   // the request-long org wrap.
   it('keeps the request-long org wrap for the command result route', async () => {

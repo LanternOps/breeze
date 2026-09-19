@@ -85,6 +85,7 @@ vi.mock('../db/schema', () => ({
     enableDocuments: 'enableDocuments',
     enableLifecycle: 'enableLifecycle',
     enableNetworkVisibility: 'enableNetworkVisibility',
+    chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
@@ -121,6 +122,7 @@ const FULL_ROW = {
   enableDocuments: false,
   enableLifecycle: false,
   enableNetworkVisibility: false,
+  chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -178,6 +180,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: false,
       enableNetworkVisibility: false,
+      chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -211,6 +214,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: false,
       enableNetworkVisibility: false,
+      chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
@@ -326,6 +330,32 @@ describe('PATCH /organizations/:id/portal-settings', () => {
 
   it('400 on invalid email', async () => {
     expect((await patch({ supportEmail: 'nope' })).status).toBe(400);
+  });
+
+  it('persists a valid chromeAccent key', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: 'plum' }]);
+    const res = await patch({ chromeAccent: 'plum' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.chromeAccent).toBe('plum');
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(valuesArg.chromeAccent).toBe('plum');
+  });
+
+  it('accepts null to clear chromeAccent back to the default', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: null }]);
+    const res = await patch({ chromeAccent: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.chromeAccent).toBeNull();
+  });
+
+  it('400 on an unknown chromeAccent key', async () => {
+    const res = await patch({ chromeAccent: 'cobalt' });
+    expect(res.status).toBe(400);
   });
 
   it('404 when partner scope cannot access the org', async () => {

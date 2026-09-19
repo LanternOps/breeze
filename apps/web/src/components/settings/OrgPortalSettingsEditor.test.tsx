@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
@@ -37,7 +37,8 @@ const SETTINGS = {
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
-  footerText: null
+  footerText: null,
+  chromeAccent: null as string | null
 };
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -188,5 +189,61 @@ describe('OrgPortalSettingsEditor', () => {
     fireEvent.click(screen.getByTestId('org-portal-save'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(onSave).not.toHaveBeenCalled();
+  });
+
+  describe('portal accent', () => {
+    it('renders all 8 swatches with the fetched accent checked', async () => {
+      mockApi({ ...SETTINGS, chromeAccent: 'navy' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-portal-settings')).toBeInTheDocument());
+
+      const group = screen.getByRole('radiogroup', { name: /portal accent/i });
+      const swatches = within(group).getAllByRole('radio');
+      expect(swatches).toHaveLength(8);
+
+      const navySwatch = screen.getByTestId('org-portal-accent-navy');
+      expect(navySwatch).toHaveAttribute('aria-checked', 'true');
+      for (const key of ['spruce', 'ink', 'oxblood', 'plum', 'bronze', 'teal', 'forest']) {
+        expect(screen.getByTestId(`org-portal-accent-${key}`)).toHaveAttribute('aria-checked', 'false');
+      }
+    });
+
+    it('defaults the checked swatch to spruce when chromeAccent is null', async () => {
+      mockApi();
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-portal-settings')).toBeInTheDocument());
+      expect(screen.getByTestId('org-portal-accent-spruce')).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('saves the picked non-default accent key', async () => {
+      mockApi();
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-portal-save')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('org-portal-accent-oxblood'));
+      expect(onDirty).toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId('org-portal-save'));
+
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect(body.chromeAccent).toBe('oxblood');
+    });
+
+    it('saves null when spruce is picked', async () => {
+      mockApi({ ...SETTINGS, chromeAccent: 'navy' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-portal-save')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('org-portal-accent-spruce'));
+      fireEvent.click(screen.getByTestId('org-portal-save'));
+
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect(body.chromeAccent).toBeNull();
+    });
   });
 });

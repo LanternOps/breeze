@@ -8,6 +8,7 @@ import AccessReviewList, { type AccessReview } from './AccessReviewList';
 import AccessReviewForm from './AccessReviewForm';
 import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
 import { asList } from '@/lib/asList';
+import { csvRow } from '@/lib/csvExport';
 
 type AccessReviewDecision = 'pending' | 'approved' | 'revoked';
 
@@ -111,11 +112,6 @@ function getDeadlineStatus(dueDate?: string | null): DeadlineStatus {
   };
 }
 
-function escapeCsvValue(value: string): string {
-  const safe = value ?? '';
-  return `"${safe.replace(/"/g, '""')}"`;
-}
-
 function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
   const rows: string[][] = [
     ['Review Name', review.name],
@@ -139,7 +135,7 @@ function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
     ]);
   });
 
-  return rows.map((row) => row.map(escapeCsvValue).join(',')).join('\n');
+  return rows.map(csvRow).join('\n');
 }
 
 export default function AccessReviewPage() {

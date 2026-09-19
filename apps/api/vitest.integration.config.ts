@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
 
 // Load test environment variables
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
@@ -11,6 +11,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
+      'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
       'src/routes/integrationConnectionScope.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',
