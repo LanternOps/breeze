@@ -246,6 +246,11 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // dispatch that fell back to rollbackResourceDigest would produce the other
   // constant and the device_maintenance mint assertion below would fail.
   maintenanceResourceDigest: vi.fn(() => 'sha256:ma1n7enanceb0undd19e57000000000000000000000000000000000000000000'),
+  // Device move-org step-up: a THIRD distinct constant, for the same reason as
+  // the maintenance one above — the mint route dispatches the digest by
+  // operation, and a dispatch that fell through to another digest function
+  // would produce the wrong constant and fail the assertion below.
+  moveOrgResourceDigest: vi.fn(() => 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -468,7 +473,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -4630,6 +4635,57 @@ describe('auth routes', () => {
 				}),
 			});
 			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		// Device move-org step-up (spec 2026-09-18 D2): a bound operation whose
+		// resource must parse under ITS OWN schema before any factor is verified.
+		it('mints a device_move_org grant bound to the canonical move digest', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-move-org');
+			const resource = {
+				deviceId: '00000000-0000-4000-8000-000000000010',
+				targetOrgId: '00000000-0000-4000-8000-000000000020',
+				targetSiteId: '00000000-0000-4000-8000-000000000030',
+				acceptCurrencyMismatch: true,
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'device_move_org', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(moveOrgResourceDigest).toHaveBeenCalledWith(expect.objectContaining(resource));
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'device_move_org',
+				resourceDigest: 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000',
+			}));
+		});
+
+		it('rejects device_move_org without a resource binding, before factor verification', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'device_move_org' }),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('rejects device_move_org carrying a MAINTENANCE-shaped resource (per-operation shape check)', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'passkey',
+					credential: { id: 'credential-1' },
+					operation: 'device_move_org',
+					resource: { deviceIds: ['00000000-0000-4000-8000-000000000010'], reason: 'scheduled patching', durationHours: 4 },
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
 			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
