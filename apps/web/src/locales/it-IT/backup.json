@@ -753,7 +753,28 @@
     "executionDetailsAreUnavailable": "I dettagli dell'esecuzione non sono disponibili.",
     "abortDisasterRecoveryExecution": "Interrompere l'esecuzione di disaster recovery?",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivi"
+    "deviceCount_other": "{{count}} dispositivi",
+    "recoveryStatus": {
+      "created": "Codice emesso",
+      "media_booted": "Supporto avviato",
+      "planned": "Pianificato",
+      "restoring": "Ripristino in corso",
+      "validated": "Convalidato",
+      "rebooted": "Riavviato",
+      "checked_in": "Registrato",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "refused": "Rifiutato",
+      "unknown": "Ripristino in attesa"
+    },
+    "reissueCode": "Riemetti codice",
+    "reissueCodeFailed": "Impossibile riemettere il codice di ripristino",
+    "cancelRecovery": "Annulla ripristino",
+    "cancelRecoveryFailed": "Impossibile annullare il ripristino",
+    "recoveryCancelled": "Ripristino annullato",
+    "codeShownOnce": "Questo codice viene mostrato una sola volta e scade tra 15 minuti. Digitalo al prompt del supporto di ripristino.",
+    "copyCode": "Copia codice",
+    "copied": "Copiato"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Definisci obiettivi di ripristino, sequenzia i gruppi e assegna dispositivi in ordine di ripristino.",
@@ -783,7 +804,9 @@
     "groupCount_one": "{{count}} gruppo",
     "groupCount_other": "{{count}} gruppi",
     "uniqueDeviceCount_one": "{{count}} dispositivo univoco",
-    "uniqueDeviceCount_other": "{{count}} dispositivi univoci"
+    "uniqueDeviceCount_other": "{{count}} dispositivi univoci",
+    "chooseAStepTypeForEachGroup": "Scegli un tipo di passaggio per ogni gruppo di ripristino.",
+    "rebuildWaitTimeoutOutOfRange": "Il timeout di attesa della ricostruzione bare-metal deve essere un numero intero compreso tra {{min}} e {{max}} minuti."
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",
@@ -798,7 +821,23 @@
     "deviceSelection": "Selezione dispositivi",
     "noDevicesAvailableToAssign": "Nessun dispositivo disponibile da assegnare.",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivi"
+    "deviceCount_other": "{{count}} dispositivi",
+    "stepType": "Tipo di passaggio",
+    "chooseAStepType": "Scegli un tipo di passaggio",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Ripristino VM da backup",
+      "vmInstantBoot": "Avvio istantaneo VM",
+      "hypervRestore": "Ripristino Hyper-V",
+      "mssqlRestore": "Ripristino SQL Server",
+      "bmrRecover": "Ripristino bare-metal (supporto di avvio)",
+      "bareMetalRebuild": "Ricostruzione bare-metal (motore di ricostruzione)"
+    },
+    "rebuildHost": "Host di ricostruzione",
+    "rebuildHostHint": "Dispositivo Linux con qemu-utils che esegue le prove. In caso di failover ogni dispositivo avvia invece il supporto di ripristino.",
+    "outputDir": "Directory di output",
+    "outputDirHint": "Directory sull'host di ricostruzione che riceve un'immagine VHDX per dispositivo.",
+    "waitTimeout": "Timeout di attesa (min)",
+    "waitTimeoutHint": "Minuti di attesa della registrazione di ogni dispositivo prima che il passaggio fallisca."
   },
   "profiles": {
     "title": "Profili di backup",

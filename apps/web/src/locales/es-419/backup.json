@@ -753,7 +753,28 @@
     "executionDetailsAreUnavailable": "Los detalles de la ejecución no están disponibles.",
     "abortDisasterRecoveryExecution": "¿Abortar la ejecución de la recuperación ante desastres?",
     "deviceCount_one": "dispositivo {{count}}",
-    "deviceCount_other": "dispositivos {{count}}"
+    "deviceCount_other": "dispositivos {{count}}",
+    "recoveryStatus": {
+      "created": "Código emitido",
+      "media_booted": "Medio iniciado",
+      "planned": "Planificado",
+      "restoring": "Restaurando",
+      "validated": "Validado",
+      "rebooted": "Reiniciado",
+      "checked_in": "Registrado",
+      "completed": "Completado",
+      "failed": "Fallido",
+      "refused": "Rechazado",
+      "unknown": "Recuperación pendiente"
+    },
+    "reissueCode": "Reemitir código",
+    "reissueCodeFailed": "No se pudo reemitir el código de recuperación",
+    "cancelRecovery": "Cancelar recuperación",
+    "cancelRecoveryFailed": "No se pudo cancelar la recuperación",
+    "recoveryCancelled": "Recuperación cancelada",
+    "codeShownOnce": "Este código se muestra una sola vez y vence en 15 minutos. Escríbalo en el indicador del medio de recuperación.",
+    "copyCode": "Copiar código",
+    "copied": "Copiado"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Defina objetivos de recuperación, secuenciar grupos y asignar dispositivos en orden de restauración.",
@@ -783,7 +804,9 @@
     "groupCount_one": "grupo {{count}}",
     "groupCount_other": "grupos {{count}}",
     "uniqueDeviceCount_one": "dispositivo único {{count}}",
-    "uniqueDeviceCount_other": "dispositivos únicos {{count}}"
+    "uniqueDeviceCount_other": "dispositivos únicos {{count}}",
+    "chooseAStepTypeForEachGroup": "Elija un tipo de paso para cada grupo de recuperación.",
+    "rebuildWaitTimeoutOutOfRange": "El tiempo de espera de la reconstrucción bare-metal debe ser un número entero entre {{min}} y {{max}} minutos."
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",
@@ -798,7 +821,23 @@
     "deviceSelection": "Selección de dispositivo",
     "noDevicesAvailableToAssign": "No hay dispositivos disponibles para asignar.",
     "deviceCount_one": "dispositivo {{count}}",
-    "deviceCount_other": "dispositivos {{count}}"
+    "deviceCount_other": "dispositivos {{count}}",
+    "stepType": "Tipo de paso",
+    "chooseAStepType": "Elegir un tipo de paso",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Restaurar VM desde respaldo",
+      "vmInstantBoot": "Arranque instantáneo de VM",
+      "hypervRestore": "Restauración de Hyper-V",
+      "mssqlRestore": "Restauración de SQL Server",
+      "bmrRecover": "Recuperación bare-metal (medio de arranque)",
+      "bareMetalRebuild": "Reconstrucción bare-metal (motor de reconstrucción)"
+    },
+    "rebuildHost": "Host de reconstrucción",
+    "rebuildHostHint": "Dispositivo Linux con qemu-utils que ejecuta los ensayos. En una conmutación por error, cada dispositivo arranca el medio de recuperación.",
+    "outputDir": "Directorio de salida",
+    "outputDirHint": "Directorio en el host de reconstrucción que recibe una imagen VHDX por dispositivo.",
+    "waitTimeout": "Tiempo de espera (min)",
+    "waitTimeoutHint": "Minutos de espera para que cada dispositivo se registre antes de que el paso falle."
   },
   "profiles": {
     "title": "Perfiles de respaldo",

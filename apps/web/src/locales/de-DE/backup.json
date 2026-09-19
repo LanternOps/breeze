@@ -753,7 +753,28 @@
     "executionDetailsAreUnavailable": "Ausführungsdetails sind nicht verfügbar.",
     "abortDisasterRecoveryExecution": "Ausführung der Notfallwiederherstellung abbrechen?",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "recoveryStatus": {
+      "created": "Code ausgestellt",
+      "media_booted": "Medium gestartet",
+      "planned": "Geplant",
+      "restoring": "Wiederherstellung läuft",
+      "validated": "Validiert",
+      "rebooted": "Neu gestartet",
+      "checked_in": "Angemeldet",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "refused": "Abgelehnt",
+      "unknown": "Wiederherstellung ausstehend"
+    },
+    "reissueCode": "Code neu ausstellen",
+    "reissueCodeFailed": "Der Wiederherstellungscode konnte nicht neu ausgestellt werden",
+    "cancelRecovery": "Wiederherstellung abbrechen",
+    "cancelRecoveryFailed": "Die Wiederherstellung konnte nicht abgebrochen werden",
+    "recoveryCancelled": "Wiederherstellung abgebrochen",
+    "codeShownOnce": "Dieser Code wird nur einmal angezeigt und läuft in 15 Minuten ab. Geben Sie ihn an der Eingabeaufforderung des Wiederherstellungsmediums ein.",
+    "copyCode": "Code kopieren",
+    "copied": "Kopiert"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Definieren Sie Wiederherstellungsziele, ordnen Sie Gruppen zu und weisen Sie Geräte in der Wiederherstellungsreihenfolge zu.",
@@ -783,7 +804,9 @@
     "groupCount_one": "{{count}} Gruppe",
     "groupCount_other": "{{count}} Gruppen",
     "uniqueDeviceCount_one": "{{count}} einzigartiges Gerät",
-    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte"
+    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte",
+    "chooseAStepTypeForEachGroup": "Wählen Sie für jede Wiederherstellungsgruppe einen Schritttyp.",
+    "rebuildWaitTimeoutOutOfRange": "Das Wartezeitlimit für den Bare-Metal-Neuaufbau muss eine ganze Zahl zwischen {{min}} und {{max}} Minuten sein."
   },
   "dRPlanGroupCard": {
     "device": "Gerät",
@@ -798,7 +821,23 @@
     "deviceSelection": "Geräteauswahl",
     "noDevicesAvailableToAssign": "Es sind keine Geräte zum Zuweisen verfügbar.",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "stepType": "Schritttyp",
+    "chooseAStepType": "Schritttyp wählen",
+    "stepTypes": {
+      "vmRestoreFromBackup": "VM aus Backup wiederherstellen",
+      "vmInstantBoot": "VM-Sofortstart",
+      "hypervRestore": "Hyper-V-Wiederherstellung",
+      "mssqlRestore": "SQL-Server-Wiederherstellung",
+      "bmrRecover": "Bare-Metal-Wiederherstellung (Startmedium)",
+      "bareMetalRebuild": "Bare-Metal-Neuaufbau (Rebuild-Engine)"
+    },
+    "rebuildHost": "Rebuild-Host",
+    "rebuildHostHint": "Linux-Gerät mit qemu-utils, das Proben ausführt. Beim Failover wird stattdessen auf jedem Gerät das Wiederherstellungsmedium gestartet.",
+    "outputDir": "Ausgabeverzeichnis",
+    "outputDirHint": "Verzeichnis auf dem Rebuild-Host, das pro Gerät ein VHDX-Image erhält.",
+    "waitTimeout": "Wartezeitlimit (Min.)",
+    "waitTimeoutHint": "Minuten, die auf die Anmeldung jedes Geräts gewartet wird, bevor der Schritt fehlschlägt."
   },
   "profiles": {
     "title": "Sicherungsprofile",

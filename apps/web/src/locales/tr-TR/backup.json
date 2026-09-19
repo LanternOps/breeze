@@ -753,7 +753,28 @@
     "executionDetailsAreUnavailable": "Yürütme ayrıntıları mevcut değil.",
     "abortDisasterRecoveryExecution": "Olağanüstü durum kurtarma işlemi iptal edilsin mi?",
     "deviceCount_one": "{{count}} cihaz",
-    "deviceCount_other": "{{count}} cihazlar"
+    "deviceCount_other": "{{count}} cihazlar",
+    "recoveryStatus": {
+      "created": "Kod verildi",
+      "media_booted": "Ortam başlatıldı",
+      "planned": "Planlandı",
+      "restoring": "Geri yükleniyor",
+      "validated": "Doğrulandı",
+      "rebooted": "Yeniden başlatıldı",
+      "checked_in": "Kaydoldu",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "refused": "Reddedildi",
+      "unknown": "Kurtarma bekliyor"
+    },
+    "reissueCode": "Kodu yeniden ver",
+    "reissueCodeFailed": "Kurtarma kodu yeniden verilemedi",
+    "cancelRecovery": "Kurtarmayı iptal et",
+    "cancelRecoveryFailed": "Kurtarma iptal edilemedi",
+    "recoveryCancelled": "Kurtarma iptal edildi",
+    "codeShownOnce": "Bu kod yalnızca bir kez gösterilir ve 15 dakika içinde geçerliliğini yitirir. Kurtarma ortamı istemine girin.",
+    "copyCode": "Kodu kopyala",
+    "copied": "Kopyalandı"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Kurtarma hedeflerini, sıra gruplarını tanımlayın ve cihazları geri yükleme sırasına göre atayın.",
@@ -783,7 +804,9 @@
     "groupCount_one": "{{count}} grubu",
     "groupCount_other": "{{count}} grup",
     "uniqueDeviceCount_one": "{{count}} benzersiz cihaz",
-    "uniqueDeviceCount_other": "{{count}} benzersiz cihazlar"
+    "uniqueDeviceCount_other": "{{count}} benzersiz cihazlar",
+    "chooseAStepTypeForEachGroup": "Her kurtarma grubu için bir adım türü seçin.",
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal yeniden oluşturma bekleme süresi {{min}} ile {{max}} dakika arasında bir tam sayı olmalıdır."
   },
   "dRPlanGroupCard": {
     "device": "cihaz",
@@ -798,7 +821,23 @@
     "deviceSelection": "Cihaz seçimi",
     "noDevicesAvailableToAssign": "Atanabilecek cihaz yok.",
     "deviceCount_one": "{{count}} cihaz",
-    "deviceCount_other": "{{count}} cihazlar"
+    "deviceCount_other": "{{count}} cihazlar",
+    "stepType": "Adım türü",
+    "chooseAStepType": "Bir adım türü seçin",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Yedekten VM geri yükleme",
+      "vmInstantBoot": "Anında VM önyüklemesi",
+      "hypervRestore": "Hyper-V geri yükleme",
+      "mssqlRestore": "SQL Server geri yükleme",
+      "bmrRecover": "Bare-metal kurtarma (önyükleme ortamı)",
+      "bareMetalRebuild": "Bare-metal yeniden oluşturma (yeniden oluşturma motoru)"
+    },
+    "rebuildHost": "Yeniden oluşturma ana bilgisayarı",
+    "rebuildHostHint": "Provaları çalıştıran, qemu-utils yüklü Linux cihazı. Yük devretmede ise her cihaz kurtarma ortamını başlatır.",
+    "outputDir": "Çıktı dizini",
+    "outputDirHint": "Yeniden oluşturma ana bilgisayarında cihaz başına bir VHDX görüntüsü alan dizin.",
+    "waitTimeout": "Bekleme süresi (dk)",
+    "waitTimeoutHint": "Adım başarısız sayılmadan önce her cihazın kaydolması için beklenecek dakika."
   },
   "profiles": {
     "title": "Yedekleme Profilleri",
