@@ -24,6 +24,7 @@ export type WorkerInitializerClassification =
       initializer:
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
+        | 'topologyOutboxWorker'
         | 'incidentCorrelationWorker'
         | 'incidentTimelineEnricher'
         | 'incidentSlaMonitor';
@@ -101,6 +102,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   { kind: 'non_consumer', initializer: 'desktopSessionOrphanRecovery' },
   consumers('playbookRetention'),
   consumers('discoveryWorker'),
+  // Database-backed interval repair; no BullMQ consumer to declare.
+  { kind: 'non_consumer', initializer: 'topologyOutboxWorker' },
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),

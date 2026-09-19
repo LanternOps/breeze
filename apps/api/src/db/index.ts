@@ -912,6 +912,17 @@ export function assertInTransaction(label: string): void {
   }
 }
 
+/** Compose ambient-db services inside a real driver-owned savepoint. Rebind
+ * only the executor: the caller's RLS GUCs and access metadata are unchanged.
+ * Using raw SQL SAVEPOINT here is insufficient: postgres.js also tracks errors
+ * in its transaction callback, so a caught SQL failure would poison the outer
+ * commit even after an explicit ROLLBACK TO. */
+export async function withDbTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  assertInTransaction('withDbTransaction');
+  const executor = dbContextStorage.getStore()!;
+  return executor.transaction(tx => dbContextStorage.run(tx as unknown as typeof baseDb, fn));
+}
+
 /**
  * The DbAccessContext metadata (scope + org/partner allowlists) of the active
  * request transaction, or undefined when no context is established. Use this to

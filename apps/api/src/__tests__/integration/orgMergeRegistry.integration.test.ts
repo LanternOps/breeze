@@ -244,6 +244,11 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // These detach only on DELETE or an actual site change. Org-only repoints
+  // retain bindings; topology's ambient merge hooks fence and rekey them.
+  'devices.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
+  'discovered_assets.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
+  'topology_manual_nodes.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
   // Validates NEW.org_id against backup_configs(storage_config_id) and raises
   // 23503 on a mismatch. It constrains the ORDER of the walk, not the write:
   // c2c_backup_configs.storage_config_id -> backup_configs(id) is a real FK, so

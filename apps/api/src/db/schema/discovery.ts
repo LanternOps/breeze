@@ -207,6 +207,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   // PARTIAL as of #5213 — many IP-less manual rows may coexist in one org, but a
   // non-NULL IP is still unique per org. Every upsert onto this index must
   // repeat the predicate via `targetWhere`, or Postgres cannot infer it (42P10).
+  idOrgSiteUnique: uniqueIndex('discovered_assets_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
     .on(table.orgId, table.ipAddress)
     .where(sql`${table.ipAddress} is not null`)
@@ -390,5 +391,6 @@ export const topologyManualNodes = pgTable('topology_manual_nodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 }, (table) => ({
+  idOrgSiteUnique: uniqueIndex('topology_manual_nodes_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgSiteIdx: index('topology_manual_nodes_org_site_idx').on(table.orgId, table.siteId)
 }));
