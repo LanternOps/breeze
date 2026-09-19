@@ -74,6 +74,7 @@ export type TimeEntryAuditMutation = {
   orgId: string | null;
   /** W06 (#3900): the server-stamped provenance of the affected entry. */
   source?: TimeEntrySource;
+  workTypeId?: string | null;
 };
 
 export interface TimeEntryActor {
@@ -99,13 +100,14 @@ export interface TimeEntryActor {
 function recordAuditMutation(
   actor: TimeEntryActor,
   action: TimeEntryAuditMutation['action'],
-  entry: { id: string; orgId?: string | null; source?: string | null },
+  entry: { id: string; orgId?: string | null; source?: string | null; workTypeId?: string | null },
 ): void {
   actor.recordAuditMutation?.({
     action,
     entryId: entry.id,
     orgId: entry.orgId ?? null,
     ...(entry.source ? { source: entry.source as TimeEntrySource } : {}),
+    ...(entry.workTypeId !== undefined ? { workTypeId: entry.workTypeId } : {}),
   });
 }
 
@@ -194,7 +196,7 @@ async function resolveTicketOrg(
 
 async function getCategoryDefaults(
   categoryId: string
-): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null } | null> {
+): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null; defaultWorkTypeId: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -203,7 +205,8 @@ async function getCategoryDefaults(
           partnerId: ticketCategories.partnerId,
           defaultBillable: ticketCategories.defaultBillable,
           defaultHourlyRate: ticketCategories.defaultHourlyRate,
-          rateCurrency: ticketCategories.rateCurrency
+          rateCurrency: ticketCategories.rateCurrency,
+          defaultWorkTypeId: ticketCategories.defaultWorkTypeId
         })
         .from(ticketCategories)
         .where(eq(ticketCategories.id, categoryId))
@@ -264,7 +267,10 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
     // D6: per-entry explicit override (applied by callers) → org default → category default → false
     defaultBillable: orgSettings?.defaultBillable ?? category?.defaultBillable ?? false,
     // D6 + match-or-skip: a default rate is used only when entered in the org's currency.
-    defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category)
+    defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category),
+    // Spec §3.1: server-side default keeps clients without a picker compatible.
+    // Retired categories still supply defaults; do not filter on is_active.
+    defaultWorkTypeId: category?.defaultWorkTypeId ?? null
   };
 }
 
@@ -462,6 +468,7 @@ export async function createTimeEntry(
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let defaultWorkTypeId: string | null = null;
   let currencyCode: string | null = null;
 
   if (input.ticketId) {
@@ -473,6 +480,7 @@ export async function createTimeEntry(
     currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
+    defaultWorkTypeId = link.defaultWorkTypeId;
   } else if (provenance.orgLink) {
     // W06 (#3900): no ticket, but the signal knows its org — stamp org and the
     // org's locked currency so time_entries_currency_required_when_org_chk holds.
@@ -495,6 +503,8 @@ export async function createTimeEntry(
   }
 
   const hourlyRate = input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate;
+  // Only undefined falls through; explicit null means no work type.
+  const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   assertRepresentable(hourlyRate, currencyCode);
 
   const rows = await db
@@ -503,6 +513,7 @@ export async function createTimeEntry(
       partnerId,
       orgId,
       ticketId: input.ticketId ?? null,
+      workTypeId,
       userId: actor.userId,
       startedAt: input.startedAt,
       endedAt: input.endedAt,
@@ -582,11 +593,12 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
+export async function startTimer(input: { ticketId?: string; description?: string; workTypeId?: string | null }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let defaultWorkTypeId: string | null = null;
   let currencyCode: string | null = null;
 
   if (input.ticketId) {
@@ -597,6 +609,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
+    defaultWorkTypeId = link.defaultWorkTypeId;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
@@ -610,6 +623,8 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   // zero-decimal currency is a 400 here, never a silently rounded time entry.
   assertRepresentable(defaultRate, currencyCode);
 
+  // Match manual entry stamping, including an explicit null from the caller.
+  const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
     // unique index time_entries_one_running_per_user_uq is the race backstop.
@@ -639,6 +654,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         partnerId: partnerId!,
         orgId,
         ticketId: input.ticketId ?? null,
+        workTypeId,
         userId: actor.userId,
         startedAt: new Date(),
         endedAt: null,
@@ -771,6 +787,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 
   const set: Record<string, unknown> = {};
   const changed: string[] = [];
+  if (input.workTypeId !== undefined) { set.workTypeId = input.workTypeId; changed.push('workTypeId'); }
   if (input.startedAt !== undefined) { set.startedAt = input.startedAt; changed.push('startedAt'); }
   if (input.endedAt !== undefined) { set.endedAt = input.endedAt; changed.push('endedAt'); }
   if (input.description !== undefined) { set.description = input.description; changed.push('description'); }

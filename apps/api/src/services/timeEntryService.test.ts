@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { inspect } from 'node:util';
+import { createTimeEntrySchema, startTimerSchema, updateTimeEntrySchema } from '@breeze/shared';
 
 const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
   const dbMocks = {
@@ -120,7 +121,7 @@ vi.mock('../db/schema', () => ({
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
     isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
-    source: 'source',
+    source: 'source', workTypeId: 'workTypeId',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -131,7 +132,7 @@ vi.mock('../db/schema', () => ({
     addedBy: 'addedBy', notes: 'notes', createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
-  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency' },
+  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency', defaultWorkTypeId: 'defaultWorkTypeId' },
   organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   partners: { id: 'id', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
@@ -1868,5 +1869,70 @@ describe('getTicketTimeEntryDefaults (#5321)', () => {
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
     await expect(getTicketTimeEntryDefaults('t-1', { ...ACTOR_D, accessibleOrgIds: ['o-1'] }))
       .rejects.toMatchObject({ status: 404, code: 'TICKET_ORG_DENIED' });
+  });
+});
+
+describe('workTypeId stamping', () => {
+  const callerWorkType = '11111111-1111-4111-8111-111111111111';
+  const categoryWorkType = '22222222-2222-4222-8222-222222222222';
+  const span = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  describe.each(['create', 'start'] as const)('%s', (operation) => {
+    it.each([
+      { name: 'explicit work type wins over category', ticket: true, input: { workTypeId: callerWorkType }, expected: callerWorkType },
+      { name: 'omission uses category default', ticket: true, input: {}, expected: categoryWorkType },
+      { name: 'explicit null clears category default', ticket: true, input: { workTypeId: null }, expected: null },
+      { name: 'standalone omission stays null', ticket: false, input: {}, expected: null },
+      { name: 'standalone explicit work type is retained', ticket: false, input: { workTypeId: callerWorkType }, expected: callerWorkType },
+    ])('$name', async ({ ticket, input, expected }) => {
+      if (ticket) {
+        dbMocks.selectResults.push(
+          [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+          [{ partnerId: 'p-1', currencyCode: 'USD' }],
+          [{ defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD', defaultWorkTypeId: categoryWorkType }],
+          [{ currencyCode: 'USD' }],
+          [{ id: 't-1', orgId: 'o-1' }],
+        );
+      }
+      dbMocks.insertResult = [{ id: 'te-1', workTypeId: expected }];
+      const recordAuditMutation = vi.fn();
+      const actor = { ...ACTOR, recordAuditMutation };
+      const body = { ...input, ...(ticket ? { ticketId: 't-1' } : {}) };
+      if (operation === 'create') await createTimeEntry({ ...span, ...body }, actor);
+      else await startTimer(body, actor);
+
+      expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: expected });
+      expect(dbMocks.selectResults).toHaveLength(0);
+      expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ workTypeId: expected }));
+    });
+  });
+
+  it.each(['not_billed', 'billed'])('updates and clears work types on %s entries with audit tracking', async (billingStatus) => {
+    for (const workTypeId of [callerWorkType, null]) {
+      const entry = { id: 'te-1', partnerId: 'p-1', orgId: null, ticketId: null, userId: ACTOR.userId,
+        ...span, isApproved: false, billingStatus, workTypeId: categoryWorkType };
+      dbMocks.selectResults.push([entry]);
+      dbMocks.updateResult = [{ ...entry, workTypeId }];
+      const recordAuditMutation = vi.fn();
+      await updateTimeEntry('te-1', { workTypeId }, { ...ACTOR, recordAuditMutation });
+      expect(dbMocks.updateSetArgs.at(-1)).toMatchObject({ workTypeId, isApproved: false });
+      expect(emitMock).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { changed: ['workTypeId'] } }));
+      expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_entry.updated', workTypeId }));
+    }
+  });
+
+  it.each([
+    { name: 'create', schema: createTimeEntrySchema, body: span },
+    { name: 'start', schema: startTimerSchema, body: {} },
+    { name: 'update', schema: updateTimeEntrySchema, body: { description: 'edited' } },
+  ])('$name schema preserves work type and validates UUIDs', ({ schema, body }) => {
+    for (const workTypeId of [callerWorkType, null]) {
+      expect(schema.parse({ ...body, workTypeId })).toHaveProperty('workTypeId', workTypeId);
+    }
+    expect(schema.parse(body)).not.toHaveProperty('workTypeId');
+    expect(schema.safeParse({ ...body, workTypeId: 'invalid' }).success).toBe(false);
   });
 });
