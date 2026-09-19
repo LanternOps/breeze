@@ -246,12 +246,39 @@ File Manager: the disk-cleanup preview/execute section (`FileManager.tsx` ~`:860
 
 Agent-update-required: a `409 agent_update_required` on either system-cleanup call renders a banner with the minimum version and a link to the agent update action; the panel's Run button is disabled.
 
-## 9. AI tools (W05)
+## 9. AI and MCP tools (W05)
 
-- `disk_cleanup` gains `path` (normalised server-side; default OS root); preview stores a run and execute **must** pass that run's `cleanupRunId` (the tool's own state carries it between the two calls); `paths` capped at 200 like the route; empty-snapshot guard added; run-level audit written like the route.
-- New `system_cleanup` tool: `action: 'list' | 'run'`, `actionIds`, `params`. `list` is Tier 1; `run` is Tier 3 (approval) with rate limit `2 / 3600 s`. Registered in every tool registry — there are two: `aiTools.ts` (registry + `aiToolSchemas.ts`) **and** `aiAgentSdkTools.ts` (`TOOL_TIERS` + `makeHandler`, contract-tested by `agentToolCatalog.contract.test.ts` and `aiGuardrails.agentPrincipal.contract.test.ts`) — plus `aiGuardrails.ts` (tier + rate), `aiAgents/agentToolCatalog.ts`, `aiAgents/actManifest.ts` (action ids only, no free-form argv), `aiToolOutput.ts` (formatter branch, else raw JSON renders), `packages/shared/src/utils/aiToolLabels.ts`, `helperToolFilter.ts` (denied to the Helper), `toolTimeouts.ts` (2 h), web `components/ai-risk/tierConfig.ts` (the user-facing tier/rate matrix — W05 adds a `tierConfig.test.ts` asserting parity with `aiGuardrails.ts` so it stops drifting silently), mobile `toolIndicatorLogic`.
-- `disk_cleanup` is modelled as an unattended `ActTarget` with a byte bound in `aiAgents/actRevalidation.ts` and `actVerify.ts`; making `cleanupRunId` required changes the target shape those re-derive, so both are updated and their tests extended.
-- Built-in "Disk Cleanup" playbook (`builtInPlaybooks.ts`) passes `cleanupRunId` through and adds an optional final `system_cleanup list` step for reporting only (no auto-run).
+One registry feeds three surfaces. `apps/api/src/services/aiTools.ts` is the core tool registry; the in-app AI chat, the AI agents/schedules/playbooks, and the **Breeze MCP server** (`routes/mcpServer.ts` builds `tools/list` from `getToolDefinitions()` and tiers from `getToolTier` + `TIER3_ACTIONS`) all read it. A second, SDK-side registry (`aiAgentSdkTools.ts`: `TOOL_TIERS` + a `tool(...)` declaration per tool) must mirror it and is contract-tested against it. There is no separate MCP tool list, no MCP name registry (`mcpToolNames.ts` is only prefix-stripping and the session allowlist), and no tool-search index to update (verified 2026-09-19).
+
+### 9.1 Tool changes
+
+- **`analyze_disk_usage`** gains `path` (normalised server-side via `normalizeScanPath`; default OS root). `refresh` scans that path; the returned snapshot is the latest **for that path**.
+- **`disk_cleanup`** gains `path`; `preview` returns `cleanupRunId` and the tool's own state carries it, so `execute` **must** pass `cleanupRunId` (the same requirement as the route after W03). `paths` capped at 200 like the route. Empty-snapshot guard (W01) and a run-level audit written like the route's. Tiering unchanged: `preview` Tier 1, `execute` Tier 3.
+- **New `system_cleanup`**: `{ deviceId, action: 'list' | 'run', actionIds?, params? }`. `list` is Tier 1 and returns the §7.3 catalog; `run` is Tier 3 with rate limit `2 / 3600 s` and requires `actionIds ⊆ SYSTEM_CLEANUP_ACTION_IDS`. The handler queues the same commands as the routes (§5.3) and polls to completion within `toolTimeouts` (2 h), so the AI, the route and MCP share one code path. Denied to the Helper.
+
+### 9.2 Behaviour over MCP (verified against `routes/mcpServer.ts`)
+
+- **Tier 3 is a hard deny over MCP, not an approval flow.** `tools/call` computes `max(baseTier, guardrailTier)` and returns `MCP_APPROVAL_REQUIRED` before scope checks, RBAC, ledger or execution. So `disk_cleanup execute` is already unavailable to MCP clients today, and `system_cleanup run` will be too. Both tools stay listed because they are mixed multiplexers: `tools/list` appends "Actions "execute"/"run" require interactive approval" via `gatedActionsForTool`; a wholly Tier 3 tool would be hidden. MCP clients therefore get `analyze_disk_usage`, `disk_cleanup preview`, and `system_cleanup list` — read-only diagnosis — and hand off the destructive step to a tech in the web UI or the in-app chat with approval. This is the intended contract and is stated in `mcp-server.mdx`.
+- **Org resolution** for device-scoped tools comes from `deviceArgs` declared in `aiTools.ts` (`resolveMcpExecutionContext` → `verifyDeviceAccess`); `system_cleanup` declares `deviceArgs: 'deviceId'` or MCP calls fail with `-32602`.
+- **Rate limits** are the same per-tool sliding windows as in-app (`checkToolRateLimit` at the MCP call site) plus the transport limits (`MCP_SSE_RATE_LIMIT_PER_MINUTE`, `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE`); no MCP-specific limit is added.
+- No MCP prompt references disk cleanup today (`mcpGuidance.ts` prompts are fleet-triage, device-investigate, patch-remediate, incident-kickoff, turnkey-setup), so no prompt changes; `MCP_TOOL_COUNT_APPROX` stays within its tolerance test after adding one tool.
+
+### 9.3 Registration checklist (each item is a plan step; the test in parentheses goes red if it is skipped)
+
+1. `aiToolsFilesystem.ts` — `system_cleanup` definition + handler; `disk_cleanup`/`analyze_disk_usage` schema changes. Register the module in `aiTools.ts`.
+2. `aiTools.ts` device-arg / helper-scoping maps — `system_cleanup: 'deviceId'` (`aiTools.deviceArgsCoverage.contract.test.ts`, `aiToolsDeviceScope.contract.test.ts`, `aiToolsDeviceGuard.contract.test.ts`).
+3. `aiToolSchemas.ts` — Zod entries matching `input_schema.properties` exactly, incl. `path` and `cleanupRunId` (`aiToolsRegistryParity.test.ts`, `aiAgentSdkTools.mcpCoverage.test.ts` key parity).
+4. `aiGuardrails.ts` — `TIER3_ACTIONS.system_cleanup = ['run']` (both tables), `TOOL_PERMISSIONS`, `RATE_LIMIT_CONFIGS` (`aiToolPermissionsCatalogParity.contract.test.ts`, `aiGuardrails.agentPrincipal.contract.test.ts`).
+5. `aiAgentSdkTools.ts` — `TOOL_TIERS` entry + `tool('system_cleanup', …, makeHandler(...))` (`aiAgentSdkTools.registryParity.contract.test.ts`, `aiAgentSdkTools.handlerCoverage.contract.test.ts`, `aiAgentSdkTools.mcpCoverage.test.ts`).
+6. `toolTimeouts.ts` (2 h), `aiToolOutput.ts` (compaction branch for the catalog/run result), `aiAgentSystemPrompt.ts` "Files & Disk" tool list.
+7. `aiAgents/agentToolCatalog.ts` — capability `files_disk` (`agentToolCatalog.contract.test.ts`: every registered headless tool maps to a capability); not added to any `AGENT_KIND_PRESETS` default.
+8. `aiAgents/actManifest.ts` — **no** `ActOperation` for `system_cleanup` (it is never unattended-eligible; the contract test's `unreachableTools`/`actEligible` derivation is updated accordingly). `disk_cleanup`'s existing `ActOperation`, `actRevalidation.ts`, `actVerify.ts` and `playbookActExecutor.ts` are updated for the required `cleanupRunId` and the `path` field.
+9. `impactFixTools.ts` — `system_cleanup` is **not** an impact-fix tool (measured freed bytes are reported on the run, not attributed as a fix) — recorded as a decision, not an omission.
+10. `helperToolFilter.ts` — omitted from `BASIC_/STANDARD_/EXTENDED_TOOLS` (denied to the Helper); `helperAiAgent.ts` prompt hint unchanged.
+11. `builtInPlaybooks.ts` — the built-in "Disk Cleanup" playbook passes `cleanupRunId` through and gains an optional final `system_cleanup list` step (reporting only, no auto-run); `playbookActExecutor.ts` classification updated.
+12. Web `components/ai-risk/tierConfig.ts` rows + `RATE_LIMIT_CONFIGS` + permission maps, `ApprovalHistoryFeed.tsx` label, and the three action-label keys in all 8 `apps/web/src/locales/*/settings.json` (`aiGuardrailsTierConfig.parity.test.ts`).
+13. Docs — `features/ai.mdx` tier and rate tables (**test-enforced** by `aiGuardrailsAiDocs.parity.test.ts`), `features/mcp-server.mdx` "File and disk tools" table + per-tool rate-limit table + a sentence on the Tier 3 hard-deny contract, `apps/api/src/data/docsIndex.json` regenerated.
+14. Mobile — nothing: tool labels are derived by verb (`packages/shared/src/utils/aiToolLabels.ts`) and `toolIndicatorLogic` is status-only (verified; `system_cleanup` derives to a sensible label, asserted by one added case in `aiToolLabels.test.ts`).
 
 ## 10. Safety model
 
