@@ -29,9 +29,9 @@ for lbl in $LABELS; do echo "$lbl: $($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 
 say "expire the rows (system scope)"
 psql "select set_config('breeze.scope','system',false); update backup_snapshots set expires_at = now() - interval '1 hour' where id in ($IDS); select count(*) from backup_snapshots where id in ($IDS) and expires_at < now()"
 
-say "run GC"
-$L gc; sleep 90
-docker logs --since 3m "$LAB_API_CONTAINER" 2>&1 | grep -i -E 'cleanup|retention|sweep|deleted|unreferenced|expired' | grep -v -i debug | head -12 | cut -c1-240
+say "run GC twice: pass 1 retires + deletes, pass 2 confirms the emptied prefixes (swept_at is set one pass later by design)"
+$L gc; sleep 60; $L gc; sleep 30
+docker logs --since 2m "$LAB_API_CONTAINER" 2>&1 | grep -i -E 'cleanup|retention|sweep|deleted|unreferenced|expired' | grep -v -i debug | head -12 | cut -c1-240
 
 say "after: rows + objects"
 psql "select id, snapshot_id, file_count, expires_at from backup_snapshots where id in ($IDS)" || true

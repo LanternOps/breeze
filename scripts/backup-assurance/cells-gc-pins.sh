@@ -66,11 +66,11 @@ fi
 
 if [ "$WHICH" != r5 ]; then
 say "R6 setup: 256 MiB of new data, egress throttled to ${LAB_R6_RATE:-12mbit} so the upload outlasts the publish window"
-$S/vmssh 'head -c 268435456 /dev/urandom > ~/assure/src/sizes/d18-lease.bin; IF=$(ip -o route get 192.168.0.60 | sed -n "s/.* dev \([^ ]*\).*/\1/p"); sudo tc qdisc replace dev $IF root tbf rate '"${LAB_R6_RATE:-12mbit}"' burst 64kbit latency 400ms; tc qdisc show dev $IF | head -1' 2>/dev/null
+$S/vmssh 'head -c 268435456 /dev/urandom > ~/assure/src/sizes/d18-lease.bin; IF=$(ip -o route show default | sed -n "s/.* dev \([^ ]*\).*/\1/p" | head -1); sudo tc qdisc replace dev $IF root tbf rate '"${LAB_R6_RATE:-12mbit}"' burst 64kbit latency 400ms; tc qdisc show dev $IF | head -1' 2>/dev/null
 JOB=$($L run "$DEV" | head -1); echo "job $JOB"; sleep 3
 psql "select id, status, base_snapshot_id, publish_lease_expires_at, now() as now, ceil(extract(epoch from (publish_lease_expires_at - now()))) - ${LAB_HELPER_PUBLISH_MARGIN_S:-3600} as publish_window_s from backup_jobs where id='$JOB'"
 $L wait-job "$JOB" 1500 | jq -c '{id,status,snapshotId,totalSize,transferredSize,completedAt,errorLog:(.errorLog|tostring|.[:300])}'
-$S/vmssh 'IF=$(ip -o route get 192.168.0.60 | sed -n "s/.* dev \([^ ]*\).*/\1/p"); sudo tc qdisc del dev $IF root; rm -f ~/assure/src/sizes/d18-lease.bin' 2>/dev/null
+$S/vmssh 'IF=$(ip -o route show default | sed -n "s/.* dev \([^ ]*\).*/\1/p" | head -1); sudo tc qdisc del dev $IF root; rm -f ~/assure/src/sizes/d18-lease.bin' 2>/dev/null
 read -r STATUS LBL <<<"$(psql "select status, coalesce(snapshot_id,'') from backup_jobs where id='$JOB'" | tr '|' ' ')"
 ERRLOG=$(psql "select error_log from backup_jobs where id='$JOB'")
 [ "$STATUS" = failed ] || { echo "FAIL R6: job ended '$STATUS', expected failed"; FAIL=1; }
