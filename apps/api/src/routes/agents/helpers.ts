@@ -45,6 +45,8 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
+  claimFilesystemScanGeneration,
+  setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
   parseFilesystemAnalysisStdout,
@@ -78,6 +80,8 @@ import {
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
 import {
+  normalizeScanPath,
+  osRootScanPath,
   isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
   resolveInheritedAgentVersionPins,
@@ -1515,19 +1519,12 @@ export async function handleCisCommandResult(
 // ============================================
 
 /**
- * W02 Task 6 transitional pin. The handler has no OS in scope yet (plan
- * amendment 6), and before this wave every snapshot and every scan-state row
- * was device-keyed with no path — which is exactly `'/'` for POSIX devices and
- * `'C:\'` for Windows ones. Task 11 reads `devices.os_type` and replaces this
- * with the normalised `command.payload.path`. Until then the POSIX root
- * preserves today's single-stream behaviour for the majority case and Task 11
- * lands in the same PR, so no deployment ever sees this value.
+ * The volume a threshold-triggered scan targets: the device's OS root, in the
+ * same normalised form every other producer uses, so the result handler keys
+ * its snapshot on the key a `GET /filesystem` with no `?path=` reads back.
  */
-const W02_TRANSITIONAL_SCAN_PATH = '/';
-
 export function getFilesystemThresholdScanPath(osType: unknown): string {
-  if (osType === 'windows') return 'C:\\';
-  return '/';
+  return osRootScanPath(osType);
 }
 
 export async function maybeQueueThresholdFilesystemAnalysis(
@@ -1573,7 +1570,7 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   }
 
   const path = getFilesystemThresholdScanPath(device.osType);
-  await db.insert(deviceCommands).values({
+  const [thresholdCommand] = await db.insert(deviceCommands).values({
     deviceId: device.id,
     type: filesystemAnalysisCommandType,
     payload: {
@@ -1592,7 +1589,11 @@ export async function maybeQueueThresholdFilesystemAnalysis(
       followSymlinks: false,
     },
     status: 'pending',
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (thresholdCommand) {
+    await setFilesystemScanGeneration(device.id, path, thresholdCommand.id);
+  }
 
   return {
     queued: true,
@@ -1626,20 +1627,66 @@ export async function handleFilesystemAnalysisCommandResult(
   }
 
   // orgId comes from the caller's agent-auth context, which already resolved
-  // the device's org — no need to re-query devices here.
+  // the device's org — no need to re-query it here. The OS, however, is not in
+  // that context (AgentAuthContext carries no OS), and the scan-path key is
+  // OS-dependent: guessing POSIX would key every Windows device on '/' and
+  // recreate the very defect this wave closes. One indexed primary-key lookup.
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+
+  if (!deviceRow) {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} has no devices row for ${command.deviceId}; no snapshot written`
+    );
+    return;
+  }
+
+  const osType = deviceRow.osType;
+  // Every producer (the scan route, the AI tool, the threshold queue) already
+  // sends the normalised form; normalising again is what makes an in-flight
+  // command queued by the PREVIOUS release land on the right key too.
+  const scanPath = normalizeScanPath(osType, asString(payload.path) ?? osRootScanPath(osType));
+
+  // Claim this volume's scan generation BEFORE anything is written (spec §13
+  // #18). `claimed` is the only outcome that owns the row; `absent` applies
+  // anyway rather than losing a completed scan to a bookkeeping row that does
+  // not exist yet. `superseded` and `already_applied` are dropped, which is
+  // what makes application exclusive and idempotent.
+  const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+  if (claim === 'superseded' || claim === 'already_applied') {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}, path ${scanPath}) dropped: ${claim}`
+    );
+    return;
+  }
 
   // The scan-state read and the disk-usage read are independent; run them
   // together. The disk figure is only consumed by the scan-state upsert below.
   const [currentState, diskRows] = await Promise.all([
-    getFilesystemScanState(command.deviceId, W02_TRANSITIONAL_SCAN_PATH),
+    getFilesystemScanState(command.deviceId, scanPath),
     db
-      .select({ usedPercent: deviceDisks.usedPercent })
+      .select({
+        mountPoint: deviceDisks.mountPoint,
+        usedPercent: deviceDisks.usedPercent,
+      })
       .from(deviceDisks)
       .where(eq(deviceDisks.deviceId, command.deviceId))
-      .limit(1),
+      .limit(64),
   ]);
+
+  // Defect 8: match the SCANNED volume's own disk row. The old code took
+  // `LIMIT 1` — an arbitrary row — so a `D:\` scan recorded `C:`'s 80% as D's
+  // baseline and every later `D:\` scan read a huge delta and forced a full
+  // rescan. No match means no figure, which means the next scan takes a
+  // baseline rather than comparing against an unrelated disk.
+  const matchedDisk = diskRows.find(
+    (disk) => normalizeScanPath(osType, disk.mountPoint) === scanPath
+  );
   const currentDiskUsedPercent =
-    typeof diskRows[0]?.usedPercent === 'number' ? diskRows[0].usedPercent : null;
+    typeof matchedDisk?.usedPercent === 'number' ? matchedDisk.usedPercent : null;
 
   const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
   const mergedPayload = scanMode === 'baseline'
@@ -1660,7 +1707,7 @@ export async function handleFilesystemAnalysisCommandResult(
       scanMode,
     };
 
-  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, W02_TRANSITIONAL_SCAN_PATH, snapshotPayload);
+  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, scanPath, snapshotPayload);
 
   const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
   const mergedHotDirectories = Array.from(
@@ -1678,7 +1725,7 @@ export async function handleFilesystemAnalysisCommandResult(
   // forced every subsequent scan back to a full baseline and defeated the
   // incremental hot-directory path.
   const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
-  await upsertFilesystemScanState(command.deviceId, orgId, W02_TRANSITIONAL_SCAN_PATH, {
+  await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
     lastRunMode: scanMode,
     lastBaselineCompletedAt: baselineCompleted
       ? new Date()
@@ -1710,6 +1757,8 @@ export async function handleFilesystemAnalysisCommandResult(
       and(
         eq(deviceCommands.deviceId, command.deviceId),
         eq(deviceCommands.type, filesystemAnalysisCommandType),
+        // Only a scan of this volume suppresses its continuation.
+        sql`${deviceCommands.payload}->>'path' = ${scanPath}`,
         sql`${deviceCommands.status} IN ('pending', 'sent')`
       )
     )
@@ -1721,6 +1770,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const nextPayload: Record<string, unknown> = {
     ...(isObject(payload) ? payload : {}),
+    path: scanPath,
     scanMode: 'baseline',
     checkpoint: { pendingDirs },
     autoContinue: true,
@@ -1738,16 +1788,21 @@ export async function handleFilesystemAnalysisCommandResult(
     }
   );
   if (queued.command) {
+    await setFilesystemScanGeneration(command.deviceId, scanPath, queued.command.id);
     return;
   }
 
-  await db.insert(deviceCommands).values({
+  const [fallbackCommand] = await db.insert(deviceCommands).values({
     deviceId: command.deviceId,
     type: filesystemAnalysisCommandType,
     payload: nextPayload,
     status: 'pending',
     createdBy: command.createdBy,
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (fallbackCommand) {
+    await setFilesystemScanGeneration(command.deviceId, scanPath, fallbackCommand.id);
+  }
 }
 
 export function extractHotDirectoriesFromSnapshotPayload(payload: Record<string, unknown>, limit: number): string[] {

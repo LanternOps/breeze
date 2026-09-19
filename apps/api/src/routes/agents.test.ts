@@ -43,6 +43,8 @@ vi.mock('../services/partnerDeviceCapacity', () => ({
   PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
 }));
 vi.mock('../services/filesystemAnalysis', () => ({
+  claimFilesystemScanGeneration: vi.fn(async () => 'claimed'),
+  setFilesystemScanGeneration: vi.fn(),
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
   getFilesystemScanState: vi.fn(() => Promise.resolve(null)),
