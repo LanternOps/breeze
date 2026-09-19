@@ -22,7 +22,7 @@
     "playwright": "^1.63.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.1",
     "werift": "^0.24.4"
   },
   "pnpm": {
