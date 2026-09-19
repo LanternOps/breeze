@@ -75,9 +75,15 @@ export default function ScriptsPage() {
   const targetKey = isPartner ? importTarget : (currentOrgId ?? 'organization');
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
 
-  const fetchScripts = useCallback(async () => {
+  const fetchScripts = useCallback(async (opts: { silent?: boolean } = {}) => {
     try {
-      setLoading(true);
+      // `silent` skips the full-page loading state for a background refetch
+      // (e.g. the list refresh after a bundle import) — flipping `loading`
+      // true unmounts the whole page body, including any open modal, which
+      // discards that modal's own state (#6005: the bundle-import success
+      // screen reset to the blank picker because its parent's own refetch
+      // tore it down mid-flight).
+      if (!opts.silent) setLoading(true);
       setError(undefined);
       // #3301 — walk every page. A bare `/scripts` returns only the first 50,
       // and this page has no pagination controls, so script 51+ was simply
@@ -98,7 +104,7 @@ export default function ScriptsPage() {
       }
       setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
     } finally {
-      setLoading(false);
+      if (!opts.silent) setLoading(false);
     }
   }, [t]);
 
@@ -475,7 +481,7 @@ export default function ScriptsPage() {
         <ScriptBundleImportModal
           isOpen={true}
           onClose={handleCloseModal}
-          onImported={() => void fetchScripts()}
+          onImported={() => void fetchScripts({ silent: true })}
         />
       )}
 
