@@ -1,9 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // §13 row 9. filesystem_analysis is dispatched with preferHeartbeat: false, so
 // its result normally arrives over the WebSocket — and the WS leg dispatches
 // ONLY this registry. Without an entry here the scan completes, the agent's
 // payload is discarded, and the Disk Cleanup tab stays empty with no error.
+
+const read = (p: string) => readFileSync(join(__dirname, p), 'utf8');
+
+/**
+ * Extract the literal entries of a `const <name> = new Set([...])` declaration
+ * from source. Copied from scriptCancellation.registration.test.ts — see that
+ * file for why this is a source-text extraction rather than an import: the Set
+ * is module-private in a route file whose static import graph is deliberately
+ * too heavy for a unit test to pull in.
+ */
+function setLiteralEntries(source: string, name: string): string[] {
+  const start = source.indexOf(`const ${name} = new Set([`);
+  if (start === -1) throw new Error(`${name} declaration not found — did it move or get renamed?`);
+  const stripped = source.slice(source.indexOf('[', start) + 1).replace(/\/\/[^\n]*/g, '');
+  const close = stripped.indexOf(']');
+  if (close === -1) throw new Error(`${name} literal is not a single flat array`);
+  const entries = [...stripped.slice(0, close).matchAll(/'([^']+)'/g)].map(m => m[1]!);
+  if (entries.length === 0) throw new Error(`${name} parsed to zero entries — the extractor is broken, not the list`);
+  return entries;
+}
 
 vi.mock('../routes/agents/helpers', () => ({
   handleFilesystemAnalysisCommandResult: vi.fn(async () => {}),
@@ -26,6 +48,15 @@ import { handleFilesystemAnalysisCommandResult } from '../routes/agents/helpers'
 describe('filesystem_analysis result handler registration', () => {
   it('is registered, so the WebSocket leg persists the snapshot', () => {
     expect(commandResultHandlers['filesystem_analysis']).toBeTypeOf('function');
+  });
+
+  // §13 row 9's fix is specifically that the WS leg (this registry) handles
+  // filesystem_analysis. It is dispatched with preferHeartbeat: false, so it
+  // must stay OFF the HTTP-polling registry too — being in both would run the
+  // result handler twice for an HTTP-polling agent (double snapshot writes).
+  it('is not ALSO in REGISTRY_DISPATCHED_COMMAND_TYPES (HTTP-polling leg)', () => {
+    const entries = setLiteralEntries(read('../routes/agents/commands.ts'), 'REGISTRY_DISPATCHED_COMMAND_TYPES');
+    expect(entries).not.toContain('filesystem_analysis');
   });
 
   it('forwards the command and the device org to the existing handler', async () => {
