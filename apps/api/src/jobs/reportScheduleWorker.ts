@@ -64,6 +64,7 @@ import {
   resolveTimezoneFromRows,
 } from '../services/portal/timezone';
 import { captureException } from '../services/sentry';
+import { dateFromOffsetlessDbTimestamp } from '../utils/offsetlessTimestamp';
 import { attachWorkerObservability } from './workerObservability';
 import {
   decodeSiteScope,
@@ -117,6 +118,33 @@ type DueCandidate = {
   config: Record<string, unknown>;
   timeZone: string;
 };
+
+/**
+ * Whether a schedule's `lastGeneratedAt` is older than the occurrence keyed by
+ * `occurrenceKey`, exported as a pure seam so the offsetless-timestamp
+ * correction below can be asserted directly under a pinned non-UTC TZ
+ * (#4059 gap 2 / `vitest.config.tz.ts`) without a database.
+ */
+export function isReportOccurrenceDue(
+  lastGeneratedAt: Date | null,
+  occurrenceKey: number,
+  timeZone: string,
+): boolean {
+  // `reports.last_generated_at` is `timestamp(...)` with no `withTimezone`, so
+  // the driver hands us the UTC wall clock re-read as this process's local
+  // time (#4059 gap 2 — see utils/offsetlessTimestamp.ts). `isDue` then reads
+  // wall-clock parts off that Date in the org's zone, so without the
+  // correction the comparison is wrong by the API host's offset: east of UTC
+  // an occurrence that already ran re-fires (duplicate report delivery), west
+  // of UTC one that has not run is suppressed (silently missed report).
+  // The RAW value still flows to `buildOccurrenceClaimCas` — that comparison
+  // happens in SQL against the column itself and must not be corrected.
+  return isDue(
+    lastGeneratedAt ? dateFromOffsetlessDbTimestamp(lastGeneratedAt) : null,
+    occurrenceKey,
+    timeZone,
+  );
+}
 
 function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
   const raw = config.schedule;
@@ -216,7 +244,7 @@ export async function findDueReports(
       timeZone: resolveTimezoneFromRows(row.orgSettings, row.partnerTimezone, row.partnerSettings),
     };
     const key = lastOccurrenceKey(now, candidate.schedule, scheduleConfigOf(candidate.config), candidate.timeZone);
-    if (isDue(candidate.lastGeneratedAt, key, candidate.timeZone)) {
+    if (isReportOccurrenceDue(candidate.lastGeneratedAt, key, candidate.timeZone)) {
       due.push({ id: candidate.id, occurrenceKey: key, lastGeneratedAt: candidate.lastGeneratedAt });
     }
   }
@@ -574,6 +602,16 @@ export async function processRunScheduledReport(
           return { name: null, logoDataUrl: null, logoAspect: null };
         });
 
+        // The scheduled report IS a customer deliverable — partner lane,
+        // `general` stream (spec §8.2). Every job in this worker runs inside
+        // runWithSystemDbAccess, so this is a plain system-context read of an
+        // org row the job already owns.
+        const [orgRow] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, report.orgId))
+          .limit(1);
+
         await emailReportRun({
           reportName: report.name,
           reportType: report.type,
@@ -585,6 +623,7 @@ export async function processRunScheduledReport(
           trendLine: trendLineOf(result),
           timezone: timeZone,
           branding,
+          partnerId: orgRow?.partnerId ?? null,
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.

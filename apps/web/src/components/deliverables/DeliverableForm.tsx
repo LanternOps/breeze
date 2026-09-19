@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { CreateDeliverableInput, UpdateDeliverableInput } from '@breeze/shared';
+import { MANAGED_EVIDENCE_REPORT_TYPES, type CreateDeliverableInput, type UpdateDeliverableInput } from '@breeze/shared';
 import {
   createDeliverable,
   updateDeliverable,
@@ -16,6 +16,13 @@ import { runClientAction } from '../../lib/runClientAction';
 
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
+
+/** Minimal shape read off `/reports` rows — full `Report` type lives in
+ *  ReportsList.tsx, which this form does not otherwise depend on. */
+interface EvidenceReportOption {
+  id: string;
+  name: string;
+}
 
 export interface DeliverableFormProps {
   fetcher: Fetcher;
@@ -48,6 +55,7 @@ interface FormState {
   graceDays: string;
   artifactRequired: boolean;
   completionMode: DeliverableCompletionMode;
+  autoEvidenceReportId: string;
   portalVisible: boolean;
   sortOrder: string;
   /** #5808 W03 — internal runbook prose. Never shown to the customer. */
@@ -75,6 +83,7 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
       graceDays: String(initial.graceDays),
       artifactRequired: initial.artifactRequired,
       completionMode: initial.completionMode,
+      autoEvidenceReportId: initial.autoEvidenceReportId ?? '',
       portalVisible: initial.portalVisible,
       sortOrder: String(initial.sortOrder),
       instructions: initial.instructions ?? '',
@@ -94,6 +103,7 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
     graceDays: '14',
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
+    autoEvidenceReportId: '',
     portalVisible: true,
     sortOrder: '0',
     instructions: '',
@@ -127,6 +137,7 @@ export default function DeliverableForm({
   const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [evidenceReports, setEvidenceReports] = useState<EvidenceReportOption[]>([]);
   // #5808 W03 — the checklist-template picker. A failed load must not block
   // the form: it just falls back to offering only "None" (no toast — this is
   // a picker convenience, not a mutation).
@@ -160,6 +171,46 @@ export default function DeliverableForm({
   const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
+  // Managed evidence definitions this org could link a deliverable to. The
+  // tuple was empty in W01 and each later wave (W02 threat_detection_review,
+  // W03 endpoint_management_review, ...) appends one type; once it is
+  // non-empty this fetches /reports for real. Auto-evidence is optional, so a
+  // failed fetch falls back to the empty-list state rather than blocking the
+  // form (it can still be saved with no linked report).
+  //
+  // The widening cast is load-bearing: `MANAGED_EVIDENCE_REPORT_TYPES` is a
+  // literal tuple, so once it has members TypeScript narrows `.length` to its
+  // literal count and `=== 0` becomes a ts(2367) "no overlap" error. The guard
+  // itself must stay — the tuple can legitimately be empty again if every type
+  // is retired.
+  useEffect(() => {
+    // Widened: the tuple is non-empty from #5784 W04 on, so a literal-typed
+    // comparison would be a tsc error rather than the runtime guard it is.
+    if ((MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetcher(`/reports?orgId=${encodeURIComponent(orgId)}`, { orgIdOverride: orgId });
+        if (!res.ok) throw new Error('failed to load reports');
+        const body = (await res.json()) as { data?: unknown };
+        const rows = Array.isArray(body.data) ? (body.data as Array<Record<string, unknown>>) : [];
+        const managed = (MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]);
+        const filtered = rows.filter(
+          (r) => r.portalSelfService === true && typeof r.type === 'string' && managed.includes(r.type),
+        );
+        if (!cancelled) {
+          setEvidenceReports(filtered.map((r) => ({ id: String(r.id), name: String(r.name) })));
+        }
+      } catch (err) {
+        console.error('[DeliverableForm] failed to load managed evidence reports', err);
+        if (!cancelled) setEvidenceReports([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetcher, orgId]);
+
   const resolvedContractId = (): string | null | undefined => {
     if (fixedContractId) return fixedContractId;
     if (showContractPicker) return form.contractId || null;
@@ -183,6 +234,7 @@ export default function DeliverableForm({
         graceDays: intOr(form.graceDays, 14),
         artifactRequired: form.artifactRequired,
         completionMode: form.completionMode,
+        autoEvidenceReportId: form.autoEvidenceReportId ? form.autoEvidenceReportId : null,
         portalVisible: form.portalVisible,
         sortOrder: intOr(form.sortOrder, 0),
         instructions: form.instructions.trim() || null,
@@ -368,6 +420,34 @@ export default function DeliverableForm({
             onChange={(e) => set('sortOrder', e.target.value)}
           />
         </div>
+      </div>
+      <div>
+        <label htmlFor={id('autoEvidenceReport')} className={labelClass}>{t('form.autoEvidenceReport')}</label>
+        <select
+          id={id('autoEvidenceReport')}
+          className={inputClass}
+          value={form.autoEvidenceReportId}
+          onChange={(e) => set('autoEvidenceReportId', e.target.value)}
+          disabled={evidenceReports.length === 0 && !form.autoEvidenceReportId}
+          data-testid="deliverable-auto-evidence-report"
+        >
+          <option value="">{t('form.autoEvidenceNone')}</option>
+          {evidenceReports.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+          {/* A link set elsewhere (backfill script, AI tool) whose definition is
+              not in the managed list must stay selectable, or a save would show
+              "None" while silently keeping the id. */}
+          {form.autoEvidenceReportId && !evidenceReports.some((r) => r.id === form.autoEvidenceReportId) && (
+            <option value={form.autoEvidenceReportId}>{form.autoEvidenceReportId}</option>
+          )}
+        </select>
+        <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
+        {evidenceReports.length === 0 && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="deliverable-auto-evidence-empty">
+            {t('form.autoEvidenceEmpty')}
+          </p>
+        )}
       </div>
       <div className="space-y-1.5">
         <label className="flex items-center gap-2 text-sm">

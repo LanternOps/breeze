@@ -49,8 +49,12 @@
   "deciding": "Enviando…",
   "expiresIn": "Vence en {{minutes}} min",
   "expiresSoon": "Vence en menos de un minuto",
+  "expiresInHours": "Vence en {{hours}} h",
+  "expiresInDays": "Vence en {{days}} días",
   "expired": "Vencida",
   "unknownOrganization": "Organización desconocida",
+  "intentNoLongerPending": "Esa aprobación ya no está pendiente.",
+  "dismiss": "Descartar",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "Se aprobó {{action}} para {{org}}",
   "pagination": {
@@ -62,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Registra un dispositivo de aprobación en tu perfil y vuelve a intentarlo.",
     "notSoleApprover": "Otra persona autorizada debe decidir sobre esta solicitud.",
+    "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, por lo que otra persona autorizada debe decidir sobre esta solicitud.",
     "verificationFailed": "La verificación se canceló o falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",
     "expired": "Esta solicitud venció antes de que se pudiera decidir.",
@@ -86,5 +91,25 @@
       "approvedPromoteFailed": "Aprobado, pero no se pudo enviar la solicitud de preautorización. Inténtalo de nuevo desde la configuración del agente.",
       "policyDecideDisabled": "Aprobado. No se pudo solicitar la preautorización porque está desactivada para esta implementación."
     }
-  }
+  },
+  "recent": {
+    "title": "Recientes",
+    "subtitle": "Ya decididas o finalizadas",
+    "loading": "Cargando aprobaciones recientes…",
+    "error": "No se pudieron cargar las aprobaciones recientes.",
+    "retry": "Reintentar",
+    "empty": "No ha finalizado nada recientemente.",
+    "status": {
+      "failed": "Falló",
+      "rejected": "Rechazada",
+      "expired": "Expirada",
+      "cancelled": "Cancelada",
+      "completed": "Completada",
+      "denied": "Denegada",
+      "approved": "Aprobada",
+      "reported": "Reportada",
+      "unknown": "Desconocido"
+    }
+  },
+  "proposedByAgentExecuteNotice": "Aprobar esto lo ejecuta ahora mismo, no es una simulación, ni siquiera en modo sombra."
 }

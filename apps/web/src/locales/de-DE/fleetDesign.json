@@ -33,11 +33,34 @@
       "maxConcurrentDesignRuns": "Für diese Organisation läuft bereits ein Flottendesign-Lauf.",
       "designRate": "Diese Organisation hat ihr aktuelles Limit für Flottendesign-Läufe erreicht.",
       "duplicate": "Ein passender Flottendesign-Lauf wurde bereits angefordert.",
-      "generic": "Der Lauf wurde nicht gestartet ({{reason}})."
+      "generic": "Der Lauf wurde nicht gestartet ({{reason}}).",
+      "noDesignerAgent": "Für den Partner dieser Organisation gibt es noch keinen Fleet-Designer-Agenten."
     },
     "fileAsDocument": "Als Dokument ablegen",
     "fileAsDocumentSuccess": "Design in der Dokumentbibliothek abgelegt.",
-    "fileAsDocumentError": "Das Design konnte nicht als Dokument abgelegt werden."
+    "fileAsDocumentError": "Das Design konnte nicht als Dokument abgelegt werden.",
+    "designerSetup": {
+      "status": {
+        "missing": "Es gibt noch keinen Fleet-Designer-Agenten.",
+        "off": "Der Fleet-Designer-Agent ist ausgeschaltet.",
+        "disabled": "Der Fleet-Designer-Agent ist deaktiviert.",
+        "killSwitchOff": "KI-Agenten sind derzeit plattformweit ausgeschaltet."
+      },
+      "enableHint": "Hier aktivieren. Der Designer liest nur Ihre Flotte und schreibt ein Design; er ändert nie ein Gerät.",
+      "askPartnerAdmin": "Bitten Sie einen Partner-Administrator, den Fleet-Designer-Agenten unter Einstellungen → KI-Agenten zu aktivieren.",
+      "killSwitchHint": "Das ist eine Plattformeinstellung; nichts auf dieser Seite kann sie ändern.",
+      "enableButton": "Fleet Designer aktivieren",
+      "enableSuccess": "Fleet Designer aktiviert.",
+      "enableError": "Fleet Designer konnte nicht aktiviert werden.",
+      "errors": {
+        "partnerScopeRequired": "Nur ein Partner-Administrator kann den Fleet-Designer-Agenten aktivieren.",
+        "partnerAdminRequired": "Nur ein Partner-Administrator kann den Fleet-Designer-Agenten aktivieren.",
+        "killSwitchOff": "KI-Agenten sind derzeit plattformweit ausgeschaltet.",
+        "agentKindExists": "Ein Designer-Agent existiert bereits. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+        "actPrerequisitesNotMet": "Der Designer-Agent braucht einen Empfänger, bevor er laufen kann. Fügen Sie einen unter Einstellungen → KI-Agenten hinzu.",
+        "invalidRecipients": "Ihr Konto konnte nicht als Empfänger des Designers gesetzt werden. Fügen Sie einen unter Einstellungen → KI-Agenten hinzu."
+      }
+    }
   },
   "sections": {
     "found": "Was gefunden wurde",
@@ -130,5 +153,21 @@
       "scope": "Funktion / Richtlinie",
       "detail": "Einzelheit"
     }
+  },
+  "evidence": {
+    "notMeasured": "Nicht gemessen",
+    "org": "Organisationsdaten",
+    "devices": "Geräte",
+    "software": "Softwareinventar",
+    "services": "Systemdienste",
+    "network": "Netzwerkdaten",
+    "posture": "Sicherheitslage",
+    "health": "Flottenzustand",
+    "configuration": "Konfiguration",
+    "automation": "Automatisierungsdaten",
+    "logs": "Ereignisprotokolle",
+    "counts": "Aktivitätszahlen",
+    "precursors": "Frühwarnindikatoren",
+    "drift": "Abweichungen vom genehmigten Entwurf"
   }
 }

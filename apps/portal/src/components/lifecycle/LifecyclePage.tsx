@@ -54,6 +54,7 @@ function LifecycleHeader({
 export function LifecyclePage({
   initialRun,
   initialSummary,
+  initialContact = null,
   // Defaults true (matching LifecyclePlanTable's own default) so an omitted
   // prop keeps the pre-#5880 link behavior for any caller that hasn't
   // threaded the flag through yet.
@@ -62,6 +63,7 @@ export function LifecyclePage({
 }: {
   initialRun: LifecycleRun | null;
   initialSummary: HardwareLifecycleSummary | null;
+  initialContact?: HardwareLifecyclePortalLatestDto['contact'];
   enableSelfService?: boolean;
   /** Rendered as a tab panel under DevicesPage's H1: the page header
    *  steps down to a section heading so the page keeps one title. */
@@ -69,6 +71,7 @@ export function LifecyclePage({
 }) {
   const [run, setRun] = useState<LifecycleRun | null>(initialRun);
   const [summary, setSummary] = useState<HardwareLifecycleSummary | null>(initialSummary);
+  const [contact, setContact] = useState(initialContact);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -97,6 +100,7 @@ export function LifecyclePage({
       const payload = latest.data as HardwareLifecyclePortalLatestDto;
       setRun(payload.run);
       setSummary(payload.summary);
+      setContact(payload.contact ?? null);
     } else {
       setMessage(latest.error ?? 'Could not load your hardware lifecycle plan.');
     }
@@ -168,14 +172,7 @@ export function LifecyclePage({
       )}
 
       <LifecycleRecommendations summary={{ recommendations: summary?.recommendations, other: summary?.other }} />
-      {/* Contact info for the closing line is not yet in the
-          GET /reports/lifecycle/latest payload (apps/api's
-          HardwareLifecyclePortalLatestDto carries only run + summary) — no
-          plumbing exists yet to pass a partner contact through this route.
-          LifecycleClosing already renders nothing without an email, so this
-          section is silent until that follow-up wires contactEmail/contactName
-          through. */}
-      <LifecycleClosing contactEmail={null} contactName={null} />
+      <LifecycleClosing contactEmail={contact?.email} contactName={contact?.name} />
     </div>
   );
 }

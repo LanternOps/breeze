@@ -27,7 +27,11 @@ import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
 } from '../jobs/peripheralJobs';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -166,6 +170,12 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(peripheralEvents.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const peripheralDeviceCondition = deviceScopeCondition(auth, peripheralEvents.deviceId);
+      if (peripheralDeviceCondition) conditions.push(peripheralDeviceCondition);
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
       const rows = await db

@@ -19,15 +19,26 @@ vi.mock('../db', () => ({
 }));
 
 const resolveSiteAllowedDeviceIds = vi.fn(async () => null as string[] | null);
-vi.mock('./aiToolsSiteScope', () => ({
-  resolveSiteAllowedDeviceIds: (...a: unknown[]) => resolveSiteAllowedDeviceIds(...(a as [])),
-  SITE_SCOPE_EMPTY_NOTE: '',
-}));
+vi.mock('./aiToolsSiteScope', async (importOriginal) => {
+  // Partial mock: `buildAgentLogConditions` also calls `deviceScopeCondition`
+  // (the exact-device axis, #6096 RC3), and a hand-listed mock silently breaks
+  // every time that module grows an export.
+  const actual = await importOriginal<typeof import('./aiToolsSiteScope')>();
+  return {
+    ...actual,
+    resolveSiteAllowedDeviceIds: (...a: unknown[]) => resolveSiteAllowedDeviceIds(...(a as [])),
+    SITE_SCOPE_EMPTY_NOTE: '',
+  };
+});
 
 const generateDeviceInventoryReport = vi.fn();
+const readDeviceInventoryRows = vi.fn(async (..._args: unknown[]) => [{ deviceId: 'd1' }]);
+const readSoftwareInventoryRows = vi.fn(async (..._args: unknown[]) => [{ softwareName: 'App' }]);
 vi.mock('./reportGenerationService', () => ({
   generateDeviceInventoryReport: (...a: unknown[]) => generateDeviceInventoryReport(...a),
   generateSoftwareInventoryReport: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+  readDeviceInventoryRows: (...args: unknown[]) => readDeviceInventoryRows(...args),
+  readSoftwareInventoryRows: (...args: unknown[]) => readSoftwareInventoryRows(...args),
 }));
 vi.mock('./aiToolsFleet', () => ({ aiLiveReportAuthority: async () => ({ scope: { kind: 'live_v1' } }) }));
 
@@ -60,6 +71,8 @@ describe('dataset adapters', () => {
     resolveSiteAllowedDeviceIds.mockReset();
     resolveSiteAllowedDeviceIds.mockResolvedValue(null);
     generateDeviceInventoryReport.mockReset();
+    readDeviceInventoryRows.mockClear();
+    readSoftwareInventoryRows.mockClear();
     readCustomFieldDefinitions.mockReset();
     readCustomFieldDefinitions.mockResolvedValue([]);
     dbSelect.mockReset();
@@ -80,6 +93,62 @@ describe('dataset adapters', () => {
     for (const adapter of Object.values(DATASET_ADAPTERS)) {
       expect([1, 2]).toContain(adapter.tier);
     }
+  });
+
+  describe.each(['device_inventory', 'software_inventory'] as const)('agent %s', (dataset) => {
+    const agentAuth = {
+      orgId: 'org-1', principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+      allowedDeviceIds: ['d1', 'd2'], allowedSiteIds: ['site-1'], canAccessSite: (id: string) => id === 'site-1',
+    } as never;
+    const request = { auth: agentAuth, orgId: 'org-1', filters: {}, deviceIds: null,
+      runTargets: ['d1', 'd3'], siteId: 'site-1', pageSize: 500 };
+
+    it('uses scoped rows without human report authority and intersects every device ceiling', async () => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, deviceIds: ['d1', 'd2', 'd3'] });
+      expect((await pager(null)).rows).toHaveLength(1);
+      const reader = dataset === 'device_inventory' ? readDeviceInventoryRows : readSoftwareInventoryRows;
+      expect(reader).toHaveBeenCalledOnce();
+      const [orgId, conditions] = reader.mock.calls[0]!;
+      expect(orgId).toBe('org-1');
+      const dialect = new PgDialect();
+      const queries = (conditions as SQL[]).map((condition) => dialect.sqlToQuery(condition));
+      expect(queries.flatMap((query) => query.params)).toEqual(['d1', 'site-1', 'site-1']);
+      expect(generateDeviceInventoryReport).not.toHaveBeenCalled();
+    });
+
+    // #6096 D4: a principal org that disagrees with the request org is a
+    // CALLER bug, not a device-less run. An empty pager would report it as "no
+    // data" — the one shape a data-minimisation boundary must never fake.
+    it('throws on a cross-organization request instead of reporting an empty export', async () => {
+      await expect(DATASET_ADAPTERS[dataset].createPager({ ...request, orgId: 'org-other' }))
+        .rejects.toThrow(/organization/i);
+      expect(readDeviceInventoryRows).not.toHaveBeenCalled();
+      expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
+    });
+
+    // A device-less run frame (ticket/anomaly/design principals never freeze
+    // `runTargets`) must yield an empty export, not a hard error — a thrown
+    // error here previously broke every non-`analysis` ai_agent run.
+    it.each([[], null])('yields an empty pager for an absent or empty frozen device set, without throwing', async (runTargets) => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, runTargets });
+      expect((await pager(null)).rows).toEqual([]);
+      expect(readDeviceInventoryRows).not.toHaveBeenCalled();
+      expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
+    });
+
+    it('never treats an empty requested device set as unrestricted', async () => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, deviceIds: [] });
+      expect((await pager(null)).rows).toEqual([]);
+      expect(readDeviceInventoryRows).not.toHaveBeenCalled();
+      expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
+    });
+
+    it('refuses a site outside the authenticated ceiling', async () => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, siteId: 'site-other' });
+      expect((await pager(null)).rows).toEqual([]);
+      expect(readDeviceInventoryRows).not.toHaveBeenCalled();
+      expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
+    });
   });
 
   it('event_logs pages with the keyset cursor searchFleetLogs returns', async () => {

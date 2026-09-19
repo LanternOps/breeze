@@ -5,6 +5,7 @@
 // whenever the Monitoring tab is active — local state would silently reset
 // "Show all" on every tab round-trip.
 
+import type { RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { describePort } from '../../discovery/portCatalog';
 import type { OpenPortEntry } from '../../discovery/DiscoveredAssetList';
@@ -18,6 +19,7 @@ import type { DeviceOption } from './types';
 const PORTS_VISIBLE_LIMIT = 12;
 
 export function OpenPortsSection({
+  sectionRef,
   openPorts,
   assetId,
   assetIp,
@@ -29,6 +31,7 @@ export function OpenPortsSection({
   expanded,
   onToggle,
 }: {
+  sectionRef?: RefObject<HTMLDivElement | null>;
   openPorts: OpenPortEntry[];
   assetId: string;
   assetIp: string;
@@ -45,6 +48,7 @@ export function OpenPortsSection({
 
   return (
     <Section
+      sectionRef={sectionRef}
       title={
         <>
           {t('networkDeviceDetailPage.sections.openPorts')}{' '}

@@ -195,6 +195,49 @@ async function getDeploymentWithAccess(
   return deployment;
 }
 
+/**
+ * The deployments a site-restricted caller must NOT reach, out of `deploymentIds`.
+ *
+ * Deployments carry no `site_id`; they are site-attributable only through their
+ * member devices, exactly as `GET /:id/devices` and the retry action already
+ * treat them. A deployment that includes ANY device outside the caller's sites
+ * is denied whole — its name, target config and progress counts aggregate over
+ * every member — and a deployment with NO member rows is unattributable and
+ * denied too (an unattributable resource is denied to a restricted caller).
+ *
+ * One batched query for any number of deployments, so the list never degenerates
+ * into an N+1. Mirrors `deniedDeploymentIds` in services/aiToolsFleet.ts, which
+ * is the AI-tool twin of these routes.
+ */
+async function deniedDeploymentIdsForSiteScope(
+  deploymentIds: string[],
+  perms: UserPermissions,
+): Promise<Set<string>> {
+  const denied = new Set<string>();
+  if (deploymentIds.length === 0) return denied;
+
+  const members = await db
+    .select({
+      deploymentId: deploymentDevices.deploymentId,
+      siteId: devices.siteId
+    })
+    .from(deploymentDevices)
+    .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
+    .where(inArray(deploymentDevices.deploymentId, deploymentIds));
+
+  const seen = new Set<string>();
+  for (const member of members) {
+    seen.add(member.deploymentId);
+    if (typeof member.siteId !== 'string' || !canAccessSite(perms, member.siteId)) {
+      denied.add(member.deploymentId);
+    }
+  }
+  for (const id of deploymentIds) {
+    if (!seen.has(id)) denied.add(id);
+  }
+  return denied;
+}
+
 function mapDeploymentRow(deployment: typeof deployments.$inferSelect): DeploymentResponse {
   return {
     id: deployment.id,
@@ -245,6 +288,33 @@ deploymentRoutes.get(
     }
 
     const whereCondition = conditions.length ? and(...conditions) : undefined;
+
+    // Site axis (app-layer only — RLS does NOT defend it). This list filtered on
+    // org alone while the per-deployment device list and the retry action both
+    // carried the axis, so a site-restricted tech read every deployment in the
+    // org by name, type, target config and status. Visibility depends on the
+    // member devices, which no index on `deployments` can express, so — like the
+    // narrowed branch of `GET /analytics/sla` — scan the org's set, apply the
+    // gate, then paginate in memory so the total stays honest.
+    const listPerms = c.get('permissions') as UserPermissions | undefined;
+    if (listPerms?.allowedSiteIds) {
+      if (listPerms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0, limit: query.limit, offset: query.offset });
+      }
+      const allRows = await db
+        .select()
+        .from(deployments)
+        .where(whereCondition)
+        .orderBy(desc(deployments.createdAt), desc(deployments.id));
+      const denied = await deniedDeploymentIdsForSiteScope(allRows.map((row) => row.id), listPerms);
+      const visible = allRows.filter((row) => !denied.has(row.id));
+      return c.json({
+        data: visible.slice(query.offset, query.offset + query.limit).map(mapDeploymentRow),
+        total: visible.length,
+        limit: query.limit,
+        offset: query.offset
+      });
+    }
 
     // Get total count
     const [countResult] = await db
@@ -352,6 +422,17 @@ deploymentRoutes.get(
     const deployment = await getDeploymentWithAccess(id, auth);
     if (!deployment) {
       return c.json({ error: 'Deployment not found' }, 404);
+    }
+
+    // Same site gate as the list: the row and its progress counts aggregate over
+    // every member device, so they are not the caller's to read unless every
+    // member is within their sites. 404 (not 403) keeps existence undisclosed.
+    const detailPerms = c.get('permissions') as UserPermissions | undefined;
+    if (detailPerms?.allowedSiteIds) {
+      const denied = await deniedDeploymentIdsForSiteScope([deployment.id], detailPerms);
+      if (denied.has(deployment.id)) {
+        return c.json({ error: 'Deployment not found' }, 404);
+      }
     }
 
     // Get progress if deployment has been initialized

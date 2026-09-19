@@ -37,6 +37,10 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     }
 
     const next = status === 401 || status === 403 ? 'reauth_required' : 'error';
+    // Raw, unsanitized text (do not prefix with MAILBOX_VERIFICATION_FAILED,
+    // 'Mailbox verification failed' — connectionService.ts's listMailboxConnections
+    // only exposes lastError to the client when it has that exact prefix, to
+    // keep this poller's error text server-side-only; #6192).
     await setConnectedMailboxStatus(
       c,
       next,

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const {
@@ -139,6 +139,7 @@ const PARTNER_BODY = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', 'false');
   hasPermMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   listSchedulesMock.mockResolvedValue([]);
@@ -146,6 +147,8 @@ beforeEach(() => {
   updateScheduleMock.mockResolvedValue(scheduleRow({ enabled: false }));
   deleteScheduleMock.mockResolvedValue(undefined);
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('GET /ai/agents/schedules', () => {
   it('returns the effective schedules and forwards both filters', async () => {
@@ -182,6 +185,32 @@ describe('GET /ai/agents/schedules', () => {
 });
 
 describe('POST /ai/agents/schedules', () => {
+  it('rejects arming Act mode when the deployment flag is off without persistence or success audit', async () => {
+    const res = await post({ ...PARTNER_BODY, actMode: true });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' });
+    expect(createScheduleMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('allows arming Act mode when the deployment flag is on', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', 'true');
+    createScheduleMock.mockResolvedValue(scheduleRow({ actMode: true }));
+    const res = await post({ ...PARTNER_BODY, actMode: true });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).data.actMode).toBe(true);
+    expect(createScheduleMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ actMode: true }));
+  });
+
+  it('allows explicit observe-only creation when the deployment flag is off', async () => {
+    const res = await post({ ...PARTNER_BODY, actMode: false });
+
+    expect(res.status).toBe(201);
+    expect(createScheduleMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ actMode: false }));
+  });
+
   it('creates a partner baseline and returns 201 with the DTO', async () => {
     const res = await post(PARTNER_BODY);
 
@@ -389,6 +418,34 @@ describe('POST /ai/agents/schedules', () => {
 });
 
 describe('PATCH /ai/agents/schedules/:id', () => {
+  it('rejects arming Act mode when the deployment flag is off without persistence or success audit', async () => {
+    const res = await patch({ actMode: true });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' });
+    expect(updateScheduleMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('allows arming Act mode when the deployment flag is on', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', 'true');
+    updateScheduleMock.mockResolvedValue(scheduleRow({ actMode: true }));
+    const res = await patch({ actMode: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.actMode).toBe(true);
+    expect(updateScheduleMock).toHaveBeenCalledWith(expect.anything(), SCHEDULE_ID, { actMode: true });
+  });
+
+  it('allows disarming Act mode when the deployment flag is off', async () => {
+    updateScheduleMock.mockResolvedValue(scheduleRow({ actMode: false }));
+    const res = await patch({ actMode: false });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.actMode).toBe(false);
+    expect(updateScheduleMock).toHaveBeenCalledWith(expect.anything(), SCHEDULE_ID, { actMode: false });
+  });
+
   it('updates and returns 200', async () => {
     const res = await patch({ enabled: false });
 

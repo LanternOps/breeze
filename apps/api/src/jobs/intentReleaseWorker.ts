@@ -43,6 +43,7 @@ import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
+import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
@@ -783,7 +784,32 @@ export async function terminalizeIntent(
  * do not generalise speculatively; add a pair only with its own release
  * test and a handler that checks `context.approverRelease`.
  */
-const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set(['manage_tickets:log_time_entry']);
+/**
+ * #6200 added the three `services/aiToolsFleet.ts` writers with the same
+ * shape as `log_time_entry`: agent-mintable as an action intent (a tier-3
+ * entry in `aiGuardrails.ts`'s `TIER3_SUPERVISED_ACTIONS` /
+ * `TIER3_FOUR_EYES_ACTIONS`) AND storing `auth.user.id` in a `users` FK
+ * column. Under the rebuilt agent auth that id is an `aiAgents.id`, so the
+ * insert was a guaranteed 23503 the technician saw as `execution_error`
+ * seconds after their own WebAuthn approval, with nothing done — observed
+ * three times on US prod for `install` (2026-09-18).
+ *
+ * `services/aiToolsFleet.userOwnedRelease.contract.test.ts` pins this set
+ * against the source, so a newly agent-mintable `auth.user.id` write into a
+ * users FK cannot be added to that file without landing here too.
+ */
+const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
+  'manage_tickets:log_time_entry',
+  // deployments.created_by (db/schema/deployments.ts) — tier 3 supervised.
+  'manage_deployments:create',
+  // patch_jobs.created_by (db/schema/patches.ts) — tier 3 supervised. The
+  // prod failure in #6200.
+  'manage_patches:install',
+  // patch_rollbacks.initiated_by (db/schema/patches.ts) — tier 3 four_eyes.
+  // Same FK, same 23503; only the approval scope differs, and the approver
+  // substitution is scope-independent.
+  'manage_patches:rollback',
+]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
   if (!intent.requestingAgentRunId) return null;
@@ -1236,6 +1262,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
+  // Tool catalog W01 PR B (#5216): the AUTHORITATIVE failure signal for an
+  // external (BYO MCP) call, straight from `executeTenantToolDetailed`.
+  // `isReturnedToolError` below is a shape heuristic written against Breeze's
+  // own compact tool bodies — it keys on a JSON object carrying `error` and
+  // none of `success`/`data`/`configured`. Third-party MCP bodies are not
+  // ours to shape: `{"error": null, "result": {...}}` would read as a failure,
+  // and an error body over the 64 KiB store cap would be suppressed by the
+  // `!truncated` guard and recorded as a COMPLETION. Neither can happen when
+  // the executor already told us. Stays null for every core tool.
+  let externalIsError: boolean | null = null;
   try {
     if (secretAction) {
       carrier = await withToolTimeout(
@@ -1247,7 +1283,28 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
       rawResult = carrier.llmText;
     } else {
-      const invoke = isHeadlessGoogleTool(intent.actionName)
+      // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
+      // dispatched through the tenant executor with the descriptor
+      // revalidation reloaded under the rebuilt actor — never `executeTool`,
+      // which knows nothing about `<slug>__<name>` names. The executor
+      // already re-applies the owner predicate + kill switch at call time
+      // and returns `JSON.stringify({ error })` on failure, which the
+      // `tool_returned_error` classification below reads as a failed release.
+      const tenantTool = revalidation.tenantTool;
+      const invoke = tenantTool
+        ? async () => {
+            const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
+              surface: 'chat',
+              orgId: intent.orgId,
+              actor: { kind: 'user', id: auth.user.id },
+            });
+            externalIsError = outcome.isError;
+            // Same string shape `executeTenantTool` produces, so the stored
+            // result body is unchanged — only the CLASSIFICATION now comes
+            // from `isError` instead of being re-derived from this string.
+            return outcome.isError ? JSON.stringify({ error: outcome.text }) : outcome.text;
+          }
+        : isHeadlessGoogleTool(intent.actionName)
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
@@ -1345,7 +1402,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // checks rawResult === carrier.llmText: an error carrier's llmText keeps the
   // errorString() JSON shape ({error, message}), so the existing detection
   // still applies unchanged.
-  if (!truncated && isReturnedToolError(rawResult)) {
+  // `externalIsError` (when set) OVERRIDES both the heuristic and the
+  // truncation guard — see its declaration. A truncated external error body is
+  // still a failed release; it just stores `{truncated:true}` as its evidence.
+  const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
+  if (returnedToolError) {
     try {
       assertNoPlaintextSecret(intent.actionName, storedResult);
     } catch (err) {

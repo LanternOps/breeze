@@ -60,7 +60,79 @@ const PORTAL_DEFINITIONS = [
       includeOtherEquipment: true,
     },
   },
+  // #5784 W02 — MANAGED EVIDENCE, not self-service. The customer sees and
+  // downloads this once the occurrence is delivered (deliveredEvidenceOnly),
+  // but never generates it: the type is deliberately absent from
+  // PORTAL_REPORT_TYPES and from both allowlist literals in
+  // reportGenerationService.ts (OD-10 = A).
+  //
+  // Name and config are literals rather than an import of
+  // MANAGED_EVIDENCE_REGISTRY because this array is `as const` and feeds a
+  // Drizzle insert. Divergence from the registry is caught by
+  // managedEvidenceRegistry.test.ts, which compares the two.
+  {
+    type: 'threat_detection_review',
+    name: 'Service evidence — Threat detection review',
+    config: {
+      sites: [],
+      includeCarriedIn: true,
+      topIncidents: 100,
+    },
+  },
+  // #5784 W03 — managed evidence, NOT self-service. The definition exists so a
+  // DELIVERED run can be listed and downloaded in the portal; the type is
+  // deliberately absent from PORTAL_REPORT_TYPES, so there is no generate
+  // button (OD-10 = A). `config` must stay byte-identical to
+  // MANAGED_EVIDENCE_REGISTRY.endpoint_management_review.defaultConfig —
+  // reportsSelfService.test.ts pins the two together.
+  {
+    type: 'endpoint_management_review',
+    name: 'Service evidence — Endpoint management review',
+    config: {
+      sites: [],
+      staleEnrolmentDays: 14,
+      trendDays: 30,
+      includeLicences: true,
+    },
+  },
+  // #5784 W04 — managed evidence, NOT self-service. Provisioned here so an org
+  // that already enabled portal reports has the definition ready (and so
+  // `resolveManagedEvidenceDefinition` adopts it rather than racing to create
+  // it), but deliberately ABSENT from PORTAL_REPORT_TYPES: a portal user can
+  // never generate it, and a run only becomes visible when the deliverable
+  // occurrence is delivered (OD-12). Name and config are spelled identically
+  // to MANAGED_EVIDENCE_REGISTRY's entry.
+  {
+    type: 'vulnerability_management',
+    name: 'Service evidence — Vulnerability management',
+    config: {
+      sites: [],
+      severityFloor: 'high',
+      topN: 25,
+      includeAccepted: true,
+    },
+  },
+  // #5784 W06 — MANAGED EVIDENCE, not self-service, and the one that carries the
+  // most PII in the feature (user principal names, IP addresses, cities). Same
+  // rule as W02 above: absent from PORTAL_REPORT_TYPES and from both allowlist
+  // literals in reportGenerationService.ts (OD-10 = A), so a customer can read a
+  // DELIVERED artifact but can never generate one on demand.
+  //
+  // No `sites` key: M365 identity data has no site dimension (OD-8 = A).
+  {
+    type: 'identity_access_review',
+    name: 'Service evidence — Identity and access review',
+    config: {
+      dormantDays: 45,
+      homeCountries: [],
+      adminDetail: true,
+    },
+  },
 ] as const;
+
+/** Exported for `managedEvidenceRegistry.test.ts`, which pins this array
+ *  against MANAGED_EVIDENCE_REGISTRY. Not part of the module's API. */
+export const PORTAL_DEFINITIONS_FOR_TEST = PORTAL_DEFINITIONS;
 
 type PortalReportInsertExecutor = Pick<typeof db, 'insert'>;
 type PortalReportProvisionArgs = {
@@ -68,15 +140,21 @@ type PortalReportProvisionArgs = {
   createdBy: string;
 };
 
-export function portalReportDefinitionsInsertQuery(
-  executor: PortalReportInsertExecutor,
-  args: PortalReportProvisionArgs,
-) {
-  const scope = {
-    version: 1,
-    kind: 'unrestricted',
-    orgId: args.orgId,
-  } as const;
+/**
+ * Build ONE portal-self-service report definition row. Extracted from
+ * `portalReportDefinitionsInsertQuery` so #5784's managed-evidence provisioning
+ * can insert a single type on demand, under a caller-supplied executor, without
+ * re-inserting the whole PORTAL_DEFINITIONS array. There is exactly one
+ * row-shape definition; both callers go through it.
+ */
+export function portalReportDefinitionRow(args: {
+  orgId: string;
+  createdBy: string;
+  type: (typeof reports.$inferInsert)['type'];
+  name: string;
+  config: Record<string, unknown>;
+}) {
+  const scope = { version: 1, kind: 'unrestricted', orgId: args.orgId } as const;
   const authority: UserReportExecutionAuthority = {
     principalKind: 'user',
     principalUserId: args.createdBy,
@@ -84,20 +162,31 @@ export function portalReportDefinitionsInsertQuery(
     capturedAt: new Date(),
     fingerprint: siteScopeFingerprint(scope),
   };
-  const scopeValues = persistedSiteScopeValues(authority);
+  return {
+    orgId: args.orgId,
+    name: args.name,
+    type: args.type,
+    config: args.config,
+    schedule: 'one_time' as const,
+    format: 'pdf' as const,
+    portalSelfService: true,
+    createdBy: args.createdBy,
+    ...persistedSiteScopeValues(authority),
+  };
+}
 
+export function portalReportDefinitionsInsertQuery(
+  executor: PortalReportInsertExecutor,
+  args: PortalReportProvisionArgs,
+) {
   return executor
     .insert(reports)
-    .values(PORTAL_DEFINITIONS.map((definition) => ({
+    .values(PORTAL_DEFINITIONS.map((definition) => portalReportDefinitionRow({
       orgId: args.orgId,
-      name: definition.name,
-      type: definition.type,
-      config: definition.config,
-      schedule: 'one_time' as const,
-      format: 'pdf' as const,
-      portalSelfService: true,
       createdBy: args.createdBy,
-      ...scopeValues,
+      type: definition.type,
+      name: definition.name,
+      config: definition.config,
     })))
     .onConflictDoNothing({
       target: [reports.orgId, reports.type],
@@ -174,16 +263,11 @@ async function tightenPortalReportStatementTimeout(): Promise<void> {
 }
 
 /**
- * The org's `enable_lifecycle` and `enable_self_service` visibility flags in
- * one row read, inside the ambient organization-scoped RLS transaction the
- * portal auth middleware already opened. Fail closed exactly like
- * `createPortalFeatureGateStrict`: a missing portal_branding row, or anything
- * that is not literally `true`, is `false` for either flag.
- *
- * Both flags live on the same `portal_branding` row, so `latestPortalHardwareLifecycleRun`
- * (which needs both — see #5880) reads them together rather than issuing a
- * second query; `portalLifecycleEnabled` below is a thin boolean view onto
- * this for its other callers, which only ever needed the one flag.
+ * Read lifecycle visibility and Devices access in the ambient org-scoped RLS
+ * transaction. Lifecycle visibility requires an explicit true; device links
+ * require either enable_devices or enable_self_service to be explicitly true.
+ * The legacy enableSelfService result field carries this combined link grant.
+ * Missing branding values fail closed.
  */
 async function portalBrandingLifecycleFlags(
   orgId: string,
@@ -192,6 +276,7 @@ async function portalBrandingLifecycleFlags(
     .select({
       enableLifecycle: portalBranding.enableLifecycle,
       enableSelfService: portalBranding.enableSelfService,
+      enableDevices: portalBranding.enableDevices,
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, orgId))
@@ -199,7 +284,7 @@ async function portalBrandingLifecycleFlags(
 
   return {
     enableLifecycle: row?.enableLifecycle === true,
-    enableSelfService: row?.enableSelfService === true,
+    enableSelfService: row?.enableSelfService === true || row?.enableDevices === true,
   };
 }
 
@@ -269,6 +354,36 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
   return lifecycleEnabled ? undefined : ne(reports.type, 'hardware_lifecycle');
 }
 
+/**
+ * OD-12 (#5784): a managed evidence run becomes customer-visible on DELIVERY,
+ * not on generation. Without this, `portalRunListPredicate` — which filters only
+ * on org, portal_self_service and status — would show a security artifact at
+ * 05:18 on the due day, before the technician reviewed it.
+ *
+ * Derived, not stamped: the occurrence already carries `delivered_at`,
+ * `delivered_by_user_id` and `delivered_via`, so a `published_at` column would
+ * only add a second copy of the truth that could drift when a delivery is
+ * reverted or the occurrence is waived.
+ *
+ * Runs no deliverable references (ordinary portal self-service) are unaffected.
+ * Fail-closed: a run referenced only by non-delivered occurrences is hidden.
+ * `sd_evidence_report_run_idx` (report_run_id) serves both sub-queries.
+ */
+export function deliveredEvidenceOnly() {
+  return sql`(
+    NOT EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      WHERE e.report_run_id = ${reportRuns.id}
+    )
+    OR EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      JOIN service_deliverable_occurrences o ON o.id = e.occurrence_id
+      WHERE e.report_run_id = ${reportRuns.id}
+        AND o.status = 'delivered'
+    )
+  )`;
+}
+
 export function portalRunPredicate(
   runId: string,
   orgId: string,
@@ -279,6 +394,7 @@ export function portalRunPredicate(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
@@ -291,6 +407,7 @@ export function portalRunListPredicate(
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
@@ -298,7 +415,12 @@ function toDto(row: {
   id: string;
   reportId: string;
   name: string;
-  type: PortalReportType;
+  // The DTO's own union, NOT PortalReportType: portalRunListPredicate has no
+  // type filter, so a managed-evidence run of a type outside the three
+  // self-service ones legitimately flows through here. Typing it as
+  // PortalReportType was a lie the compiler could not see, because the value
+  // comes from the database (#5784 W02, W03, W04).
+  type: PortalRunDto['type'];
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: Date | null;
   completedAt: Date | null;
@@ -544,11 +666,9 @@ export async function generatePortalReport(args: {
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
-  // The org's `enable_self_service` flag (#5880): the portal page needs this
-  // to decide whether a device row's Computer cell may link to
-  // /portal/devices — that route itself redirects home when self-service is
-  // off, so linking there unconditionally silently dumps the customer on
-  // Proposals instead.
+  contact: { name: string | null; email: string } | null;
+  // Legacy field name: device deep-links are enabled by either the Devices
+  // visibility flag or self-service, matching the Devices page's access grants.
   enableSelfService: boolean;
 };
 
@@ -572,6 +692,11 @@ export async function latestPortalHardwareLifecycleRun(
       eq(reports.type, 'hardware_lifecycle'),
       eq(reports.portalSelfService, true),
       eq(reportRuns.status, 'completed'),
+      // OD-12 (#5784): this dedicated reader is a third portal path to a run.
+      // A deliverable may name the canonical lifecycle definition as its
+      // auto-evidence, so the delivery gate applies here exactly as in
+      // portalRunPredicate — or "latest" leaks an unreviewed run.
+      deliveredEvidenceOnly(),
     ))
     .orderBy(desc(reportRuns.completedAt), desc(reportRuns.id))
     .limit(1);
@@ -585,9 +710,14 @@ export async function latestPortalHardwareLifecycleRun(
     timeStyle: 'short',
   }).format(row.completedAt ?? new Date());
 
+  const branding = await getReportBranding(orgId);
+
   return {
     run: { id: row.id, generatedAt },
     summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+    contact: branding.contactEmail
+      ? { name: branding.contactName ?? null, email: branding.contactEmail }
+      : null,
     enableSelfService: flags.enableSelfService,
   };
 }

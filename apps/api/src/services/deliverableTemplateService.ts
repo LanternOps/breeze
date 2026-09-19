@@ -13,6 +13,8 @@ import type {
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createDeliverable, DeliverableServiceError } from './serviceDeliverableService';
+import { resolveManagedEvidenceDefinition } from './managedEvidenceDefinitions';
+import type { ManagedEvidenceType } from './managedEvidenceRegistry';
 import { firstAnchorAfter, type Cadence } from './recurrence';
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
@@ -95,6 +97,26 @@ const ownerScopeOf = (row: Pick<DeliverableTemplateSetRow, 'orgId'>) =>
 /** Visibility is not permission: a partner-wide row is administrable only by a full-partner admin. */
 function requireWritable(row: Pick<DeliverableTemplateSetRow, 'orgId'>, actor: TemplateActor): void {
   if (row.orgId === null && !canManagePartnerWidePolicies(actor)) throw new PartnerWideWriteDeniedError();
+}
+
+/**
+ * The owner axis to validate a checklist-template REFERENCE against (#5921
+ * follow-up). The set's own `partnerId` column is ALWAYS null for an
+ * org-owned set — the one-owner XOR constraint forbids both columns being
+ * set — so handing that column straight to
+ * `assertChecklistTemplateUsableByTemplateItemOwner` rejected every
+ * partner-wide checklist template on every org-owned set. Resolve the
+ * ORGANIZATION's own partnerId instead, same lookup as
+ * serviceDeliverableService's `validateReferences`. A partner-owned set's
+ * `partnerId` column is already the right value and needs no lookup.
+ */
+async function resolveChecklistItemOwner(
+  set: Pick<DeliverableTemplateSetRow, 'orgId' | 'partnerId'>,
+): Promise<{ orgId: string | null; partnerId: string | null }> {
+  if (set.orgId === null) return { orgId: null, partnerId: set.partnerId };
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, set.orgId)).limit(1);
+  return { orgId: set.orgId, partnerId: org?.partnerId ?? null };
 }
 
 function mapUniqueViolation(err: unknown): never {
@@ -202,6 +224,7 @@ export async function createTemplateSet(input: CreateTemplateSetInput, actor: Te
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           sortOrder: item.sortOrder,
+          autoEvidenceReportType: item.autoEvidenceReportType ?? null,
         }).returning();
         if (itemRow) items.push(itemRow);
       }
@@ -250,7 +273,7 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
   // every other org the set is applied to, and the apply would silently produce
   // an empty checklist. A null needs no lookup — it clears the pointer.
   if (input.checklistTemplateId != null) {
-    await assertChecklistTemplateUsableByTemplateItemOwner(input.checklistTemplateId, { orgId: set.orgId, partnerId: set.partnerId });
+    await assertChecklistTemplateUsableByTemplateItemOwner(input.checklistTemplateId, await resolveChecklistItemOwner(set));
   }
   try {
     const [row] = await db.transaction(async (tx) => tx.insert(deliverableTemplateItems).values({
@@ -267,6 +290,7 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
       instructions: input.instructions ?? null,
       checklistTemplateId: input.checklistTemplateId ?? null,
       sortOrder: input.sortOrder,
+      autoEvidenceReportType: input.autoEvidenceReportType ?? null,
     }).returning());
     if (!row) throw new TemplateServiceError('Insert returned no row', 500, 'INSERT_FAILED');
     return row;
@@ -279,7 +303,7 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
   const set = await loadSetOr404(setId, actor);
   requireWritable(set, actor);
   if (patch.checklistTemplateId != null) {
-    await assertChecklistTemplateUsableByTemplateItemOwner(patch.checklistTemplateId, { orgId: set.orgId, partnerId: set.partnerId });
+    await assertChecklistTemplateUsableByTemplateItemOwner(patch.checklistTemplateId, await resolveChecklistItemOwner(set));
   }
   try {
     const [row] = await db.transaction(async (tx) => tx.update(deliverableTemplateItems)
@@ -294,6 +318,7 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
         ...(patch.instructions !== undefined ? { instructions: patch.instructions ?? null } : {}),
         ...(patch.checklistTemplateId !== undefined ? { checklistTemplateId: patch.checklistTemplateId ?? null } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+        ...(patch.autoEvidenceReportType !== undefined ? { autoEvidenceReportType: patch.autoEvidenceReportType } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(deliverableTemplateItems.id, itemId), eq(deliverableTemplateItems.setId, set.id)))
@@ -426,6 +451,34 @@ export async function applyTemplateSet(
       const out: AppliedTemplateResult['created'] = [];
       for (const item of toCreate) {
         const anchorDueDate = firstAnchorAfter(effectiveFrom, item.cadence as Cadence);
+        // #5784 OD-6 = A. Resolve the partner-wide TYPE to THIS org's managed
+        // definition, inside the same all-or-nothing transaction and on the
+        // SAME tx handle — the ambient `db` proxy would resolve to the request
+        // transaction (serviceDeliverableService.ts:52) and escape the rollback.
+        // A provisioning failure aborts the whole apply with an error the
+        // technician sees, rather than a 05:18 console.warn. This only
+        // provisions a definition and links a deliverable: it never generates
+        // and never publishes — the OD-12 delivery gate sits downstream.
+        let autoEvidenceReportId: string | undefined;
+        if (item.autoEvidenceReportType) {
+          // A managed definition carries USER provenance (its created_by is the
+          // principal the ordinary edit/reauthorize surface works on), so a
+          // session with no user (API key, system) must name an owner.
+          const definitionOwner = opts.ownerUserId ?? actor.userId;
+          if (!definitionOwner) {
+            throw new TemplateServiceError(
+              'Applying an item with an auto-evidence report type requires ownerUserId when the caller has no user',
+              400, 'EVIDENCE_OWNER_REQUIRED',
+            );
+          }
+          const managed = await resolveManagedEvidenceDefinition(
+            orgId,
+            item.autoEvidenceReportType as ManagedEvidenceType,
+            definitionOwner,
+            tx,
+          );
+          autoEvidenceReportId = managed.id;
+        }
         const row = await createDeliverable(orgId, {
           contractId: contractId ?? undefined,
           name: item.name,
@@ -438,6 +491,7 @@ export async function applyTemplateSet(
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           ownerUserId: opts.ownerUserId ?? undefined,
+          autoEvidenceReportId,
           instructions: item.instructions ?? undefined,
           checklistTemplateId: item.checklistTemplateId ?? undefined,
           portalVisible: true,

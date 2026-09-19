@@ -27,6 +27,7 @@ const GAUGES = {
   m365_sync_in_flight: 'Sync actions currently executing on this instance',
   m365_in_flight_total: 'All executor operations currently executing on this instance',
   m365_signin_limiter_tokens: 'Whole tokens available in the app-wide sign-in activity bucket',
+  m365_signin_events_limiter_tokens: 'Whole tokens available in the app-wide sign-in EVENTS bucket',
 } as const;
 
 type CounterName = keyof typeof COUNTERS;
@@ -65,6 +66,11 @@ export function setTotalInFlight(value: number): void {
 
 export function setSigninLimiterTokens(value: number): void {
   gaugeValues.set('m365_signin_limiter_tokens', value);
+}
+
+/** #5784 W05. /auditLogs/signIns has its own bucket, so its own series. */
+export function setSigninEventsLimiterTokens(value: number): void {
+  gaugeValues.set('m365_signin_events_limiter_tokens', value);
 }
 
 /** Label values here are closed enums, but escape anyway — the format is a contract. */

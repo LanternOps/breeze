@@ -41,6 +41,13 @@ vi.mock('./serviceDeliverableService', async (importOriginal) => {
   };
 });
 
+// #5784 W01: apply-time resolution of a template item's evidence TYPE to the
+// target org's managed definition. Mocked here (the chain mock cannot feed a
+// real insert-then-reread); the real path is proven on Postgres in
+// managedEvidenceFoundations.integration.test.ts.
+const resolveMock = vi.hoisted(() => vi.fn());
+vi.mock('./managedEvidenceDefinitions', () => ({ resolveManagedEvidenceDefinition: resolveMock }));
+
 import {
   applyTemplateSet,
   createTemplateSet,
@@ -220,12 +227,31 @@ describe('deliverableTemplateService', () => {
     expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner).not.toHaveBeenCalled();
   });
 
-  it('updateTemplateItem validates a NON-null pointer against the set owner', async () => {
-    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]);
-    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+  it('updateTemplateItem validates a NON-null pointer against the set owner, resolving the org\'s partnerId', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]); // loadSetOr404
+    dbMocks.rows.push([{ partnerId: 'p1' }]); // organizations lookup for org1's partner
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]); // update returning
     await updateTemplateItem('s1', 'i1', { checklistTemplateId: 'tcl-1' }, partnerAdmin);
     expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
-      .toHaveBeenCalledWith('tcl-1', { orgId: 'org1', partnerId: null });
+      .toHaveBeenCalledWith('tcl-1', { orgId: 'org1', partnerId: 'p1' });
+  });
+
+  // #5921 follow-up: an org-owned set's own partner_id column is ALWAYS null
+  // (one-owner XOR constraint), so passing it straight through rejected every
+  // partner-wide checklist template on every org-owned set. The correct owner
+  // axis is the ORGANIZATION's own partnerId (same lookup as
+  // serviceDeliverableService.validateReferences), not the set's partner_id
+  // column.
+  it('an org-owned set resolves the ORGANIZATION\'s partnerId, not the set\'s own null partner_id, so a partner-wide template is usable', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]); // loadSetOr404
+    dbMocks.rows.push([{ partnerId: 'p1' }]); // organizations lookup for org1's partner
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]); // insert returning
+    await addTemplateItem('s1', {
+      name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true,
+      completionMode: 'on_ticket_resolve', sortOrder: 0, checklistTemplateId: 'tcl-partner-wide',
+    }, partnerAdmin);
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
+      .toHaveBeenCalledWith('tcl-partner-wide', { orgId: 'org1', partnerId: 'p1' });
   });
 });
 
@@ -343,6 +369,88 @@ describe('applyTemplateSet', () => {
     dbMocks.rows.push([set], withChecklist(null), []);
     await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin)).resolves.toBeDefined();
     expect(createdCalls[0]!.input).toMatchObject({ checklistTemplateId: undefined });
+  });
+
+  describe('auto-evidence type resolution at apply time (#5784 OD-6 = A)', () => {
+    beforeEach(() => { resolveMock.mockReset(); });
+    const typed = [{ ...items[0]!, autoEvidenceReportType: 'threat_detection_review' }, { ...items[1]!, autoEvidenceReportType: null }];
+
+    it('resolves the item type to that org’s managed definition on the SAME tx handle', async () => {
+      resolveMock.mockResolvedValue({ id: 'r1', type: 'threat_detection_review', config: {}, adopted: false });
+      dbMocks.rows.push([set], typed, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01', ownerUserId: 'owner-1' }, partnerAdmin);
+      const { db } = await import('../db');
+      // The executor the service passed must be the transaction handle (the
+      // chain mock passes itself as tx), not the module-level db proxy: the
+      // ambient proxy resolves to the request transaction and would escape
+      // the all-or-nothing rollback.
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(resolveMock).toHaveBeenCalledWith('org1', 'threat_detection_review', 'owner-1', db);
+      expect(createdCalls[0]!.input).toMatchObject({ name: 'Sign-in log review', autoEvidenceReportId: 'r1' });
+      expect(createdCalls[1]!.input.autoEvidenceReportId).toBeUndefined();
+    });
+
+    it('falls back to the acting user as the definition owner when no ownerUserId is given', async () => {
+      resolveMock.mockResolvedValue({ id: 'r1', type: 'threat_detection_review', config: {}, adopted: true });
+      dbMocks.rows.push([set], typed, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+      expect(resolveMock).toHaveBeenCalledWith('org1', 'threat_detection_review', partnerAdmin.userId, expect.anything());
+    });
+
+    it('400s EVIDENCE_OWNER_REQUIRED when neither ownerUserId nor an acting user exists', async () => {
+      dbMocks.rows.push([set], typed, []);
+      await expect(applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, { ...partnerAdmin, userId: null }))
+        .rejects.toMatchObject({ status: 400, code: 'EVIDENCE_OWNER_REQUIRED' });
+      expect(resolveMock).not.toHaveBeenCalled();
+      expect(createdCalls).toEqual([]);
+    });
+
+    it('fails the whole apply when provisioning fails — nothing half-written', async () => {
+      resolveMock.mockRejectedValue(new Error('boom'));
+      dbMocks.rows.push([set], typed, []);
+      await expect(applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin)).rejects.toThrow();
+      expect(createdCalls).toEqual([]);
+    });
+
+    it('leaves autoEvidenceReportId unset and never resolves for a set with no typed item', async () => {
+      dbMocks.rows.push([set], items, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+      expect(resolveMock).not.toHaveBeenCalled();
+      expect(createdCalls.every((c) => c.input.autoEvidenceReportId === undefined)).toBe(true);
+    });
+  });
+});
+
+describe('autoEvidenceReportType is carried by every item write (#5784)', () => {
+  beforeEach(() => { dbMocks.rows.length = 0; });
+  const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Org plan' };
+  const item = { name: 'x', cadence: 'monthly' as const, leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
+
+  it('createTemplateSet copies the type onto the item row', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    dbMocks.rows.push([{ ...orgSet }], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
+    await createTemplateSet({ ownerScope: 'organization', orgId: 'org1', name: 'Org plan', items: [{ ...item, autoEvidenceReportType: 'threat_detection_review' }] }, partnerAdmin);
+    expect(values.mock.calls.some(([v]) => (v as { autoEvidenceReportType?: string }).autoEvidenceReportType === 'threat_detection_review')).toBe(true);
+    values.mockRestore();
+  });
+
+  it('addTemplateItem copies the type; updateTemplateItem patches it, including back to null', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    const setSpy = vi.spyOn(db as any, 'set');
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
+    await addTemplateItem('s1', { ...item, autoEvidenceReportType: 'threat_detection_review' }, partnerAdmin);
+    expect(values.mock.calls.at(-1)![0]).toMatchObject({ autoEvidenceReportType: 'threat_detection_review' });
+
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: null }]);
+    await updateTemplateItem('s1', 'i1', { autoEvidenceReportType: null }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).toMatchObject({ autoEvidenceReportType: null });
+
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item }]);
+    await updateTemplateItem('s1', 'i1', { graceDays: 21 }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).not.toHaveProperty('autoEvidenceReportType');
+    values.mockRestore(); setSpy.mockRestore();
   });
 });
 

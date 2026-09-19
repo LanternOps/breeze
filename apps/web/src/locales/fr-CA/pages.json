@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Catalogue tiers",
     "adminTrustAct": "Action de confiance du partenaire",
     "adminTrustQueue": "File d'attente de confiance du partenaire",
+    "adminSendingDomains": "Domaines d'envoi du partenaire",
     "adminUsersDetailDevices": "Appareils de l'utilisateur",
     "aiAgentsImpact": "Impact de l'IA",
     "aiAgentsRunsDetail": "Détail de l'exécution",
@@ -126,8 +127,9 @@
     "sensitiveData": "Données sensibles",
     "settingsAccessReviews": "Revues d'accès",
     "settingsAiAgents": "Agents IA",
-    "settingsAiUsage": "Utilisation et budget de l'IA",
+    "settingsAiUsage": "Utilisation de l’IA",
     "settingsAiScriptAuthoring": "Rédaction de scripts",
+    "settingsToolSources": "Sources d'outils",
     "settingsAlertTemplatesDetail": "Modèle d'alerte",
     "settingsAlertTemplates": "Modèles d'alerte",
     "settingsApiKeys": "Clés API",
@@ -165,7 +167,8 @@
     "agreementTemplates": "Modèles d'entente",
     "agreementTemplateDetail": "Modèle d'entente",
     "agreementTemplateNew": "Nouveau modèle d'entente",
-    "signedAgreements": "Ententes signées"
+    "signedAgreements": "Ententes signées",
+    "settingsTicketing": "Paramètres de billetterie"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

@@ -270,6 +270,37 @@ function getClientIp(c: any): string {
   return getTrustedClientIp(c, '127.0.0.1');
 }
 
+/**
+ * Insert a tunnel_allowlists row and return it, or return `undefined` when the
+ * (org_id, direction, pattern, COALESCE(site_id)) unique index already holds an
+ * identical rule.
+ *
+ * The insert runs in a NESTED transaction (postgres.js SAVEPOINT) on purpose.
+ * Every request handler already sits inside one `withDbAccessContext`
+ * transaction, and a 23505 raised directly on that transaction aborts it even
+ * when caught: every follow-up statement then fails with 25P02 ("current
+ * transaction is aborted") and the handler's friendly 409 / re-select
+ * surfaces as a raw 500 at commit. That is exactly what broke every repeat
+ * "Connect" on a discovered printer in production on 2026-09-15. The
+ * savepoint contains the violation so the outer transaction stays usable
+ * (proof: dbSavepointErrorIsolation.integration.test.ts). Callers must issue
+ * the insert through `tx`, not the ambient `db` proxy, or the statement lands
+ * on the outer transaction again.
+ */
+async function insertAllowlistRuleUnlessDuplicate(
+  values: typeof tunnelAllowlists.$inferInsert,
+): Promise<typeof tunnelAllowlists.$inferSelect | undefined> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [row] = await tx.insert(tunnelAllowlists).values(values).returning();
+      return row;
+    });
+  } catch (err) {
+    if (isPgUniqueViolation(err)) return undefined;
+    throw err;
+  }
+}
+
 async function getDeviceForTunnel(c: Context, deviceId: string, auth: AuthContext) {
   const [device] = await db
     .select()
@@ -591,41 +622,39 @@ tunnelRoutes.post(
       return c.json({ error: `Target blocked: ${blockResult.reason}` }, 403);
     }
 
-    // Ensure a single-port destination rule for this asset:port. Attempt the
-    // insert; on a unique-violation (index: org_id, direction, pattern,
-    // COALESCE(site_id, nil)) re-select the existing row by the same key — the
-    // index guarantees exactly one match. Mirrors POST /tunnels/allowlist's own
-    // duplicate handling; sidesteps fighting Drizzle's .onConflict API against
-    // an expression index.
+    // Ensure a single-port destination rule for this asset:port. Look the rule
+    // up first — a repeat Connect (the common case) must not raise at all —
+    // then insert inside a savepoint so a concurrent first-Connect losing the
+    // race is contained instead of aborting the request transaction, and
+    // re-select the winner's row by the same key (index: org_id, direction,
+    // pattern, COALESCE(site_id, nil) — exactly one match). Sidesteps fighting
+    // Drizzle's .onConflict API against an expression index.
     const pattern = `${ip}/32:${body.port}`;
-    let rule: typeof tunnelAllowlists.$inferSelect | undefined;
+    const ruleKey = and(
+      eq(tunnelAllowlists.orgId, device.orgId),
+      eq(tunnelAllowlists.direction, 'destination'),
+      eq(tunnelAllowlists.pattern, pattern),
+      siteId ? eq(tunnelAllowlists.siteId, siteId) : isNull(tunnelAllowlists.siteId),
+    );
+    const findRule = async () => {
+      const [existing] = await db.select().from(tunnelAllowlists).where(ruleKey).limit(1);
+      return existing;
+    };
+
+    let rule = await findRule();
     let ruleCreated = false;
-    try {
-      [rule] = await db
-        .insert(tunnelAllowlists)
-        .values({
-          orgId: device.orgId,
-          siteId: siteId || null,
-          direction: 'destination',
-          pattern,
-          source: 'discovery',
-          discoveredAssetId: asset.id,
-          createdBy: auth.user.id,
-        })
-        .returning();
-      ruleCreated = true;
-    } catch (err) {
-      if (!isPgUniqueViolation(err)) throw err;
-      [rule] = await db
-        .select()
-        .from(tunnelAllowlists)
-        .where(and(
-          eq(tunnelAllowlists.orgId, device.orgId),
-          eq(tunnelAllowlists.direction, 'destination'),
-          eq(tunnelAllowlists.pattern, pattern),
-          siteId ? eq(tunnelAllowlists.siteId, siteId) : isNull(tunnelAllowlists.siteId),
-        ))
-        .limit(1);
+    if (!rule) {
+      rule = await insertAllowlistRuleUnlessDuplicate({
+        orgId: device.orgId,
+        siteId: siteId || null,
+        direction: 'destination',
+        pattern,
+        source: 'discovery',
+        discoveredAssetId: asset.id,
+        createdBy: auth.user.id,
+      });
+      ruleCreated = rule !== undefined;
+      if (!rule) rule = await findRule();
     }
 
     if (!rule) {
@@ -862,35 +891,28 @@ tunnelRoutes.post(
       return c.json({ error: 'Site not found for this organization' }, 404);
     }
 
-    let rule: typeof tunnelAllowlists.$inferSelect | undefined;
-    try {
-      [rule] = await db
-        .insert(tunnelAllowlists)
-        .values({
-          orgId,
-          siteId: body.siteId || null,
-          direction: body.direction,
-          pattern: body.pattern,
-          description: body.description || null,
-          source: body.source || 'manual',
-          discoveredAssetId: body.discoveredAssetId || null,
-          createdBy: auth.user.id,
-        })
-        .returning();
-    } catch (err) {
-      // The expression unique index on (orgId, direction, pattern, siteId)
-      // raises 23505 on a duplicate rule — map it to a clear 409 instead of
-      // letting it bubble as a raw 500.
-      if (isPgUniqueViolation(err)) {
-        return c.json({ error: 'An identical allowlist rule already exists for this organization' }, 409);
-      }
-      throw err;
+    // The expression unique index on (orgId, direction, pattern, siteId)
+    // raises 23505 on a duplicate rule — map it to a clear 409 instead of
+    // letting it bubble as a raw 500. The insert is savepointed so the caught
+    // violation cannot abort the request transaction (see the helper).
+    const rule = await insertAllowlistRuleUnlessDuplicate({
+      orgId,
+      siteId: body.siteId || null,
+      direction: body.direction,
+      pattern: body.pattern,
+      description: body.description || null,
+      source: body.source || 'manual',
+      discoveredAssetId: body.discoveredAssetId || null,
+      createdBy: auth.user.id,
+    });
+    if (!rule) {
+      return c.json({ error: 'An identical allowlist rule already exists for this organization' }, 409);
     }
 
     await logTunnelAudit(
       'tunnel.allowlist.create',
       'tunnel_allowlist',
-      rule!.id,
+      rule.id,
       auth.user.id,
       orgId,
       { direction: body.direction, pattern: body.pattern, siteId: body.siteId || null },

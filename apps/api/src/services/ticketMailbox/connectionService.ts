@@ -35,7 +35,11 @@ export interface MailboxConnectionListItem {
   status: MailboxConnectionStatus;
   lastPolledAt: Date | null;
   lastMessageAt: Date | null;
+  /** Sanitized probe failure reason ("Mailbox verification failed: Graph 403 (…)"), else null. */
+  verificationError: string | null;
 }
+
+export const MAILBOX_VERIFICATION_FAILED = 'Mailbox verification failed';
 
 export type MailboxConnectionSnapshot = Pick<
   MailboxConnection,
@@ -61,6 +65,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     status: ticketMailboxConnections.status,
     lastPolledAt: ticketMailboxConnections.lastPolledAt,
     lastMessageAt: ticketMailboxConnections.lastMessageAt,
+    lastError: ticketMailboxConnections.lastError,
   }).from(ticketMailboxConnections)
     .where(eq(ticketMailboxConnections.partnerId, partnerId));
   return rows.map((row) => ({
@@ -70,6 +75,9 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     status: row.status as MailboxConnectionStatus,
     lastPolledAt: row.lastPolledAt,
     lastMessageAt: row.lastMessageAt,
+    // Only our own sanitized reason is exposed; the poll worker also writes
+    // lastError with raw upstream error text that must not reach the client.
+    verificationError: row.lastError?.startsWith(MAILBOX_VERIFICATION_FAILED) ? row.lastError : null,
   }));
 }
 
@@ -282,6 +290,27 @@ export async function isMailboxConnectionSnapshotCurrent(
   return rows.length === 1;
 }
 
+/** Request-context update for a retest that fails again while the connection
+ * is already `error`: no status transition, but the stored reason must track
+ * the latest probe result so `verificationError` doesn't go stale on refresh
+ * (#6192). Same snapshot+status guard as isMailboxConnectionSnapshotCurrent. */
+export async function refreshErrorReason(
+  snapshot: MailboxConnectionSnapshot,
+  lastError: string,
+): Promise<boolean> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ lastError, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, snapshot.id),
+      eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
+      eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
+      eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
+      eq(ticketMailboxConnections.status, 'error'),
+    ))
+    .returning({ id: ticketMailboxConnections.id });
+  return rows.length === 1;
+}
+
 export async function setConnectedMailboxStatus(
   snapshot: MailboxConnectionSnapshot,
   status: Exclude<MailboxConnectionStatus, 'connected' | 'pending_consent' | 'disabled'>,
@@ -341,16 +370,44 @@ export async function resetDeltaCursor(snapshot: MailboxConnectionSnapshot): Pro
   }));
 }
 
+export interface MailboxProbeResult {
+  ok: boolean;
+  error?: string;
+  /** Operator-safe diagnostic: HTTP status + Graph `error.code` only, never message bodies. */
+  reason?: string;
+}
+
+const GRAPH_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_.]{0,63}$/;
+
 /** Lightweight Graph probe: can the app read this mailbox under the tenant's consent? */
-export async function probeMailbox(tenantId: string, mailboxAddress: string): Promise<{ ok: boolean; error?: string }> {
+export async function probeMailbox(tenantId: string, mailboxAddress: string): Promise<MailboxProbeResult> {
   let token: string;
   try {
     token = await getMailboxToken(tenantId);
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'token acquisition failed' };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'token acquisition failed',
+      reason: 'token acquisition failed',
+    };
   }
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailboxAddress)}/messages?${encodeURIComponent('$top')}=1`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' });
   if (res.ok) return { ok: true };
-  return { ok: false, error: `Graph returned ${res.status}` };
+  let code: string | undefined;
+  try {
+    const body = await res.json() as { error?: { code?: unknown } };
+    if (typeof body?.error?.code === 'string' && GRAPH_ERROR_CODE.test(body.error.code)) code = body.error.code;
+  } catch {
+    // Non-JSON / empty body (Graph's normal shape for many errors) and a
+    // genuine body-stream failure both land here; either way we still report
+    // the status alone. Deliberately not logging the parse error's message,
+    // which can echo a fragment of the response body.
+    console.warn('[ticketMailbox] failed to parse Graph error body', { status: res.status });
+  }
+  return {
+    ok: false,
+    error: `Graph returned ${res.status}`,
+    reason: code ? `Graph ${res.status} (${code})` : `Graph ${res.status}`,
+  };
 }

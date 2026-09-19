@@ -17,6 +17,7 @@ import {
   collectReadableDrRows,
   drGroupsReadable,
   drReadSiteCeiling,
+  drReadUnrestricted,
   filterReadableDrExecutions,
   filterReadableDrPlans,
 } from './drReadAuthorization';
@@ -189,7 +190,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       // Unrestricted and system callers keep the original single-query path.
       // Only the restricted branch needs a concrete org to resolve device
       // sites; a restricted caller whose org cannot be resolved fails CLOSED.
-      if (siteCeiling === null) {
+      if (drReadUnrestricted(auth)) {
         const rows = await load(undefined, limit);
         return JSON.stringify({ plans: rows, showing: rows.length });
       }
@@ -339,7 +340,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       // See query_dr_plans: unrestricted/system keeps the single-query path;
       // only the restricted branch needs a concrete org, and fails closed
       // without one.
-      if (siteCeiling === null) {
+      if (drReadUnrestricted(auth)) {
         const rows = await load(undefined, limit);
         return JSON.stringify({ executions: rows, showing: rows.length });
       }
@@ -384,6 +385,13 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       const plan = await loadPlanWithAccess(planId, auth);
       if (!plan) return JSON.stringify({ error: 'Plan not found or access denied' });
       if (plan.status === 'archived') return JSON.stringify({ error: 'Cannot execute an archived plan' });
+      // Executing a plan restores/fails over every device its STORED groups
+      // name — none of which the caller had to submit, so the declarative
+      // `deviceArgs` gate never saw them (#6096 #2). Same helper the plan-level
+      // mutations use; a no-op for unrestricted callers.
+      if (await planStoredDevicesDenied(auth, plan.orgId, plan.id)) {
+        return JSON.stringify({ error: 'Plan not found or access denied' });
+      }
 
       const groupConditions: SQL[] = [eq(drPlanGroups.planId, plan.id)];
       const gc = orgWhere(auth, drPlanGroups.orgId);
@@ -534,6 +542,12 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
         const plan = await loadPlanWithAccess(planId, auth);
         if (!plan) return JSON.stringify({ error: 'Plan not found or access denied' });
+        // The submitted `devices` are gated by `deviceArgs`, but the PLAN being
+        // extended is not: attaching a group is a control-plane write over every
+        // site/device the plan already reaches (#6096 #2).
+        if (await planStoredDevicesDenied(auth, plan.orgId, plan.id)) {
+          return JSON.stringify({ error: 'Plan not found or access denied' });
+        }
 
         const [group] = await db
           .insert(drPlanGroups)

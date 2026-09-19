@@ -5,7 +5,49 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestStopShipperDoesNotBlockShutdownLogging(t *testing.T) {
+	// Hold the flush open just as an in-flight HTTP request would, without
+	// making a real network request or waiting for its 30-second timeout.
+	shipper := &Shipper{stopChan: make(chan struct{})}
+	shipper.wg.Add(1)
+	shipperMu.Lock()
+	prev := globalShipper
+	globalShipper = shipper
+	shipperMu.Unlock()
+
+	stopped := make(chan struct{})
+	logged := make(chan struct{})
+	var buf bytes.Buffer
+	logger := slog.New(&shippingHandler{base: slog.NewTextHandler(&buf, nil)})
+	go func() {
+		StopShipper()
+		close(stopped)
+	}()
+	<-shipper.stopChan
+	t.Cleanup(func() {
+		shipper.wg.Done()
+		<-stopped
+		<-logged
+		shipperMu.Lock()
+		globalShipper = prev
+		shipperMu.Unlock()
+	})
+	go func() {
+		logger.Warn("shutdown stage timed out, continuing")
+		close(logged)
+	}()
+	select {
+	case <-logged:
+		if !strings.Contains(buf.String(), "shutdown stage timed out") {
+			t.Fatal("shutdown warning was not written locally")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown timeout warning blocked behind the shipper flush")
+	}
+}
 
 func TestPreInitLoggerUsesConfiguredHandler(t *testing.T) {
 	logger := L("websocket")

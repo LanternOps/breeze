@@ -30,6 +30,7 @@
     "contentChanged": "Los detalles de esta solicitud cambiaron después de crearse, por lo que ya no se puede aprobar.",
     "expired": "Esta solicitud expiró antes de poder decidirse.",
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
+    "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, así que otro aprobador debe decidir sobre esta solicitud.",
     "noApproverDevice": "Aprobar tu propia solicitud requiere Touch ID / Windows Hello.",
     "registerDevice": "Registrar este dispositivo",
     "decideFailed": "No se pudo enviar la decisión",
@@ -128,6 +129,8 @@
   "aiToolCallCard": {
     "running": "En ejecución...",
     "approvedRunning": "Aprobado · en ejecución",
+    "approvedFailed": "Aprobado · falló",
+    "approvedCompleted": "Aprobado · completado",
     "input": "Entrada:",
     "error": "Error:",
     "output": "Salida:"
@@ -138,7 +141,7 @@
     "tabs": {
       "orgs": "Organizaciones",
       "sessions": "Sesiones",
-      "usage": "Uso",
+      "usage": "Uso del complemento de Office",
       "templates": "Plantillas"
     }
   },

@@ -58,8 +58,9 @@
     "partner": "Partner",
     "billing": "Fatturazione",
     "organizations": "Organizzazioni",
-    "aiUsageBudget": "Utilizzo e budget AI",
+    "aiUsage": "Utilizzo AI",
     "scriptAuthoring": "Creazione di script",
+    "toolSources": "Fonti degli strumenti",
     "aiAgents": "Agenti AI",
     "aiAgentRuns": "Esecuzioni agenti IA",
     "aiImpact": "Impatto IA",
@@ -94,7 +95,9 @@
     "aiRisk": "Rischio IA",
     "deviceBackup": "Backup dispositivi",
     "sectionServiceDesk": "Service desk",
-    "serviceManagement": "Gestione servizi"
+    "serviceManagement": "Gestione servizi",
+    "ticketing": "Ticket",
+    "deliverableTemplates": "Modelli di consegna"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -955,7 +958,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Intervallo (s)",
-          "timeout": "Timeout (s)"
+          "timeout": "Timeout (s)",
+          "target": "URL di destinazione"
         },
         "labels": {
           "lastChecked": "Ultimo controllo: {{time}}",
@@ -983,6 +987,20 @@
           "httpCheck": "Controllo HTTP",
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Porta"
+        },
+        "targetResetNote": "La modifica dell’URL reimposta l’osservazione TLS.",
+        "saved": "Monitor aggiornato",
+        "certificate": {
+          "title": "Certificato",
+          "issuer": "Emittente",
+          "expires": "Scadenza",
+          "observedHost": "Host osservato",
+          "state": "Stato",
+          "states": {
+            "observed": "Osservato",
+            "handshakeFailed": "Negoziazione TLS non riuscita",
+            "notTls": "Senza TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1833,7 +1851,9 @@
         "assetsDescription": "Visualizzazione unificata del polling SNMP e dei controlli di rete per risorsa rilevata.",
         "table": {
           "asset": "Risorsa",
-          "overall": "Stato complessivo"
+          "overall": "Stato complessivo",
+          "reachability": "Raggiungibilità",
+          "collection": "Raccolta"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1885,7 +1905,29 @@
         "disabling": "Disabilitazione...",
         "yesDisable": "Sì, disabilita",
         "monitoringNotActive": "Il monitoraggio non è attivo per questa risorsa.",
-        "saving": "Salvataggio..."
+        "saving": "Salvataggio...",
+        "openSettings": "Impostazioni…",
+        "reachability": {
+          "responding": "Risponde",
+          "notResponding": "Non risponde",
+          "unverified": "Non verificato",
+          "sources": {
+            "networkCheck": "controllo di rete",
+            "probe": "controlla ora",
+            "scan": "scansione",
+            "unifi": "controller UniFi",
+            "snmp": "interrogazione SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Raccolta in corso",
+          "partial": "Parziale",
+          "no_template": "Nessun modello",
+          "failing": "Non riuscita",
+          "paused": "In pausa",
+          "never_polled": "Mai interrogato",
+          "not_configured": "Non configurato"
+        }
       },
       "MonitoringPage": {
         "tabs": {

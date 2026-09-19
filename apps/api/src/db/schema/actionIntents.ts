@@ -279,6 +279,22 @@ export const actionIntents = pgTable(
     taskId: uuid('task_id'),
     taskStepKey: text('task_step_key'),
     operationKey: text('operation_key'),
+    /**
+     * Tool catalog W01 PR B (#5216): the external (BYO MCP) tool this Tier-3
+     * intent releases through, bound to the exact `tool_source_tools` row and
+     * `revision` the approver saw. Both set or both NULL
+     * (`action_intents_external_tool_chk`); immutable (deny-listed in
+     * action_intents_block_content_update(), migrations/
+     * 2026-10-16-193700-action-intents-external-tool.sql).
+     *
+     * Bare uuid, NO FK — deliberately, like aiOriginSessionId: the row is
+     * immutable evidence and must never be blocked or tombstoned by a deleted
+     * tool row. Release revalidation reloads the live row by this id and
+     * fails closed (`external_tool_disabled` / `external_tool_drift` /
+     * `external_tool_source_unavailable`, revalidateRelease.ts).
+     */
+    toolSourceToolId: uuid('tool_source_tool_id'),
+    toolRevision: text('tool_revision'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable

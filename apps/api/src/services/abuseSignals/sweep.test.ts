@@ -16,6 +16,8 @@ const {
   loadRecidivistMatches,
   computeRecidivistSignals,
   loadOriginIpAggregates,
+  loadSendingDomainAggregates,
+  computeSendingDomainSignals,
   persistSignals,
   markDelivered,
   sendOpsAlert,
@@ -34,6 +36,8 @@ const {
   loadRecidivistMatches: vi.fn(),
   computeRecidivistSignals: vi.fn(),
   loadOriginIpAggregates: vi.fn(),
+  loadSendingDomainAggregates: vi.fn(),
+  computeSendingDomainSignals: vi.fn(),
   persistSignals: vi.fn(),
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
@@ -67,6 +71,7 @@ vi.mock('./originIp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./originIp')>()),
   loadOriginIpAggregates,
 }));
+vi.mock('./sendingDomains', () => ({ loadSendingDomainAggregates, computeSendingDomainSignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
@@ -129,6 +134,8 @@ beforeEach(() => {
     corpus: { suspendedIps: new Map(), probes: [] },
     scannedPartnerIds: [],
   });
+  loadSendingDomainAggregates.mockResolvedValue({ aggregates: [], scannedPartnerIds: [] });
+  computeSendingDomainSignals.mockReturnValue([]);
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
 });
@@ -414,5 +421,23 @@ describe('runAbuseSweep — origin-IP detector wiring', () => {
     const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
     expect(persisted.map((s) => s.signalKey)).toEqual(['fraud.dead_account_probe_origin']);
     expect(persisted.some((s) => s.signalKey === 'fraud.corroborated_watch')).toBe(false);
+  });
+});
+
+describe('sending-domain signals are wired into the sweep', () => {
+  it('feeds sending-domain signals into persistSignals and their partners into the evaluated set', async () => {
+    loadSendingDomainAggregates.mockResolvedValue({
+      aggregates: [], scannedPartnerIds: ['p-sending'],
+    });
+    computeSendingDomainSignals.mockReturnValue([
+      { partnerId: 'p-sending', signalKey: 'email.partner_lane_cap_hit', score: 45, severity: 'watch', evidence: { partnerName: 'Acme' } },
+    ] satisfies ComputedSignal[]);
+    persistSignals.mockResolvedValue({ toNotify: [] });
+
+    await runAbuseSweep();
+
+    const [computed, , evaluated] = persistSignals.mock.calls[0]!;
+    expect((computed as ComputedSignal[]).map((s) => s.signalKey)).toContain('email.partner_lane_cap_hit');
+    expect((evaluated as ReadonlySet<string>).has('p-sending')).toBe(true);
   });
 });

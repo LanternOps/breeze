@@ -40,6 +40,7 @@ import { showToast } from '../shared/Toast';
 import DeliverableTemplatesPage from './DeliverableTemplatesPage';
 import type { TemplateSet } from '../../lib/api/deliverableTemplates';
 import type { ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
+import { MANAGED_EVIDENCE_REPORT_TYPES } from '@breeze/shared';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -260,6 +261,64 @@ describe('DeliverableTemplatesPage', () => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Deliverable removed' }));
     });
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
+  });
+
+  // #5784 W02 shipped the first managed-evidence type, so the picker now has
+  // options and the empty state is gone. The picker still defaults to None —
+  // auto-evidence is opt-in, never inherited by an existing template item.
+  // W03 and W04 registered further types (endpoint_management_review,
+  // vulnerability_management); the assertion below reads the registry
+  // directly so later waves need no edit here.
+  it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    // None stays the default — auto-evidence is opt-in per item.
+    expect(select.value).toBe('');
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
+    );
+  });
+
+  it('sends autoEvidenceReportType: null on item create when None is selected', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({
+        data: {
+          id: 'item-2',
+          setId: 'set-1',
+          name: 'Quarterly review',
+          description: null,
+          cadence: 'quarterly',
+          leadDays: 7,
+          graceDays: 14,
+          artifactRequired: true,
+          completionMode: 'on_ticket_resolve',
+          sortOrder: 0,
+          autoEvidenceReportType: null,
+        },
+      }),
+    );
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+    fireEvent.change(screen.getByTestId('deliverable-template-item-name'), { target: { value: 'Quarterly review' } });
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/deliverable-templates/set-1/items' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body).toEqual(expect.objectContaining({ autoEvidenceReportType: null }));
+    });
   });
 });
 

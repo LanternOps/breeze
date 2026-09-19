@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Üçüncü Taraf Kataloğu",
     "adminTrustAct": "Ortak güven eylemi",
     "adminTrustQueue": "Ortak güven kuyruğu",
+    "adminSendingDomains": "İş ortağı gönderim alan adları",
     "adminUsersDetailDevices": "Kullanıcı cihazları",
     "aiAgentsImpact": "Yapay Zeka Etkisi",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
@@ -126,8 +127,9 @@
     "sensitiveData": "Hassas Veriler",
     "settingsAccessReviews": "Erişim İncelemeleri",
     "settingsAiAgents": "Yapay Zeka Aracıları",
-    "settingsAiUsage": "Yapay Zeka Kullanımı ve Bütçe",
+    "settingsAiUsage": "Yapay Zeka Kullanımı",
     "settingsAiScriptAuthoring": "Betik yazımı",
+    "settingsToolSources": "Araç Kaynakları",
     "settingsAlertTemplatesDetail": "Uyarı Şablonu",
     "settingsAlertTemplates": "Uyarı Şablonları",
     "settingsApiKeys": "API Anahtarları",
@@ -165,7 +167,8 @@
     "agreementTemplates": "Anlaşma şablonları",
     "agreementTemplateDetail": "Anlaşma şablonu",
     "agreementTemplateNew": "Yeni anlaşma şablonu",
-    "signedAgreements": "İmzalı anlaşmalar"
+    "signedAgreements": "İmzalı anlaşmalar",
+    "settingsTicketing": "Bilet Ayarları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

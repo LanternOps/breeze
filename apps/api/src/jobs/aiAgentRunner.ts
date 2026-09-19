@@ -42,9 +42,21 @@ import {
 // find them here.
 export { AI_AGENT_QUEUE, AI_AGENT_RUN_JOB_NAME, enqueueAgentRunJob, getAiAgentRunJobId };
 
-/** Wall-clock ceiling for a run is 600s (the run loop owns the abort
- *  controller); the BullMQ lock has to outlive that plus teardown, hence 720s. */
-const AI_AGENT_LOCK_DURATION_MS = 720_000;
+/**
+ * The BullMQ lock has to outlive the longest wall clock ANY profile may be
+ * configured for, plus teardown — not just the shared 600s default. 1800s is
+ * the ceiling the validator accepts for every wall-clock field
+ * (`wallClockSeconds`, `analysisWallClockSeconds`, and #5870's
+ * `designWallClockSeconds`, whose default now sits at that ceiling), so this
+ * is sized off 1800s rather than 600s (was 720_000, i.e. 600s+120s). 1800s +
+ * 180s teardown/skew buffer = 1_980_000ms.
+ *
+ * `runService.ts`'s `STALLED_RUN_AFTER_SECONDS` (2700s = 1800s + 900s) is the
+ * admission-side reaper for a run whose worker crashed outright; it was
+ * already sized off the 1800s validator ceiling and comfortably exceeds this
+ * lock duration, so it needs no change here.
+ */
+const AI_AGENT_LOCK_DURATION_MS = 1_980_000;
 
 let aiAgentWorker: Worker<AiAgentQueueJobData> | null = null;
 

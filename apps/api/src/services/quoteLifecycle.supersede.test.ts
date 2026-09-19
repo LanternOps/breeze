@@ -79,7 +79,6 @@ vi.mock('./email', async (importOriginal) => {
     ...actual,
     getEmailService: vi.fn(() => ({
       sendEmail: vi.fn((args: Record<string, unknown>) => { capturedEmailArgs = args; return sendEmailMock(args); }),
-      fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>`,
     })),
   };
 });

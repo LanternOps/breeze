@@ -317,6 +317,7 @@ export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
 export interface HardwareLifecyclePortalLatestDto {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
+  contact: { name: string | null; email: string } | null;
   // The org's `enable_self_service` flag (#5880) — governs whether a device
   // row's Computer cell may link to /portal/devices, which itself redirects
   // home when self-service is off.
@@ -735,6 +736,7 @@ export interface BrandingConfig {
   enableTickets?: boolean;
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
+  enableDevices?: boolean;
   enablePasswordReset?: boolean;
   enableDashboard?: boolean;
   enableSecurity?: boolean;

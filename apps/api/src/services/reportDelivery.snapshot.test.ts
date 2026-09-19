@@ -56,6 +56,7 @@ vi.mock('../services/reportGenerationService', () => ({
 }));
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
+const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
 vi.mock('../services/siteScope', () => ({
   resolveLiveReportAuthority: vi.fn(async () => ({
@@ -168,6 +169,7 @@ async function runScheduledReportForTest(args: {
   selectMock.mockReturnValueOnce(selectChain([reportRow({ format: args.format, config: { emailRecipients: args.recipients } })]));
   selectMock.mockReturnValueOnce(selectChain([])); // contact recipients
   selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone
+  selectMock.mockReturnValueOnce(selectChain([{ partnerId: PARTNER_ID }])); // org -> partner, for report.delivery
   insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
   updateMock.mockReturnValue(updateChain());
   generateReportMock.mockResolvedValueOnce({ rows: args.rows, rowCount: args.rows.length, summary: args.summary });

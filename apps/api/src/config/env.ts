@@ -138,6 +138,23 @@ export function remoteDesktopFenceRequired(): boolean {
 // policyDecide.sweepFlagOff.test.ts, the regression control for exactly that).
 // Read at CALL time, like policyDecideEnabled above, so a test can flip it
 // per case without vi.resetModules().
+// Task A7 (tool-catalog W1, spec docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-w1-tool-sources-mcp.md).
+// Platform kill switch for the tool-catalog / tool-sources feature. Default
+// OFF (dark-ship). Read at CALL time, like policyDecideEnabled() above, so a
+// test can flip it per-case without vi.resetModules().
+export function toolSourcesEnabled(): boolean {
+  return envFlag('TOOL_SOURCES_ENABLED', false);
+}
+
+// Task A7. Sub-flag of toolSourcesEnabled(): whether a tool source's outbound
+// fetch may target a private/loopback/link-local address. Default OFF, and
+// refused outright on the hosted platform (validate.ts superRefine) — a
+// tool source that can reach a partner's internal network from a shared
+// hosted egress path is an SSRF vector, so this is self-hosted-only.
+export function toolSourcesAllowPrivateEgress(): boolean {
+  return envFlag('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS', false);
+}
+
 export function sweepActEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
 }

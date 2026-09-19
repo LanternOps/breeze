@@ -211,7 +211,8 @@
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    }
+    },
+    "overridesOrgTab": "Os campos definidos aqui substituem e bloqueiam o mesmo campo na aba de IA de cada organização."
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -547,7 +548,8 @@
       },
       "ticketing": {
         "label": "Chamados",
-        "description": "Status, SLAs, exportações"
+        "description": "Status, SLAs, categorias, formulários",
+        "linkCta": "Gerenciar configurações de tickets →"
       },
       "aiBudgets": {
         "label": "Orçamentos de IA",
@@ -564,6 +566,10 @@
       "loginBranding": {
         "label": "Identidade visual do login",
         "description": "Aparência da página de login"
+      },
+      "modules": {
+        "label": "Módulos",
+        "description": "Central de serviços e faturamento ativados/desativados"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -896,7 +902,10 @@
     },
     "customCss": {
       "title": "CSS personalizado (avançado)",
-      "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout."
+      "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout.",
+      "saveError": "Falha ao salvar o CSS personalizado.",
+      "loadError": "Não foi possível carregar o CSS personalizado salvo atualmente. A edição está desativada até que isso seja carregado.",
+      "saveBlockedByLoadError": "O CSS personalizado não foi salvo: não foi possível verificar o valor atual. Recarregue a página e tente novamente."
     },
     "preview": {
       "action": "Visualizar",
@@ -1130,6 +1139,10 @@
       "description": "Escolha quais informações de serviço este cliente pode ver no portal.",
       "enableAll": "Ativar toda a visibilidade",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar a página Dispositivos. O autoatendimento também permite acessar esta página."
+        },
         "enableDashboard": {
           "label": "Painel",
           "description": "Mostra um resumo da saúde do serviço ao entrar."
@@ -1455,7 +1468,7 @@
     "completeReview": "Concluir revisão"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Uso e orçamento de IA",
+    "aIUsageBudget": "Uso de IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do assistente de IA e configure limites de orçamento",
     "budgetConfiguration": "Configuração de orçamento",
     "aIEnabled": "IA habilitada",
@@ -1505,7 +1518,19 @@
     "untitled": "Sem título",
     "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
     "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}}: o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
-    "creditsRemaining": "Créditos de IA Breeze restantes"
+    "creditsRemaining": "Créditos de IA Breeze restantes",
+    "defaultValue": "Padrão ({{value}})",
+    "viewPartnerWideBudgets": "Orçamentos de IA do parceiro",
+    "monitorAIAssistantUsage": "Monitorar o uso do assistente de IA",
+    "effectiveBudget": "Orçamento vigente",
+    "effectiveBudgetHelp": "Os limites em vigor para esta organização agora, e onde cada um foi definido.",
+    "effectiveBudgetUnavailable": "Não foi possível carregar o orçamento efetivo. Recarregue a página para tentar novamente.",
+    "sourcePartner": "Definido pelo parceiro",
+    "sourceOrganization": "Definido pela organização",
+    "sourceDefault": "Padrão",
+    "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
+    "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
+    "thresholdsOff": "Desativado"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1542,6 +1567,7 @@
       "actMode": {
         "label": "Modo de ação",
         "hint": "Quando ativado, este agendamento pode aplicar certas correções automaticamente em vez de aguardar aprovação.",
+        "deploymentDisabledHint": "O modo de ação não está disponível porque BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED está desativado nesta instalação. Entre em contato com seu administrador para ativá-lo.",
         "disabledHint": "Ativar o modo de ação exige acesso total do parceiro a todas as organizações.",
         "scopeNote": "As correções não supervisionadas se limitam a reiniciar um serviço parado, e somente em dispositivos cuja organização já recebeu a permissão manage_services:restart. Todo o resto continua aguardando aprovação.",
         "disableForOrg": "Desativar o modo de ação para esta organização",
@@ -1615,7 +1641,9 @@
       "act": "Ação",
       "actConsequence": "Executa as operações permitidas sem um clique. Não há reversão automática.",
       "actUnavailable": "Ainda não está disponível para este agente.",
-      "shadowUnavailableForKind": "Este agente apenas lê e escreve relatórios — não há nada para observar no modo sombra."
+      "designerAct": "Ligado",
+      "designerActConsequence": "Executa por agendamento ou sob demanda e escreve um Fleet Design. Nunca altera um dispositivo.",
+      "shadowApprovalNotice": "As propostas chegam em Aprovações; aprovar uma delas a executa de verdade, não é uma simulação."
     },
     "allOrgs": "Todas as organizações",
     "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
@@ -2113,11 +2141,13 @@
           "title": "Arquivos gerados por esta execução",
           "download": "Baixar",
           "preview": "Visualizar",
-          "attachToTicket": "Anexar a um chamado",
-          "attach": "Anexar {{name}}",
+          "attachToTicket": "Anexar como nota interna",
+          "attach": "Anexar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID do chamado",
-          "attachedToTicket": "Anexado ao chamado",
-          "attachFailed": "Não foi possível anexar o arquivo a esse chamado"
+          "attachedToTicket": "Anexado ao chamado como nota interna",
+          "attachFailed": "Não foi possível anexar o arquivo a esse chamado",
+          "attachedButCommentFailed": "O arquivo foi anexado, mas não foi possível adicionar a nota ao chamado",
+          "downloadExpired": "Este arquivo expirou e não está mais disponível para download."
         },
         "workspace": {
           "title": "O que foi executado na sandbox",
@@ -2235,6 +2265,7 @@
       "emptyState": {
         "title": "Ainda não há resultados de IA neste período",
         "description": "Os resultados aparecerão aqui assim que seus agentes de IA avaliarem um alerta, triarem um chamado ou executarem uma correção no modo de observação ou de ação. Amplie o período do relatório acima ou configure um agente para começar.",
+        "descriptionWidestWindow": "Os resultados aparecerão aqui assim que seus agentes de IA avaliarem um alerta, triarem um chamado ou executarem uma correção no modo de observação ou de ação. Ainda não há dados suficientes, mesmo no período de relatório mais amplo — configure um agente para começar.",
         "action": "Configurar um agente"
       },
       "tileGroups": {
@@ -3051,6 +3082,11 @@
       "searchPlaceholder": "Pesquisar scripts…",
       "selectedCount_one": "{{count}} script autorizado",
       "selectedCount_other": "{{count}} scripts autorizados"
+    },
+    "designerNote": {
+      "title": "Este agente apenas lê e escreve relatórios",
+      "body": "Um Fleet Designer nunca executa nada em um dispositivo. Ligado significa que ele pode ser executado e entregar seus designs aos destinatários que você escolher.",
+      "ack": "Entendo que este agente é executado sem supervisão e entrega Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3393,7 +3429,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de Produtos",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "O catálogo de produtos está disponível apenas para contas de parceiros.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gerencie hardware, software e itens de serviço usados em cotações, contratos e faturas. Conecte distribuidores (Pax8, TD SYNNEX) em Integrações → Distribuidores."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gerencie hardware, software e itens de serviço usados em cotações, contratos e faturas. Conecte distribuidores (Pax8, TD SYNNEX) em Integrações → Distribuidores.",
+    "distributorsLink": "Gerenciar conexões de distribuidores →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "A senha atual é obrigatória",
@@ -4091,6 +4128,7 @@
     "languageLoadFailed": "Preferência salva, mas o idioma não foi carregado — exibindo em inglês. Verifique sua conexão e tente novamente."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tempo padrão (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "Os minutos de SLA e a taxa horária devem ser números.",
     "categoryUpdated": "Categoria atualizada",
     "ticketing": "Chamados",
@@ -4192,7 +4230,10 @@
     "inboundEmail": "E-mail de entrada",
     "cannedResponses": "Respostas prontas",
     "checkingAccess": "Verificando seu acesso...",
-    "timeTracking": "Controle de tempo"
+    "timeTracking": "Controle de tempo",
+    "email": "E-mail",
+    "templates": "Modelos",
+    "timeCapture": "Registro de tempo"
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
@@ -4346,6 +4387,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Orçamento de IA",
+    "description": "Limites de gastos, limites de frequência e modo de aprovação do assistente de IA nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
+  },
   "orgSettingsPage": {
     "loading": "Carregando configurações da organização...",
     "confirmDiscard": "Você tem alterações não salvas nesta seção. A troca irá descartá-los. Continuar?",
@@ -4399,7 +4445,9 @@
       "notifications": "Notificações",
       "notificationsDescription": "E-mail, Slack, webhooks",
       "ticketing": "Chamados",
-      "ticketingDescription": "SLA e substituições de faturamento"
+      "ticketingDescription": "SLA e substituições de faturamento",
+      "ai": "IA",
+      "aiDescription": "Orçamento do assistente de IA, limites de frequência e modo de aprovação"
     },
     "overview": {
       "title": "Visão geral da organização",
@@ -5160,7 +5208,15 @@
     "columns": {
       "email": "E-mail",
       "role": "Função",
-      "lastLogin": "Último login"
+      "lastLogin": "Último login",
+      "mfaStatus": "Status da MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrito",
+      "pending": "Pendente",
+      "pendingByDate": "Pendente — inscrever-se até {{date}}",
+      "overdue": "Atrasado",
+      "notRequired": "Não exigido"
     },
     "status": {
       "active": "Ativo",
@@ -5226,6 +5282,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "As variáveis de cada organização são listadas na respectiva organização.",
     "title": "Variáveis",
     "description": "Defina um valor uma única vez — um token de site de fornecedor, a URL de um repositório interno — e faça referência a ele nos scripts em vez de fixá-lo para cada cliente.",
     "loading": "Carregando variáveis…",
@@ -5265,6 +5322,16 @@
     "empty": {
       "title": "Nenhuma variável ainda",
       "description": "Crie uma para parar de colar o mesmo token nos scripts de cada cliente."
+    },
+    "filters": {
+      "searchLabel": "Pesquisar variáveis",
+      "searchPlaceholder": "Pesquisar por chave ou descrição",
+      "scopeGroupLabel": "Filtrar por escopo",
+      "scopeAll": "Todos os escopos"
+    },
+    "noMatches": {
+      "title": "Nenhuma variável corresponde aos seus filtros",
+      "description": "Tente um termo de pesquisa diferente ou limpe o filtro de escopo."
     },
     "errors": {
       "load": "Não foi possível carregar as variáveis."
@@ -5559,5 +5626,18 @@
     "saveFailed": "Não foi possível salvar essas configurações.",
     "loading": "Carregando…",
     "loadFailed": "Não foi possível carregar as configurações de criação de scripts."
+  },
+  "ticketingHubPage": {
+    "heading": "Configurações de tickets",
+    "description": "Status, SLAs, categorias, formulários de abertura, e-mail, modelos e registro de tempo, aplicados a todas as suas organizações."
+  },
+  "catalogDefaultsCard": {
+    "title": "Padrões do catálogo",
+    "description": "Usados para pré-preencher importações do catálogo e o preenchimento automático do editor de orçamentos — não afetam diretamente a resolução de preços.",
+    "loading": "Carregando padrões do catálogo...",
+    "loadError": "Falha ao carregar os padrões do catálogo.",
+    "saveError": "Falha ao salvar os padrões do catálogo",
+    "saveSuccess": "Padrões do catálogo salvos",
+    "saveButton": "Salvar"
   }
 }

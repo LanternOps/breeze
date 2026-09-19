@@ -1,9 +1,11 @@
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   __setVercelSdkForTests,
   createVercelSandboxBackend,
   readVercelCredentials,
+  resolveVercelImage,
   resolveVercelRegion,
 } from './vercelSandboxBackend';
 import type { SandboxCreateSpec } from './sandboxBackend';
@@ -36,7 +38,7 @@ function makeFakeSandbox(overrides: Record<string, unknown> = {}) {
     totalDurationMs: undefined as number | undefined,
     runCommand: vi.fn(async (_params?: Record<string, unknown>) => ({ exitCode: 0 as number | null, durationMs: 12 as number | undefined })),
     writeFiles: vi.fn(async (_files?: Array<{ path: string; content: Buffer }>) => undefined),
-    readFileToBuffer: vi.fn(async (_file?: { path: string }): Promise<Buffer | null> => Buffer.from('hi')),
+    readFile: vi.fn(async (_file?: { path: string }, _opts?: { signal: AbortSignal }): Promise<Readable | null> => Readable.from([Buffer.from('hi')])),
     mkDir: vi.fn(async (_path?: string) => undefined),
     fs: {
       mkdir: vi.fn(async (_p?: string, _o?: { recursive: boolean }) => undefined),
@@ -81,6 +83,26 @@ describe('resolveVercelRegion', () => {
   });
 });
 
+describe('resolveVercelImage', () => {
+  it('keeps the universal image for deployments without an override', () => {
+    expect(resolveVercelImage({})).toBe('vercel/sandbox/universal');
+    expect(resolveVercelImage({ VERCEL_SANDBOX_IMAGE: '' })).toBe('vercel/sandbox/universal');
+  });
+
+  it.each(['breeze/analysis:2026-09-16', '@breeze/analysis', `registry.example.com/breeze/analysis@sha256:${'a'.repeat(64)}`])(
+    'accepts the configured reference %s unchanged', (image) => {
+      expect(resolveVercelImage({ VERCEL_SANDBOX_IMAGE: image })).toBe(image);
+    },
+  );
+
+  it.each([' ', ' image', 'image ', 'image\nother', 'image\tother'])(
+    'rejects malformed explicit configuration %j', (image) => {
+      expect(() => resolveVercelImage({ VERCEL_SANDBOX_IMAGE: image }))
+        .toThrowError(expect.objectContaining({ code: 'create_failed' }));
+    },
+  );
+});
+
 describe('readVercelCredentials', () => {
   it('requires all three and never falls back to ambient SDK env', () => {
     expect(() =>
@@ -101,6 +123,7 @@ describe('vercelSandboxBackend', () => {
   let sandbox: ReturnType<typeof makeFakeSandbox>;
 
   beforeEach(() => {
+    vi.stubEnv('VERCEL_SANDBOX_IMAGE', undefined);
     process.env.VERCEL_SANDBOX_TOKEN = 'tok';
     process.env.VERCEL_TEAM_ID = 'team_x';
     process.env.VERCEL_PROJECT_ID = 'prj_x';
@@ -110,6 +133,7 @@ describe('vercelSandboxBackend', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     __setVercelSdkForTests(null);
     delete process.env.VERCEL_SANDBOX_TOKEN;
     delete process.env.VERCEL_TEAM_ID;
@@ -136,7 +160,22 @@ describe('vercelSandboxBackend', () => {
     expect(String(params.name)).not.toContain(SPEC.orgId);
     expect(String(params.name)).not.toContain(SPEC.runId);
 
-    expect(handle).toMatchObject({ backend: 'vercel', providerRef: 'breeze-eu-abc', region: 'eu' });
+    expect(handle).toMatchObject({ backend: 'vercel', providerRef: 'breeze-eu-abc', region: 'eu', runtimeImage: 'vercel/sandbox/universal' });
+  });
+
+  it('uses the deployment image while preserving the network and persistence restrictions', async () => {
+    vi.stubEnv('VERCEL_SANDBOX_IMAGE', 'breeze/analysis:qa');
+    const handle = await createVercelSandboxBackend().create(SPEC);
+    expect(handle.runtimeImage).toBe('breeze/analysis:qa');
+    expect(Sandbox.create).toHaveBeenCalledWith(expect.objectContaining({
+      image: 'breeze/analysis:qa', networkPolicy: 'deny-all', persistent: false,
+    }));
+  });
+
+  it('rejects a malformed image before creating a sandbox', async () => {
+    vi.stubEnv('VERCEL_SANDBOX_IMAGE', 'bad image');
+    await expect(createVercelSandboxBackend().create(SPEC)).rejects.toMatchObject({ code: 'create_failed' });
+    expect(Sandbox.create).not.toHaveBeenCalled();
   });
 
   it('destroys and fails create when the vendor landed in the wrong region', async () => {
@@ -212,17 +251,58 @@ describe('vercelSandboxBackend', () => {
     await expect(backend.readFile(handle, '/etc/passwd', 10)).rejects.toMatchObject({
       code: 'invalid_path',
     });
-    expect(sandbox.readFileToBuffer).not.toHaveBeenCalled();
+    expect(sandbox.readFile).not.toHaveBeenCalled();
   });
 
-  it('treats a null readFileToBuffer as not_found and an over-cap read as file_too_large', async () => {
+  it('accepts an exact-cap stream and reports missing preflight files as not_found', async () => {
     const backend = createVercelSandboxBackend();
     const handle = await backend.create(SPEC);
-    sandbox.readFileToBuffer.mockResolvedValueOnce(null);
+    sandbox.readFile.mockResolvedValueOnce(Readable.from([Buffer.from('ab'), Buffer.from('cd')]));
+    await expect(backend.readFile(handle, '/work/out/x', 4)).resolves.toEqual(Buffer.from('abcd'));
+    sandbox.fs.lstat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+    await expect(backend.readFile(handle, '/work/out/missing', 4)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects oversized files before opening a stream', async () => {
+    const backend = createVercelSandboxBackend();
+    const handle = await backend.create(SPEC);
+    sandbox.fs.lstat.mockResolvedValue({ size: 100, isDirectory: () => false, isSymbolicLink: () => false });
+    await expect(backend.readFile(handle, '/work/out/x', 10)).rejects.toMatchObject({ code: 'file_too_large' });
+    expect(sandbox.readFile).not.toHaveBeenCalled();
+  });
+
+  it('aborts a file that grows past its preflight size without buffering the remainder', async () => {
+    const backend = createVercelSandboxBackend();
+    const handle = await backend.create(SPEC);
+    const stream = Readable.from([Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(100)]);
+    sandbox.readFile.mockResolvedValueOnce(stream);
+    await expect(backend.readFile(handle, '/work/out/x', 10)).rejects.toMatchObject({ code: 'file_too_large' });
+    expect(sandbox.readFile.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it('cleans up a provider sandbox when directory bootstrap fails', async () => {
+    sandbox.fs.mkdir.mockRejectedValueOnce(new Error('mkdir failed'));
+    await expect(createVercelSandboxBackend().create(SPEC)).rejects.toMatchObject({ code: 'create_failed' });
+    expect(sandbox.delete).toHaveBeenCalledWith({ deleteOrphanSnapshots: true });
+  });
+
+  it('preserves the provider handle for the reaper when bootstrap cleanup fails', async () => {
+    sandbox.fs.mkdir.mockRejectedValueOnce(new Error('mkdir failed'));
+    sandbox.delete.mockRejectedValueOnce(new Error('delete unavailable'));
+    await expect(createVercelSandboxBackend().create(SPEC)).rejects.toMatchObject({
+      code: 'create_failed', handle: { providerRef: sandbox.name, backend: 'vercel' },
+    });
+  });
+
+  it('treats a null readFile as not_found and an over-cap read as file_too_large', async () => {
+    const backend = createVercelSandboxBackend();
+    const handle = await backend.create(SPEC);
+    sandbox.readFile.mockResolvedValueOnce(null);
     await expect(backend.readFile(handle, '/work/out/x', 10)).rejects.toMatchObject({
       code: 'not_found',
     });
-    sandbox.readFileToBuffer.mockResolvedValueOnce(Buffer.alloc(100));
+    sandbox.readFile.mockResolvedValueOnce(Readable.from([Buffer.alloc(100)]));
     await expect(backend.readFile(handle, '/work/out/x', 10)).rejects.toMatchObject({
       code: 'file_too_large',
     });
@@ -302,7 +382,7 @@ describe('vercelSandboxBackend', () => {
     await expect(
       backend.writeFiles(handle, [{ path: '/work/out/escape/planted', bytes: Buffer.from('x') }]),
     ).rejects.toMatchObject({ code: 'invalid_path' });
-    expect(sandbox.readFileToBuffer).not.toHaveBeenCalled();
+    expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(sandbox.writeFiles).not.toHaveBeenCalled();
   });
 

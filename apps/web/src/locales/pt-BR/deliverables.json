@@ -67,6 +67,9 @@
       "on_ticket_resolve": "Entregue quando o chamado vinculado for resolvido"
     },
     "autoEvidenceReport": "Anexar execuções de relatório como evidência",
+    "autoEvidenceNone": "Nenhum",
+    "autoEvidenceHelp": "A evidência é gerada no dia de vencimento e se torna visível para o cliente quando a ocorrência é entregue.",
+    "autoEvidenceEmpty": "Ainda não há tipos de relatório de evidência gerenciados disponíveis.",
     "owner": "Responsável",
     "ticketCategory": "Categoria do chamado",
     "portalVisible": "Exibir no portal do cliente",
@@ -80,6 +83,10 @@
   },
   "drawer": {
     "title": "Ocorrências",
+    "empty_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento.",
+    "empty_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento.",
+    "emptyWithDate_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento ({{date}}).",
+    "emptyWithDate_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento ({{date}}).",
     "evidence": "Evidências",
     "noEvidence": "Nenhuma evidência anexada",
     "late": "Atrasada",
@@ -186,7 +193,8 @@
       "leadDays": "Abrir este número de dias antes do vencimento",
       "graceDays": "Marcar como não cumprida este número de dias após o vencimento",
       "artifactRequired": "Evidência obrigatória",
-      "completionMode": "Conclusão"
+      "completionMode": "Conclusão",
+      "autoEvidenceReportType": "Tipo de relatório de evidência"
     },
     "ownerScope": {
       "legend": "Para quem é este conjunto?",

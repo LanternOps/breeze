@@ -49,8 +49,12 @@
   "deciding": "Gönderiliyor…",
   "expiresIn": "{{minutes}} dk içinde sona erer",
   "expiresSoon": "Bir dakikadan kısa sürede sona erer",
+  "expiresInHours": "{{hours}} sa içinde sona erer",
+  "expiresInDays": "{{days}} gün içinde sona erer",
   "expired": "Süresi doldu",
   "unknownOrganization": "Bilinmeyen kuruluş",
+  "intentNoLongerPending": "Bu onay artık beklemede değil.",
+  "dismiss": "Kapat",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{org}} için {{action}} onaylandı",
   "pagination": {
@@ -62,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
     "alreadyDecided": "Bu isteğe zaten karar verildi.",
     "expired": "Bu istek, karar verilmeden önce sona erdi.",
@@ -86,5 +91,25 @@
       "approvedPromoteFailed": "Onaylandı, ancak ön yetkilendirme isteği gönderilemedi. Aracı ayarlarından yeniden deneyin.",
       "policyDecideDisabled": "Onaylandı. Bu dağıtım için kapalı olduğundan ön yetkilendirme istenemedi."
     }
-  }
+  },
+  "recent": {
+    "title": "Son işlemler",
+    "subtitle": "Karara bağlanmış veya tamamlanmış",
+    "loading": "Son onaylar yükleniyor…",
+    "error": "Son onaylar yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Son zamanlarda tamamlanan bir şey yok.",
+    "status": {
+      "failed": "Başarısız",
+      "rejected": "Reddedildi",
+      "expired": "Süresi doldu",
+      "cancelled": "İptal edildi",
+      "completed": "Tamamlandı",
+      "denied": "Reddedildi",
+      "approved": "Onaylandı",
+      "reported": "Bildirildi",
+      "unknown": "Bilinmiyor"
+    }
+  },
+  "proposedByAgentExecuteNotice": "Bunu onaylamak şimdi çalıştırır — gölge modunda bile bu bir deneme çalıştırması değildir."
 }

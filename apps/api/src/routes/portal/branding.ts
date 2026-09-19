@@ -106,6 +106,7 @@ brandingRoutes.get('/branding', async (c) => {
       customCss: portalBranding.customCss,
       enableTickets: portalBranding.enableTickets,
       enableAssetCheckout: portalBranding.enableAssetCheckout,
+      enableDevices: portalBranding.enableDevices,
       enableSelfService: portalBranding.enableSelfService,
       enablePasswordReset: portalBranding.enablePasswordReset,
       enableDashboard: portalBranding.enableDashboard,

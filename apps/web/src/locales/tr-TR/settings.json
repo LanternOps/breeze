@@ -211,7 +211,8 @@
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    }
+    },
+    "overridesOrgTab": "Burada belirlediğiniz alanlar, her kuruluşun yapay zeka sekmesindeki aynı alanın üzerine yazar ve onu kilitler."
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -547,7 +548,8 @@
       },
       "ticketing": {
         "label": "Biletleme",
-        "description": "Durumlar, SLA'lar, dışa aktarmalar"
+        "description": "Durumlar, SLA'lar, kategoriler, formlar",
+        "linkCta": "Bilet ayarlarını yönet →"
       },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
@@ -564,6 +566,10 @@
       "loginBranding": {
         "label": "Oturum Aç Markalama",
         "description": "Giriş sayfasının görünümü"
+      },
+      "modules": {
+        "label": "Modüller",
+        "description": "Servis masası ve faturalandırma açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -896,7 +902,10 @@
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
-      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın."
+      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
+      "saveError": "Özel CSS kaydedilemedi.",
+      "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
+      "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
     },
     "preview": {
       "action": "Önizleme",
@@ -1130,6 +1139,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
@@ -1455,7 +1468,7 @@
     "completeReview": "İncelemeyi Tamamla"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aIUsageBudget": "Yapay Zeka Kullanımı",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
@@ -1505,7 +1518,19 @@
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
     "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
+    "defaultValue": "Varsayılan ({{value}})",
+    "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
+    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "effectiveBudget": "Geçerli bütçe",
+    "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
+    "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
+    "sourcePartner": "İş ortağı tarafından belirlendi",
+    "sourceOrganization": "Kuruluş tarafından belirlendi",
+    "sourceDefault": "Varsayılan",
+    "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
+    "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
+    "thresholdsOff": "Kapalı"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1542,6 +1567,7 @@
       "actMode": {
         "label": "Eylem modu",
         "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "deploymentDisabledHint": "Bu dağıtımda BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED kapalı olduğundan eylem modu kullanılamıyor. Etkinleştirmek için yöneticinizle iletişime geçin.",
         "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
         "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
         "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
@@ -1615,7 +1641,9 @@
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
-      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
+      "designerAct": "Açık",
+      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -2113,11 +2141,13 @@
           "title": "Bu çalıştırmanın oluşturduğu dosyalar",
           "download": "İndir",
           "preview": "Önizleme",
-          "attachToTicket": "Bilete ekle",
-          "attach": "{{name}} dosyasını ekle",
+          "attachToTicket": "Dahili not olarak ekle",
+          "attach": "{{name}} dosyasını dahili not olarak ekle",
           "ticketIdPlaceholder": "Bilet No",
-          "attachedToTicket": "Bilete eklendi",
-          "attachFailed": "Dosya bu bilete eklenemedi"
+          "attachedToTicket": "Bilete dahili not olarak eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi",
+          "attachedButCommentFailed": "Dosya eklendi, ancak bilete not eklenemedi",
+          "downloadExpired": "Bu dosyanın süresi doldu ve artık indirilemiyor."
         },
         "workspace": {
           "title": "Korumalı alanda ne çalıştı",
@@ -2235,6 +2265,7 @@
       "emptyState": {
         "title": "Bu dönemde henüz yapay zekâ sonucu yok",
         "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "descriptionWidestWindow": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. En geniş raporlama döneminde bile henüz yeterli veri yok — başlamak için bir ajan kurun.",
         "action": "Ajan kur"
       },
       "tileGroups": {
@@ -3051,6 +3082,11 @@
       "searchPlaceholder": "Betik ara…",
       "selectedCount_one": "{{count}} betik yetkilendirildi",
       "selectedCount_other": "{{count}} betik yetkilendirildi"
+    },
+    "designerNote": {
+      "title": "Bu aracı yalnızca okur ve rapor yazar",
+      "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
+      "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
     }
   },
   "apiKeyForm": {
@@ -3393,7 +3429,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın.",
+    "distributorsLink": "Distribütör bağlantılarını yönet →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Geçerli şifre gerekli",
@@ -4091,6 +4128,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",
@@ -4192,7 +4230,10 @@
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
     "checkingAccess": "Erişiminiz kontrol ediliyor...",
-    "timeTracking": "Zaman Takibi"
+    "timeTracking": "Zaman Takibi",
+    "email": "E-posta",
+    "templates": "Şablonlar",
+    "timeCapture": "Zaman kaydı"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -4346,6 +4387,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Yapay zeka bütçesi",
+    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
+  },
   "orgSettingsPage": {
     "loading": "Organizasyon ayarları yükleniyor...",
     "confirmDiscard": "Bu bölümde kaydedilmemiş değişiklikleriniz var. Geçiş yapmak onları ortadan kaldıracaktır. Devam etmek?",
@@ -4399,7 +4445,9 @@
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",
       "ticketing": "Biletleme",
-      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma"
+      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
+      "ai": "Yapay Zeka",
+      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -5160,7 +5208,15 @@
     "columns": {
       "email": "E-posta",
       "role": "Rol",
-      "lastLogin": "Son giriş"
+      "lastLogin": "Son giriş",
+      "mfaStatus": "MFA durumu"
+    },
+    "mfaStatus": {
+      "enrolled": "Kayıtlı",
+      "pending": "Beklemede",
+      "pendingByDate": "Beklemede — {{date}} tarihine kadar kaydolun",
+      "overdue": "Gecikti",
+      "notRequired": "Gerekli değil"
     },
     "status": {
       "active": "Aktif",
@@ -5226,6 +5282,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",
@@ -5265,6 +5322,16 @@
     "empty": {
       "title": "Henüz değişken yok",
       "description": "Aynı jetonu her müşterinin komut dosyalarına yapıştırmayı durdurmak için bir tane oluşturun."
+    },
+    "filters": {
+      "searchLabel": "Değişkenleri ara",
+      "searchPlaceholder": "Anahtar veya açıklamaya göre ara",
+      "scopeGroupLabel": "Kapsama göre filtrele",
+      "scopeAll": "Tüm kapsamlar"
+    },
+    "noMatches": {
+      "title": "Filtrelerinize uyan değişken yok",
+      "description": "Farklı bir arama terimi deneyin veya kapsam filtresini temizleyin."
     },
     "errors": {
       "load": "Değişkenler yüklenemedi."
@@ -5559,5 +5626,18 @@
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
     "loadFailed": "Betik yazımı ayarları yüklenemedi."
+  },
+  "ticketingHubPage": {
+    "heading": "Bilet Ayarları",
+    "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog varsayılanları",
+    "description": "Katalog içe aktarmalarını ve teklif düzenleyicisinin otomatik doldurmasını önceden doldurmak için kullanılır — fiyat çözümlemesini doğrudan etkilemez.",
+    "loading": "Katalog varsayılanları yükleniyor...",
+    "loadError": "Katalog varsayılanları yüklenemedi.",
+    "saveError": "Katalog varsayılanları kaydedilemedi",
+    "saveSuccess": "Katalog varsayılanları kaydedildi",
+    "saveButton": "Kaydet"
   }
 }

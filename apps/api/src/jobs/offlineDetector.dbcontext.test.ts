@@ -106,6 +106,7 @@ vi.mock('../db/schema', () => ({
 // drizzle operators are stubbed so the mocked string "columns" above never
 // reach real SQL generation. These tests assert context depth, not SQL shape.
 vi.mock('drizzle-orm', () => ({
+  sql: (...a: unknown[]) => ({ op: 'sql', a }),
   eq: (...a: unknown[]) => ({ op: 'eq', a }),
   and: (...a: unknown[]) => ({ op: 'and', a }),
   or: (...a: unknown[]) => ({ op: 'or', a }),

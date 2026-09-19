@@ -67,8 +67,19 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `$osv=[System.Environment]::OSVersion.Version; ` +
     `if($osv.Major -lt 10)` +
     `{throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"}`;
+  // Download into a private temp directory, never the shell's working
+  // directory. An elevated PowerShell starts in C:\Windows\system32, so a
+  // relative -OutFile lands the agent INSIDE System32; `service install` then
+  // copies it from there into Program Files and Defender's ASR rule "Block use
+  // of copied or impersonated system tools" (C0033C00-...) denies every open
+  // of that copy, even to SYSTEM - the service is registered but can never
+  // start (#5898).
+  const winStageDir =
+    `$d=Join-Path $env:TEMP 'breeze-install'; ` +
+    `New-Item -ItemType Directory -Force -Path $d | Out-Null; ` +
+    `$exe=Join-Path $d 'breeze-agent.exe'`;
   const winMzCheck =
-    `$b=[IO.File]::ReadAllBytes("$pwd\\breeze-agent.exe"); ` +
+    `$b=[IO.File]::ReadAllBytes($exe); ` +
     `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
     `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
   // Older Windows PowerShell 5.1 hosts (e.g. Windows Server 2016) can default
@@ -83,11 +94,12 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `$ErrorActionPreference='Stop'; ` +
     `${winOsFloorCheck}; ` +
     `${winTlsCheck}; ` +
-    `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile breeze-agent.exe; ` +
+    `${winStageDir}; ` +
+    `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile $exe; ` +
     `${winMzCheck}; ` +
-    `.\\breeze-agent.exe service install; ${winThrow('service install')}; ` +
-    `.\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
-    `.\\breeze-agent.exe service start; ${winThrow('service start')}`;
+    `& $exe service install; ${winThrow('service install')}; ` +
+    `& $exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
+    `& $exe service start; ${winThrow('service start')}`;
 
   return { windows, macos: unixCmd, linux: unixCmd };
 }

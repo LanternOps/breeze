@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 // Canonicalize NODE_ENV before any module reads it (some routes/services gate
 // on `NODE_ENV === 'production'` at import time). Must stay directly after
 // dotenv so .env is loaded first. See #917 (L-6).
@@ -40,6 +41,7 @@ import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -101,6 +103,8 @@ import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked'
 import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
+import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -127,6 +131,7 @@ import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
+import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -188,6 +193,7 @@ import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
+import { toolSourcesRoutes } from './routes/toolSources';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -211,8 +217,11 @@ import {
   getDbPoolHealthMinTimeouts,
   getDbPoolHealthWindowMs,
   startDbPoolHealthMonitor,
+  startWedgedBackendMonitor,
+  stopWedgedBackendMonitor,
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
+import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -257,10 +266,11 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
-import { drainAuditRetryQueue } from './services/auditService';
+import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/auditService';
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
@@ -746,7 +756,8 @@ api.use('*', async (c, next) => {
 });
 
 api.use('*', async (c, next) => {
-  await next();
+  const auditWritten = await runWithAuditRequestTracking(next);
+  if (auditWritten) return;
 
   const method = c.req.method.toUpperCase();
   if (!isMutatingMethod(method)) {
@@ -913,6 +924,13 @@ api.route('/webhooks', stripeWebhookRoutes);
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
+// Resend delivery webhook for partner sending domains (W06) — no session auth,
+// Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
+// is unset. partnerGuard passes through (no Authorization header); the route
+// reads the raw body itself via c.req.text(), so no body-consuming middleware may
+// sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
+// auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', resendWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -958,6 +976,10 @@ api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
+// Second sub-router at the same prefix (ten prefixes here already are). The
+// probe lives in its own module so routes/discovery.ts does not grow past 2,247
+// lines; no path overlaps, so mount order is immaterial.
+api.route('/discovery', discoveryAssetProbeRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -972,6 +994,9 @@ api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+// Metric history in its own module (routes/monitoring.ts is already 1,071
+// lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
+api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
@@ -988,6 +1013,10 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+// W03 (partner sending domains). MUST stay above the catch-all `/partner`
+// mount below, the same ordering `/partner/trust` relies on — Hono matches in
+// registration order, so a later specific mount is never reached.
+api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -1073,6 +1102,9 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
+// when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
+api.route('/tool-sources', toolSourcesRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
@@ -1159,6 +1191,7 @@ async function initializeWorkers(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
 
@@ -1332,6 +1365,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // which would report `database-unreachable` about a process that is simply
   // shutting down.
   stopDbPoolHealthMonitor();
+  stopWedgedBackendMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1625,6 +1659,23 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
+    );
+  }
+
   await initializeDatabaseForStartup({
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
@@ -1743,11 +1794,18 @@ async function bootstrap(): Promise<void> {
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  //
+  // #6098: deliberately NOT wrapped in runWithSystemDbAccess. syncBinaries()
+  // does GitHub release/manifest fetches (BINARY_SOURCE=github, and as a
+  // local-mode fallback) — wrapping the whole call in a system DB context
+  // held a pooled connection idle-in-transaction across that network phase
+  // for the entire boot (verified: 2.7s hold, the #1105 safeFetch tripwire
+  // fired x10). syncBinaries() and everything it calls now open their own
+  // short withSystemDbAccessContext around only their DB reads/writes, so no
+  // ambient context is needed — or wanted — here.
   const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
-    await runWithSystemDbAccess(async () => {
-      await syncBinaries();
-    });
+    await syncBinaries();
   } catch (err) {
     if (binarySource === 'local') {
       console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);
