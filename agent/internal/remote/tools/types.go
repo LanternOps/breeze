@@ -606,6 +606,10 @@ type FilesystemAnalysisSummary struct {
 	BytesScanned          int64 `json:"bytesScanned"`
 	MaxDepthReached       int   `json:"maxDepthReached"`
 	PermissionDeniedCount int64 `json:"permissionDeniedCount"`
+	// Set when the duplicate-group map hit maxFSDuplicateGroups and stopped
+	// admitting new keys, so "no duplicates found" can be distinguished from
+	// "we stopped looking". omitempty keeps every existing payload byte-stable.
+	DuplicateTrackingTruncated bool `json:"duplicateTrackingTruncated,omitempty"`
 }
 
 // FilesystemAnalysisResponse captures the full analysis payload.

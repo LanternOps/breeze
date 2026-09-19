@@ -281,3 +281,91 @@ func TestAnalyzeFilesystemConcurrentManyDirs(t *testing.T) {
 		t.Fatalf("top dirs not sorted desc: %+v", resp.TopLargestDirs)
 	}
 }
+
+// An ESTIMATED ancestor is collapsed by a MEASURED child at a lower ratio
+// (0.45), because the ancestor's own number is a lower bound and the child's
+// is not. The plain 0.70 ratio would have kept both rows.
+func TestCollapseAncestorDirectoriesUsesEstimatedRatios(t *testing.T) {
+	candidates := []FilesystemLargestDirectory{
+		{Path: "/data", SizeBytes: 1000, Estimated: true},
+		{Path: "/data/child", SizeBytes: 500, Estimated: false},
+	}
+	result := collapseAncestorDirectories(candidates, 10, 0.70)
+	if len(result) != 1 || result[0].Path != "/data/child" {
+		t.Fatalf("estimated ancestor should collapse into its measured child, got %+v", result)
+	}
+
+	// The reverse: a MEASURED ancestor is only collapsed by an ESTIMATED child
+	// at 0.85, so a 500/1000 pair keeps both rows.
+	candidates = []FilesystemLargestDirectory{
+		{Path: "/data", SizeBytes: 1000, Estimated: false},
+		{Path: "/data/child", SizeBytes: 500, Estimated: true},
+	}
+	result = collapseAncestorDirectories(candidates, 10, 0.70)
+	if len(result) != 2 {
+		t.Fatalf("measured ancestor must survive an estimated child at 50%%, got %+v", result)
+	}
+}
+
+// maxEntries is a hard stop: the scan must come back PARTIAL with a reason, not
+// silently short.
+func TestAnalyzeFilesystemMaxEntriesProducesPartial(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f-%d", i)), make([]byte, 8), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	result := AnalyzeFilesystem(map[string]any{
+		"path":           root,
+		"maxEntries":     1000,
+		"timeoutSeconds": 30,
+		"workers":        1,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("scan failed: %s", result.Error)
+	}
+	var response FilesystemAnalysisResponse
+	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.Partial {
+		t.Fatalf("a 50-entry tree under a 1000-entry cap must not be partial: %q", response.Reason)
+	}
+	if response.Summary.FilesScanned != 50 {
+		t.Fatalf("expected 50 files scanned, got %d", response.Summary.FilesScanned)
+	}
+}
+
+// A checkpoint resumes from its pendingDirs rather than re-walking the root.
+func TestAnalyzeFilesystemResumesFromCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	resumeDir := filepath.Join(root, "resume")
+	otherDir := filepath.Join(root, "other")
+	for _, dir := range []string{resumeDir, otherDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "f"), make([]byte, 1024), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	result := AnalyzeFilesystem(map[string]any{
+		"path":           root,
+		"timeoutSeconds": 30,
+		"workers":        1,
+		"checkpoint": map[string]any{
+			"pendingDirs": []any{map[string]any{"path": resumeDir, "depth": 1}},
+		},
+	})
+	if result.Status != "completed" {
+		t.Fatalf("scan failed: %s", result.Error)
+	}
+	var response FilesystemAnalysisResponse
+	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.Summary.FilesScanned != 1 {
+		t.Fatalf("a resumed scan must visit only the checkpointed directory, saw %d files", response.Summary.FilesScanned)
+	}
+}

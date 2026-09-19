@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"container/heap"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 )
 
 const (
+	maxFSDuplicateGroups         = 50_000
 	defaultFSBaselineMaxDepth    = 32
 	defaultFSIncrementalMaxDepth = 12
 	maxFSMaxDepth                = 64
@@ -195,7 +197,8 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 	tempBytes := make(map[string]int64)
 	duplicateByKey := make(map[string]*duplicateGroup)
-	cleanupByPath := make(map[string]FilesystemCleanupCandidate)
+	cleanupSet := newCleanupCandidateSet(maxFSCleanupCandidates)
+	var duplicateTrackingTruncated bool
 
 	topLargestFiles := make([]FilesystemLargestFile, 0, topFilesLimit)
 	topLargestDirs := make([]FilesystemLargestDirectory, 0, topDirsLimit)
@@ -418,14 +421,14 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 			if category != "" {
 				tempBytes[category] += fileSize
-				addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
+				cleanupSet.Add(FilesystemCleanupCandidate{
 					Path:       entryPath,
 					Category:   category,
 					SizeBytes:  fileSize,
 					Safe:       categorySafe,
 					Reason:     "temporary/cache file",
 					ModifiedAt: resolveModTime(),
-				}, maxFSCleanupCandidates)
+				})
 			}
 
 			if oldDownload {
@@ -445,7 +448,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 				})
 			}
 
-			addDuplicateCandidate(duplicateByKey, entryPath, fileSize)
+			if addDuplicateCandidate(duplicateByKey, entryPath, fileSize) {
+				duplicateTrackingTruncated = true
+			}
 			statsMu.Unlock()
 
 			if currentEntries > int64(maxEntries) {
@@ -572,7 +577,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		scanErrors = append(scanErrors, trashScanError)
 	}
 	for _, trashPath := range trashPaths {
-		size, _, timedOut, trashErr := estimateDirectorySize(trashPath, deadline, maxEntries/2)
+		size, _, timedOut, trashErr := estimateDirectorySize(trashPath, deadline, maxEntries/2, &permissionDeniedCount)
 		if trashErr != nil {
 			if !os.IsNotExist(trashErr) {
 				appendScanError(&scanErrors, trashPath, trashErr, &permissionDeniedCount)
@@ -599,13 +604,13 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		if trashCategory == "" {
 			trashCategory = "trash"
 		}
-		addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
+		cleanupSet.Add(FilesystemCleanupCandidate{
 			Path:      trashPath,
 			Category:  trashCategory,
 			SizeBytes: size,
 			Safe:      trashSafe,
 			Reason:    "trash/recycle bin cleanup",
-		}, maxFSCleanupCandidates)
+		})
 	}
 
 	tempAccumulation := make([]FilesystemAccumulation, 0, len(tempBytes))
@@ -619,7 +624,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	sort.Slice(trashUsage, func(i, j int) bool { return trashUsage[i].SizeBytes > trashUsage[j].SizeBytes })
 
 	duplicateCandidates := buildDuplicateCandidateList(duplicateByKey, 200)
-	cleanupCandidates := mapCleanupCandidates(cleanupByPath, maxFSCleanupCandidates)
+	cleanupCandidates := cleanupSet.Sorted()
 
 	completedAt := time.Now()
 	pendingCheckpoint := buildCheckpointPayload(pendingFrames, maxFSCheckpointDirs)
@@ -633,11 +638,12 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		Reason:      reason,
 		Checkpoint:  pendingCheckpoint,
 		Summary: FilesystemAnalysisSummary{
-			FilesScanned:          filesScanned,
-			DirsScanned:           dirsScanned,
-			BytesScanned:          bytesScanned,
-			MaxDepthReached:       maxDepthReached,
-			PermissionDeniedCount: permissionDeniedCount,
+			FilesScanned:               filesScanned,
+			DirsScanned:                dirsScanned,
+			BytesScanned:               bytesScanned,
+			MaxDepthReached:            maxDepthReached,
+			PermissionDeniedCount:      permissionDeniedCount,
+			DuplicateTrackingTruncated: duplicateTrackingTruncated,
 		},
 		TopLargestFiles:     topLargestFiles,
 		TopLargestDirs:      topLargestDirs,
@@ -1060,24 +1066,33 @@ func normalizeDuplicateName(name string) string {
 	return n
 }
 
-func addDuplicateCandidate(groups map[string]*duplicateGroup, path string, sizeBytes int64) {
+// addDuplicateCandidate records path under its size|basename key, bounded to
+// maxFSDuplicateGroups DISTINCT keys. It reports whether a NEW key had to be
+// dropped, which the caller surfaces as summary.duplicateTrackingTruncated —
+// an unbounded map grew one entry per distinct basename on a 10M-file scan.
+// Existing keys keep accumulating members (up to 50 paths each) regardless.
+func addDuplicateCandidate(groups map[string]*duplicateGroup, path string, sizeBytes int64) bool {
 	base := normalizeDuplicateName(filepath.Base(path))
 	if base == "" || sizeBytes <= 0 {
-		return
+		return false
 	}
 	key := fmt.Sprintf("%d|%s", sizeBytes, base)
 	group, ok := groups[key]
 	if !ok {
+		if len(groups) >= maxFSDuplicateGroups {
+			return true
+		}
 		groups[key] = &duplicateGroup{
 			Key:       key,
 			SizeBytes: sizeBytes,
 			Paths:     []string{path},
 		}
-		return
+		return false
 	}
 	if len(group.Paths) < 50 {
 		group.Paths = append(group.Paths, path)
 	}
+	return false
 }
 
 func buildDuplicateCandidateList(groups map[string]*duplicateGroup, limit int) []FilesystemDuplicateCandidate {
@@ -1105,29 +1120,91 @@ func buildDuplicateCandidateList(groups map[string]*duplicateGroup, limit int) [
 	return candidates
 }
 
-func addCleanupCandidate(existing map[string]FilesystemCleanupCandidate, candidate FilesystemCleanupCandidate, maxItems int) {
-	if len(existing) >= maxItems {
+// cleanupCandidateSet keeps the top-N cleanup candidates BY SIZE.
+//
+// The previous cap was insertion-ordered (`if len(existing) >= maxItems {
+// return }`), so once 1000 candidates had been seen a late 40 GB directory
+// could not displace an early 1 KB file — while the UI presents the list as
+// "biggest wins". A min-heap keyed on SizeBytes makes the eviction correct:
+// the smallest member is always at the root, so admitting a larger newcomer is
+// O(log n) instead of an O(n) scan on every file of a multi-million-file walk.
+//
+// Not safe for concurrent use; every caller holds statsMu (or runs after
+// workers.Wait()), exactly as the map it replaces did.
+type cleanupCandidateSet struct {
+	limit int
+	heap  cleanupCandidateHeap
+}
+
+type cleanupCandidateHeap struct {
+	items []FilesystemCleanupCandidate
+	index map[string]int
+}
+
+func (h cleanupCandidateHeap) Len() int { return len(h.items) }
+
+func (h cleanupCandidateHeap) Less(i, j int) bool {
+	return h.items[i].SizeBytes < h.items[j].SizeBytes
+}
+
+func (h cleanupCandidateHeap) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+	h.index[h.items[i].Path] = i
+	h.index[h.items[j].Path] = j
+}
+
+func (h *cleanupCandidateHeap) Push(x any) {
+	candidate, ok := x.(FilesystemCleanupCandidate)
+	if !ok {
 		return
 	}
-	if candidate.Path == "" || candidate.SizeBytes <= 0 {
-		return
-	}
-	prev, ok := existing[candidate.Path]
-	if !ok || candidate.SizeBytes > prev.SizeBytes {
-		existing[candidate.Path] = candidate
+	h.index[candidate.Path] = len(h.items)
+	h.items = append(h.items, candidate)
+}
+
+func (h *cleanupCandidateHeap) Pop() any {
+	last := len(h.items) - 1
+	candidate := h.items[last]
+	h.items = h.items[:last]
+	delete(h.index, candidate.Path)
+	return candidate
+}
+
+func newCleanupCandidateSet(limit int) *cleanupCandidateSet {
+	return &cleanupCandidateSet{
+		limit: limit,
+		heap:  cleanupCandidateHeap{items: make([]FilesystemCleanupCandidate, 0, limit), index: map[string]int{}},
 	}
 }
 
-func mapCleanupCandidates(existing map[string]FilesystemCleanupCandidate, limit int) []FilesystemCleanupCandidate {
-	candidates := make([]FilesystemCleanupCandidate, 0, len(existing))
-	for _, candidate := range existing {
-		candidates = append(candidates, candidate)
+func (s *cleanupCandidateSet) Add(candidate FilesystemCleanupCandidate) {
+	if s.limit <= 0 || candidate.Path == "" || candidate.SizeBytes <= 0 {
+		return
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].SizeBytes > candidates[j].SizeBytes })
-	if len(candidates) > limit {
-		return candidates[:limit]
+	if at, ok := s.heap.index[candidate.Path]; ok {
+		if candidate.SizeBytes <= s.heap.items[at].SizeBytes {
+			return
+		}
+		s.heap.items[at] = candidate
+		heap.Fix(&s.heap, at)
+		return
 	}
-	return candidates
+	if len(s.heap.items) < s.limit {
+		heap.Push(&s.heap, candidate)
+		return
+	}
+	if candidate.SizeBytes <= s.heap.items[0].SizeBytes {
+		return
+	}
+	heap.Pop(&s.heap)
+	heap.Push(&s.heap, candidate)
+}
+
+func (s *cleanupCandidateSet) Sorted() []FilesystemCleanupCandidate {
+	out := make([]FilesystemCleanupCandidate, len(s.heap.items))
+	copy(out, s.heap.items)
+	sort.Slice(out, func(i, j int) bool { return out[i].SizeBytes > out[j].SizeBytes })
+	return out
 }
 
 // isWindowsVolumeRoot reports whether path names a volume root (C:\, d:/, C:).
@@ -1263,7 +1340,7 @@ func isRealPathUnderRoot(scanRoot, candidate string) bool {
 	return strings.HasPrefix(realCandidate, prefix)
 }
 
-func estimateDirectorySize(root string, deadline time.Time, maxEntries int) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {
+func estimateDirectorySize(root string, deadline time.Time, maxEntries int, permissionDenied *int64) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {
 	info, statErr := os.Stat(root)
 	if statErr != nil {
 		return 0, 0, false, statErr
@@ -1286,6 +1363,11 @@ func estimateDirectorySize(root string, deadline time.Time, maxEntries int) (siz
 		children, readErr := os.ReadDir(current)
 		if readErr != nil {
 			if os.IsPermission(readErr) {
+				// Counted, not silently skipped: unreadable trash makes the
+				// reported size a lower bound.
+				if permissionDenied != nil {
+					*permissionDenied++
+				}
 				continue
 			}
 			return sizeBytes, filesScanned, false, readErr
