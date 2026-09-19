@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { I18nextProvider } from 'react-i18next';
+import { i18n } from '../../lib/i18n';
 
-import PartnerBillingSettings from './PartnerBillingSettings';
+import PartnerBillingSettingsPage from './PartnerBillingSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { partnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 
@@ -14,8 +17,52 @@ const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? 'OK' : 'ERR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-describe('PartnerBillingSettings', () => {
-  beforeEach(() => vi.clearAllMocks());
+function renderPage() {
+  return render(<I18nextProvider i18n={i18n}><PartnerBillingSettingsPage /></I18nextProvider>);
+}
+
+async function gotoDocumentsTab() {
+  await userEvent.click(await screen.findByTestId('billing-settings-tab-documents'));
+}
+
+describe('PartnerBillingSettingsPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+  });
+
+  it('has three visible tabs: Defaults, Documents, Connections', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
+    expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
+    expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
+  });
+
+  it('reserves a Rates slot for #4628 W02 without rendering it (do not remove — see "Conflicts with #4628")', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    await screen.findByTestId('billing-settings-tab-defaults');
+    expect(screen.queryByTestId('billing-settings-tab-rates')).not.toBeInTheDocument();
+  });
+
+  it('one Save button submits the full payload regardless of which tab is active; markup moved to Catalog', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    await gotoDocumentsTab();
+    expect(screen.getByTestId('partner-billing-save')).toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-markup')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-auto-tax-hardware')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-ai-style')).not.toBeInTheDocument();
+  });
+
+  it('the Connections tab renders the real BillingConnectionsTab, not a placeholder (M6)', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    await userEvent.click(await screen.findByTestId('billing-settings-tab-connections'));
+    expect(await screen.findByTestId('billing-connections-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('billing-connections-tab-placeholder')).not.toBeInTheDocument();
+  });
 
   it('loads and shows the seller company name', async () => {
     fetchMock.mockResolvedValue(json({
@@ -28,7 +75,8 @@ describe('PartnerBillingSettings', () => {
       billingAddressPostalCode: null, billingAddressCountry: null,
       billingTermsAndConditions: null,
     }));
-    render(<PartnerBillingSettings />);
+    renderPage();
+    await gotoDocumentsTab();
     await waitFor(() =>
       expect((screen.getByTestId('partner-billing-company-name') as HTMLInputElement).value).toBe('Acme MSP LLC'),
     );
@@ -39,7 +87,7 @@ describe('PartnerBillingSettings', () => {
       currencyCode: 'EUR', defaultTaxRate: '0.085', invoiceNumberPrefix: 'EU',
       invoiceTermsDays: 14, invoiceFooter: 'Thanks',
     }));
-    render(<PartnerBillingSettings />);
+    renderPage();
     await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
     expect((screen.getByTestId('partner-billing-currency') as HTMLInputElement).value).toBe('EUR');
     // 0.085 fraction -> 8.5 percent
@@ -58,7 +106,7 @@ describe('PartnerBillingSettings', () => {
       currencyCode: 'ISK', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
       invoiceTermsDays: 30, invoiceFooter: null,
     }));
-    render(<PartnerBillingSettings />);
+    renderPage();
     await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
     expect((screen.getByTestId('partner-billing-currency') as HTMLSelectElement).value).toBe('ISK');
   });
@@ -68,7 +116,7 @@ describe('PartnerBillingSettings', () => {
       if (opts?.method === 'PATCH') return json({ data: {} });
       return json({ currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceFooter: null });
     });
-    render(<PartnerBillingSettings />);
+    renderPage();
     await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId('partner-billing-tax'), { target: { value: '7' } });
@@ -81,12 +129,6 @@ describe('PartnerBillingSettings', () => {
     });
   });
 
-  /**
-   * The partner reporting currency is cached module-wide (partnerCurrencyCache)
-   * and the approximate-total cache is bound to its generation. Without a reset
-   * on save, an admin who switches the reporting currency keeps reading the old
-   * currency — labels AND converted "≈ approximate" totals — until logout.
-   */
   it('resets the cached partner currency on a successful save so stale money labels/totals cannot survive', async () => {
     fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });
@@ -95,7 +137,7 @@ describe('PartnerBillingSettings', () => {
     partnerCurrencyCache.value = 'USD';
     const generationBefore = partnerCurrencyCache.generation;
 
-    render(<PartnerBillingSettings />);
+    renderPage();
     await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
     fireEvent.change(screen.getByTestId('partner-billing-currency'), { target: { value: 'EUR' } });
     fireEvent.click(screen.getByTestId('partner-billing-save'));
@@ -104,33 +146,7 @@ describe('PartnerBillingSettings', () => {
     expect(partnerCurrencyCache.generation).toBeGreaterThan(generationBefore);
   });
 
-  it('sends autoTaxHardware in the PATCH body and toggles it via checkbox', async () => {
-    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
-      if (opts?.method === 'PATCH') return json({ data: {} });
-      return json({
-        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
-        autoTaxHardware: true, invoiceFooter: null,
-      });
-    });
-    render(<PartnerBillingSettings />);
-    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
-
-    // Checkbox should start checked (loaded true from server)
-    const checkbox = screen.getByTestId('partner-billing-auto-tax-hardware') as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-
-    // Uncheck it and save — PATCH body must carry autoTaxHardware: false
-    fireEvent.click(checkbox);
-    fireEvent.click(screen.getByTestId('partner-billing-save'));
-
-    await waitFor(() => {
-      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
-      expect(patch).toBeTruthy();
-      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({ autoTaxHardware: false });
-    });
-  });
-
-  it('#3205 W07: the appendix checkbox round-trips', async () => {
+  it('#3205 W07: the appendix checkbox round-trips (Documents tab)', async () => {
     fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });
       return json({
@@ -138,7 +154,8 @@ describe('PartnerBillingSettings', () => {
         invoiceDeviceAppendix: true, invoiceFooter: null,
       });
     });
-    render(<PartnerBillingSettings />);
+    renderPage();
+    await gotoDocumentsTab();
     const box = await screen.findByTestId('partner-billing-device-appendix') as HTMLInputElement;
     expect(box.checked).toBe(true);
     fireEvent.click(box);
@@ -157,10 +174,14 @@ describe('PartnerBillingSettings', () => {
         invoiceDeviceAppendix: true, invoiceFooter: null,
       });
     });
-    render(<PartnerBillingSettings />);
+    renderPage();
+    await gotoDocumentsTab();
     const box = await screen.findByTestId('partner-billing-device-appendix') as HTMLInputElement;
     expect(box.checked).toBe(true);
 
+    // Edit an unrelated field on the OTHER tab — state is shared across tabs
+    // in one form, so the appendix value set above must still ride along.
+    await userEvent.click(screen.getByTestId('billing-settings-tab-defaults'));
     fireEvent.change(screen.getByTestId('partner-billing-prefix'), { target: { value: 'ACME' } });
     fireEvent.click(screen.getByTestId('partner-billing-save'));
 
@@ -185,10 +206,10 @@ describe('PartnerBillingSettings', () => {
         billingAddressCountry: 'us', billingTermsAndConditions: null,
       });
     });
-    render(<PartnerBillingSettings />);
-    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+    renderPage();
+    await gotoDocumentsTab();
+    await waitFor(() => expect(screen.getByTestId('partner-billing-addr1')).toBeInTheDocument());
 
-    // Clear addr1 to whitespace-only (should serialize as null); country is uppercased on change
     fireEvent.change(screen.getByTestId('partner-billing-addr1'), { target: { value: '   ' } });
     fireEvent.click(screen.getByTestId('partner-billing-save'));
 
@@ -209,8 +230,9 @@ describe('PartnerBillingSettings', () => {
         invoiceFooter: null, documentTheme: 'condensed', documentPageSize: 'letter',
       });
     });
-    render(<PartnerBillingSettings />);
-    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+    renderPage();
+    await gotoDocumentsTab();
+    await waitFor(() => expect(screen.getByTestId('partner-billing-document-theme')).toBeInTheDocument());
 
     expect((screen.getByTestId('partner-billing-document-theme') as HTMLSelectElement).value).toBe('condensed');
     expect((screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement).value).toBe('letter');
@@ -230,7 +252,8 @@ describe('PartnerBillingSettings', () => {
 
   // #3430 — this form PATCHes the FULL payload, so a legacy scheme-less
   // billingWebsite would 400 an unrelated edit with only a toast naming the
-  // wire field. The inline guard points at the offending field first.
+  // wire field. The inline guard points at the offending field first. Website
+  // lives on the Documents tab now.
   describe('billingWebsite scheme guard', () => {
     const loaded = (billingWebsite: string | null) => json({
       currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
@@ -239,8 +262,9 @@ describe('PartnerBillingSettings', () => {
 
     it('flags a legacy scheme-less value loaded from the server and blocks the save', async () => {
       fetchMock.mockResolvedValue(loaded('acme.test'));
-      render(<PartnerBillingSettings />);
-      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument());
 
       expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
       const input = screen.getByTestId('partner-billing-website');
@@ -260,8 +284,9 @@ describe('PartnerBillingSettings', () => {
       'flags %j typed into the field',
       async (value) => {
         fetchMock.mockResolvedValue(loaded(null));
-        render(<PartnerBillingSettings />);
-        await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+        renderPage();
+        await gotoDocumentsTab();
+        await waitFor(() => expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument());
 
         fireEvent.change(screen.getByTestId('partner-billing-website'), { target: { value } });
         expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
@@ -271,9 +296,9 @@ describe('PartnerBillingSettings', () => {
 
     it('clears the error and re-enables the save once corrected', async () => {
       fetchMock.mockResolvedValue(loaded('acme.test'));
-      render(<PartnerBillingSettings />);
-      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
-      expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument());
 
       fireEvent.change(screen.getByTestId('partner-billing-website'), { target: { value: 'https://acme.test' } });
       expect(screen.queryByTestId('partner-billing-website-error')).toBeNull();
@@ -282,8 +307,9 @@ describe('PartnerBillingSettings', () => {
 
     it('does not flag an empty website', async () => {
       fetchMock.mockResolvedValue(loaded(null));
-      render(<PartnerBillingSettings />);
-      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument());
       expect(screen.queryByTestId('partner-billing-website-error')).toBeNull();
       expect((screen.getByTestId('partner-billing-save') as HTMLButtonElement).disabled).toBe(false);
     });

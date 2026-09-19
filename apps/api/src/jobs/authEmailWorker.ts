@@ -124,7 +124,7 @@ async function handlePasswordReset(email: string): Promise<void> {
     captureException(err);
     throw err;
   }
-  await emailService.sendPasswordReset({ to: eligibility.email, resetUrl });
+  await emailService.sendPasswordReset({ to: eligibility.email, resetUrl, purpose: 'auth.password_reset' });
 
   await createAuditLog({
     orgId: null,
@@ -198,7 +198,7 @@ async function handleRegistrationVerification(tokenHash: string): Promise<void> 
     'http://localhost:4321'
   ).replace(/\/$/, '');
   const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rec.rawToken)}`;
-  await emailService.sendVerificationEmail({ to: rec.email, name: rec.name, verificationUrl });
+  await emailService.sendVerificationEmail({ to: rec.email, name: rec.name, verificationUrl, purpose: 'auth.email_verification' });
 }
 
 let authEmailWorker: Worker | null = null;

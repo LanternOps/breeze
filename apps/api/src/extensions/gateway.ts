@@ -57,6 +57,10 @@ async function loadExtensionAuthorization(
     return;
   }
 
+  // `mfaSatisfied` crosses a trust boundary into extension code: it means the
+  // session satisfies the tenant's effective MFA policy (see requireMfa()),
+  // NOT that a second factor was presented. An extension needing a proven
+  // fresh factor must not treat this flag as one.
   c.set('extensionAuthorization', {
     hasPermission: (resource, action) =>
       hasPermission(userPermissions, resource, action),

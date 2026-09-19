@@ -19,6 +19,7 @@ import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
+import { ownOutboundReason } from './loopPrevention';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -201,6 +202,24 @@ export async function processInboundEmail(
     const inboundDomain = inboundDomainOrNull();
     if (inboundDomain && senderDomain(n.from) === inboundDomain.toLowerCase()) {
       await logInbound(n, partnerId, 'ignored', null, `self-loop: sender is inbound domain ${inboundDomain}`);
+      return;
+    }
+
+    // (1d) OUR OWN OUTBOUND, LOOPING BACK (spec §8.5). The self-loop rule above
+    // keys on the SENDER being on TICKETS_INBOUND_DOMAIN, which a partner-lane
+    // message is not: its From is the partner's own domain. So a notification
+    // that comes back — a contact address forwarding to the partner's support
+    // mailbox, which forwards into Breeze — would sail past it and open a
+    // ticket from our own mail.
+    //
+    // Two message-level signals instead of a sender guess: the X-Breeze-Outbound
+    // header every partner-lane message carries, and a Message-ID that
+    // outboundThreading.ts minted. Both are about the MESSAGE, so a technician
+    // writing in from the partner's support address is unaffected — which is
+    // the case suppressing by sending domain would have broken.
+    const ownOutbound = ownOutboundReason(n, inboundDomain);
+    if (ownOutbound) {
+      await logInbound(n, partnerId, 'ignored', null, `own outbound mail: ${ownOutbound}`);
       return;
     }
 

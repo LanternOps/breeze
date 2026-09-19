@@ -23,7 +23,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { deliveryTtlMs, isOfflineQueueEnabled, type OfflinePolicy } from './commandOfflinePolicy';
+import { deliveryTtlMs, type OfflinePolicy } from './commandOfflinePolicy';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
@@ -441,14 +441,9 @@ function asWhenOffline(value: unknown): 'queue' | 'skip' {
   return value === 'skip' ? 'skip' : 'queue';
 }
 
-/**
- * #5128 W4. Automations rejected offline devices outright before this wave, so
- * their queue arm is gated on `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` (default
- * on since W4, removed in W5). With the flag off, or with the action set to
- * 'skip', the dispatch keeps today's `device_offline` failure verbatim.
- */
+/** Queue until the standard delivery deadline unless the action explicitly skips offline devices. */
 function automationOfflinePolicy(whenOffline: 'queue' | 'skip' | undefined): OfflinePolicy {
-  if (asWhenOffline(whenOffline) === 'skip' || !isOfflineQueueEnabled()) {
+  if (asWhenOffline(whenOffline) === 'skip') {
     return { kind: 'reject' };
   }
   return { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') };

@@ -28,23 +28,17 @@ if (isPortalPageDisabled(response)) {
 ---
 
 <PortalLayout title="Reports">
-  {branding.enableLifecycle && (
-    <a
-      href={withBase('/reports/lifecycle')}
-      data-testid="reports-lifecycle-card"
-      class="mb-6 flex items-center justify-between rounded-lg border border-border bg-card px-5 py-4 text-sm transition-colors hover:bg-accent"
-    >
-      <span>
-        <span class="block font-semibold text-foreground">Hardware lifecycle</span>
-        <span class="mt-0.5 block text-muted-foreground">
-          See the replacement plan for the machines we manage for you.
-        </span>
-      </span>
-      <span aria-hidden="true" class="text-muted-foreground">&rarr;</span>
-    </a>
-  )}
+  {/* The lifecycle link renders inside ReportRunList, under the page title,
+      as a ruled row. The plan is a tab on /devices now; /reports/lifecycle
+      stays for orgs with Self-service off, whose /devices bounces home
+      (#4932, #5880). */}
   <ReportRunList
     client:load
+    lifecycleHref={
+      branding.enableLifecycle
+        ? withBase(branding.enableSelfService !== false ? '/devices#lifecycle' : '/reports/lifecycle')
+        : null
+    }
     initialRuns={response.data ?? []}
     timezone={response.timezone ?? 'UTC'}
     error={response.error}

@@ -8,7 +8,8 @@ import { navigateTo } from '@/lib/navigation';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: null, tokens: null })
 }));
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

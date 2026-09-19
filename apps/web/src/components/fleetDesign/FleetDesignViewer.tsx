@@ -18,6 +18,7 @@ import type { UseDesignSelectionResult } from "./useDesignSelection";
 export interface FleetDesignViewerProps {
   outcome: FleetDesignOutcome;
   selection: UseDesignSelectionResult;
+  unavailable?: string[];
 }
 
 function Section({ title, testId, children }: { title: string; testId: string; children: ReactNode }) {
@@ -89,12 +90,33 @@ const LEGACY_BUCKET_CLASS: Record<FleetDesignLegacyItem["bucket"], string> = {
   needed: "bg-warning/15 text-warning",
 };
 
-export default function FleetDesignViewer({ outcome, selection }: FleetDesignViewerProps) {
+export default function FleetDesignViewer({ outcome, selection, unavailable = [] }: FleetDesignViewerProps) {
   const { t } = useTranslation("fleetDesign");
   const { sections } = outcome;
+  const evidenceTitles: Record<string, string> = {
+    org: t("evidence.org"),
+    devices: t("evidence.devices"),
+    software: t("evidence.software"),
+    services: t("evidence.services"),
+    network: t("evidence.network"),
+    posture: t("evidence.posture"),
+    health: t("evidence.health"),
+    configuration: t("evidence.configuration"),
+    automation: t("evidence.automation"),
+    logs: t("evidence.logs"),
+    counts: t("evidence.counts"),
+    precursors: t("evidence.precursors"),
+    approvedDesign: t("evidence.drift"),
+    drift: t("evidence.drift"),
+  };
 
   return (
     <div className="space-y-4" data-testid="fleet-design-viewer">
+      {Array.from(new Set(unavailable)).map((key) => (
+        <Section key={key} title={evidenceTitles[key] ?? key} testId={`fleet-design-section-${key}-not-measured`}>
+          <p className="text-sm text-muted-foreground">{t("evidence.notMeasured")}</p>
+        </Section>
+      ))}
       <Section title={t("sections.found")} testId="fleet-design-section-found">
         {sections.found.summary.length === 0 && sections.found.findings.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("items.none")}</p>

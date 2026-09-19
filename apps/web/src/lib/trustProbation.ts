@@ -5,7 +5,8 @@ export type TrustCapability =
   | 'remote_control'
   | 'device_execute'
   | 'installer_distribute'
-  | 'agent_enroll';
+  | 'agent_enroll'
+  | 'custom_sending_domain';
 
 export interface TrustDenial {
   error: TrustDenyCode;
@@ -21,6 +22,7 @@ const TRUST_CAPABILITIES = new Set<TrustCapability>([
   'device_execute',
   'installer_distribute',
   'agent_enroll',
+  'custom_sending_domain',
 ]);
 
 export function isTrustDenial(body: unknown): body is TrustDenial {

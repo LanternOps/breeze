@@ -9,8 +9,8 @@ import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { createSite } from './db-utils';
 import { createTopologyTenant, createTopologyGraph, orgContext, TOPOLOGY_TABLES } from './topology-fixtures';
 
-const indexFile = '2026-10-17-150000-topology-inventory-fk-targets.sql';
-const foundationFile = '2026-10-17-150100-topology-foundation.sql';
+const indexFile = '2026-10-20-150000-topology-inventory-fk-targets.sql';
+const foundationFile = '2026-10-20-150100-topology-foundation.sql';
 const migration = (name: string) => readFile(new URL(`../../../migrations/${name}`, import.meta.url), 'utf8');
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext(orgContext(orgId), action);
 const rejected = (work: Promise<unknown>, code: string) => expect(work).rejects.toMatchObject({ cause: { code } });

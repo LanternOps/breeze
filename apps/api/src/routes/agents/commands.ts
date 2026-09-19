@@ -37,9 +37,7 @@ import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND
 import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 import {
-  applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
 
 import {
@@ -247,18 +245,9 @@ commandsRoutes.get('/:id/commands', async (c) => {
 // window keeps the handler visible to the scanner. See #4019.
 //
 // The endpoint accepts results ONLY for the command types the claim allowlist
-// permits while the agent sits on a narrowed drain surface. Being on the drain
-// ROUTE allowlist is not the same as being harmless: this route has a second,
-// id-shaped entrance.
-//
-// A NON-UUID commandId short-circuits into the `sw-install-…` branch, which
-// writes deployment history via `applySoftwareInstallResult` with NO
-// `device_commands` row to consult — its only gate is that the device UUID
-// embedded in the caller-supplied id matches the authenticated device. A
-// command-type allowlist cannot see that path at all, so a draining agent could
-// keep stamping deployment_results rows for its org. Refuse the whole shape
-// while draining; the drain only ever delivers real, UUID-keyed
-// `device_commands` rows.
+// permits while the agent sits on a narrowed drain surface.
+// Draining agents may only report results for persisted, UUID-keyed commands
+// whose type can be checked against their claim allowlist.
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -282,30 +271,6 @@ commandsRoutes.post(
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
-      // Software install commands carry their tracking IDs in the commandId
-      // itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`.
-      // Persist the outcome to deployment_results so the dashboard reflects
-      // reality. The attempt suffix is optional (legacy ids default to 0);
-      // applySoftwareInstallResult rejects results whose attempt no longer
-      // matches the row's current retryCount (superseded by a retry).
-      const swInstallMatch = commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
-      if (swInstallMatch) {
-        const [, deploymentIdFromCmd, deviceIdFromCmd, attemptFromCmd] = swInstallMatch;
-        if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
-          await applySoftwareInstallResult({
-            deploymentId: deploymentIdFromCmd,
-            deviceId,
-            status: data.status,
-            exitCode: data.exitCode,
-            stdout: data.stdout,
-            stderr: data.stderr,
-            error: data.error,
-            startedAt: data.startedAt,
-            durationMs: data.durationMs,
-            attemptNumber: attemptFromCmd ? parseInt(attemptFromCmd, 10) : 0,
-          });
-        }
-      }
       return c.json({ success: true });
     }
 
@@ -579,14 +544,10 @@ commandsRoutes.post(
       }
     }
 
-    // Offline-queued software installs (dispatchSoftwareInstallToDevice
-    // fallback): the result arrives with the device_commands UUID instead of
-    // the sw-install-<deployment>-<device>-<attempt> id, so reconcile the
-    // matching deployment_results row here. deviceId comes from the
-    // authenticated agent context; the payload's deploymentId/retryCount were
-    // written server-side at queue time (see buildAndDispatchSoftwareInstalls).
-    // The status='pending' + retryCount=attempt guard in the helper makes
-    // replays AND results from a retry-superseded queued command a no-op.
+    // Software-install results carry the persisted command UUID. Reconcile
+    // deployment_results using the authenticated device and the server-written
+    // deploymentId/retryCount payload. The helper's pending-status and attempt
+    // guards make replays and retry-superseded results a no-op.
     if (command.type === 'software_install') {
       try {
         // #5128: shared with the websocket transport so the two cannot drift.

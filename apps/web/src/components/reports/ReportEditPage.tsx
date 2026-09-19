@@ -152,7 +152,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="space-y-6">
       <Breadcrumbs items={[
         { label: t('reports.reportEditPage.reportsBreadcrumb'), href: '/reports' },
         { label: report.name || t('reports.reportEditPage.title') }

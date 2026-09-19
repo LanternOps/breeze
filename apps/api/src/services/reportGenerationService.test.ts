@@ -24,6 +24,7 @@ import {
   type ReportType,
 } from './reportGenerationService';
 import { reportTypeEnum } from '../db/schema/reports';
+import { organizations } from '../db/schema';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -243,11 +244,18 @@ describe('generateReport mandatory execution authority', () => {
 
     // OD-8 = A: an org-wide identity view served to a site-restricted technician
     // would be a scope escalation, so the answer is the empty-but-shaped result
-    // and NOTHING is read.
+    // and NOTHING IDENTITY-SHAPED is read. The one permitted read is the org's
+    // own display name (#6100) — an evidence PDF must name its customer — so
+    // the guard is "exactly one select, against organizations, keyed by org id",
+    // not "no select at all".
     expect(result.rows).toEqual([]);
     expect(result.rowCount).toBe(0);
     expect(renderedParams()).not.toContain(SITE_A);
-    expect(db.select).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
+    const chain = vi.mocked(db.select).mock.results[0]!.value as any;
+    expect(chain.from).toHaveBeenCalledTimes(1);
+    expect(chain.from).toHaveBeenCalledWith(organizations);
+    expect(renderedParams()).toEqual([ORG_ID]);
   });
 
   it.each(SITE_SCOPED_REPORT_TYPES)(

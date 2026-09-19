@@ -21,6 +21,7 @@ export * from './automationActions';
 
 export * from './reliability';
 export * from './businessEmail';
+export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';
@@ -1043,6 +1044,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './partnerTicketingSettings';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';

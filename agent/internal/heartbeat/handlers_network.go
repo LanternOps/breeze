@@ -24,6 +24,7 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 		Methods:          tools.GetPayloadStringSlice(cmd.Payload, "methods"),
 		PortRanges:       tools.GetPayloadStringSlice(cmd.Payload, "portRanges"),
 		SNMPCommunities:  tools.GetPayloadStringSlice(cmd.Payload, "snmpCommunities"),
+		SNMPCredentials:  parseDiscoverySNMPCredentials(cmd.Payload),
 		Timeout:          time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
 		Concurrency:      tools.GetPayloadInt(cmd.Payload, "concurrency", 128),
 		DeepScan:         tools.GetPayloadBool(cmd.Payload, "deepScan", false),
@@ -52,6 +53,66 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// parseDiscoverySNMPCredentials reads the profile's `snmpCredentials` from a
+// network_discovery payload. The server sends the decrypted object
+// (version/username/authProtocol/authPassphrase/privacyProtocol/
+// privacyPassphrase/port/timeout/retries — see discoveryWorker.ts); an array
+// of such objects is accepted too. Before issue #6234 this field was never
+// read, so a v3 profile went on the wire as v2c/"public".
+//
+// The credential's `timeout` is milliseconds (profile SNMP settings), unlike
+// the scan-level `timeout`, which is seconds.
+func parseDiscoverySNMPCredentials(payload map[string]any) []discovery.SNMPCredential {
+	raw, ok := payload["snmpCredentials"]
+	if !ok || raw == nil {
+		return nil
+	}
+	var entries []map[string]any
+	switch v := raw.(type) {
+	case map[string]any:
+		entries = []map[string]any{v}
+	case []any:
+		for _, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				entries = append(entries, obj)
+			}
+		}
+	default:
+		return nil
+	}
+
+	out := make([]discovery.SNMPCredential, 0, len(entries))
+	for _, entry := range entries {
+		cred := discovery.SNMPCredential{
+			Version:        tools.GetPayloadString(entry, "version", "v2c"),
+			Community:      tools.GetPayloadString(entry, "community", ""),
+			Username:       tools.GetPayloadString(entry, "username", ""),
+			AuthProtocol:   tools.GetPayloadString(entry, "authProtocol", ""),
+			AuthPassphrase: firstPayloadString(entry, "authPassphrase", "authPassword"),
+			PrivProtocol:   firstPayloadString(entry, "privacyProtocol", "privProtocol"),
+			PrivPassphrase: firstPayloadString(entry, "privacyPassphrase", "privPassword"),
+			Port:           tools.GetPayloadInt(entry, "port", 0),
+			Retries:        tools.GetPayloadInt(entry, "retries", 0),
+		}
+		if ms := tools.GetPayloadInt(entry, "timeout", 0); ms > 0 {
+			cred.Timeout = time.Duration(ms) * time.Millisecond
+		}
+		// Incomplete entries are kept: discovery.ResolveSNMPCredentials is the
+		// one place that decides usability and logs why an entry was skipped.
+		out = append(out, cred)
+	}
+	return out
+}
+
+func firstPayloadString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v := tools.GetPayloadString(payload, key, ""); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // parseSnmpPollRequest turns a poll command payload into an SNMPDevice.
 //
 // Split out of handleSnmpPoll so the wire contract (spec §7.1) is unit-testable
@@ -65,12 +126,12 @@ func parseSnmpPollRequest(payload map[string]any) (snmppoll.SNMPDevice, *tools.C
 
 	var snmpVersion snmppoll.SNMPVersion
 	switch tools.GetPayloadString(payload, "version", "v2c") {
-	case "v1":
-		snmpVersion = 0x00
-	case "v3":
-		snmpVersion = 0x03
+	case "v1", "1":
+		snmpVersion = snmppoll.Version1
+	case "v3", "3":
+		snmpVersion = snmppoll.Version3
 	default:
-		snmpVersion = 0x01
+		snmpVersion = snmppoll.Version2c
 	}
 
 	// The port narrows to uint16 below; an out-of-range value would silently

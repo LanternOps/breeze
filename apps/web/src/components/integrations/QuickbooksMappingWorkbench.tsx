@@ -214,13 +214,25 @@ export default function QuickbooksMappingWorkbench({
                   syncStatus: mapping.syncStatus,
                   proposedRemoteId: mapping.remoteEntityId,
                   // The mapping payload carries no display name. Keep the one
-                  // we already have when the id is unchanged; otherwise drop it
-                  // so the picker labels the option with the id rather than
-                  // another record's name.
+                  // we already have when the id is unchanged. A row that had
+                  // NO remote id before (p.proposedRemoteId was null) and now
+                  // gets one is a fresh create — the record was just created
+                  // under the Breeze display name (buildCustomerPayload / item
+                  // payload), so that name IS the new record's name. Checking
+                  // "no prior id" rather than p.linkStatus === "create_new"
+                  // matters: a create_new row that already has an id (from an
+                  // earlier create) can still be re-pointed at a *different*,
+                  // already-existing remote record via manual search+confirm —
+                  // that id change must NOT be relabeled with the Breeze name,
+                  // since it names someone else's record. Otherwise drop the
+                  // name so the picker labels the option with the id rather
+                  // than another record's name.
                   proposedRemoteName:
                     mapping.remoteEntityId && mapping.remoteEntityId === p.proposedRemoteId
                       ? p.proposedRemoteName
-                      : null,
+                      : mapping.remoteEntityId && !p.proposedRemoteId
+                        ? p.breezeDisplayName
+                        : null,
                   // A persisted remote id IS a link, not a guess — the same
                   // rule the API applies in confidenceForMapping().
                   confidence: mapping.remoteEntityId ? "existing_link" : "none",

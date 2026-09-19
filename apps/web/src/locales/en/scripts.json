@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Elevated",
     "relativeTime": {
       "justNow": "Just now",
       "minutesAgo": "{{count}}m ago",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "This action cannot be undone."
     },
     "library": {
+      "target": "Import into",
+      "allOrgs": "All orgs (partner-wide)",
+      "chooseOrg": "Choose an organization",
+      "partnerPermission": "You cannot import scripts for all organizations. Choose an organization instead.",
+      "importSuccess": "Imported “{{name}}”",
       "title": "System Script Library",
       "description": "Import scripts into your organization",
       "searchPlaceholder": "Search system scripts...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} imported, {{renamed}} renamed, {{versioned}} versioned, {{skipped}} skipped, {{failed}} failed",
     "scriptCount": "{{count}} scripts in bundle",
     "statusInvalid": "Invalid",
-    "exportLimit": "You can export up to {{max}} scripts per bundle."
+    "exportLimit": "You can export up to {{max}} scripts per bundle.",
+    "importDoneTitle": "Import complete",
+    "importDoneNothing": "Nothing was imported",
+    "importDoneOpen": "Open script",
+    "resultActionImported": "Imported",
+    "resultActionRenamed": "Renamed from {{name}}",
+    "resultActionVersioned": "Added as a new version",
+    "resultOpen": "Open"
   },
   "testRunner": {
     "title": "Test run",

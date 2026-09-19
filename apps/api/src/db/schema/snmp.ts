@@ -65,7 +65,11 @@ export const snmpMetrics = pgTable('snmp_metrics', {
   // qualified instance OID and `base_oid` is the column it belongs to.
   // NULL on every legacy-agent row; readers COALESCE(base_oid, oid).
   baseOid: varchar('base_oid', { length: 200 }),
-  instance: varchar('instance', { length: 64 }),
+  // 200, matching `oid`/`base_oid`: an instance suffix is a suffix of the
+  // fully-qualified OID, and a real inetCidrRouteTable walk returns 110-char
+  // IPv6 suffixes that a VARCHAR(64) silently killed the whole poll over
+  // (#6108, widened by 2026-10-17-140000-snmp-metrics-instance-width.sql).
+  instance: varchar('instance', { length: 200 }),
   name: varchar('name', { length: 100 }).notNull(),
   value: text('value'),
   // 'null' | 'number' | 'string' | 'object' | 'error'. An 'error' row carries

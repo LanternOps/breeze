@@ -72,3 +72,12 @@ describe('InvoiceList — names', () => {
     expect(screen.getByTestId('deposit-unpaid-badge').textContent).toBe('Deposit unpaid');
   });
 });
+
+describe('InvoiceList — billed by month', () => {
+  it('places the twelve-month row above the ledger', () => {
+    render(<InvoiceList invoices={[inv({ issueDate: new Date().toISOString().slice(0, 10) })]} />);
+    const row = screen.getByTestId('portal-billed-by-month');
+    const table = document.querySelector('table');
+    expect(table && row.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

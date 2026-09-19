@@ -6,13 +6,15 @@ SentinelOne containment/remediation APIs are treated as high-risk operations.
 
 ### Controls
 
+> **"MFA-assured session" / `requireMfa()`** means the session's `mfa` claim is true: the session satisfies the caller's *effective* MFA policy (organization/partner `security.requireMfa`, role `force_mfa`, or the partner-admin force flag). An account with a factor enrolled is assured only after proving it; an account with no factor under a policy that requires MFA is locked to enrollment; an account with no factor in a tenant that does **not** require MFA is admitted with a password alone, by design. `requireMfa()` is therefore not proof that a second factor was presented — operations that need a fresh proven factor regardless of tenant policy (agent rollback, maintenance entry, factor management) use the single-use step-up grant (`POST /auth/mfa/step-up`), which denies accounts with no usable factor.
+
 - Secrets are encrypted at rest before storage (`api_token_encrypted`).
 - Mutating routes require specific scopes (`organization`, `partner`, or `system`):
-  - Isolation/threat-action routes require `devices:execute` permission + MFA middleware.
-  - Integration management routes require `organizations:write` permission + MFA middleware.
+  - Isolation/threat-action routes require `devices:execute` permission + the MFA-assured-session middleware (`requireMfa()`).
+  - Integration management routes require `organizations:write` permission + the MFA-assured-session middleware.
 - AI tool tiers:
   - **Tier 1** (read-only): `get_s1_status`, `get_s1_threats` — no approval, no MFA.
-  - **Tier 3** (high-risk): `s1_isolate_device`, `s1_threat_action` — approval-gated, MFA required.
+  - **Tier 3** (high-risk): `s1_isolate_device`, `s1_threat_action` — approval-gated, MFA-assured session required.
   - Note: Sync is a REST-only operation (`POST /api/v1/s1/sync`), not exposed as an AI tool.
 - Rate-limited: S1 AI tool invocations are limited to 5 per 10 minutes (does not apply to REST API endpoints).
 - All action requests are persisted to `s1_actions` with provider action IDs for traceability.
@@ -58,7 +60,7 @@ The integration emits normalized events on the Breeze event bus:
 5. Emit integration events for downstream automation and response.
 
 ### Operational Guardrails
-- Integration management and manual sync endpoints require authenticated org write access and MFA.
+- Integration management and manual sync endpoints require authenticated org write access and an MFA-assured session.
 - Webhook ingestion is unauthenticated by user session but cryptographically validated via HMAC-SHA256 signature.
 - Integration health and incident read APIs remain org-scoped for partner/system contexts.
 - The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io`, and every outbound Huntress request is made through the SSRF-safe HTTP client (`safeFetch`: DNS-pinned to the resolved public IP, with no redirect following). The hostname allowlist alone is insufficient — DNS rebinding or an upstream redirect could otherwise reach an internal address — so the pinned, no-redirect transport is what actually prevents SSRF.

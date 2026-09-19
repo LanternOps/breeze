@@ -130,6 +130,14 @@ vi.mock('../services/actionIntents/intentApprovers', () => ({
   // identity). Permissive default (an eligible decider); the ineligible-
   // decider tests override it per-case.
   isAgentIntentDecideAuthorized: vi.fn(async () => true),
+  // Org-wide governance classifier (audit §1.1). Mirrors the real semantics
+  // (tool + action pair) rather than a constant, so the site-ceiling tests
+  // below drive the branch through the same shape production does. Literals,
+  // not imported constants — vi.mock factories are hoisted.
+  isOrgWideGovernanceIntent: vi.fn(
+    (toolName: string, args: Record<string, unknown> | null | undefined) =>
+      toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
+  ),
 }));
 
 // The decide handler re-resolves the DECIDER's live authorization before an
@@ -1970,6 +1978,8 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     boundArgumentDigest?: string | null;
     intentDigest?: string;
     approvalScope?: 'supervised' | 'four_eyes';
+    actionName?: string;
+    args?: Record<string, unknown>;
   }) {
     const approvalRow = {
       id: 'appr-1',
@@ -1999,7 +2009,8 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     const intentRow = {
       id: 'intent-1',
       orgId: 'org-9',
-      actionName: 'y',
+      actionName: opts.actionName ?? 'y',
+      arguments: opts.args ?? {},
       argumentDigest: opts.intentDigest ?? 'digest-abc',
       source: 'mcp_api',
       status: 'pending_approval',
@@ -2126,6 +2137,77 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
   });
 
+  // ── Site ceiling on the APPROVER side (audit §1.1) ──────────────────────
+  // The RAISER of `manage_ai_agents:authorize_supervised_key` is gated by
+  // `canMutateOrgWideGovernance` (aiToolsAiAgentGovernance.ts). The grant it
+  // creates converts "ask a human" into "run unattended for this ORG", so the
+  // DECIDER of the four-eyes row must clear the same ceiling — otherwise a
+  // site-restricted approver holding `approvals:decide` can wave through an
+  // org-wide unattended-action grant they could never have raised.
+  it('refuses an intent-linked APPROVE (403) when a SITE-RESTRICTED decider approves an org-wide governance grant', async () => {
+    mockDecideWithIntent({
+      requestedByUserId: 'requester-1',
+      actionName: 'manage_ai_agents',
+      args: { action: 'authorize_supervised_key', kind: 'triage', opKey: 'manage_services:restart' },
+    });
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      scope: 'organization',
+      orgId: 'org-9',
+      allowedSiteIds: ['site-a'],
+      permissions: [{ resource: 'approvals', action: 'decide' }],
+    } as never);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('site_ceiling');
+    // Review finding #2: a non-retryable denial must carry a human-readable
+    // reason too, not just the bare machine token the web client maps.
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
+    // Fails closed BEFORE the CAS — the fan-in transaction never opens.
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentId: 'intent-1',
+        outcome: 'approver_unauthorized',
+        details: expect.objectContaining({ errorCode: 'site_ceiling' }),
+      }),
+    );
+  });
+
+  // Control: the SAME intent decided by an unrestricted approver still lands,
+  // so the assertion above is discriminating on the ceiling, not on the tool.
+  it('allows an UNRESTRICTED decider to approve the same org-wide governance grant', async () => {
+    mockDecideWithIntent({
+      requestedByUserId: 'requester-1',
+      actionName: 'manage_ai_agents',
+      args: { action: 'authorize_supervised_key', kind: 'triage', opKey: 'manage_services:restart' },
+    });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  // Control: a site ceiling is NOT a blanket bar on deciding — an ordinary
+  // (non-governance) intent is unaffected.
+  it('still allows a site-restricted decider to approve an ordinary intent', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      scope: 'organization',
+      orgId: 'org-9',
+      allowedSiteIds: ['site-a'],
+      permissions: [{ resource: 'approvals', action: 'decide' }],
+    } as never);
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses an intent-linked APPROVE (403) when the decider lost access to the intent org', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
     vi.mocked(canAccessOrg).mockReturnValueOnce(false);
@@ -2223,7 +2305,7 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
     // #2685: the happy path must have actually re-derived the approver set,
     // not skipped the check.
-    expect(resolveIntentApprovers).toHaveBeenCalledWith('org-9');
+    expect(resolveIntentApprovers).toHaveBeenCalledWith('org-9', { requireOrgWideGovernance: false });
     // Scope gate the other direction: a four_eyes sole-operator self-approval
     // must NOT carry the supervised-only `approvalMethod` tag — that would
     // blur the two signals this gate exists to keep apart.
@@ -2231,6 +2313,31 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       .mocked(recordActionIntentEvent)
       .mock.calls.find((c) => c[0]?.outcome === 'self_approved_sole_operator');
     expect((call?.[0]?.details as Record<string, unknown> | undefined)?.approvalMethod).toBeUndefined();
+  });
+
+  // Audit §1.1: the sole-operator RE-DERIVATION must apply the SAME org-wide
+  // governance filter the FAN-OUT does (intentService.ts). If only one side
+  // filtered, a governance intent whose other approvers are all
+  // site-restricted would be sole-operator at fan-out and "someone else is
+  // eligible" here (or the reverse) — the determination would be wrong in one
+  // direction or the other.
+  it('re-derives the approver set WITH the governance filter for an org-wide governance intent', async () => {
+    mockDecideWithIntent({
+      requestedByUserId: TEST_USER.id,
+      actionName: 'manage_ai_agents',
+      args: { action: 'authorize_supervised_key', kind: 'triage', opKey: 'manage_services:restart' },
+    });
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(resolveIntentApprovers).toHaveBeenCalledWith('org-9', { requireOrgWideGovernance: true });
   });
 
   // #2685: sole-operator status is RE-DERIVED at decide time, not inferred

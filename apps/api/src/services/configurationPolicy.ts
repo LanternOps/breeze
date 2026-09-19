@@ -38,6 +38,7 @@ import {
 } from '../db/schema';
 import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
   isCompatibleParent,
@@ -1023,6 +1024,13 @@ async function decomposeInlineSettings(
         targets = { ...rawTargets, excludes: parsed.data };
       }
 
+      // #6001: `paths` and `targets.paths` are BOTH written for a file-mode
+      // custom selection (the Backup tab sends the same array in both fields),
+      // and dispatch treats `targets` as authoritative, falling back to `paths`
+      // only when `targets` carries none (jobs/backupWorker.ts,
+      // prepareBackupDispatchTargets). Keep writing both. Writing ONLY `paths`
+      // works but depends entirely on that fallback; writing only `targets`
+      // breaks the read-back in this file's own getter, which prefers `paths`.
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
@@ -2427,8 +2435,7 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       // Apply the optional role/os device-type filter (#1724). A NULL filter
       // matches all; a set filter gates the assignment to matching devices.
-      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
+      ...buildRoleOsFilterConditions(device),
     ))
       .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 

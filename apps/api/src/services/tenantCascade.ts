@@ -50,6 +50,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
 import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
+import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -1628,6 +1629,19 @@ export async function cascadeDeletePartner(
     details: { partnerId, startedAt },
     result: 'success',
   });
+
+  // Release provider-side sending domains BEFORE any delete (spec §3.5).
+  // partner_sending_domains carries a BEFORE DELETE guard that raises while the
+  // row still owns a provider_domain_id, so the partner-axis sweep below would
+  // abort the purge without this. It writes an email_provider_domain_releases
+  // row for every provider_managed domain — that table has no partner_id, so it
+  // survives the sweep and the worker drains it afterwards — and never one for
+  // a domain Breeze did not create. No provider call is made here.
+  //
+  // It runs after the forensic breadcrumb above on purpose: the purge_started
+  // audit must exist even if this step throws. It opens its own system context,
+  // like every other statement in this function (see the nesting warning below).
+  await releaseSendingDomainsForPartner(partnerId);
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.
