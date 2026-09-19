@@ -263,10 +263,19 @@ where
     None
 }
 
+#[cfg(test)]
+static TEST_ARGS_OVERRIDE: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
 /// Resolve which helper config file to read: the per-session path supplied via
 /// `--config`, or the legacy fixed path next to `agent.yaml` when no flag is
 /// passed (preserves single-session behavior for older agents).
 fn resolve_helper_config_path() -> PathBuf {
+    #[cfg(test)]
+    if let Ok(guard) = TEST_ARGS_OVERRIDE.lock() {
+        if let Some(ref args) = *guard {
+            return config_path_from_args(args.clone().into_iter()).unwrap_or_else(helper_config_path);
+        }
+    }
     config_path_from_args(std::env::args().skip(1)).unwrap_or_else(helper_config_path)
 }
 
@@ -342,8 +351,25 @@ struct HelperStatus {
     pid: u32,
 }
 
-fn helper_status_path() -> PathBuf {
+fn status_path_from_config_path(config_path: &std::path::Path) -> PathBuf {
+    config_path.with_file_name("helper_status.yaml")
+}
+
+fn legacy_helper_status_path() -> PathBuf {
     agent_config_path().with_file_name("helper_status.yaml")
+}
+
+/// Delete root legacy helper_status.yaml if the helper is running in per-session
+/// mode, so the Go agent does not fall back to stale root state when no session is active.
+fn cleanup_legacy_status_file(current_status_path: &std::path::Path) {
+    let legacy = legacy_helper_status_path();
+    if current_status_path != legacy && legacy.exists() {
+        let _ = std::fs::remove_file(&legacy);
+    }
+}
+
+fn helper_status_path() -> PathBuf {
+    status_path_from_config_path(&resolve_helper_config_path())
 }
 
 fn write_status_file(chat_active: bool) {
@@ -354,6 +380,7 @@ fn write_status_file(chat_active: bool) {
         pid: std::process::id(),
     };
     let path = helper_status_path();
+    cleanup_legacy_status_file(&path);
     if let Ok(yaml) = serde_yaml::to_string(&status) {
         // Atomic write: temp file + rename
         let tmp_path = path.with_extension("yaml.tmp");
@@ -1358,6 +1385,73 @@ mod tests {
         assert_eq!(
             config_path_from_args(args.into_iter()),
             Some(PathBuf::from("/first.yaml"))
+        );
+    }
+
+    fn with_test_args<F, R>(args: Vec<&str>, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let mut guard = TEST_ARGS_OVERRIDE.lock().unwrap();
+        *guard = Some(args.into_iter().map(|s| s.to_string()).collect());
+        drop(guard);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let mut guard = TEST_ARGS_OVERRIDE.lock().unwrap();
+        *guard = None;
+        match result {
+            Ok(res) => res,
+            Err(err) => std::panic::resume_unwind(err),
+        }
+    }
+
+    #[test]
+    fn helper_status_path_under_config_arg_derives_from_session_config() {
+        with_test_args(
+            vec!["--config", "/var/lib/breeze/sessions/s-1/helper_config.yaml"],
+            || {
+                assert_eq!(
+                    helper_status_path(),
+                    PathBuf::from("/var/lib/breeze/sessions/s-1/helper_status.yaml")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn helper_status_path_under_config_equals_form_derives_from_session_config() {
+        with_test_args(
+            vec!["--config=/etc/breeze/sessions/s-2/helper_config.yaml"],
+            || {
+                assert_eq!(
+                    helper_status_path(),
+                    PathBuf::from("/etc/breeze/sessions/s-2/helper_status.yaml")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn helper_status_path_without_config_arg_falls_back_to_legacy() {
+        with_test_args(vec!["--other", "val"], || {
+            assert_eq!(
+                helper_status_path(),
+                helper_config_path().with_file_name("helper_status.yaml")
+            );
+        });
+    }
+
+    #[test]
+    fn status_path_from_config_path_derives_correct_filename() {
+        let session_config = PathBuf::from("/var/lib/breeze/sessions/s-1/helper_config.yaml");
+        assert_eq!(
+            status_path_from_config_path(&session_config),
+            PathBuf::from("/var/lib/breeze/sessions/s-1/helper_status.yaml")
+        );
+
+        let legacy_config = PathBuf::from("C:\\ProgramData\\Breeze\\helper_config.yaml");
+        assert_eq!(
+            status_path_from_config_path(&legacy_config),
+            PathBuf::from("C:\\ProgramData\\Breeze\\helper_status.yaml")
         );
     }
 
