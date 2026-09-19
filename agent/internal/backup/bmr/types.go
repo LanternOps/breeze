@@ -140,11 +140,23 @@ type RecoveryResult struct {
 
 // ValidationResult from post-restore checks.
 type ValidationResult struct {
-	Passed          bool     `json:"passed"`
-	ServicesRunning bool     `json:"servicesRunning"`
-	NetworkUp       bool     `json:"networkUp"`
-	CriticalFiles   bool     `json:"criticalFiles"`
-	Failures        []string `json:"failures,omitempty"`
+	Passed          bool `json:"passed"`
+	ServicesRunning bool `json:"servicesRunning"`
+	NetworkUp       bool `json:"networkUp"`
+	CriticalFiles   bool `json:"criticalFiles"`
+	// SystemStateApplied mirrors SystemStateOutcome.Applied so the verdict
+	// says whether OS state landed, not just files (#5412).
+	SystemStateApplied bool     `json:"systemStateApplied"`
+	Failures           []string `json:"failures,omitempty"`
+}
+
+// SystemStateOutcome is what the system-state phase of a recovery
+// concluded, handed to Validate so the verdict can refuse to pass a run
+// that was supposed to apply OS state and did not (#5412).
+type SystemStateOutcome struct {
+	Expected      bool // the bootstrap/backupType said the snapshot carries state
+	ManifestFound bool // system-state/manifest.json downloaded and decoded
+	Applied       bool // the platform Restorer applied every artifact
 }
 
 // VMRestoreConfig for restoring a backup as a new VM.

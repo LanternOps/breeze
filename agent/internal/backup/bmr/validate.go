@@ -51,8 +51,13 @@ var windowsCriticalServices = []string{
 // is applySystemState's error (if any) from reading that staged list — see
 // applyServiceValidation's doc comment for why this must fail validation
 // outright rather than being treated the same as "no services staged".
-func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, error) {
+// state is the system-state phase's outcome; an expected-but-unapplied
+// state fails the verdict with a named check (#5412).
+func Validate(serviceUnits []string, serviceUnitsErr error, state SystemStateOutcome) (*ValidationResult, error) {
 	result := &ValidationResult{Passed: true}
+
+	// System state expected by the bootstrap must actually have landed.
+	applySystemStateValidation(result, state)
 
 	// Check network connectivity.
 	result.NetworkUp = checkNetwork()
@@ -76,9 +81,30 @@ func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, 
 		"networkUp", result.NetworkUp,
 		"criticalFiles", result.CriticalFiles,
 		"servicesRunning", result.ServicesRunning,
+		"systemStateApplied", result.SystemStateApplied,
 		"failures", len(result.Failures),
 	)
 	return result, nil
+}
+
+// applySystemStateValidation records the system-state outcome into result
+// and fails the verdict when state was expected but not applied. Split out
+// (like applyServiceValidation) so it is unit-testable without Validate's
+// real network dial and OS file probes. A manifest that was found but not
+// applied without being expected does not fail here: RunRecoveryContext's
+// status derivation already keeps such a run off "completed" (see
+// stateBlocksCompletion), and validation stays about what the bootstrap
+// promised.
+func applySystemStateValidation(result *ValidationResult, state SystemStateOutcome) {
+	result.SystemStateApplied = state.Applied
+	if state.Expected && !state.Applied {
+		result.Passed = false
+		if state.ManifestFound {
+			result.Failures = append(result.Failures, "system state not applied: manifest was found but its artifacts were not applied")
+		} else {
+			result.Failures = append(result.Failures, "system state not applied: snapshot advertises system state but no manifest was found")
+		}
+	}
 }
 
 // checkNetwork tests basic network connectivity by trying to resolve
