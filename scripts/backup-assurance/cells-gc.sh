@@ -41,10 +41,12 @@ for lbl in $LABELS; do echo "$lbl: $($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 
 say "R1: newest file snapshot must still restore byte-exact (its references point into the expired prefixes)"
 SNAP=$($L snapshots "$DEV" | jq -r 'select(.backupType=="file") | .id' | head -1); echo "newest row $SNAP"
 RID=$($L restore "$SNAP" '{"targetPath":"/home/ubuntu/assure/postfix/R1"}'); $L wait-restore "$RID" 2400 | tee "$R/postfix-R1-restore.json" | jq -c '{status,restoredFiles,restoredSize,errorSummary,failed:(.resultDetails.failedFiles|tostring|.[:200])}'
-$S/vmssh 'ROOT=/home/ubuntu/assure/postfix/R1/home/ubuntu/assure/src; sudo ~/assure/hash-tree.sh ~/assure/src > ~/assure/pre3.tsv; sudo ~/assure/hash-tree.sh "$ROOT" > ~/assure/post-R1.tsv; ~/assure/compare-hashes.sh ~/assure/pre3.tsv ~/assure/post-R1.tsv --expect-skipped "^meta/links/" | grep -v "^  \(many/\|names/LLLL\)" | head -16' 2>/dev/null | tee "$R/postfix-R1-compare.txt"
+$S/vmssh 'ROOT=/home/ubuntu/assure/postfix/R1/home/ubuntu/assure/src; sudo ~/assure/hash-tree.sh ~/assure/src > ~/assure/pre3.tsv; sudo ~/assure/hash-tree.sh "$ROOT" > ~/assure/post-R1.tsv; ~/assure/compare-hashes.sh ~/assure/pre3.tsv ~/assure/post-R1.tsv --expect-skipped "^meta/links/" | grep -v "^  \(many/\|names/LLLL\)" | head -40' 2>/dev/null | tee "$R/postfix-R1-compare.txt"
+
+FAIL=0
+grep -q '^RESULT: BYTE-EXACT' "$R/postfix-R1-compare.txt" || { echo "FAIL R1: retained snapshot did not restore byte-exact"; FAIL=1; }
 
 say "R4: reclaimed prefixes must be empty and retired"
-FAIL=0
 for lbl in $LABELS; do
   n=$($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 2>/dev/null | wc -l | tr -d ' ')
   swept=$(psql "select count(*) from backup_snapshot_retirements where snapshot_id='$lbl' and swept_at is not null")
