@@ -95,7 +95,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(147);
+    expect(WORKER_REGISTRY.length).toBe(148);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -137,14 +137,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(147);
+    expect(selectWorkers('all').length).toBe(148);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(147);
+    expect(api.length + worker.length).toBe(148);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -152,7 +152,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(147);
+    expect(union.size).toBe(148);
   });
 
   it("'api' selects only socket-owner placements", () => {
