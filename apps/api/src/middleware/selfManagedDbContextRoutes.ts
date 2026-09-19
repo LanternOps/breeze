@@ -257,6 +257,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // the network call, so the ambient request transaction must not be held
   // across it.
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/tools\/[^/]+\/test\/?$/ },
+  // #6098 — sync-github fetches the GitHub release + manifest
+  // (RELEASE_FETCH_TIMEOUT_MS=30s) via syncFromGitHub. authMiddleware
+  // previously wrapped the whole handler in the request's ambient
+  // withDbAccessContext (scope=system, from requireScope("system")), pinning
+  // a pooled connection idle-in-transaction across that fetch — the same
+  // class of hazard the boot-time syncBinaries() call had. binarySync's
+  // writes (upsertVersion et al.) now open their own short
+  // withSystemDbAccessContext around just the write, so the handler needs no
+  // ambient context; writeRouteAudit already manages its own (via
+  // createAuditLogAsync's runOutsideDbContext + withSystemDbAccessContext).
+  { method: 'POST', pattern: /^\/api\/v1\/agent-versions\/sync-github\/?$/ },
 ];
 
 /**

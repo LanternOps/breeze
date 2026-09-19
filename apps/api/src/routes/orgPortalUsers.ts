@@ -87,8 +87,12 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
   const inviteUrl = buildPortalUrl(`/accept-invite?token=${encodeURIComponent(rawToken)}`);
   const emailService = getEmailService();
   if (!emailService) return false;
+  // Partner from the VERIFIED auth context, never request input (spec §8.1).
+  // These routes are requireScope('partner', 'system'); a system-scope caller
+  // has partnerId === null, which resolves to the platform sender.
+  const partnerId = (c.get('auth') as AuthContext | undefined)?.partnerId ?? null;
   try {
-    await emailService.sendPortalInvite({ to: user.email, inviteUrl, orgName: orgName ?? undefined, inviterName: inviterName ?? undefined, message });
+    await emailService.sendPortalInvite({ to: user.email, inviteUrl, orgName: orgName ?? undefined, inviterName: inviterName ?? undefined, message, partnerId });
     return true;
   } catch (err) {
     console.error('[orgPortalUsers] invite email failed:', err);

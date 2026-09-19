@@ -246,6 +246,14 @@ export const moveOrgSchema = z.object({
   // monetary rows, the move is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED)
   // unless explicitly accepted; `true` additionally requires invoices:write.
   acceptCurrencyMismatch: z.boolean().optional(),
+  // Device move-org step-up (spec 2026-09-18 D2/D3): a single-use grant
+  // minted by POST /auth/mfa/step-up for operation 'device_move_org', bound
+  // to this exact { deviceId, orgId, siteId, acceptCurrencyMismatch }.
+  // Required whenever ENABLE_2FA is on; the route answers
+  // 403 STEP_UP_REQUIRED when it is missing or does not validate.
+  // Deliberately NOT .strict() (unlike the maintenance schemas): the only
+  // behaviour change for existing callers is the grant requirement itself.
+  stepUpGrant: z.string().guid().optional(),
 });
 
 export const metricsQuerySchema = z.object({

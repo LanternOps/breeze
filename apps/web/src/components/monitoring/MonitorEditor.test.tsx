@@ -502,4 +502,94 @@ describe('MonitorEditor (#5289)', () => {
     fireEvent.click(screen.getByTestId('monitor-editor-delivery-none'));
     expect(screen.queryByTestId('monitor-editor-channels')).toBeNull();
   });
+
+  it('create mode: retains the chosen script id for a script-check monitor on submit (#6207)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
+      if (input.startsWith('/scripts')) {
+        return json({ data: [{ id: '11111111-2222-4333-8444-555555555555', name: 'Disk cleanup' }] });
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'script' } });
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByTestId('condition-field-scriptId'), {
+      target: { value: '11111111-2222-4333-8444-555555555555' },
+    });
+    expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555');
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Script check' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors/new-1'));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    expect(call).toBeDefined();
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
+  });
+
+  it('edit mode: retains the previously-saved script — in the picker AND on save — even when the script list resolves after the monitor (#6207)', async () => {
+    let resolveScripts: (value: Response) => void = () => {};
+    const scriptsPromise = new Promise<Response>((resolve) => {
+      resolveScripts = resolve;
+    });
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') {
+        return json({ data: { id: 'm1' } });
+      }
+      if (input === '/monitor-definitions/m1') {
+        return json({
+          data: {
+            ...MONITOR_M1_FIXTURE,
+            kind: 'script',
+            condition: {
+              scriptId: '11111111-2222-4333-8444-555555555555',
+              intervalMinutes: 60,
+              timeoutSeconds: 300,
+              breachOnNonZeroExit: true,
+            },
+          },
+        });
+      }
+      if (input.startsWith('/scripts')) return scriptsPromise;
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    // The scripts list resolves AFTER the monitor has already loaded and reset()
+    // has run — the select's <option> for the saved script doesn't exist yet at
+    // that point.
+    resolveScripts(json({ data: [{ id: '11111111-2222-4333-8444-555555555555', name: 'Disk cleanup' }] }));
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument());
+
+    // Assert inside its own `waitFor` — the option appearing and the select's
+    // `value` prop re-syncing both happen off the same `setScripts` state
+    // update but are two separate observations of the DOM, so give React a
+    // tick to settle rather than asserting immediately after the first one.
+    await waitFor(() =>
+      expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555'),
+    );
+
+    // Saving WITHOUT touching the field must still submit the real scriptId —
+    // this is what actually determines whether the monitor alerts (#6207's
+    // second symptom: monitorScriptWorker silently skips a monitor whose
+    // stored scriptId doesn't resolve to a script row).
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH'),
+      ).toBe(true),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(patchBody.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
+  });
 });

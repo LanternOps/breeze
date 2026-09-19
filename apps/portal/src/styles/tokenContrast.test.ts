@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PORTAL_CHROME_ACCENTS, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 
 /**
  * Contract test for the portal's colour tokens.
@@ -28,6 +29,13 @@ function token(block: string, name: string): [number, number, number] {
 function lightBlock(): string {
   const m = /:root\s*\{([\s\S]*?)\n  \}/.exec(CSS);
   if (!m) throw new Error(':root block not found');
+  return m[1];
+}
+
+/** The `.dark {...}` block. */
+function darkBlock(): string {
+  const m = /\n  \.dark\s*\{([\s\S]*?)\n  \}/.exec(CSS);
+  if (!m) throw new Error('.dark block not found');
   return m[1];
 }
 
@@ -118,5 +126,64 @@ describe('portal colour tokens meet WCAG AA', () => {
   it('the border hairline is visible against the page', () => {
     const ratio = contrast(rgb('border'), surface);
     expect(ratio, `border measured ${ratio.toFixed(2)}:1`).toBeGreaterThan(1.4);
+  });
+});
+
+/**
+ * Contract test for the curated chrome accents
+ * (packages/shared/src/types/portalChromeAccent.ts). Read directly from the
+ * shared spec, not from the generated CSS — chromeAccents.test.ts is what
+ * proves the CSS matches the spec; this proves the spec itself is safe to
+ * ship. A preset that fails AA here is not this file's to fix (the spec
+ * belongs to @breeze/shared): leave the assertion red and report the failing
+ * preset and its measured ratio.
+ */
+describe('portal chrome accent presets meet WCAG AA', () => {
+  const lightSurface = hslToRgb(token(lightBlock(), 'background'));
+  const darkSurface = hslToRgb(token(darkBlock(), 'background'));
+  const parseTriplet = (triplet: string): [number, number, number] => {
+    const [h, s, l] = triplet.split(/\s+/);
+    return [parseFloat(h), parseFloat(s), parseFloat(l)];
+  };
+
+  const presetKeys = (Object.keys(PORTAL_CHROME_ACCENTS) as (keyof typeof PORTAL_CHROME_ACCENTS)[]).filter(
+    (key) => key !== PORTAL_CHROME_ACCENT_DEFAULT
+  );
+
+  it('covers every non-default accent preset', () => {
+    expect(presetKeys.length).toBe(7);
+  });
+
+  it.each(presetKeys)('%s: light primary-foreground on light primary clears AA', (key) => {
+    const spec = PORTAL_CHROME_ACCENTS[key].light;
+    const ratio = contrast(hslToRgb(parseTriplet(spec.primaryForeground)), hslToRgb(parseTriplet(spec.primary)));
+    expect(ratio, `${key} light primaryForeground on primary measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+      AA
+    );
+  });
+
+  it.each(presetKeys)('%s: light primary-on-tint on the light background clears AA', (key) => {
+    const spec = PORTAL_CHROME_ACCENTS[key].light;
+    const ratio = contrast(hslToRgb(parseTriplet(spec.primaryOnTint)), lightSurface);
+    expect(
+      ratio,
+      `${key} light primaryOnTint on background measured ${ratio.toFixed(2)}:1`
+    ).toBeGreaterThanOrEqual(AA);
+  });
+
+  it.each(presetKeys)('%s: dark primary-foreground on dark primary clears AA', (key) => {
+    const spec = PORTAL_CHROME_ACCENTS[key].dark;
+    const ratio = contrast(hslToRgb(parseTriplet(spec.primaryForeground)), hslToRgb(parseTriplet(spec.primary)));
+    expect(ratio, `${key} dark primaryForeground on primary measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+      AA
+    );
+  });
+
+  it.each(presetKeys)('%s: dark primary-on-tint on the dark background clears AA', (key) => {
+    const spec = PORTAL_CHROME_ACCENTS[key].dark;
+    const ratio = contrast(hslToRgb(parseTriplet(spec.primaryOnTint)), darkSurface);
+    expect(ratio, `${key} dark primaryOnTint on background measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+      AA
+    );
   });
 });

@@ -630,6 +630,11 @@ patchesRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // Bind the rollback target to THIS device's own `installed` observation,
+    // mirroring how install binds to `pending` (#5561 / SEC-115). `patches` is
+    // a global catalog shared across tenants, so an id alone must never select
+    // what gets removed from a device. `packageId` is deliberately not
+    // forwarded: the agent resolves rollbacks against its own installed set.
     const [patch] = await db
       .select({
         id: patches.id,
@@ -637,12 +642,17 @@ patchesRoutes.post(
         externalId: patches.externalId,
         title: patches.title
       })
-      .from(patches)
-      .where(eq(patches.id, patchId))
+      .from(devicePatches)
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .where(and(
+        eq(devicePatches.deviceId, deviceId),
+        eq(devicePatches.status, 'installed'),
+        eq(patches.id, patchId)
+      ))
       .limit(1);
 
     if (!patch) {
-      return c.json({ error: 'Patch not found' }, 404);
+      return c.json({ error: 'Patch is not installed on this device' }, 404);
     }
 
     const queued = await queueCommandForExecution(

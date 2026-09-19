@@ -32,6 +32,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { PERMISSIONS } from '../services/permissions';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import {
   M365_CUSTOMER_GRAPH_READ_OUTCOMES,
   recordM365CustomerGraphReadEvent,
@@ -245,6 +246,14 @@ m365CustomerGraphReadRoutes.post(
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -297,6 +306,14 @@ m365CustomerGraphReadRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -341,6 +358,14 @@ m365CustomerGraphReadRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -403,6 +428,14 @@ m365CustomerGraphReadRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -457,6 +490,14 @@ m365CustomerGraphReadRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);

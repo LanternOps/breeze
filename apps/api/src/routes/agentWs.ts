@@ -73,9 +73,7 @@ import {
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
-  applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
@@ -1382,47 +1380,6 @@ export async function processOrphanedCommandResult(
     return;
   }
 
-  // Software install results dispatched over WS carry their tracking IDs in
-  // the commandId itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attempt>`.
-  // The agent normally POSTs these to the HTTP result route
-  // (routes/agents/commands.ts), but if that goroutine fails the result can
-  // still arrive here — without this branch the deployment_results row
-  // strands as 'pending' forever. The helper's status='pending' +
-  // retryCount=attempt guard makes double delivery (HTTP + WS) AND a stale
-  // result from a retry-superseded attempt a no-op. The attempt suffix is
-  // optional (legacy in-flight ids default to 0).
-  const swInstallMatch = result.commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
-  if (swInstallMatch) {
-    const [, swDeploymentId, swDeviceId, swAttempt] = swInstallMatch;
-    // Bind to the socket's authenticated device identity, like the other
-    // branches: a compromised agent must not write another device's row.
-    if (!swDeploymentId || !swDeviceId || swDeviceId !== authenticatedDeviceId) {
-      console.warn(
-        `[AgentWs] Rejecting software-install result ${result.commandId} from agent ${agentId}: ` +
-        `authenticatedDevice=${authenticatedDeviceId}`
-      );
-      return;
-    }
-    try {
-      await applySoftwareInstallResult({
-        deploymentId: swDeploymentId,
-        deviceId: authenticatedDeviceId,
-        status: result.status,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        error: result.error,
-        startedAt: result.startedAt,
-        durationMs: result.durationMs,
-        attemptNumber: swAttempt ? parseInt(swAttempt, 10) : 0,
-      });
-    } catch (err) {
-      console.error(`[AgentWs] Failed to apply software-install result ${result.commandId}:`, err);
-      captureException(err);
-    }
-    return;
-  }
-
   // Ignore non-persistent command IDs that are expected to have no DB row.
   if (result.commandId.startsWith('dev-push-')) {
     return;
@@ -2330,16 +2287,9 @@ async function processCommandResult(
       }
     }
 
-    // #5128 — software installs now arrive here. A software_install pushed over
-    // this socket used to carry the synthetic
-    // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
-    // regex branch above; new dispatches persist a device_commands row FIRST and
-    // push with its UUID, so they land on this generic path instead. Without
-    // this the deployment_results row would strand as `pending` forever on the
-    // websocket transport. The regex branch above is kept for frames already in
-    // flight from before the deploy. Reconciliation is idempotent (guarded on
-    // status='pending' + matching attempt), so a result that reaches BOTH
-    // transports is still applied once.
+    // Software installs use persisted command UUIDs on both transports.
+    // Reconciliation is idempotent (pending status + matching attempt), so
+    // a result reaching both transports is applied once.
     if (command.type === 'software_install') {
       try {
         // Short org wrap (#3021): deployment_results is an RLS-guarded org table.

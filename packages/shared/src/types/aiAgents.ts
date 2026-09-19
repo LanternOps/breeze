@@ -143,6 +143,17 @@ export interface AiAgentLimits {
   designBudgetCentsPerRun: number;
   designMaxTurns: number;
   /**
+   * #5870 — the design-profile wall clock, pinned like `analysisWallClockSeconds`
+   * (same reason: a profile whose raised turn/budget ceilings need real time
+   * to be reached must not be cut by the shared 600s default). Default 1800s:
+   * a design run reads a whole org's fleet across up to `designMaxTurns` (60)
+   * turns before its one `submit_fleet_design` call, and 600s was observed
+   * truncating real runs at 36/60 turns with `wallClockExceeded=true` while
+   * still finalizing `completed` (the outcome tool had been submitted) —
+   * see `designProfile.ts`'s `designLimits`.
+   */
+  designWallClockSeconds: number;
+  /**
    * AI patch agent (W01) — patch-profile admission caps, counted on their
    * own like every other profile. A patch run is scheduled once a day per
    * org (`0 2 * * *` default) plus the occasional manual "Run now", so
@@ -258,6 +269,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxDesignRunsPerDay: 4,
   designBudgetCentsPerRun: 300,
   designMaxTurns: 60,
+  designWallClockSeconds: 1800,
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring.
   maxConcurrentPatchRuns: 1,
@@ -607,18 +619,26 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * pre-v12 snapshot. Every site that switches on `schemaVersion` must tolerate
  * 1 through 12.
  *
- * v13 (this bump, AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
+ * v13 (AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
  * `sweepPromoteThreshold` — see `AiAgentLimits.maxUnattendedDevicesPerSweep`'s
  * docstring. Same rule as every prior bump: a v1-v12 in-flight run's snapshot
  * lacks them and MUST still execute; read sites fall back to
  * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v13 snapshot. Every site that switches
  * on `schemaVersion` must tolerate 1 through 13.
+ *
+ * v14 (this bump, #5870): `designWallClockSeconds` — see
+ * `AiAgentLimits.designWallClockSeconds`'s docstring. Same rule as every
+ * prior bump: a v1-v13 in-flight run's snapshot lacks it and MUST still
+ * execute (`designLimits`'s `?? AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds`
+ * read); read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v14
+ * snapshot. Every site that switches on `schemaVersion` must tolerate 1
+ * through 14.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 13 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 14 as const;
 
 export interface AiAgentPolicySnapshot {
   /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), or 13 (current). Read sites must tolerate all thirteen. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

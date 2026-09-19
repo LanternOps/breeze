@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Ocorrências",
+    "empty_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento.",
+    "empty_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento.",
+    "emptyWithDate_one": "Ainda não há ocorrências. A primeira é planejada {{count}} dia antes do vencimento ({{date}}).",
+    "emptyWithDate_other": "Ainda não há ocorrências. A primeira é planejada {{count}} dias antes do vencimento ({{date}}).",
     "evidence": "Evidências",
     "noEvidence": "Nenhuma evidência anexada",
     "late": "Atrasada",

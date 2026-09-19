@@ -56,12 +56,25 @@ const POLICIES = [
   { id: 'pol-site', name: 'site wide', targetType: 'site', targetIds: ['site-1'] },
 ];
 
+/** Both fleet devices sit in site-1; only the exact-device axis separates them. */
+const ORG_DEVICE_ROWS = [
+  { id: 'dev-1', siteId: 'site-1' },
+  { id: 'dev-2', siteId: 'site-1' },
+];
+
 function mockPolicyList(rows = POLICIES): void {
-  mockDb.select.mockImplementation(() => ({
-    from: () => ({
-      where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }),
-    }),
-  }));
+  mockDb.select.mockImplementation((cols?: unknown) => {
+    // A caller carrying allowedSiteIds also resolves the site-narrowed device
+    // set for device-targeted policies — a {id, siteId} scan over org devices.
+    if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object)) {
+      return { from: () => ({ where: () => Promise.resolve(ORG_DEVICE_ROWS) }) };
+    }
+    return {
+      from: () => ({
+        where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }),
+      }),
+    };
+  });
 }
 
 describe('manage_browser_policy list — exact-device axis (finding 10)', () => {

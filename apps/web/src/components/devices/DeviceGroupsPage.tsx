@@ -61,8 +61,6 @@ type DeviceGroup = {
    */
   rules?: DeviceGroupRule[];
   filterConditions?: FilterConditionGroup | null;
-  policyId?: string;
-  policyName?: string;
   policy?: { id: string; name: string };
 };
 
@@ -119,16 +117,12 @@ const normalizeGroup = (group: DeviceGroup): DeviceGroup => {
     (group.filterConditions || (group.rules && group.rules.length > 0)
       ? "dynamic"
       : "static");
-  const policyId = group.policyId ?? group.policy?.id ?? "";
-  const policyName = group.policyName ?? group.policy?.name ?? "";
   const deviceIds =
     group.deviceIds ?? group.devices?.map((device) => device.id) ?? [];
 
   return {
     ...group,
     type: inferredType,
-    policyId,
-    policyName,
     deviceIds,
   };
 };
@@ -351,10 +345,10 @@ export default function DeviceGroupsPage() {
 
   const fetchPolicies = useCallback(async () => {
     try {
-      const response = await fetchWithAuth("/policies");
+      const response = await fetchWithAuth("/configuration-policies?limit=100");
       if (response.ok) {
         const data = await response.json();
-        setPolicies(asList<Policy>(data, "policies"));
+        setPolicies(asList<Policy>(data, "policies", "data"));
       }
     } catch {
       // Policies are optional for this page.
@@ -813,22 +807,39 @@ export default function DeviceGroupsPage() {
     if (!bulkPolicyId || selectedGroupIds.size === 0) return;
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth("/device-groups/bulk", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "apply-policy",
-          policyId: bulkPolicyId,
-          groupIds: Array.from(selectedGroupIds),
+      const results = await Promise.allSettled(
+        Array.from(selectedGroupIds).map(async (groupId) => {
+          const res = await fetchWithAuth(`/configuration-policies/${bulkPolicyId}/assignments`, {
+            method: "POST",
+            body: JSON.stringify({
+              level: "device_group",
+              targetId: groupId,
+              priority: 0,
+            }),
+          });
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData?.error || `Failed for group ${groupId}`);
+          }
+          return groupId;
         }),
-      });
+      );
 
-      if (!response.ok) {
-        throw new Error("Failed to apply policy to groups");
-      }
+      const succeeded = results.filter((r) => r.status === "fulfilled");
+      const failed = results.filter((r) => r.status === "rejected");
 
       await fetchGroups();
-      setSelectedGroupIds(new Set());
-      handleCloseModal();
+      if (failed.length === 0) {
+        setSelectedGroupIds(new Set());
+        handleCloseModal();
+      } else {
+        const succeededIds = new Set(
+          succeeded.map((s) => (s as PromiseFulfilledResult<string>).value)
+        );
+        setSelectedGroupIds((prev) => new Set(Array.from(prev).filter((id) => !succeededIds.has(id))));
+        const firstError = (failed[0] as PromiseRejectedResult).reason?.message || "Failed to apply policy to some groups";
+        setError(`${failed.length} group assignment(s) failed: ${firstError}`);
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -1091,8 +1102,7 @@ export default function DeviceGroupsPage() {
                             {deviceCount === 1 ? "" : t("deviceGroupsPage.s")}
                           </span>
                           <span className="rounded-full border bg-muted px-2 py-0.5">
-                            {t("deviceGroupsPage.policy")}{" "}
-                            {group.policyName || "Not assigned"}
+                            Group assignment: {group.policy?.name || "None"}
                           </span>
                         </div>
                       </div>

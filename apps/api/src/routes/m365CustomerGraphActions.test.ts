@@ -18,6 +18,8 @@ type AuthState = {
   accessibleOrgIds: string[] | null;
   permissions: Set<'organizations:read' | 'organizations:write'>;
   mfa: boolean;
+  /** A defined value (including []) is a SITE CEILING — services/siteCeilingAccess.ts. */
+  allowedSiteIds?: string[];
 };
 
 const { authRef, mocks } = vi.hoisted(() => ({
@@ -123,6 +125,7 @@ vi.mock('../services/m365ControlPlane/metrics', () => ({
 }));
 
 import { m365CustomerGraphActionsRoutes } from './m365CustomerGraphActions';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { m365CustomerGraphReadRoutes } from './m365CustomerGraphRead';
 
 const requiredGrant = {
@@ -610,5 +613,42 @@ describe('connection DTO grant health', () => {
     expect(body.connection.grantHealth).toBe('manifest-stale');
     expect(body.connection.manifestVersion).toBe(0);
     expect(body.connection.currentManifestVersion).toBe(1);
+  });
+});
+
+/**
+ * Customer Graph Actions is the org's WRITE consent to its whole Entra
+ * tenant. Granting, retesting or severing it is an org-wide governance act
+ * with no per-site slice — the same class as the legacy /m365/connection
+ * routes, and the same gap: `organizations:write` + MFA were the only gates,
+ * and a site-restricted technician holds both for their own sites.
+ */
+describe('customer-graph-actions mutations — org-wide governance site ceiling', () => {
+  it.each(mutationRequests)('%s is 403 for a site-restricted caller', async (_name, request) => {
+    authRef.current = auth({ allowedSiteIds: ['site-1'] });
+    const response = await request();
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    // The refusal precedes the lifecycle service entirely — no consent URL is
+    // minted, no binding cookie set, no connection touched.
+    expect(mocks.initiate).not.toHaveBeenCalled();
+    expect(mocks.retest).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(mutationRequests)('%s is 403 when the ceiling is the EMPTY site list', async (_name, request) => {
+    authRef.current = auth({ allowedSiteIds: [] });
+    expect((await request()).status).toBe(403);
+  });
+
+  it.each(mutationRequests)('%s still succeeds for an UNRESTRICTED caller', async (_name, request) => {
+    // Control: `allowedSiteIds` undefined is the default `auth()` shape.
+    expect((await request()).status).toBe(200);
+  });
+
+  it('does NOT gate the read surface', async () => {
+    authRef.current = auth({ allowedSiteIds: ['site-1'] });
+    const response = await app().request(`/m365/customer-graph-actions/connections?orgId=${ORG_ID}`);
+    expect(response.status).toBe(200);
   });
 });

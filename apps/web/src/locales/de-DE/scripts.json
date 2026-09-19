@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Erhöhte Rechte",
     "relativeTime": {
       "justNow": "Gerade eben",
       "minutesAgo": "Vor {{count}}m",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
     },
     "library": {
+      "target": "Importieren in",
+      "allOrgs": "Alle Organisationen (partnerweit)",
+      "chooseOrg": "Organisation auswählen",
+      "partnerPermission": "Sie können Skripte nicht für alle Organisationen importieren. Wählen Sie stattdessen eine Organisation aus.",
+      "importSuccess": "„{{name}}“ wurde importiert",
       "title": "Systemskriptbibliothek",
       "description": "Importieren Sie Skripte in Ihre Organisation",
       "searchPlaceholder": "Systemskripte suchen...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} importiert, {{renamed}} umbenannt, {{versioned}} versioniert, {{skipped}} übersprungen, {{failed}} fehlgeschlagen",
     "scriptCount": "{{count}} Skripte im Bundle",
     "statusInvalid": "Ungültig",
-    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
+    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren.",
+    "importDoneTitle": "Import abgeschlossen",
+    "importDoneNothing": "Es wurde nichts importiert",
+    "importDoneOpen": "Skript öffnen",
+    "resultActionImported": "Importiert",
+    "resultActionRenamed": "Umbenannt von {{name}}",
+    "resultActionVersioned": "Als neue Version hinzugefügt",
+    "resultOpen": "Öffnen"
   },
   "testRunner": {
     "title": "Testlauf",

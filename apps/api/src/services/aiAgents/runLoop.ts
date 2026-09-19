@@ -1680,6 +1680,20 @@ async function driveSdkLoop(
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
   const model = effective.model ?? llm.model;
 
+  // #5870 — the only log line between admission and termination. Without it
+  // a run that is legitimately still thinking (a design run may now run up
+  // to 1800s) is indistinguishable from one that is hung; `turn_count` and
+  // `cost_cents` are only written at finalization. No secrets or prompt
+  // content: runId/profile/model/maxTurns/wallClockMs are all metadata
+  // already stored on the run row or its policy snapshot.
+  console.log('[aiAgentRunLoop] run loop starting', {
+    runId: run.id,
+    profile: run.profile,
+    model,
+    maxTurns: runLimits.maxTurnsPerRun,
+    wallClockMs,
+  });
+
   // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
   // model on every task-linked run." Admission stamped the CONFIGURED model
   // (`policySnapshot.effective.model`), which is null whenever the agent

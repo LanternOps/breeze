@@ -109,6 +109,17 @@ export default function MonitorConditionFields({ kind, name }: MonitorConditionF
                 data-testid={`condition-field-${field.key}`}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register(path)}
+                // Explicit `value` (in addition to `register`'s own binding)
+                // so the DOM stays in sync with form state even when the
+                // matching <option> doesn't exist yet at mount/reset time —
+                // e.g. editing a saved script monitor, where `reset()` from
+                // the fetched monitor can land before this component's own
+                // async `/scripts` fetch has populated the option list.
+                // Without this, assigning a value with no matching <option>
+                // is a native-select no-op that never gets retried once the
+                // option does appear, so the picker silently reverts to the
+                // placeholder (#6207).
+                value={String(conditionValues[field.key] ?? '')}
               >
                 <option value="">{t('fields.scriptSelectPlaceholder')}</option>
                 {scripts.map((script) => (

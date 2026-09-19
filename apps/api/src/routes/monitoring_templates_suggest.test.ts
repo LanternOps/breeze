@@ -214,10 +214,13 @@ describe('GET /monitoring/templates/suggest', () => {
     expect(suggestTemplate).not.toHaveBeenCalled();
   });
 
-  it('403s for a site the caller cannot see, before suggesting anything', async () => {
+  it('404s (opaque, matching a missing asset) for a site the caller cannot see, before suggesting anything (#5777)', async () => {
     mockAssetLookup({ id: ASSET_ID, orgId: ORG_ID, siteId: SITE_HIDDEN, assetType: 'printer', snmpData: {} });
     const res = await get(ASSET_ID, SITE_ALLOWED);
-    expect(res.status).toBe(403);
+    // Must be indistinguishable from the "asset outside the caller's org" 404
+    // above — an out-of-ceiling asset is not an existence oracle (#5777).
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Asset not found');
     expect(suggestTemplate).not.toHaveBeenCalled();
   });
 

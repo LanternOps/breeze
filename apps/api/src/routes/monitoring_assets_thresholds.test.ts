@@ -173,21 +173,25 @@ describe('GET /monitoring/assets/:id/thresholds', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
-  it('403s when the caller has no access to the asset’s site', async () => {
+  it('404s (opaque, matching a missing asset) when the caller has no access to the asset’s site (#5777)', async () => {
     mockAssetLookup([{ id: ASSET_ID, orgId: ORG_ID, siteId: SITE_HIDDEN }]);
 
     const res = await request({ 'x-restrict-site': SITE_ALLOWED });
 
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toBe('Access to this site denied');
+    // Must be byte-identical to the "asset outside the caller's org" 404
+    // above — an out-of-ceiling asset must not be distinguishable from a
+    // missing one (existence oracle, #5777).
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Asset not found');
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
-  it('403s for a site-restricted caller when the asset has no site at all', async () => {
+  it('404s (opaque) for a site-restricted caller when the asset has no site at all (#5777)', async () => {
     mockAssetLookup([{ id: ASSET_ID, orgId: ORG_ID, siteId: null }]);
 
     const res = await request({ 'x-restrict-site': SITE_ALLOWED });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Asset not found');
   });
 });

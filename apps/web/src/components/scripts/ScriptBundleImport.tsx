@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Download, Loader2, Upload, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, ExternalLink, Loader2, Upload, X } from 'lucide-react';
+import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '@/lib/authScope';
@@ -36,13 +37,28 @@ type PreviewEntry = {
   existingVersion?: number;
 };
 
+type ImportResultEntry = {
+  index: number;
+  name: string;
+  action: 'imported' | 'renamed' | 'versioned' | 'skipped';
+  finalName?: string;
+  scriptId?: string;
+};
+
 type ImportResult = {
   imported: number;
   skipped: number;
   renamed: number;
   versioned: number;
   errors: Array<{ index: number; name: string; error: string }>;
+  /** Per-entry outcome; optional because an older API omits it. */
+  scripts?: ImportResultEntry[];
 };
+
+/** Entries the import actually wrote — skipped ones have nothing to open. */
+function writtenEntries(result: ImportResult): ImportResultEntry[] {
+  return (result.scripts ?? []).filter(e => e.action !== 'skipped' && !!e.scriptId);
+}
 
 // ---------------------------------------------------------------------------
 // Export modal: multi-select → download .json
@@ -367,8 +383,12 @@ export function ScriptBundleImportModal({
       <div className="flex w-full max-w-2xl max-h-[85vh] flex-col overflow-hidden rounded-lg border bg-card shadow-lg">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold">{t('bundle.importTitle')}</h2>
-            <p className="text-sm text-muted-foreground">{t('bundle.importDescription')}</p>
+            <h2 className="text-lg font-semibold">
+              {result ? t('bundle.importDoneTitle') : t('bundle.importTitle')}
+            </h2>
+            {!result && (
+              <p className="text-sm text-muted-foreground">{t('bundle.importDescription')}</p>
+            )}
           </div>
           <button
             type="button"
@@ -381,11 +401,13 @@ export function ScriptBundleImportModal({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          {/* Scripts run as SYSTEM — say so plainly. */}
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span data-testid="bundle-import-system-warning">{t('bundle.systemWarning')}</span>
-          </div>
+          {/* Scripts run as SYSTEM — say so plainly (intake step only). */}
+          {!result && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span data-testid="bundle-import-system-warning">{t('bundle.systemWarning')}</span>
+            </div>
+          )}
 
           {!result && (
             <div>
@@ -546,16 +568,57 @@ export function ScriptBundleImportModal({
           )}
 
           {result && (
-            <div className="space-y-3" data-testid="bundle-import-result">
-              <p className="text-sm">
-                {t('bundle.resultSummary', {
-                  imported: result.imported,
-                  renamed: result.renamed,
-                  versioned: result.versioned,
-                  skipped: result.skipped,
-                  failed: result.errors.length
-                })}
-              </p>
+            <div className="space-y-4" data-testid="bundle-import-result">
+              <div className="flex items-start gap-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {writtenEntries(result).length > 0
+                      ? t('bundle.importDoneTitle')
+                      : t('bundle.importDoneNothing')}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {t('bundle.resultSummary', {
+                      imported: result.imported,
+                      renamed: result.renamed,
+                      versioned: result.versioned,
+                      skipped: result.skipped,
+                      failed: result.errors.length
+                    })}
+                  </p>
+                </div>
+              </div>
+              {writtenEntries(result).length > 0 && (
+                <ul className="divide-y rounded-md border text-sm">
+                  {writtenEntries(result).map(entry => (
+                    <li
+                      key={entry.index}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
+                      data-testid="bundle-import-result-row"
+                    >
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium">{entry.finalName ?? entry.name}</span>
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          {entry.action === 'renamed'
+                            ? t('bundle.resultActionRenamed', { name: entry.name })
+                            : entry.action === 'versioned'
+                              ? t('bundle.resultActionVersioned')
+                              : t('bundle.resultActionImported')}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void navigateTo(`/scripts/${entry.scriptId}`)}
+                        className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary hover:underline"
+                        data-testid={`bundle-import-result-open-${entry.scriptId}`}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {t('bundle.resultOpen')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               {result.errors.length > 0 && (
                 <ul className="space-y-1 text-sm text-destructive">
                   {result.errors.map(err => (
@@ -577,6 +640,21 @@ export function ScriptBundleImportModal({
           >
             {result ? t('common:actions.done') : t('common:actions.cancel')}
           </button>
+          {result && writtenEntries(result).length === 1 && (
+            <button
+              type="button"
+              onClick={() => {
+                const [only] = writtenEntries(result);
+                handleClose();
+                void navigateTo(`/scripts/${only.scriptId}`);
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
+              data-testid="bundle-import-open-script"
+            >
+              <ExternalLink className="h-4 w-4" />
+              {t('bundle.importDoneOpen')}
+            </button>
+          )}
           {!result && (
             <button
               type="button"
