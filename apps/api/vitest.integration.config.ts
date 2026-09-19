@@ -11,6 +11,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
+      'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
       'src/routes/integrationConnectionScope.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',

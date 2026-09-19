@@ -71,10 +71,9 @@
  *   4. DB reachability probe, then `waitForMigrationParity()` — NEVER
  *      `autoMigrate()`. A worker-role process never applies migrations. Then
  *      `initializeDatabaseForStartup({ autoMigrateEnabled: false, production })`
- *      — with migrations disabled this runs ONLY `assertRequestDatabaseRoleSafe()`,
- *      the same production role check index.ts performs, so a worker-role
- *      process can never serve tenant-scoped queries through a SUPERUSER/
- *      BYPASSRLS pool.
+ *      — with migrations disabled this only verifies the request role, the same
+ *      unconditional check index.ts performs, so a worker-role process can
+ *      never serve tenant-scoped queries through a SUPERUSER/BYPASSRLS pool.
  *   5. Redis mandatory — exit non-zero if unreachable (no limp mode).
  *   6. Extension runtime in `mode: 'worker'` (parity-check-never-apply,
  *      publish tenancy, stage, validate, seed state, activate registry; no
@@ -548,12 +547,13 @@ export async function bootWorker(): Promise<void> {
   }
   migrationParityAchieved = true;
 
-  // Production DB-role verification. `autoMigrateEnabled: false` means this
-  // call runs ONLY `assertRequestDatabaseRoleSafe()` (rejects a request pool
-  // running as SUPERUSER/BYPASSRLS) — a worker-role process never migrates,
-  // but it still must never serve tenant-scoped queries through a role that
-  // bypasses RLS. Mirrors index.ts's `initializeDatabaseForStartup` call and
-  // its `NODE_ENV === 'production'` gate.
+  // DB-role verification. `autoMigrateEnabled: false` means this call only
+  // verifies the request role (rejects a request pool running as
+  // SUPERUSER/BYPASSRLS) — a worker-role process never migrates, but it still
+  // must never serve tenant-scoped queries through a role that bypasses RLS.
+  // Mirrors index.ts's `initializeDatabaseForStartup` call. The verification
+  // runs in every environment; `production` only decides whether the
+  // BREEZE_ALLOW_UNSAFE_DB_ROLE break-glass opt-out may be honoured.
   try {
     await (await import('./db/databaseStartup')).initializeDatabaseForStartup({
       autoMigrateEnabled: false,
