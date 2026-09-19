@@ -1,4 +1,4 @@
-import { Context, Next } from 'hono';
+import { Context, Next, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from './mobileDeviceBlocked';
@@ -66,6 +66,26 @@ export type PrincipalKind =
  */
 export function isInteractiveUserSession(auth: Pick<AuthContext, 'principal'>): boolean {
   return auth.principal.kind === 'user_session';
+}
+
+/**
+ * "A human must be doing this" — UNCONDITIONAL. NOT redundant with
+ * requireMfa(): API-key and MCP-OAuth contexts are built with `token: {}`
+ * (routes/mcpServer.ts), and hasSatisfiedMfa returns true for ANY context
+ * when ENABLE_2FA is off — so on such a deployment the MFA gate would ADMIT a
+ * machine principal. This gate is what makes "machine-principal denial with
+ * zero state change" independent of MFA configuration. Place it before any
+ * lookup so a denial costs no query. Used by device maintenance (RMM-QA-176,
+ * on entry AND exit) and device move-org (spec 2026-09-18 D1).
+ */
+export function requireInteractiveSession(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const auth = c.get('auth') as AuthContext | undefined;
+    if (!auth || !isInteractiveUserSession(auth)) {
+      return c.json({ error: 'Interactive user session required' }, 403);
+    }
+    return next();
+  };
 }
 
 export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {

@@ -6,7 +6,7 @@ import { eq, sql, desc, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, isInteractiveUserSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
@@ -615,25 +615,6 @@ const STEP_UP_REQUIRED_BODY = { error: 'Step-up required', code: 'STEP_UP_REQUIR
 
 /** Thrown inside the write transaction when the grant lost a consume race. */
 class MaintenanceStepUpConsumedError extends Error {}
-
-/**
- * "A human must be doing this" — UNCONDITIONAL, on entry AND exit
- * (RMM-QA-176 D1). NOT redundant with requireMfa(): API-key and MCP-OAuth
- * contexts are built with `token: {}` (routes/mcpServer.ts:2246), and
- * hasSatisfiedMfa returns true for ANY context when ENABLE_2FA is off — so on
- * such a deployment the MFA gate would ADMIT a machine principal. This gate is
- * what makes "API-key denial with zero state change" independent of MFA
- * configuration. Placed before the device lookup so a denial costs no query.
- */
-function requireInteractiveSession(): MiddlewareHandler {
-  return async (c: Context, next: Next) => {
-    const auth = c.get('auth') as AuthContext | undefined;
-    if (!auth || !isInteractiveUserSession(auth)) {
-      return c.json({ error: 'Interactive user session required' }, 403);
-    }
-    return next();
-  };
-}
 
 /**
  * Entry and extension need an assured session; EXIT deliberately does not —
