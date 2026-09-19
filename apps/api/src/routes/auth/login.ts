@@ -43,6 +43,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs } from '../../services/authLifecycle';
+import { mfaSrcFor } from '../../services/mfaAssuranceSource';
 import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -674,6 +675,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     partnerId,
     scope,
     mfa: mfaSatisfied,
+    // The enrolled branch returned early above, so anyone minting here proved
+    // no factor: `mfa: true` here is policy-admitted, never factor-earned.
+    mfaSrc: mfaSrcFor(mfaSatisfied, 'policy'),
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
@@ -1109,6 +1113,10 @@ loginRoutes.post('/refresh', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: ENABLE_2FA ? payload.mfa : false,
+    // Carry the assurance SOURCE forward exactly as the binding below: a
+    // refresh re-issues what the prior signed token said, never recomputes it,
+    // and never upgrades 'policy' to 'factor'. Absent stays absent.
+    mfaSrc: ENABLE_2FA && payload.mfa ? payload.mfa_src : undefined,
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.

@@ -177,6 +177,7 @@ export const JOB_SCHEDULES = {
   'audit-drift-evaluator': '17 * * * *',
   'abuse-signals-sweep': '22,37,52,7 * * * *',
   'partner-trust-promote': '*/15 * * * *',
+  'accounting-mapping-sweep': '4,19,34,49 * * * *',
   'backup-expired-snapshot-cleanup': '27 2,8,14,20 * * *',
   'software-remediation-request-cleanup': '35 * * * *',
   'backup-recovery-token-expiry': '37 * * * *',

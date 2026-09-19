@@ -330,7 +330,7 @@ test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED 
   );
 });
 
-// ─── Item 2: Test API sharded 4 ways ─────────────────────────────────
+// ─── Item 2: Test API sharded 8 ways ─────────────────────────────────
 // ~2470 vitest files import-time dominated, ~26-34 min unsharded. Only the
 // main `test:run` invocation is actually split; every other named step in
 // this job (extension-sdk, ee/workspace, tz, load-static, compat fixture,
@@ -344,16 +344,16 @@ const testApiStep = (name) => {
   return match[1];
 };
 
-test('test-api has a 4-way shard matrix', () => {
+test('test-api has an 8-way shard matrix', () => {
   const body = job('test-api');
-  assert.match(body, /^    name: Test API \(shard \$\{\{ matrix\.shard \}\}\/4\)$/mu);
-  assert.match(body, /^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3, 4\]$/mu);
+  assert.match(body, /^    name: Test API \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
+  assert.match(body, /^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3, 4, 5, 6, 7, 8\]$/mu);
   assert.match(body, /^    timeout-minutes: 30$/mu);
 });
 
 test('test-api runs the main vitest split with --shard and no bare "--"', () => {
   const step = testApiStep('Run API tests');
-  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/4$/mu);
+  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
   assert.doesNotMatch(step, /pnpm --filter=@breeze\/api test:run -- /u, 'a bare "--" makes pnpm forward it literally and vitest silently ignores --shard');
 });
 
@@ -382,23 +382,23 @@ test('test-api setup steps run on every shard (no shard-1 guard)', () => {
   }
 });
 
-// ─── Item 3: integration-test sharded 8 ways, no lint/typecheck wait ────
+// ─── Item 3: integration-test sharded 16 ways, no lint/typecheck wait ───
 test('ci-success asserts lint/check-migrations/security-audit unconditionally and gates the rest on APP_CHANGED', () => {
   assert.match(summary, /needs: \[[^\]]*\bcheck-migrations\b[^\]]*\]/u, 'ci-success must needs: check-migrations — CHECK_MIGRATIONS_RESULT was previously asserted nowhere');
   assert.match(summary, /APP_CHANGED: \$\{\{ needs\.changes\.outputs\.app \}\}/u);
   assert.match(summary, /CHECK_MIGRATIONS_RESULT: \$\{\{ needs\.check-migrations\.result \}\}/u);
 });
 
-test('integration-test has an 8-way shard matrix and does not wait on lint/typecheck', () => {
+test('integration-test has a 16-way shard matrix and does not wait on lint/typecheck', () => {
   const body = job('integration-test');
-  assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
-  assert.match(body, /^        shard: \[1, 2, 3, 4, 5, 6, 7, 8\]$/mu);
+  assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/16\)$/mu);
+  assert.match(body, /^        shard: \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16\]$/mu);
   // The exact match already proves lint/typecheck are absent from the actual
   // `needs:` YAML line (as opposed to a doesNotMatch scan, which would also
   // trip on this test's own explanatory comment mentioning them by name).
   assert.match(body, /^    needs: \[changes\]$/mu, 'integration-test must not needs: lint or typecheck — that added ~8 min to the critical path and a lint failure still fails CI Success via ci-success');
   assert.match(body, /^    timeout-minutes: 40$/mu);
-  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
+  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
 });
 
 // Execute the real summary shell. The bypass may only fire on the literal

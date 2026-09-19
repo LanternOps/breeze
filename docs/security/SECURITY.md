@@ -64,3 +64,7 @@ The integration emits normalized events on the Breeze event bus:
 - Webhook ingestion is unauthenticated by user session but cryptographically validated via HMAC-SHA256 signature.
 - Integration health and incident read APIs remain org-scoped for partner/system contexts.
 - The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io`, and every outbound Huntress request is made through the SSRF-safe HTTP client (`safeFetch`: DNS-pinned to the resolved public IP, with no redirect following). The hostname allowlist alone is insufficient — DNS rebinding or an upstream redirect could otherwise reach an internal address — so the pinned, no-redirect transport is what actually prevents SSRF.
+
+## Session MFA assurance source (`mfa_src`)
+
+Since W03 of the device move-org step-up work, every `mfa: true` token also carries `mfa_src`: `factor` (Breeze verified a factor in this session's lineage), `idp` (a trusted CF Access / SSO assertion), or `policy` (the effective policy required none). Refresh and factor re-mints copy it verbatim and never upgrade it. `mfa: false` tokens carry no source at all, and tokens minted before the claim shipped have none and MUST be read as `policy`. `verifyToken` drops any value outside that set rather than typing it through. No gate consumes it yet; it exists so a future "proven factor" check is a predicate on the token, not a plumbing change. Source of truth: `apps/api/src/services/mfaAssuranceSource.ts`.

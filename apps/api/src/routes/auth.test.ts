@@ -25,6 +25,7 @@ vi.mock('../services', () => {
       partnerId: identity.partnerId,
       scope: identity.scope,
       mfa: identity.mfa,
+      mfa_src: identity.mfaSrc,
       aep: epochs.authEpoch,
       mep: epochs.mfaEpoch,
       mdid: identity.mobileDeviceId,
@@ -1562,7 +1563,7 @@ describe('auth routes', () => {
       expect(body).toMatchObject({ mfaRequired: false });
       expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.objectContaining({ sub: 'user-1', mfa: true, mfa_src: 'factor' }),
         expect.anything(),
       );
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
@@ -1894,7 +1895,7 @@ describe('auth routes', () => {
       expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-1', recoveryCode);
 
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.objectContaining({ sub: 'user-1', mfa: true, mfa_src: 'factor' }),
         expect.anything(),
       );
       // Exactly one pending-record consume on success — the recovery branch
@@ -2283,6 +2284,8 @@ describe('auth routes', () => {
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
       expect(grants.has('grant-1')).toBe(false);
       expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
 
       const replay = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
       expect(replay.status).toBe(403);
@@ -3264,6 +3267,11 @@ describe('auth routes', () => {
       // call that double-charges the per-user step-up rate limit and runs
       // argon2 twice for every successful enable.
       expect(verifyPassword).toHaveBeenCalledTimes(1);
+      // The factor this call installs is what assures the replacement session,
+      // so the enrollment identity is factor-sourced (spec D6) — the real
+      // primitive rejects any other source.
+      const enableInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enableInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     it('POST /auth/mfa/enable rejects policy drift without consuming enrollment authority', async () => {
@@ -4096,7 +4104,7 @@ describe('auth routes', () => {
           user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
           token: {
             sid: 'family-123', sub: 'user-123', type: 'access',
-            aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+            aep: 4, mep: 9, mfa: true, mfa_src: 'policy' as const, mdid: 'signed-device-1', roleId: 'role-7',
           },
           orgId: 'org-5',
           partnerId: 'partner-2',
@@ -4126,6 +4134,9 @@ describe('auth routes', () => {
         partnerId: 'partner-2',
         scope: 'organization',
         mfa: true,
+        // Carried verbatim from the caller's signed token — a factor write
+        // re-mints the assurance it was given, never a better one.
+        mfaSrc: 'policy',
         mobileDeviceId: 'signed-device-1',
       });
       expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -4334,7 +4345,7 @@ describe('auth routes', () => {
             user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
             token: {
               sid: 'family-123', sub: 'user-123', type: 'access',
-              aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+              aep: 4, mep: 9, mfa: true, mfa_src: 'policy' as const, mdid: 'signed-device-1', roleId: 'role-7',
             },
             orgId: 'org-5',
             partnerId: 'partner-2',
@@ -4357,6 +4368,9 @@ describe('auth routes', () => {
           partnerId: 'partner-2',
           scope: 'organization',
           mfa: true,
+          // Carried verbatim from the caller's signed token — a factor write
+          // re-mints the assurance it was given, never a better one.
+          mfaSrc: 'policy',
           mobileDeviceId: 'signed-device-1',
         });
         expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -4386,6 +4400,8 @@ describe('auth routes', () => {
         expect(res.status).toBe(200);
         const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
         expect(input.identity.mfa).toBe(false);
+        // Not assured ⇒ no source, whatever the prior token said.
+        expect(input.identity.mfaSrc).toBeUndefined();
       });
 
       // Post-commit: the factor is already gone, so a failure installing the

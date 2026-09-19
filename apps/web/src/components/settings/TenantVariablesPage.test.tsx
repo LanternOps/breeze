@@ -211,8 +211,12 @@ describe('TenantVariablesPage', () => {
 
     // Both mounted instances must resolve successfully (no unhandled
     // rejection — vitest fails the run on one, which is the regression guard).
+    // Wait on EACH instance: `findAllByTestId` resolves as soon as the first
+    // instance has painted, and on a loaded runner the second is a tick
+    // behind, so a synchronous `getByTestId` on it flaked three merge-queue
+    // entries on 2026-09-18 (#5793, #6075, #6297).
     await screen.findAllByTestId('tenant-variable-row-syslog_host');
-    expect(within(second.container).getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
+    await within(second.container).findByTestId('tenant-variable-row-syslog_host');
   });
 
   it('reloads with its own request after a delete instead of joining a list GET that was already in flight (#6103)', async () => {
