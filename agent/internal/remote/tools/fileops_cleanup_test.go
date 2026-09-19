@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -277,6 +278,9 @@ func TestDeleteFilePermanentRecursiveLegacyDoesNotPreWalk(t *testing.T) {
 }
 
 func TestDeleteFilePermanentRecursiveSumsTreeSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX cleanup-rule fixture")
+	}
 	tmpDir := cleanupTempDir(t)
 	tree := filepath.Join(tmpDir, "a", "b")
 	if err := os.MkdirAll(tree, 0o755); err != nil {
@@ -814,5 +818,75 @@ func TestCleanupGuardPrefixIsReservedForGuardDecisions(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "permission denied") {
 		t.Fatalf("expected the underlying I/O reason to survive, got %q", result.Error)
+	}
+}
+
+// A fixture rule gives us an isolated anchor whose permissions can be changed
+// without touching a shared system directory such as /tmp.
+func TestOpenCleanupTargetAnchorIOErrorsAreNotGuardRejections(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("relies on POSIX mode bits that root ignores")
+	}
+	table, err := loadCleanupRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := table.byOS[runtime.GOOS]
+	t.Cleanup(func() { table.byOS[runtime.GOOS] = original })
+	for _, phase := range []string{"resolve", "open", "missing", "not-directory"} {
+		t.Run(phase, func(t *testing.T) {
+			parent := cleanupTempDir(t)
+			anchor := filepath.Join(parent, "anchor")
+			if err := os.Mkdir(anchor, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			patterns, err := compileCleanupPatterns([]string{anchor + "/**"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			table.byOS[runtime.GOOS] = []compiledCleanupRule{{patterns: patterns}}
+			blocked := anchor
+			if phase == "resolve" {
+				blocked = parent
+			}
+			wantErr := error(os.ErrPermission)
+			switch phase {
+			case "missing", "not-directory":
+				if err := os.Remove(anchor); err != nil {
+					t.Fatal(err)
+				}
+				wantErr = os.ErrNotExist
+				if phase == "not-directory" {
+					if err := os.WriteFile(anchor, []byte("x"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					wantErr = nil // os.OpenRoot may return an internal, non-syscall error.
+				}
+			default:
+				if err := os.Chmod(blocked, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+			}
+			target, err := openCleanupTarget(runtime.GOOS, filepath.Join(anchor, "victim"), "/")
+			if target != nil {
+				target.close()
+			}
+			if err == nil || errors.Unwrap(err) == nil {
+				t.Fatalf("expected a wrapped I/O error, got %v", err)
+			}
+			if wantErr != nil && !errors.Is(err, wantErr) {
+				t.Fatalf("expected wrapped %v, got %v", wantErr, err)
+			}
+			if phase == "not-directory" && !strings.Contains(err.Error(), "not a directory") {
+				t.Fatalf("expected the underlying directory error, got %v", err)
+			}
+			if strings.HasPrefix(err.Error(), CleanupGuardRejectedPrefix) {
+				t.Fatalf("anchor I/O must not be a guard rejection: %v", err)
+			}
+			if !strings.HasPrefix(err.Error(), "cleanup: ") {
+				t.Fatalf("expected cleanup I/O context, got %v", err)
+			}
+		})
 	}
 }

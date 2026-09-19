@@ -222,9 +222,11 @@ export function mapFileDeleteStatus(
  * screening, so nothing ever left. Treating them alike made an all-rejected run
  * return 400 before the run row and the audit were written — commands on the
  * device with no record of them (spec §10).
+ * Budget-skipped actions also never send a command.
  */
 export function wasDispatched(action: Pick<CleanupExecutionAction, 'status' | 'reason'>): boolean {
-  return action.status !== 'rejected' || action.reason === 'agent_guard';
+  return action.status !== 'skipped_budget'
+    && (action.status !== 'rejected' || action.reason === 'agent_guard');
 }
 
 type Rejection = { reason: CleanupRejectionReason };

@@ -8,6 +8,7 @@ import {
   mapFileDeleteStatus,
   parseFileDeleteResult,
   runCleanupExecution,
+  wasDispatched,
   type FileDeleteDispatchResult,
 } from './filesystemCleanupExecution';
 import type { FilesystemCleanupCandidate } from './filesystemAnalysis';
@@ -396,6 +397,9 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
     expect(outcome.actions.map((a) => a.status)).toEqual([
       'completed', 'completed', 'skipped_budget', 'skipped_budget',
     ]);
+    const selectedPaths = outcome.actions.filter(wasDispatched).map((action) => action.path);
+    expect(selectedPaths).toEqual(paths.slice(0, 2));
+    expect(selectedPaths).toHaveLength(dispatch.mock.calls.length);
     expect(outcome.partial).toBe(true);
     expect(outcome.budgetMs).toBe(120_000);
     expect(outcome.rejectedPaths).toEqual([]);
@@ -431,6 +435,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
       now: () => clock,
     });
     expect(outcome.actions.map((a) => a.status)).toEqual(['completed', 'rejected', 'skipped_budget']);
+    expect(outcome.actions.filter(wasDispatched)).toHaveLength(1);
     expect(outcome.rejectedPaths).toEqual(['/home/bob/taxes.pdf']);
   });
 });

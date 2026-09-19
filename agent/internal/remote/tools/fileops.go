@@ -664,24 +664,33 @@ func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, erro
 			volumeRoot = string(filepath.Separator)
 		}
 	}
-	underRoot, err := isRealPathUnderRoot(volumeRoot, anchor)
+	// Unlike the scanner's isRealPathUnderRoot, execution must preserve missing
+	// paths as I/O errors rather than classifying them as off-volume decisions.
+	realVolume, err := filepath.EvalSymlinks(volumeRoot)
 	if err != nil {
-		// A resolution error (e.g. EACCES on a component) is refused, not
-		// guessed at — same stance as a genuine cross-volume anchor.
-		return nil, fmt.Errorf("%s anchor %s could not be resolved on volume %s: %w", CleanupGuardRejectedPrefix, anchor, volumeRoot, err)
+		return nil, fmt.Errorf("cleanup: cannot resolve volume %s: %w", volumeRoot, err)
 	}
+	realAnchor, err := filepath.EvalSymlinks(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot resolve anchor %s: %w", anchor, err)
+	}
+	volumePrefix := strings.TrimSuffix(realVolume, string(filepath.Separator)) + string(filepath.Separator)
+	underRoot := realAnchor == realVolume || strings.HasPrefix(realAnchor, volumePrefix)
 	if !underRoot {
 		return nil, fmt.Errorf("%s anchor %s is not on volume %s", CleanupGuardRejectedPrefix, anchor, volumeRoot)
 	}
 
 	rel, err := filepath.Rel(anchor, filepath.Clean(cleanPath))
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot resolve %s relative to anchor %s: %w", cleanPath, anchor, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("%s %s is not inside its anchor %s", CleanupGuardRejectedPrefix, cleanPath, anchor)
 	}
 
 	root, err := os.OpenRoot(anchor)
 	if err != nil {
-		return nil, fmt.Errorf("cannot open cleanup anchor %s: %w", anchor, err)
+		return nil, fmt.Errorf("cleanup: cannot open anchor %s: %w", anchor, err)
 	}
 	if err := refuseLinkedAncestors(root, rel); err != nil {
 		_ = root.Close()
@@ -690,9 +699,9 @@ func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, erro
 	if _, err := root.Lstat(rel); err != nil {
 		_ = root.Close()
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("path does not exist: %s", cleanPath)
+			return nil, fmt.Errorf("cleanup: path does not exist: %s: %w", cleanPath, err)
 		}
-		return nil, fmt.Errorf("failed to stat %s inside its anchor: %w", cleanPath, err)
+		return nil, fmt.Errorf("cleanup: failed to stat %s inside its anchor: %w", cleanPath, err)
 	}
 	return &cleanupTarget{root: root, rel: rel, match: match}, nil
 }
@@ -727,9 +736,9 @@ func refuseLinkedAncestors(root *os.Root, rel string) error {
 		info, err := root.Lstat(prefix)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return fmt.Errorf("path does not exist: %s", prefix)
+				return fmt.Errorf("cleanup: path does not exist: %s: %w", prefix, err)
 			}
-			return fmt.Errorf("failed to stat %s inside its anchor: %w", prefix, err)
+			return fmt.Errorf("cleanup: failed to stat %s inside its anchor: %w", prefix, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%s %s traverses a symlink at %s", CleanupGuardRejectedPrefix, rel, prefix)
