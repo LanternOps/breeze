@@ -5,7 +5,7 @@ import '../../aiTools';
 import { GOLDEN_CASES } from './goldenPrompts';
 
 // A-W02 Task 5 declares the currently mute documentation tool; remove this set then.
-const PENDING_DECLARATION = new Set(['search_documentation']);
+const PENDING_DECLARATION = new Set<string>([]); // search_documentation was declared by A-W02 (#6341)
 
 // The plan's fixed prompts also reference these pre-existing #3300 gaps from
 // aiAgentSdkTools.registryParity.contract.test.ts (KNOWN_MISSING_TOOL_TIERS).
@@ -73,6 +73,6 @@ describe('GOLDEN_CASES', () => {
     const structuralMisses = GOLDEN_CASES
       .filter((c) => c.expect.every((e) => undeclared.has(e.tool)))
       .map((c) => c.id);
-    expect(structuralMisses).toEqual(['g23', 'g26', 'g34', 'g35', 'g36', 'g49', 'g55', 'g57', 'g59', 'g60']);
+    expect(structuralMisses).toEqual(['g23', 'g26', 'g34', 'g35', 'g36', 'g49', 'g55', 'g59', 'g60']);
   });
 });

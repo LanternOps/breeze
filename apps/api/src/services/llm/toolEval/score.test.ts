@@ -18,7 +18,7 @@ describe('scoreFirstCall', () => {
     expect(scoreFirstCall(c, { toolUses: [] })).toMatchObject({ hit: false, answeredWithoutTool: true, observedTool: null });
   });
   it('summarizes', () => {
-    const s = summarize([{ id: 'a', hit: true, observedTool: 'x', observedAction: null, answeredWithoutTool: false }, { id: 'b', hit: false, observedTool: null, observedAction: null, answeredWithoutTool: true }]);
+    const s = summarize([{ id: 'a', hit: true, observedTool: 'x', observedAction: null, answeredWithoutTool: false, unavailableTool: false }, { id: 'b', hit: false, observedTool: null, observedAction: null, answeredWithoutTool: true, unavailableTool: false }]);
     expect(s).toMatchObject({ total: 2, hits: 1, accuracy: 0.5 });
     expect(s.misses.map((m) => m.id)).toEqual(['b']);
   });
