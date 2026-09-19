@@ -120,6 +120,33 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     setMeasured(true);
   }, [measured]);
 
+  // Self-hosted webfonts (Plus Jakarta Sans, `font-display: swap`) paint the
+  // very first measurement pass in the system fallback font, which reliably
+  // renders each tab label a few px NARROWER than the real font. Nothing
+  // else ever re-measures once `measured` flips true — the ResizeObserver
+  // below only fires on the CONTAINER's own size changing, not on the
+  // labels quietly growing wider once the webfont swaps in — so a cold-cache
+  // load can compute "5 tabs fit" against fallback-font widths and never
+  // revisit that once the swap makes them not fit, leaving the tablist to
+  // overflow into horizontal scroll instead of collapsing one more tab into
+  // "More" (sweep paper cut #7). Re-measuring once fonts have settled closes
+  // that gap. `document.fonts` is undefined in some test/SSR environments —
+  // optional-chained rather than assumed.
+  useEffect(() => {
+    let cancelled = false;
+    document.fonts?.ready
+      .then(() => {
+        if (!cancelled) setMeasured(false);
+      })
+      .catch(() => {
+        // Font loading failed outright — the fallback-font measurement
+        // already taken is the best available; nothing more to do.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const computeVisible = useCallback(() => {
     const container = containerRef.current;
     if (!container || tabWidths.current.length === 0) return;
