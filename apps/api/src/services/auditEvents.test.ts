@@ -40,6 +40,27 @@ describe('writeAuditEvent', () => {
     );
   });
 
+  // #5611 review: a service auditing on behalf of a request it no longer holds
+  // hands over the IP it already resolved. Re-deriving it from a header-only
+  // shim would fail the proxy-trust check in production and drop it.
+  it('prefers a pre-resolved ipAddress / userAgent over deriving them from the request', () => {
+    const c = buildRequestLike({ 'user-agent': 'shim-ua', 'x-forwarded-for': '198.51.100.7' });
+
+    writeAuditEvent(c, {
+      orgId: null,
+      actorType: 'user',
+      actorId: '123e4567-e89b-42d3-a456-426614174001',
+      action: 'invoice.stripe_session_abandoned',
+      resourceType: 'invoice',
+      ipAddress: '203.0.113.9',
+      userAgent: 'real-ua/1',
+    });
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ ipAddress: '203.0.113.9', userAgent: 'real-ua/1' })
+    );
+  });
+
   it('exposes the persistence promise for callers that require completion', async () => {
     let resolvePersistence!: () => void;
     const persistence = new Promise<void>((resolve) => {

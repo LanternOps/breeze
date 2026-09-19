@@ -67,6 +67,9 @@
       "on_ticket_resolve": "Consegnato alla risoluzione del ticket collegato"
     },
     "autoEvidenceReport": "Allega le esecuzioni del report come evidenza",
+    "autoEvidenceNone": "Nessuno",
+    "autoEvidenceHelp": "L'evidenza viene generata il giorno di scadenza e diventa visibile al cliente quando l'occorrenza viene consegnata.",
+    "autoEvidenceEmpty": "Non sono ancora disponibili tipi di report di evidenza gestiti.",
     "owner": "Responsabile",
     "ticketCategory": "Categoria del ticket",
     "portalVisible": "Mostra nel portale clienti",
@@ -80,6 +83,10 @@
   },
   "drawer": {
     "title": "Occorrenze",
+    "empty_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza.",
+    "empty_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza.",
+    "emptyWithDate_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza ({{date}}).",
+    "emptyWithDate_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza ({{date}}).",
     "evidence": "Evidenze",
     "noEvidence": "Nessuna evidenza allegata",
     "late": "In ritardo",
@@ -186,7 +193,8 @@
       "leadDays": "Apri questo numero di giorni prima della scadenza",
       "graceDays": "Segna come mancato questo numero di giorni dopo la scadenza",
       "artifactRequired": "Evidenza richiesta",
-      "completionMode": "Completamento"
+      "completionMode": "Completamento",
+      "autoEvidenceReportType": "Tipo di report di evidenza"
     },
     "ownerScope": {
       "legend": "Per chi è questo set?",

@@ -26,6 +26,7 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -193,7 +194,7 @@ async function jobOrgIsAuthorized(
  * Redis or the agent WebSocket, so the pooled connection is released before
  * the connectivity check and dispatch (#1105).
  */
-async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckMonitorInputs> {
+async function loadCheckMonitorInputs(data: CheckMonitorJobData, selectedAgentId?: string): Promise<CheckMonitorInputs> {
   const [monitor] = await db
     .select()
     .from(networkMonitors)
@@ -215,7 +216,7 @@ async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckM
   // The probe device comes from the RUNNING org (data.orgId), never from
   // monitor.orgId - which is NULL for a partner-wide check and would silently
   // match no device at all.
-  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId });
+  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId }, selectedAgentId);
   return { status: 'ok', monitor, agentId };
 }
 
@@ -241,7 +242,7 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
       return { dispatched: false, agentId: null };
   }
 
-  const { monitor, agentId } = inputs;
+  const { agentId } = inputs;
 
   // Phase 2 — connectivity check and the agent WebSocket dispatch, both with
   // NO DB context open (#1105). dispatchCommandToAgent does Redis/WS I/O via
@@ -252,7 +253,13 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  const command = buildMonitorCommand(monitor);
+  // Revalidate after connectivity I/O, in a fresh short DB context. Pin the
+  // previous executor so a changed scope cannot silently select a replacement.
+  const current = await runWithSystemDbAccess(() => loadCheckMonitorInputs(data, agentId));
+  if (current.status !== 'ok' || current.agentId !== agentId) {
+    return { dispatched: false, agentId: null };
+  }
+  const command = buildMonitorCommand(current.monitor);
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
 
   if (outcome.status !== 'sent') {
@@ -271,65 +278,17 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
 }
 
 /**
- * Quick Support exclusion (applies to every device selection below):
- * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
- * 'quick_support' org and are a stranger's personal machine borrowed for one
- * ~20-minute session. That org stays inside technicians' accessibleOrgIds for
- * RLS reasons, so background workers are NOT filtered for us. Such a device must
- * never be conscripted as a monitor executor (it would run network probes on a
- * home network) nor be picked as the attribution device for a monitor alert.
+ * Kept as a named export because monitorWorker.test.ts and
+ * monitorWorker.dbcontext.test.ts assert on it directly. The rules now live in
+ * services/networkExecutorSelection.ts, shared with routes/monitors.ts and the
+ * manual probe (spec §5).
  */
 export async function selectExecutionAgentForMonitor(
-  monitor: {
-    orgId: string;
-    assetId: string | null;
-  }
+  monitor: { orgId: string; assetId: string | null },
+  agentId?: string,
 ): Promise<string | null> {
-  let assetSiteId: string | null = null;
-
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({ siteId: discoveredAssets.siteId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-    assetSiteId = asset?.siteId ?? null;
-  }
-
-  if (assetSiteId) {
-    // Site-bound monitor: the executing agent MUST live in the monitor's site.
-    // If no online agent is available there, return null rather than crossing
-    // the site boundary to an arbitrary org agent (SR5-08) — that would direct
-    // a root-level agent in another site to probe this target.
-    const [siteAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.siteId, assetSiteId),
-        eq(devices.status, 'online')
-      ))
-      .limit(1);
-
-    return siteAgent?.agentId ?? null;
-  }
-
-  // Unbound monitor (no site scope): org-wide selection is legitimate. Monitors
-  // created by site-restricted callers are now required to be site-bound
-  // (aiToolsMonitoring create gate), so this path is reached only for monitors
-  // an unrestricted caller intentionally left assetless.
-  const [onlineAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(
-      eq(devices.orgId, monitor.orgId),
-      eq(devices.isEphemeral, false),
-      eq(devices.status, 'online')
-    ))
-    .limit(1);
-
-  return onlineAgent?.agentId ?? null;
+  const pick = await selectMonitorExecutor(monitor, { agentId });
+  return 'agentId' in pick ? pick.agentId : null;
 }
 
 async function resolveMonitorAlertDevice(

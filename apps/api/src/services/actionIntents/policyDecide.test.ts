@@ -280,6 +280,8 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxDesignRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
       designBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
       designMaxTurns: AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
+      // v14 (#5870) design-profile wall clock — same reason again.
+      designWallClockSeconds: AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds,
       // v11 (AI patch agent W01) patch-profile caps — same reason again.
       maxConcurrentPatchRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
       maxPatchRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
@@ -297,6 +299,8 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       analysisMaxConcurrentRuns: AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
       analysisMaxStepTimeoutSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
       analysisMaxStepsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      maxUnattendedDevicesPerSweep: AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
+      sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

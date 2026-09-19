@@ -113,11 +113,11 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
-import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
+import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
@@ -1076,6 +1076,64 @@ describe('requirePermission', () => {
     expect(res.status).toBe(200);
   });
 
+  // #5733 — requirePermission must hand the TOKEN SCOPE to getUserPermissions.
+  // Without it the resolver only knows about partnerId/orgId, both null on a
+  // system token, so it fell through to "no membership" → 403 on every
+  // requirePermission route that also admits requireScope(... 'system').
+  it('forwards scope=system so getUserPermissions can resolve a platform admin (#5733)', async () => {
+    const systemAuth = {
+      ...baseAuth,
+      user: { ...baseAuth.user, isPlatformAdmin: true },
+      partnerId: null,
+      orgId: null,
+      scope: 'system' as const,
+    };
+    const systemPerms = {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'platform-admin',
+      scope: 'system' as const,
+    };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('still answers 403 for a system token the resolver refuses (non-platform-admin)', async () => {
+    const systemAuth = { ...baseAuth, partnerId: null, orgId: null, scope: 'system' as const };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('No permissions found');
+  });
+
   it('stores permissions in context after successful check', async () => {
     let capturedPerms: any;
     const app = new Hono();
@@ -1144,6 +1202,64 @@ describe('requireMfa', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+
+  // Contract: the `mfa` claim means "this session satisfies the EFFECTIVE MFA
+  // policy" (login/SSO/CF-Access mint it from getEffectiveMfaPolicy). It is
+  // NOT proof that a factor was presented — a tenant that does not require
+  // MFA admits password-only sessions here by design. Anything that needs a
+  // proven fresh factor uses the step-up grant primitive instead
+  // (services/mfaStepUpGrant.ts). These pin the gate's only input.
+  it('rejects when the auth context carries no token at all (claim absent ≠ satisfied)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', { ...baseAuth, token: undefined });
+      await next();
+    });
+    app.use(requireMfa());
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+  });
+
+  it('hasSatisfiedMfa reads only the mfa claim: true only for mfa === true', () => {
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: true } } as any)).toBe(true);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: false } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: undefined } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: 'true' } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: undefined } as any)).toBe(false);
+  });
+});
+
+describe('requireInteractiveSession', () => {
+  function appWith(auth: unknown) {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      if (auth !== undefined) c.set('auth', auth);
+      await next();
+    });
+    app.use(requireInteractiveSession());
+    app.get('/test', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('admits a user_session principal', async () => {
+    const res = await appWith({ ...baseAuth, principal: { kind: 'user_session' } }).request('/test');
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['api_key', 'oauth_grant', 'ai_agent', 'system', 'unknown'])('denies a %s principal with a written 403', async (kind) => {
+    const res = await appWith({ ...baseAuth, principal: { kind } }).request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+  });
+
+  it('denies when there is no auth context at all', async () => {
+    const res = await appWith(undefined).request('/test');
+    expect(res.status).toBe(403);
   });
 });
 
@@ -1240,6 +1356,106 @@ describe('requirePartner', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+// #5733 — requireOrgAccess and requireSiteAccess each fall back to resolving
+// permissions themselves when an earlier requirePermission did not publish them.
+// That fallback must forward the token scope for exactly the same reason
+// requirePermission does: a system token carries no partnerId/orgId, so without
+// the scope the resolver has no axis to look up and denies a platform admin.
+// Asserting the CALL ARGUMENTS (not just the resulting status) is the point —
+// a status-only assertion passes whether or not the field is forwarded.
+describe('scope forwarding to getUserPermissions (#5733)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const systemAuth = {
+    ...baseAuth,
+    user: { ...baseAuth.user, isPlatformAdmin: true },
+    partnerId: null,
+    orgId: null,
+    scope: 'system' as const,
+    canAccessOrg: () => true,
+  };
+  const systemPerms = {
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: null,
+    orgId: null,
+    roleId: 'platform-admin',
+    scope: 'system' as const,
+  };
+
+  it('requireOrgAccess forwards the scope on its self-resolve fallback', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth); // no `permissions` published — forces the fallback
+      await next();
+    });
+    app.use('/orgs/:orgId', requireOrgAccess());
+    app.get('/orgs/:orgId', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(canAccessOrg).mockReturnValue(true);
+
+    const res = await app.request('/orgs/org-abc');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('requireSiteAccess forwards the scope on its self-resolve fallback', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use('/sites/:siteId', requireSiteAccess());
+    app.get('/sites/:siteId', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(canAccessSite).mockReturnValue(true);
+
+    const res = await app.request('/sites/site-abc');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('does NOT invent a scope for an ordinary org token (the membership path is unchanged)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('devices', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+    });
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    await app.request('/test');
+
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: baseAuth.partnerId || undefined,
+      orgId: baseAuth.orgId || undefined,
+      scope: baseAuth.scope,
+    });
   });
 });
 

@@ -58,8 +58,9 @@
     "partner": "Partenaire",
     "billing": "Facturation",
     "organizations": "Organisations",
-    "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiUsage": "Utilisation de l’IA",
     "scriptAuthoring": "Rédaction de scripts",
+    "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
     "aiImpact": "Impact de l’IA",
@@ -94,7 +95,9 @@
     "aiRisk": "Risque IA",
     "deviceBackup": "Sauvegarde des appareils",
     "sectionServiceDesk": "Centre de services",
-    "serviceManagement": "Gestion des services"
+    "serviceManagement": "Gestion des services",
+    "ticketing": "Billetterie",
+    "deliverableTemplates": "Modèles de livrables"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -955,7 +958,8 @@
         "fallbackTitle": "Moniteur",
         "fields": {
           "interval": "Intervalle (s)",
-          "timeout": "Temps mort (s)"
+          "timeout": "Temps mort (s)",
+          "target": "URL cible"
         },
         "labels": {
           "lastChecked": "Dernière vérification : {{time}}",
@@ -983,6 +987,20 @@
           "httpCheck": "Vérification HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Port TCP"
+        },
+        "targetResetNote": "La modification de l’URL réinitialise l’observation TLS.",
+        "saved": "Moniteur mis à jour",
+        "certificate": {
+          "title": "Certificat",
+          "issuer": "Émetteur",
+          "expires": "Expiration",
+          "observedHost": "Hôte observé",
+          "state": "État",
+          "states": {
+            "observed": "Observé",
+            "handshakeFailed": "Échec de la négociation TLS",
+            "notTls": "Sans TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1833,7 +1851,9 @@
         "assetsDescription": "Vue unifiée des sondages et vérifications réseau de SNMP par actif découvert.",
         "table": {
           "asset": "Actif",
-          "overall": "Globalisation"
+          "overall": "Globalisation",
+          "reachability": "Joignabilité",
+          "collection": "Collecte"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1885,7 +1905,29 @@
         "disabling": "Désactivant...",
         "yesDisable": "Oui, désactiver",
         "monitoringNotActive": "La surveillance n’est pas active pour cet actif.",
-        "saving": "Enregistrement..."
+        "saving": "Enregistrement...",
+        "openSettings": "Paramètres…",
+        "reachability": {
+          "responding": "Répond",
+          "notResponding": "Ne répond pas",
+          "unverified": "Non vérifié",
+          "sources": {
+            "networkCheck": "vérification réseau",
+            "probe": "vérifier maintenant",
+            "scan": "balayage",
+            "unifi": "contrôleur UniFi",
+            "snmp": "interrogation SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Collecte en cours",
+          "partial": "Partielle",
+          "no_template": "Aucun modèle",
+          "failing": "En échec",
+          "paused": "En pause",
+          "never_polled": "Jamais interrogé",
+          "not_configured": "Non configuré"
+        }
       },
       "MonitoringPage": {
         "tabs": {
@@ -2491,5 +2533,10 @@
     "message": "Votre rôle nécessitera l’authentification à deux facteurs. Configurez-la avant le {{date}}.",
     "cta": "Configurer la 2FA",
     "dismiss": "Fermer le rappel d’authentification à deux facteurs"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'authentification multifacteur n'est pas exigée pour votre équipe. Les sessions avec mot de passe seulement peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "cta": "Exiger l'AMF",
+    "dismiss": "Masquer le rappel de politique AMF pour aujourd'hui"
   }
 }

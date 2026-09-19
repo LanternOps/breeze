@@ -143,6 +143,17 @@ export interface AiAgentLimits {
   designBudgetCentsPerRun: number;
   designMaxTurns: number;
   /**
+   * #5870 — the design-profile wall clock, pinned like `analysisWallClockSeconds`
+   * (same reason: a profile whose raised turn/budget ceilings need real time
+   * to be reached must not be cut by the shared 600s default). Default 1800s:
+   * a design run reads a whole org's fleet across up to `designMaxTurns` (60)
+   * turns before its one `submit_fleet_design` call, and 600s was observed
+   * truncating real runs at 36/60 turns with `wallClockExceeded=true` while
+   * still finalizing `completed` (the outcome tool had been submitted) —
+   * see `designProfile.ts`'s `designLimits`.
+   */
+  designWallClockSeconds: number;
+  /**
    * AI patch agent (W01) — patch-profile admission caps, counted on their
    * own like every other profile. A patch run is scheduled once a day per
    * org (`0 2 * * *` default) plus the occasional manual "Run now", so
@@ -186,6 +197,29 @@ export interface AiAgentLimits {
   analysisMaxConcurrentRuns: number;
   analysisMaxStepTimeoutSeconds: number;
   analysisMaxStepsPerRun: number;
+  /**
+   * #4442 W05 — hard per-OCCURRENCE cap on how many distinct devices one
+   * sweep may touch unattended. Merged with `min` (the default), so an org
+   * may tighten it and never widen it. Default 3: a genuine canary, not a
+   * budget — a partner must deliberately raise it. Deliberately NOT reusing
+   * `maxActionsPerRun` (also 3), which governs how many CARDS a sweep may
+   * raise; conflating "how many approvals" with "how many machines may it
+   * touch unattended" is exactly the distinction #4442 is about (OD-3).
+   * Enforced in `persistSweepFindings`' cohort walk (`sweepActCohort.ts`) —
+   * see runService.ts's limits-coverage inventory. Snapshot v13.
+   */
+  maxUnattendedDevicesPerSweep: number;
+  /**
+   * #4442 W05 — verified-evidence count from SWEEP-MINTED intents a colon key
+   * must reach before act mode graduates for a (org, op) pair, ON TOP OF
+   * `promoteThreshold`. Merged with `max`, like `promoteThreshold`: a bar, not
+   * a budget. Verified evidence from alert-triggered, run-bound intents shows
+   * the OP is safe; it says nothing about whether the sweep picked the right
+   * TARGET, and target selection is the entire new risk surface (OD-5).
+   * Enforced in `graduationService.evaluateEligibility` — see runService.ts's
+   * limits-coverage inventory. Snapshot v13.
+   */
+  sweepPromoteThreshold: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -235,6 +269,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxDesignRunsPerDay: 4,
   designBudgetCentsPerRun: 300,
   designMaxTurns: 60,
+  designWallClockSeconds: 1800,
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring.
   maxConcurrentPatchRuns: 1,
@@ -255,6 +290,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   analysisMaxConcurrentRuns: 2,
   analysisMaxStepTimeoutSeconds: 300,
   analysisMaxStepsPerRun: 40,
+  // Sweep act-mode caps (#4442 W05) — see
+  // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring.
+  // maxUnattendedDevicesPerSweep merges with min (the default);
+  // sweepPromoteThreshold merges with max (effectivePolicy.ts).
+  maxUnattendedDevicesPerSweep: 3,
+  sweepPromoteThreshold: 10,
 });
 
 export interface AiAgentTriggers {
@@ -272,6 +313,22 @@ export interface AiAgentTriggers {
    * `ruleId === null` alert fails a non-empty `alertRuleIds`.
    */
   alertCategories?: string[];
+  /**
+   * Resource filters. ABSENT means unrestricted; an EMPTY array means NOTHING
+   * is allowed — the two are NOT interchangeable, and the validator rejects
+   * `[]` on write (`.min(1)`) precisely so a stored `[]` can only ever arrive
+   * from a merge. `effectivePolicy.ts` intersects a partner baseline with an
+   * org override, and disjoint filters legitimately intersect to `[]`; that
+   * result must keep meaning "no device matches", never "unrestricted".
+   *
+   * These are an EXECUTION boundary, not just a trigger filter (#6086): a run
+   * of a scoped agent is admitted only for an exact device inside the scope,
+   * and that scope is rechecked before execution and before every tool call
+   * (`services/aiAgents/runResourceScope.ts`). The boundary is over DEVICES,
+   * not tools: a scoped run keeps its agent's full tool allowlist, and every
+   * device-keyed tool is bounded to the run's own device by the exact-device
+   * allowlist the run's auth context carries (`agentAuthContext.ts`).
+   */
   siteIds?: string[];
   deviceGroupIds?: string[];
   deviceTags?: string[];
@@ -426,7 +483,9 @@ export interface AiAgentProtectedResources {
  * unattended execution: a saved script can read secrets, rewrite config, or do
  * anything else its author wrote, so allowlisting the TOOL must not silently
  * authorize every script an org happens to have. `scriptIds` is the closed set
- * an operator has explicitly opted into for act mode; empty/absent means
+ * an operator has explicitly opted into for act mode. This is an ALLOWLIST,
+ * not a narrowing filter, so it does NOT follow the absent-means-unrestricted
+ * split of `AiAgentTriggers`' resource filters: empty AND absent both mean
  * run_script is never act-eligible for this agent — the model may still call
  * it, and it still records as a proposal exactly like any other unmatched
  * Tier-3 mutation (Global Constraints, plan header).
@@ -559,12 +618,27 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
  * pre-v12 snapshot. Every site that switches on `schemaVersion` must tolerate
  * 1 through 12.
+ *
+ * v13 (AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
+ * `sweepPromoteThreshold` — see `AiAgentLimits.maxUnattendedDevicesPerSweep`'s
+ * docstring. Same rule as every prior bump: a v1-v12 in-flight run's snapshot
+ * lacks them and MUST still execute; read sites fall back to
+ * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v13 snapshot. Every site that switches
+ * on `schemaVersion` must tolerate 1 through 13.
+ *
+ * v14 (this bump, #5870): `designWallClockSeconds` — see
+ * `AiAgentLimits.designWallClockSeconds`'s docstring. Same rule as every
+ * prior bump: a v1-v13 in-flight run's snapshot lacks it and MUST still
+ * execute (`designLimits`'s `?? AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds`
+ * read); read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v14
+ * snapshot. Every site that switches on `schemaVersion` must tolerate 1
+ * through 14.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 12 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 14 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), or 12 (current). Read sites must tolerate all twelve. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), or 13 (current). Read sites must tolerate all thirteen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

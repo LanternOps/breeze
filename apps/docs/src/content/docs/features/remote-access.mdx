@@ -66,6 +66,8 @@ The agent holds a short lease and renews it about every 25 seconds over its exis
 - multi-factor authentication is still satisfied under the current role policy;
 - the session's hard time limit has not been reached.
 
+The MFA check evaluates the role's *actual, effective* MFA policy, not just its raw flag — a Partner Admin who hasn't enrolled an MFA factor no longer has their desktop sessions revoked when MFA isn't actually required by policy.
+
 If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
 
 If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.
@@ -641,6 +643,11 @@ WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. C
 - **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
 
 The viewer should automatically fall back to the WebSocket transport after a timeout.
+
+**Poor video quality, high latency, or stalls — where are the WebRTC diagnostics?**
+While a desktop session is live, the device emits two periodic diagnostic lines: `Viewer WebRTC stats` (RTT, jitter, packet loss, frame drops as reported by the viewer) and `Desktop WebRTC metrics` (`captureMs`, `convertMs`, `encodeMs`, frames captured/encoded/sent, bandwidth). Both are shipped to **Devices → Select Device → Agent Logs** for the duration of the session regardless of `log_shipping_level`, so you do not need to lower the level to see them. Read `captureMs` against `encodeMs`: a high `captureMs` with a low `encodeMs` means the screen capturer is the bottleneck, not the encoder.
+
+On macOS with `isService=true` the desktop-helper writes the same lines locally to `/Library/Application Support/Breeze/logs/desktop-helper.log`; on Windows they are in `C:\ProgramData\Breeze\logs\user-helper.log`. If the helper logs `Log shipping disabled: helper config is missing required keys` at startup, the listed `agent.yaml` keys are absent and nothing from that process reaches Agent Logs — re-enrol or repair the config, then restart the helper.
 
 **Session limit hit (429).**
 The organisation or user limit on concurrent sessions has been reached. Call `DELETE /remote/sessions/stale` to free capacity, or navigate to the Active Sessions list and close sessions that are no longer needed.

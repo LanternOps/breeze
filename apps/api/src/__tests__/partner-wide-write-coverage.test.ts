@@ -83,6 +83,18 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // no caller-supplied partner id, never reachable with a partner token's choice
   // of target.
   'services/monitors/builtInMonitors.ts': 'one-time per-partner provisioning of the partner\'s own built-in rows; callers are createPartner(), a requireScope(system) route, and the boot backfill',
+  // --- tool_sources / tool_source_tools became dual-axis in #5216 -----------
+  // Discovery is a BullMQ job, not a caller-facing write: it loads the source
+  // row by id, copies that row's OWN owner axis onto the tools it upserts (the
+  // constraint trigger tool_source_tools_owner_guard_trg rejects anything
+  // else), and never reads an owner from a request. All FIVE caller-facing
+  // mutating routes in routes/toolSources.ts run the
+  // `existing.orgId === null && !canManagePartnerWidePolicies(auth)` gate
+  // before touching a partner-wide row: PATCH /:id, DELETE /:id, PATCH
+  // /:id/tools/:toolId, POST /:id/tools/bulk, and POST /:id/discover (the
+  // one enqueue site a caller can reach — added in the same PR that added
+  // this allowlist entry, after a review round found it missing).
+  'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
   // hash, MFA secret, passkeys, phone, email verification, last-login), never
@@ -296,6 +308,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
   'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with partner ownership and a fresh raw partner-member selection check for both merge participants — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
   'services/orgArchive.ts': 'archive/restore writes run under system context from the org-lifecycle service; the HTTP surface is gated by routes/orgArchive.ts\'s requireScope(partner,system) + requireOrgWrite + MFA, partner ownership of the target, AND the caller\'s own partner_users.org_ids selection (partnerMemberMayReachOrg, fail-closed for org_access=none) — organizations is not a partner-wide policy table. Every write is scoped to one org the caller may manage; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from archiving or restoring an org they already manage.',
+  // --- partner sending domains (spec 2026-09-17 W02) -----------------------
+  'services/emailDomains/domainRelease.ts': 'releaseSendingDomainsForPartner has no caller-facing surface at all: it is invoked only by cascadeDeletePartner and finalizePartnerOffboarding, both of which run in system context on a partner already being destroyed, and it takes the partner id from those functions rather than from any request. It writes exactly two things — an outbox row and provider_domain_id = NULL — and creates no partner-owned configuration, so there is no partner-wide policy decision for canManagePartnerWidePolicies to gate.',
+  'services/emailDomains/sendingDomainService.ts': 'the partner-wide gate for every caller-facing sending-domain write lives one layer up, in routes/partnerSendingDomains.ts, which calls canManagePartnerWidePolicies on all six mutating routes; this service takes the partner id from the verified auth context its route passed, never from request input, and its remaining callers are the platform-admin routes (already behind platformAdminMiddleware + requireMfa) and the sending-domains worker, which has no caller at all',
+  'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */

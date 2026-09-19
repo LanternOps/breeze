@@ -9,7 +9,7 @@ const workspace = {
   backend: 'vercel',
   region: 'eu' as const,
   status: 'destroyed',
-  bootstrapHash: 'sha256:abc',
+  bootstrapHash: 'sha256:abc', runtimeImage: 'analysis@sha256:abc',
   createdAt: '2026-09-13T10:00:00.000Z',
   readyAt: '2026-09-13T10:00:04.000Z',
   destroyedAt: '2026-09-13T10:03:00.000Z',

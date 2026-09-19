@@ -1801,10 +1801,21 @@ export function createDesktopWsRoutes(
         return c.json({ error: access.error }, access.status);
       }
 
+      // SEC-038 W06: a terminal decision (server End, teardown, sweep, lease
+      // revocation) commits before the agent acknowledges the stop, leaving
+      // the row with terminationPhase='pending'. The viewer's answer poll
+      // must never connect on a stale answer from such a row, so the answer
+      // is withheld for any terminal phase as well as any terminal status.
+      const terminationPhase = access.session.terminationPhase ?? 'none';
+      const answerWithheld = access.session.status === 'failed'
+        || access.session.status === 'disconnected'
+        || access.session.status === 'denied'
+        || terminationPhase !== 'none';
       return c.json({
         id: access.session.id,
         status: access.session.status,
-        webrtcAnswer: access.session.status === 'failed' || access.session.status === 'disconnected' ? null : access.session.webrtcAnswer,
+        terminationPhase,
+        webrtcAnswer: answerWithheld ? null : access.session.webrtcAnswer,
         errorMessage: access.session.errorMessage,
         startedAt: access.session.startedAt,
         endedAt: access.session.endedAt,

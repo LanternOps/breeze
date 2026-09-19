@@ -76,7 +76,12 @@ const intersectOptional = (a?: string[], b?: string[]): string[] | undefined =>
 // key becomes promote-eligible must not be undercut by an org row asking for
 // 5. Named here, not inline, so a future limit that needs the same exception
 // is one addition to this set instead of a special case buried in the loop.
-const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold']);
+// `sweepPromoteThreshold` (#4442 W05) is the second member, for the same
+// reason: it is a BAR on how much sweep-chosen-target evidence a key needs
+// before act mode graduates. `maxUnattendedDevicesPerSweep` is deliberately
+// NOT here — it is a budget, and max-merging it would let an org WIDEN how
+// many machines a sweep may touch unattended, a real safety inversion.
+const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold', 'sweepPromoteThreshold']);
 
 function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): AiAgentLimits {
   const partner = partnerLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
@@ -249,6 +254,15 @@ export function mergeAgentPolicies(
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      anomalyTypes: intersectOptional(partner.triggers.anomalyTypes, org.triggers.anomalyTypes),
+      metricNames: intersectOptional(partner.triggers.metricNames, org.triggers.metricNames),
+      // `minAnomalyScore` is a FLOOR ("fire only at or above this"), so `max`
+      // IS the tighten-only rule — the same direction as the intersections.
+      minAnomalyScore: partner.triggers.minAnomalyScore === undefined
+        ? org.triggers.minAnomalyScore
+        : org.triggers.minAnomalyScore === undefined
+          ? partner.triggers.minAnomalyScore
+          : Math.max(partner.triggers.minAnomalyScore, org.triggers.minAnomalyScore),
       // Wave 6 PR 3 (#3828, Task 4) — same tighten-only intersection as the
       // other narrowing lists above. Unenforced by the admission subscriber
       // this PR (`AiAgentTriggers.ticketCategories`'s docstring), but merged

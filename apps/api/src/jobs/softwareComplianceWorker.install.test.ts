@@ -11,6 +11,7 @@ const {
   inventoryMock,
   scheduleUninstallMock,
   scheduleInstallMock,
+  latestPolicyOwnedInstallMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
   dbSelectMock: vi.fn(),
@@ -29,6 +30,10 @@ const {
   upsertMock: vi.fn(async (_inputs: Array<Record<string, unknown>>) => undefined),
   inventoryMock: vi.fn(async () => new Map<string, unknown[]>([['device-1', []]])),
   scheduleUninstallMock: vi.fn(async (..._args: unknown[]) => 0),
+  latestPolicyOwnedInstallMock: vi.fn(async (
+    _policyId: string,
+    _deviceIds: string[],
+  ) => new Map<string, Date>()),
   scheduleInstallMock: vi.fn(async (
     _policyId: string,
     _targets: Array<{ deviceId: string; catalogIds: string[]; attempt: number }>,
@@ -55,6 +60,9 @@ vi.mock('./softwareRemediationWorker', () => ({
   scheduleSoftwareRemediation: scheduleUninstallMock,
   scheduleSoftwareInstallRemediation: scheduleInstallMock,
 }));
+vi.mock('../services/softwarePolicyInstallRemediation', () => ({
+  readLatestPolicyOwnedInstallByDevice: latestPolicyOwnedInstallMock,
+}));
 vi.mock('../services/softwarePolicyService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/softwarePolicyService')>();
   return {
@@ -70,6 +78,7 @@ import {
   decideInstallRemediation,
   installStatusForSkip,
   processCheckPolicy,
+  reconcileOrphanedInstallRemediation,
 } from './softwareComplianceWorker';
 import type { SoftwarePolicyViolation } from '../db/schema';
 
@@ -613,5 +622,205 @@ describe('processCheckPolicy — install remediation wiring', () => {
 
     expect(upsertedRows()[0]?.installRemediationStatus).toBeUndefined();
     expect(upsertedRows()[0]?.installRemediationAttempts).toBeUndefined();
+  });
+});
+
+/**
+ * #5505 W03 — the orphaned-install reconcile sweep.
+ *
+ * W02 (#5917) shipped the producer ahead of the processor. Every install job it
+ * enqueued hit the parking branch in createSoftwareRemediationWorker, COMPLETED
+ * as a no-op, and left its compliance row at
+ * `install_remediation_status = 'pending'` with `last_install_remediation_attempt`
+ * stamped and `install_remediation_attempts` incremented.
+ *
+ * Those rows do not drain from installing a processor alone. The next pass runs
+ * decideInstallRemediation, whose timing gate is shouldQueueAutoRemediation,
+ * whose FIRST branch is `previousRemediationStatus === 'pending' → in_progress`
+ * — with no staleness escape. installStatusForSkip writes nothing for a timing
+ * deferral, so the row is stuck at 'pending' forever and the device never gets
+ * its software. The parked job itself is gone from Redis (removeOnComplete), so
+ * nothing will ever move it.
+ *
+ * This is the explicit, idempotent sweep that unsticks them.
+ */
+describe('reconcileOrphanedInstallRemediation — #5505 W03', () => {
+  const ATTEMPT_AT = new Date('2026-09-15T10:00:00Z');
+
+  function reconcile(overrides: Record<string, unknown> = {}) {
+    return reconcileOrphanedInstallRemediation({
+      installRemediationStatus: 'pending',
+      lastInstallRemediationAttempt: ATTEMPT_AT,
+      installRemediationAttempts: 1,
+      latestPolicyOwnedDeploymentAt: null,
+      ...overrides,
+    } as any);
+  }
+
+  it('resets a W02-parked row: live status, an attempt stamped, and no deployment to show for it', () => {
+    expect(reconcile()).toEqual({
+      installRemediationStatus: 'none',
+      installRemediationAttempts: 0,
+      lastInstallRemediationAttempt: null,
+    });
+  });
+
+  it('also reclaims an in_progress row abandoned by a hard-killed worker', () => {
+    expect(reconcile({ installRemediationStatus: 'in_progress', installRemediationAttempts: 3 })).toEqual({
+      installRemediationStatus: 'none',
+      installRemediationAttempts: 2,
+      lastInstallRemediationAttempt: null,
+    });
+  });
+
+  it('leaves a genuinely in-flight row alone — a deployment exists for this attempt', () => {
+    expect(
+      reconcile({ latestPolicyOwnedDeploymentAt: new Date(ATTEMPT_AT.getTime() + 1000) })
+    ).toBeUndefined();
+  });
+
+  it('still reconciles when the only deployment PREDATES this attempt', () => {
+    // A previous cycle installed successfully; THIS enqueue produced nothing.
+    // Membership alone would wrongly read that old row as proof of live work.
+    expect(
+      reconcile({ latestPolicyOwnedDeploymentAt: new Date(ATTEMPT_AT.getTime() - 60_000) })
+    ).toEqual({
+      installRemediationStatus: 'none',
+      installRemediationAttempts: 0,
+      lastInstallRemediationAttempt: null,
+    });
+  });
+
+  it('is idempotent: a row it already reset is not touched again', () => {
+    expect(reconcile({ installRemediationStatus: 'none', installRemediationAttempts: 0 })).toBeUndefined();
+  });
+
+  it('never touches a terminal status', () => {
+    for (const status of ['completed', 'failed', 'skipped', 'gave_up', null]) {
+      expect(reconcile({ installRemediationStatus: status })).toBeUndefined();
+    }
+  });
+
+  it('floors the attempt counter at zero', () => {
+    expect(reconcile({ installRemediationAttempts: 0 })).toEqual({
+      installRemediationStatus: 'none',
+      installRemediationAttempts: 0,
+      lastInstallRemediationAttempt: null,
+    });
+  });
+
+  it('reconciles a live row that never recorded an attempt timestamp at all', () => {
+    expect(reconcile({ lastInstallRemediationAttempt: null })).toEqual({
+      installRemediationStatus: 'none',
+      installRemediationAttempts: 0,
+      lastInstallRemediationAttempt: null,
+    });
+  });
+});
+
+/**
+ * The sweep has to actually RUN inside a compliance pass, and the row it
+ * unsticks has to be re-queued by that SAME pass — otherwise a device parked by
+ * W02 waits an extra cycle for no reason, and a sweep that is merely exported
+ * but never called is dead code that a unit test of the pure function would
+ * happily pass.
+ */
+describe('processCheckPolicy — orphaned-install reconcile sweep (#5505 W03)', () => {
+  const PARKED_ROW = {
+    deviceId: 'device-1',
+    status: 'violation',
+    violations: [{ type: 'missing', rule: { name: 'Chrome', catalogId: 'cat-1' }, detectedAt: '2026-09-01T00:00:00Z' }],
+    remediationStatus: null,
+    lastRemediationAttempt: null,
+    installRemediationStatus: 'pending',
+    lastInstallRemediationAttempt: new Date('2026-09-15T10:00:00Z'),
+    installRemediationAttempts: 2,
+  };
+
+  function upsertedRows(): Array<Record<string, unknown>> {
+    const call = upsertMock.mock.calls[0];
+    if (!call) throw new Error('upsertSoftwareComplianceStatuses was never called');
+    return call[0] as unknown as Array<Record<string, unknown>>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    armingMock.mockReturnValue({ armed: true });
+    resolveDeviceIdsMock.mockResolvedValue(['device-1']);
+    scheduleUninstallMock.mockResolvedValue(0);
+    scheduleInstallMock.mockResolvedValue(['device-1']);
+    latestPolicyOwnedInstallMock.mockResolvedValue(new Map<string, Date>());
+  });
+
+  it('resets a W02-parked row and re-queues the device in the same pass', async () => {
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [PARKED_ROW],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', []]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    // The corrected values ride out on the compliance upsert, not a bespoke UPDATE.
+    expect(upsertedRows()[0]?.installRemediationStatus).toBe('none');
+    // One unearned increment given back — not a reset to zero.
+    expect(upsertedRows()[0]?.installRemediationAttempts).toBe(1);
+    // And the pass that unstuck it also acted on it, rather than deferring a cycle.
+    expect(scheduleInstallMock).toHaveBeenCalled();
+  });
+
+  it('leaves a genuinely in-flight row parked and queues nothing for it', async () => {
+    latestPolicyOwnedInstallMock.mockResolvedValue(
+      new Map([['device-1', new Date('2026-09-15T10:00:30Z')]])
+    );
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [PARKED_ROW],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', []]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upsertedRows()[0]?.installRemediationStatus).not.toBe('none');
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  it('issues no reconcile UPDATE at all when nothing is parked — the drained steady state', async () => {
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [{ ...PARKED_ROW, installRemediationStatus: 'completed' }],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', []]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    // Not even the prefetch fires — no live status means nothing to reconcile.
+    expect(latestPolicyOwnedInstallMock).not.toHaveBeenCalled();
+    // The 'none' the upsert writes here is W02's own "it came back" transition
+    // off a stale 'completed', NOT a reconcile: the counter is left untouched.
+    expect(upsertedRows()[0]?.installRemediationAttempts).toBeUndefined();
+  });
+
+  it('prefetches for the LIVE devices only, not the whole pass', async () => {
+    // The all-or-nothing case (0 live -> no prefetch) is covered above; this
+    // pins the filter itself, which that case cannot discriminate.
+    resolveDeviceIdsMock.mockResolvedValue(['device-1', 'device-2']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [
+        { id: 'device-1', orgId: 'org-1' },
+        { id: 'device-2', orgId: 'org-1' },
+      ],
+      [PARKED_ROW, { ...PARKED_ROW, deviceId: 'device-2', installRemediationStatus: 'completed' }],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', []], ['device-2', []]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(latestPolicyOwnedInstallMock).toHaveBeenCalledTimes(1);
+    expect(latestPolicyOwnedInstallMock).toHaveBeenCalledWith(POLICY_ID, ['device-1']);
   });
 });

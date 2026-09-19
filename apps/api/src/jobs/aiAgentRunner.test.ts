@@ -180,7 +180,9 @@ describe('ai-agent runner bootstrap', () => {
     expect(call.name).toBe('ai-agent');
     expect(call.opts).toMatchObject({
       concurrency: 2,
-      lockDuration: 720_000,
+      // #5870 — sized off the 1800s validator ceiling every profile's wall
+      // clock is bounded by (design's included), not the 600s shared default.
+      lockDuration: 1_980_000,
       stalledInterval: 60_000,
       maxStalledCount: 1,
     });

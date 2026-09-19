@@ -3,9 +3,16 @@ package heartbeat
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
+
+func TestBackupVerificationTimeoutMatchesServerBudget(t *testing.T) {
+	if backupVerificationTimeout != 2*time.Hour {
+		t.Fatalf("backup verification timeout = %v, want 2h", backupVerificationTimeout)
+	}
+}
 
 func TestBackupVerifyHandlersRegistered(t *testing.T) {
 	cmds := []string{

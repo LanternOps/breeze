@@ -73,6 +73,7 @@ vi.mock('../db/schema', () => ({
     orgId: 'orgId',
     enableTickets: 'enableTickets',
     enableAssetCheckout: 'enableAssetCheckout',
+    enableDevices: 'enableDevices',
     enableSelfService: 'enableSelfService',
     enablePasswordReset: 'enablePasswordReset',
     enableDashboard: 'enableDashboard',
@@ -80,10 +81,15 @@ vi.mock('../db/schema', () => ({
     enableBackups: 'enableBackups',
     enableReports: 'enableReports',
     enableSupportUsage: 'enableSupportUsage',
+    enableService: 'enableService',
+    enableDocuments: 'enableDocuments',
+    enableLifecycle: 'enableLifecycle',
+    chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
     footerText: 'footerText',
+    customCss: 'customCss',
     updatedAt: 'updatedAt'
   },
   organizations: { id: 'id', deletedAt: 'deletedAt' }
@@ -103,6 +109,7 @@ const FULL_ROW = {
   orgId: ORG_ID,
   enableTickets: false,
   enableAssetCheckout: true,
+  enableDevices: false,
   enableSelfService: true,
   enablePasswordReset: true,
   enableDashboard: false,
@@ -113,13 +120,14 @@ const FULL_ROW = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
   footerText: null,
+  customCss: 'body{}',
   // Read-only columns that must never leak into the response payload:
   customDomain: 'portal.customer.example',
-  customCss: 'body{}',
   logoUrl: 'https://x/logo.png'
 };
 
@@ -147,7 +155,7 @@ function resetAuth(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
 describe('GET /organizations/:id/portal-settings', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
-  it('returns the managed subset when a row exists (never visual branding columns)', async () => {
+  it('returns the managed subset when a row exists (including customCss, never visual branding columns)', async () => {
     dbSelectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence check
       .mockResolvedValueOnce([FULL_ROW]);      // portal_branding row
@@ -158,6 +166,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       orgId: ORG_ID,
       enableTickets: false,
       enableAssetCheckout: true,
+      enableDevices: false,
       enableSelfService: true,
       enablePasswordReset: true,
       enableDashboard: false,
@@ -168,13 +177,15 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
-      footerText: null
+      footerText: null,
+      customCss: 'body{}'
     });
     expect(JSON.stringify(body)).not.toContain('customDomain');
-    expect(JSON.stringify(body)).not.toContain('customCss');
+    expect(JSON.stringify(body)).not.toContain('logo.png');
   });
 
   it('returns schema defaults when no row exists', async () => {
@@ -188,6 +199,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       orgId: ORG_ID,
       enableTickets: true,
       enableAssetCheckout: false, // parked — the portal has no checkout UI yet
+      enableDevices: false,
       enableSelfService: true,
       enablePasswordReset: true,
       enableDashboard: false,
@@ -198,10 +210,12 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
-      footerText: null
+      footerText: null,
+      customCss: null
     });
   });
 
@@ -254,6 +268,20 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       body: JSON.stringify(body)
     });
 
+  it('persists the independent Devices visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableDevices: true, enableSelfService: false }]);
+    const res = await patch({ enableDevices: true, enableSelfService: false });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableDevices: true, enableSelfService: false });
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableDevices: true, enableSelfService: false });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableDevices', 'enableDevices');
+  });
+
   it('upserts and returns the managed subset', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
     dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableTickets: true }]);
@@ -297,6 +325,32 @@ describe('PATCH /organizations/:id/portal-settings', () => {
 
   it('400 on invalid email', async () => {
     expect((await patch({ supportEmail: 'nope' })).status).toBe(400);
+  });
+
+  it('persists a valid chromeAccent key', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: 'plum' }]);
+    const res = await patch({ chromeAccent: 'plum' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.chromeAccent).toBe('plum');
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(valuesArg.chromeAccent).toBe('plum');
+  });
+
+  it('accepts null to clear chromeAccent back to the default', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: null }]);
+    const res = await patch({ chromeAccent: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.chromeAccent).toBeNull();
+  });
+
+  it('400 on an unknown chromeAccent key', async () => {
+    const res = await patch({ chromeAccent: 'cobalt' });
+    expect(res.status).toBe(400);
   });
 
   it('404 when partner scope cannot access the org', async () => {
@@ -369,5 +423,79 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     await patch({ supportEmail: 'support@example.test' });
 
     expect(onPortalFlagsChanged).not.toHaveBeenCalled();
+  });
+
+  describe('customCss (#5952)', () => {
+    it('accepts and persists safe custom CSS', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, customCss: '.portal-header { color: red; }' }]);
+
+      const res = await patch({ customCss: '.portal-header { color: red; }' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.customCss).toBe('.portal-header { color: red; }');
+
+      const { db } = await import('../db');
+      const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+      expect(valuesArg.customCss).toBe('.portal-header { color: red; }');
+    });
+
+    it('accepts null to clear custom CSS', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, customCss: null }]);
+
+      const res = await patch({ customCss: null });
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects @import', async () => {
+      const res = await patch({ customCss: '@import url("evil.css");' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects expression()', async () => {
+      const res = await patch({ customCss: 'body { width: expression(alert(1)); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects behavior:', async () => {
+      const res = await patch({ customCss: 'body { behavior: url(evil.htc); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects -moz-binding', async () => {
+      const res = await patch({ customCss: 'body { -moz-binding: url("evil.xml#x"); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects url() with a non-https/data scheme', async () => {
+      expect((await patch({ customCss: 'body { background: url(http://evil.example/x.png); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(javascript:alert(1)); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(//evil.example/x.png); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(/local/x.png); }' })).status).toBe(400);
+    });
+
+    it('accepts url() with https: and data: schemes', async () => {
+      dbSelectResult.mockResolvedValue([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+
+      expect((await patch({ customCss: 'body { background: url(https://cdn.example/x.png); }' })).status).toBe(200);
+      expect((await patch({ customCss: "body { background: url(data:image/png;base64,AAAA); }" })).status).toBe(200);
+    });
+
+    it('rejects custom CSS over the 65536-char cap', async () => {
+      const res = await patch({ customCss: 'a'.repeat(65_537) });
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts custom CSS at exactly the cap', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+      const css = '.a{}'.repeat(16_384); // 65536 chars exactly
+      expect(css).toHaveLength(65_536);
+      const res = await patch({ customCss: css });
+      expect(res.status).toBe(200);
+    });
   });
 });

@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
@@ -6,7 +7,7 @@ import { organizations, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { updatePortalSettingsSchema } from '@breeze/shared';
+import { updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged,
@@ -17,12 +18,28 @@ import {
 // Registered onto orgRoutes so it inherits orgRoutes' authMiddleware
 // (mounting at the top-level api app would silently skip auth). The public
 // portal lookup routes in routes/portal/branding.ts stay read-only/pre-auth;
-// this is the only write surface. Visual branding + customDomain are excluded
-// by the strict schema — they ship with the domain-verification project.
+// this is the only write surface. Visual branding (logo/colors) + customDomain
+// are excluded by the strict schema — they ship with the domain-verification
+// project. customCss IS writable here (#5952) — it is the canonical write
+// path for portal_branding.custom_css; sanitisation lives in
+// updatePortalSettingsSchema (@breeze/shared) so both this route and any
+// future caller get the same rejection behavior.
+//
+// chromeAccent is extended in HERE rather than added to
+// packages/shared's updatePortalSettingsSchema, so the enum key list
+// (PORTAL_CHROME_ACCENT_KEYS) stays the single source of truth without a
+// second copy drifting in the shared validator. `.extend()` on a `.strict()`
+// zod object preserves both the unknown-key rejection and per-field
+// validation (verified: unrecognized keys still 400, and an invalid enum
+// value still 400).
+const patchPortalSettingsSchema = updatePortalSettingsSchema.extend({
+  chromeAccent: z.enum(PORTAL_CHROME_ACCENT_KEYS).nullable().optional()
+});
 
 const PORTAL_SETTINGS_DEFAULTS = {
   enableTickets: true,
   enableAssetCheckout: false, // parked — see schema/portal.ts
+  enableDevices: false,
   enableSelfService: true,
   enablePasswordReset: true,
   enableDashboard: false,
@@ -33,15 +50,18 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
   welcomeMessage: null,
-  footerText: null
+  footerText: null,
+  customCss: null
 } as const;
 
 type PortalSettingsRow = {
   enableTickets: boolean;
   enableAssetCheckout: boolean;
+  enableDevices: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
   enableDashboard: boolean;
@@ -52,22 +72,26 @@ type PortalSettingsRow = {
   enableService: boolean;
   enableDocuments: boolean;
   enableLifecycle: boolean;
+  chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
+  customCss: string | null;
 };
 
 // Single projection used by BOTH the GET select and the PATCH .returning():
 // every column not listed here (logoUrl, faviconUrl, primary/secondary/accent
-// colors, customCss, customDomain, domainVerified) never reaches the app
-// layer on either path, so a toResponse refactor can't accidentally leak them.
+// colors, customDomain, domainVerified) never reaches the app layer on either
+// path, so a toResponse refactor can't accidentally leak them. customCss WAS
+// in that excluded set before #5952; it is now part of the managed subset.
 // A function, not a module-scope const: other route tests (orgs.test.ts etc.)
 // mock ../db/schema without portalBranding, and an import-time column deref
 // would crash their whole file at collection.
 const portalSettingsColumns = () => ({
   enableTickets: portalBranding.enableTickets,
   enableAssetCheckout: portalBranding.enableAssetCheckout,
+  enableDevices: portalBranding.enableDevices,
   enableSelfService: portalBranding.enableSelfService,
   enablePasswordReset: portalBranding.enablePasswordReset,
   enableDashboard: portalBranding.enableDashboard,
@@ -78,10 +102,12 @@ const portalSettingsColumns = () => ({
   enableService: portalBranding.enableService,
   enableDocuments: portalBranding.enableDocuments,
   enableLifecycle: portalBranding.enableLifecycle,
+  chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
-  footerText: portalBranding.footerText
+  footerText: portalBranding.footerText,
+  customCss: portalBranding.customCss
 });
 
 function toResponse(orgId: string, row?: PortalSettingsRow) {
@@ -90,6 +116,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     orgId,
     enableTickets: row.enableTickets,
     enableAssetCheckout: row.enableAssetCheckout,
+    enableDevices: row.enableDevices,
     enableSelfService: row.enableSelfService,
     enablePasswordReset: row.enablePasswordReset,
     enableDashboard: row.enableDashboard,
@@ -100,10 +127,12 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableService: row.enableService,
     enableDocuments: row.enableDocuments,
     enableLifecycle: row.enableLifecycle,
+    chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
-    footerText: row.footerText
+    footerText: row.footerText,
+    customCss: row.customCss
   };
 }
 
@@ -151,7 +180,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
     requireScope('partner', 'system'),
     requireOrgWrite,
     requireMfa(),
-    zValidator('json', updatePortalSettingsSchema),
+    zValidator('json', patchPortalSettingsSchema),
     async (c) => {
       const body = c.req.valid('json');
       if (Object.keys(body).length === 0) {

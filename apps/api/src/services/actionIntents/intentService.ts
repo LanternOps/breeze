@@ -1,4 +1,4 @@
-import { remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
+import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -46,15 +46,19 @@ import {
   loadProposalGuardrailContext,
 } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { PERMISSION_GRANTS, serializeAiOrigin } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
+import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHandoff';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import {
+  isOrgWideGovernanceIntent,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
   resolveIntentTargetScope,
   type IntentTargetScope,
+  type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import {
@@ -226,6 +230,23 @@ export interface CreateActionIntentInput {
    * an `autonomyDenied` breadcrumb on its `result` column.
    */
   autonomy?: { kind: 'ticket_autonomy' };
+  /**
+   * Tool catalog W01 PR B (#5216): the intent releases through an EXTERNAL
+   * (tenant tool-source, BYO MCP) tool rather than a core one. `toolName`
+   * is then the qualified `<slug>__<name>` the chat session resolved, and
+   * the binding pins the exact `tool_source_tools` row + `revision` the
+   * approver is shown — release revalidation reloads that row and fails
+   * closed on drift/disable (revalidateRelease.ts).
+   *
+   * When set, `checkGuardrails` (the CORE classifier) is NOT consulted: it
+   * would answer tier 4 "unknown tool" for a qualified name. The external
+   * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
+   * auto-execute in-session and never mint an intent; the caller passes
+   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
+   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
+   * calling tenant tools is W5 work (flows-as-tools).
+   */
+  externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
@@ -780,6 +801,14 @@ interface HumanFanoutArgs {
   agentEligibleApprovers: string[];
   requesterEligible: boolean;
   requesterId: string;
+  /**
+   * Review finding #1: diagnostics from the org-wide-governance ceiling
+   * filter that produced `eligibleApprovers`/`requesterEligible` (null when
+   * the intent isn't org-wide-governance-shaped, or no candidate reached the
+   * filter). Used ONLY to pick a more truthful cancellation errorCode below
+   * — never widens who is actually eligible.
+   */
+  governanceDiagnostics?: ResolveIntentApproversDiagnostics | null;
 }
 
 interface HumanFanoutResult {
@@ -817,6 +846,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     agentEligibleApprovers,
     requesterEligible,
     requesterId,
+    governanceDiagnostics,
   } = args;
 
   let approvalRequestIds: string[] = [];
@@ -910,15 +940,27 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     // No eligible approvers and the requester isn't one either — fail
     // closed: create then immediately cancel, visible in audit (spec §4
     // step 4 / §8).
+    //
+    // Review finding #1: when the ONLY reason nobody survived is the
+    // org-wide-governance site ceiling (every approvals:decide holder
+    // resolved fine but was site/exact-device restricted), report that as a
+    // distinct errorCode — `no_eligible_approvers` alone can't tell an
+    // operator "nobody holds the permission at all" apart from "several
+    // people do, but none of them can actually approve this specific
+    // org-wide grant".
+    const cancelErrorCode =
+      governanceDiagnostics && governanceDiagnostics.droppedBySiteCeiling > 0
+        ? 'no_eligible_approvers_site_ceiling'
+        : 'no_eligible_approvers';
     const [cancelled] = await tx
       .update(actionIntents)
-      .set({ status: 'cancelled', errorCode: 'no_eligible_approvers', decidedAt: new Date() })
+      .set({ status: 'cancelled', errorCode: cancelErrorCode, decidedAt: new Date() })
       .where(eq(actionIntents.id, inserted.id))
       .returning();
     finalIntent = cancelled ?? {
       ...inserted,
       status: 'cancelled',
-      errorCode: 'no_eligible_approvers',
+      errorCode: cancelErrorCode,
     };
     // #5205 W05 (#5210), spec §6.3: this row is freshly inserted in THIS same
     // transaction (createActionIntent's caller), so the CAS above cannot lose
@@ -1164,16 +1206,94 @@ export async function createActionIntent(
   const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
   const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
-  const { check: guardrail, context: guardrailContext } = await resolveGuardrailForIntent(
-    input.toolName,
-    input.input,
-    // `input.orgId` is the caller-supplied address; the authoritative
-    // `resolvedOrg` is computed a few lines below, and the guardrail only needs
-    // the org to scope a READ that is re-validated by assertProposalRunnable
-    // and by consumeProposalForIntent inside the transaction.
-    input.orgId ?? auth.orgId ?? null,
-    input.guardrailContext,
-  );
+  // Tool catalog W01 PR B (#5216): an EXTERNAL tool binding replaces the core
+  // classifier with a fixed Tier-3/supervised verdict — see the field's doc
+  // on CreateActionIntentInput. Validated BEFORE any DB access, like `scope`.
+  const externalTool = input.externalTool ?? null;
+  if (externalTool) {
+    if (auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'AI agent principals cannot create intents for external (tool-source) tools',
+        'external_tool_not_allowed_for_agent',
+      );
+    }
+    if (!isTenantToolName(input.toolName)) {
+      throw new ActionIntentError(
+        `externalTool binding requires a qualified <slug>__<name> tool name (got '${input.toolName}')`,
+        'invalid_external_tool',
+      );
+    }
+    // `tool_source_tool_id` is a Postgres uuid column — same 22P02-at-INSERT
+    // reasoning as the `binding` checks below. An empty revision would make
+    // the pairing CHECK pass while pinning nothing; refuse it.
+    if (!CANONICAL_UUID_LOWER.test(externalTool.toolSourceToolId)) {
+      throw new ActionIntentError('externalTool.toolSourceToolId must be a canonical lowercase UUID', 'invalid_external_tool');
+    }
+    if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
+      throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents.
+  //
+  // THE choke point for the raise: every path that mints an intent — the chat
+  // preToolUse callback (services/aiAgentSdk.ts), the HTTP promote route
+  // (routes/aiAgents.ts) and every agent lane (runLoop, sweepFindings,
+  // patchPlan, alertVerdicts, ticketTriageFindings, aiTimeEntryProposal) —
+  // funnels through this function, so gating here covers all of them at once
+  // rather than being re-remembered per caller. (MCP never mints one at all:
+  // routes/mcpServer.ts fails every Tier-3 `tools/call` closed with
+  // MCP_APPROVAL_REQUIRED before it can reach an intent.)
+  //
+  // It must be the RAISE that is refused, not just the tool handler, because
+  // a Tier-3 intent outlives the handler: the row is minted BEFORE the
+  // handler runs, and after approval the release worker dispatches through
+  // the HEADLESS `*Action` functions (services/m365ToolsHeadless.ts,
+  // services/googleToolsHeadless.ts), which take no AuthContext and so never
+  // reach `canMutateOrgWideGovernance` at all. Without this, a site-restricted
+  // technician could mint an org-wide identity-tenant mutation and have
+  // someone else's approval execute it.
+  //
+  // Placed ahead of `resolveGuardrailForIntent` deliberately: the refusal
+  // precedes every DB read and write, so a refused raise leaves no row, no
+  // approval request and no proposal consumption behind.
+  //
+  // HUMAN lane only. An `ai_agent` principal is governed by
+  // `checkAgentGuardrails` (resolved just below), which already denies these
+  // tools categorically (`agent_policy_denied`: session-only / secret-bearing /
+  // human-only). A device-bound run carries `allowedSiteIds`, so letting this
+  // gate run first would mask that denial with the wrong lane's error code.
+  if (
+    auth.principal?.kind !== 'ai_agent'
+    && isOrgWideGovernanceIntent(input.toolName, input.input)
+    && !canMutateOrgWideGovernance(auth)
+  ) {
+    throw new ActionIntentError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'site_ceiling');
+  }
+
+  const { check: guardrail, context: guardrailContext } = externalTool
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `${input.toolName} — external tool from ${externalTool.sourceName}`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : await resolveGuardrailForIntent(
+        input.toolName,
+        input.input,
+        // `input.orgId` is the caller-supplied address; the authoritative
+        // `resolvedOrg` is computed a few lines below, and the guardrail only needs
+        // the org to scope a READ that is re-validated by assertProposalRunnable
+        // and by consumeProposalForIntent inside the transaction.
+        input.orgId ?? auth.orgId ?? null,
+        input.guardrailContext,
+      );
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1509,8 +1629,17 @@ export async function createActionIntent(
     // keys for exactly the same reason a device sweep fan-out does.
     scopeId: scopeDeviceId ?? scopeTicketId ?? null,
   });
-  const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
+  // definition: the approver reads which source the call goes to and which
+  // argument keys it carries (values are on the card's argument JSON).
+  const targetSummary = externalTool
+    ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : buildTargetSummary(input.toolName, input.input);
+  const impactSummary = externalTool
+    ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
+        Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
+      }`
+    : buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -1576,11 +1705,31 @@ export async function createActionIntent(
   // can also acknowledge the patterns (scripts:write + MFA, spec §4.5), so the
   // four-eyes candidate set is filtered to scripts:write holders. The context
   // was already loaded once for the guardrail above — no second proposal read.
+  // Audit §1.1: an ORG-WIDE GOVERNANCE intent (today
+  // manage_ai_agents:authorize_supervised_key) is refused at decide time for
+  // any approver carrying a site/exact-device ceiling
+  // (`canMutateOrgWideGovernance`, approvals/decideApprovalRequest.ts). Fan out
+  // to the same population the decide gate admits, or the queue fills with rows
+  // nobody can action and — more seriously — the sole-operator determination
+  // disagrees with its own decide-time re-derivation, which passes this SAME
+  // flag. The two call sites must always move together.
+  const requireOrgWideGovernance = isOrgWideGovernanceIntent(input.toolName, input.input);
+  // Review finding #1: capture WHY candidates were dropped from the
+  // org-wide-governance ceiling filter (site-restricted vs. genuinely
+  // unresolvable vs. a missed org lookup) so the fail-closed cancellation
+  // below can report a distinct, more truthful errorCode instead of a bare
+  // `no_eligible_approvers` that can't distinguish "nobody holds
+  // approvals:decide" from "several do, all site-restricted".
+  let governanceDiagnostics: ResolveIntentApproversDiagnostics | null = null;
   const eligibleAll = await resolveIntentApprovers(orgId, {
     alsoRequire:
       input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
         ? PERMISSION_GRANTS.SCRIPTS_WRITE
         : undefined,
+    requireOrgWideGovernance,
+    onDiagnostics: (diagnostics) => {
+      governanceDiagnostics = diagnostics;
+    },
   });
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
@@ -1839,6 +1988,10 @@ export async function createActionIntent(
           impactSummary,
           reason: input.reason ?? null,
           riskTier: guardrail.tier,
+          // Tool catalog W01 PR B (#5216): both or neither —
+          // `action_intents_external_tool_chk`. Immutable from here on.
+          toolSourceToolId: externalTool?.toolSourceToolId ?? null,
+          toolRevision: externalTool?.revision ?? null,
           idempotencyKey,
           correlationId: randomUUID(),
           approvalScope,
@@ -1960,10 +2113,19 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
-          existing.argumentDigest !== argumentDigest
+          existing.argumentDigest !== argumentDigest ||
+          // Tool catalog W01 PR B (#5216): the external binding is part of the
+          // request's identity. A tool row deleted and recreated under the
+          // same qualified name (new uuid, or a new revision after
+          // rediscovery) is a DIFFERENT approval target, so reusing the live
+          // intent would hand the caller a binding release revalidation is
+          // going to refuse as `external_tool_disabled`/`_drift` — a confusing
+          // spurious failure instead of an honest conflict here.
+          (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
             'idempotency_conflict',
           );
         }
@@ -2081,6 +2243,7 @@ export async function createActionIntent(
             agentEligibleApprovers,
             requesterEligible,
             requesterId,
+            governanceDiagnostics,
           }));
       }
 
@@ -2267,7 +2430,15 @@ export async function createActionIntent(
       outcome: cancelledForNoApprovers ? 'cancelled' : 'created',
       ...auditActor,
       details: cancelledForNoApprovers
-        ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers', ...agentAuditDetails }
+        ? {
+          errorCode: creation.intent.errorCode ?? 'no_eligible_approvers',
+          // Review finding #1: carry WHY the fan-out came up empty into the
+          // audit trail, not just a bare errorCode — an operator (or a
+          // future incident) needs to tell "nobody holds approvals:decide"
+          // apart from "several people do, all site-restricted".
+          ...(governanceDiagnostics ? { governanceDiagnostics } : {}),
+          ...agentAuditDetails,
+        }
         : {
           approverCount: creation.approvalRequestIds.length,
           // Gated on four_eyes: supervised intents always have exactly one
@@ -2865,4 +3036,79 @@ export async function waitForIntentDecision(
   }
 
   return lastStatus;
+}
+
+// ============================================================================
+// waitForIntentTerminalOutcome — the post-handoff read-back (#6022)
+// ============================================================================
+
+/**
+ * Read an intent's TERMINAL outcome back, for a chat turn that handed the
+ * action off to the durable release worker.
+ *
+ * Strictly an OBSERVER, and that is the whole safety argument: like
+ * `waitForIntentDecision` it never writes, never releases, never retries and
+ * never terminalizes. Giving up simply returns the last row it read (or `null`
+ * if it never managed one), so the worker remains the sole owner of the
+ * intent's lifecycle and the `approved -> executing` CAS stays the single
+ * mutual-exclusion point.
+ *
+ * Why it exists: #5107's handoff told the model "approved and running, the
+ * outcome is reported separately" and nothing ever reported it. When the
+ * worker's execution failed — #6022's autoInstall guardrail refusal — the chat
+ * kept saying "Approved · running" and the model narrated a success that never
+ * happened. A guardrail refusal terminalizes in milliseconds, so a SHORT wait
+ * converts the overwhelmingly common failure case into a truthful tool error
+ * while leaving genuinely long-running work to time out honestly.
+ *
+ * Returns as soon as the status is terminal (see `TERMINAL_INTENT_STATUSES`),
+ * with the `result`/`error_code` needed to describe it. `null` means "no
+ * readable outcome" — NOT a failure; `describeIntentOutcome` maps it back to
+ * "still running" precisely so a failed read can never be narrated as a failed
+ * action.
+ */
+export async function waitForIntentTerminalOutcome(
+  intentId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<IntentOutcomeSnapshot | null> {
+  const startTime = Date.now();
+  let pollInterval = 250;
+  let last: IntentOutcomeSnapshot | null = null;
+
+  // Always take one read, even on a zero/negative budget: a sibling wait may
+  // have exhausted the shared approval budget, and the guardrail refusal this
+  // exists to surface is already committed by then.
+  for (;;) {
+    if (signal?.aborted) return last;
+
+    try {
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({
+            status: actionIntents.status,
+            errorCode: actionIntents.errorCode,
+            result: actionIntents.result,
+          })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1),
+      );
+
+      if (!row) return last;
+      last = { status: row.status, errorCode: row.errorCode ?? null, result: row.result ?? null };
+      if (isTerminalIntentStatus(last.status)) return last;
+    } catch (err) {
+      console.error(
+        `[intentService] waitForIntentTerminalOutcome poll error for intent ${intentId}:`,
+        err,
+      );
+    }
+
+    const remaining = timeoutMs - (Date.now() - startTime);
+    if (remaining <= 0) return last;
+
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollInterval, remaining)));
+    pollInterval = Math.min(pollInterval * 1.5, 1000);
+  }
 }

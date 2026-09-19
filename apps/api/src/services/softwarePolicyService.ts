@@ -292,6 +292,20 @@ export const SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS = {
   failed: 'install_failed',
   /** Consecutive attempts exhausted; the install loop guard stopped retrying. */
   gaveUp: 'install_gave_up',
+  /**
+   * The pass ran to completion and created NO deployment, with nothing having
+   * errored — every candidate was skipped (unreachable catalog item, no
+   * install target for the device's OS, or a payload id the policy no longer
+   * reports missing).
+   *
+   * Added by #5505 W03. Without it the emit site had to fall back to `queued`
+   * for this outcome, which put "an install was queued for this device" in the
+   * durable audit trail when nothing was: `action` is the dimension a
+   * technician filters on, and the contradiction was visible only by reading
+   * details.deploymentsCreated. The reason for each skip travels in
+   * details.skipped.
+   */
+  skipped: 'install_skipped',
 } as const;
 
 export type SoftwarePolicyInstallAuditAction =

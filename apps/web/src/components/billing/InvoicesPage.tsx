@@ -13,6 +13,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
+import BillablesExportCard from './BillablesExportCard';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
 import { ApproximateMoneyLine } from './shared/ApproximateMoneyLine';
@@ -153,6 +154,8 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
 
   // New-invoice dialog state
   const [assembleOpen, setAssembleOpen] = useState(false);
+  // Billables export dialog state (M5) — moved here from Ticketing settings.
+  const [exportOpen, setExportOpen] = useState(false);
   const [mode, setMode] = useState<'assemble' | 'blank'>('assemble');
   const [assembleOrgId, setAssembleOrgId] = useState('');
   const [assembleSiteId, setAssembleSiteId] = useState('');
@@ -491,16 +494,28 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
             {t('invoicesPage.subtitle')}
           </p>
         </div>
-        {can('invoices', 'write') && (
-          <button
-            type="button"
-            onClick={openAssemble}
-            data-testid="invoices-assemble-open"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            {t('invoicesPage.newInvoice')}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!lockedOrgId && !isOrgScoped && can('tickets', 'read') && can('time_entries', 'read') && (
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              data-testid="invoices-export-billables-open"
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted/40"
+            >
+              {t('invoicesPage.exportBillables')}
+            </button>
+          )}
+          {can('invoices', 'write') && (
+            <button
+              type="button"
+              onClick={openAssemble}
+              data-testid="invoices-assemble-open"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              {t('invoicesPage.newInvoice')}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Outstanding summary */}
@@ -879,6 +894,19 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
         confirmLabel={t('invoicesPage.bulk.deleteDrafts')}
         confirmTestId="invoices-bulk-delete-confirm"
       />
+
+      {/* Export billables dialog (M5) */}
+      <Dialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title={t('invoicesPage.exportBillablesDialogTitle')}
+        labelledBy="invoices-export-billables-title"
+        maxWidth="lg"
+        className="p-6"
+      >
+        <h2 id="invoices-export-billables-title" className="sr-only">{t('invoicesPage.exportBillablesDialogTitle')}</h2>
+        <BillablesExportCard />
+      </Dialog>
 
       {/* New-invoice dialog (assemble | blank) */}
       <Dialog

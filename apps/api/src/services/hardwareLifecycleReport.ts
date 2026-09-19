@@ -61,6 +61,20 @@ import type { ReportExecutionAuthority } from './siteScope';
  *  technician says otherwise. */
 const COMPUTER_ROLES = new Set(['workstation', 'server', 'unknown']);
 
+/**
+ * `upsertWarranty` (services/warrantySync.ts) writes `status: 'unknown'` both
+ * when a vendor genuinely reports no coverage AND when the lookup itself
+ * failed (network, expired API key, quota) — only `lastSyncError` tells them
+ * apart. Require both signals: a failed lookup always leaves `status`
+ * `'unknown'` (the catch path never reaches `computeWarrantyStatus`), so this
+ * also reads false for a device that has never been synced at all (`status`
+ * null, `lastSyncError` null) — the report should not flag a row as
+ * "lookup failed" for a lookup that was simply never attempted (#5764).
+ */
+function deriveWarrantyLookupFailed(status: string | null, lastSyncError: string | null): boolean {
+  return status === 'unknown' && lastSyncError != null;
+}
+
 type Subject = {
   id: string;
   kind: 'device' | 'manual_asset';
@@ -78,6 +92,7 @@ type Subject = {
   purchaseDateSource: 'manual' | 'vendor' | null;
   warrantyEndDate: string | null;
   warrantyIsSubscription: boolean;
+  warrantyLookupFailed: boolean;
 };
 
 function isComputer(s: Subject): boolean {
@@ -108,6 +123,7 @@ function toDeviceRow(s: Subject, today: string, replaceAgeYears: number): Hardwa
     purchaseDate: s.purchaseDate,
     purchaseDateSource: s.purchaseDateSource,
     warrantyEndDate: s.warrantyEndDate,
+    warrantyLookupFailed: s.warrantyLookupFailed,
     ageYears: ageYears(s.purchaseDate, today),
     replaceBy,
     replacement: classifyReplacement(replaceBy, today),
@@ -177,6 +193,8 @@ export async function generateHardwareLifecycleReport(
       serialNumber: deviceHardware.serialNumber,
       warrantyEndDate: deviceWarranty.warrantyEndDate,
       warrantyIsSubscription: deviceWarranty.isSubscription,
+      warrantyStatus: deviceWarranty.status,
+      warrantyLastSyncError: deviceWarranty.lastSyncError,
     })
     .from(devices)
     .leftJoin(sites, eq(devices.siteId, sites.id))
@@ -201,6 +219,7 @@ export async function generateHardwareLifecycleReport(
     purchaseDateSource: d.purchaseDateSource ?? null,
     warrantyEndDate: d.warrantyEndDate ?? null,
     warrantyIsSubscription: d.warrantyIsSubscription === true,
+    warrantyLookupFailed: deriveWarrantyLookupFailed(d.warrantyStatus ?? null, d.warrantyLastSyncError ?? null),
   }));
 
   // --- manual assets ---------------------------------------------------------
@@ -222,6 +241,8 @@ export async function generateHardwareLifecycleReport(
         siteName: sites.name,
         warrantyEndDate: deviceWarranty.warrantyEndDate,
         warrantyIsSubscription: deviceWarranty.isSubscription,
+        warrantyStatus: deviceWarranty.status,
+        warrantyLastSyncError: deviceWarranty.lastSyncError,
       })
       .from(manualAssets)
       .leftJoin(sites, eq(manualAssets.siteId, sites.id))
@@ -246,6 +267,7 @@ export async function generateHardwareLifecycleReport(
         purchaseDateSource: a.purchaseDateSource ?? null,
         warrantyEndDate: a.warrantyEndDate ?? null,
         warrantyIsSubscription: a.warrantyIsSubscription === true,
+        warrantyLookupFailed: deriveWarrantyLookupFailed(a.warrantyStatus ?? null, a.warrantyLastSyncError ?? null),
       });
     }
   }

@@ -24,7 +24,11 @@ import {
 } from 'recharts';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { EmptyState } from '../shared/EmptyState';
-import { AI_AGENT_IMPACT_BY_ORG_LIMIT, IMPACT_WEIGHT_KEYS } from '@breeze/shared';
+import {
+  AI_AGENT_IMPACT_BY_ORG_LIMIT,
+  AI_AGENT_IMPACT_WINDOWS,
+  IMPACT_WEIGHT_KEYS,
+} from '@breeze/shared';
 import type { AiAgentImpactDto, ImpactWeights } from '@breeze/shared';
 
 // Type-only import: erased at compile time, so this is NOT a runtime cycle with
@@ -351,7 +355,17 @@ export default function ImpactEstimateBand({
       testId="ai-impact-empty"
       icon={<TrendingUp className="h-7 w-7" />}
       title={t('aiAgentsPage.impact.emptyState.title')}
-      description={t('aiAgentsPage.impact.emptyState.description')}
+      // At the widest window there is nowhere further to widen into — the
+      // MEASURED band learned this same lesson for its own omission copy in
+      // #5885 (`insufficient_data` vs `insufficient_followup`, classified on
+      // `windowDays === MEASURED_MAX_WINDOW_DAYS`). Mirror it here: never
+      // tell the user to widen a window that is already the widest one
+      // available.
+      description={
+        dto.window === AI_AGENT_IMPACT_WINDOWS[AI_AGENT_IMPACT_WINDOWS.length - 1]
+          ? t('aiAgentsPage.impact.emptyState.descriptionWidestWindow')
+          : t('aiAgentsPage.impact.emptyState.description')
+      }
       headingLevel={2}
       action={
         <a

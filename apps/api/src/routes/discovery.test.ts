@@ -10,6 +10,16 @@ import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 
+// W01 (spec §4.4): the route now derives `reachability` through the batched
+// loader. The derivation is pinned by services/assetReachability.test.ts; this
+// suite owns the WIRING, so the loader is mocked and driven per-test rather
+// than teaching this file's db chain rig three more query shapes.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({
@@ -210,6 +220,7 @@ describe('discovery routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     app = new Hono();
     app.route('/discovery', discoveryRoutes);
   });
@@ -553,6 +564,9 @@ describe('discovery routes', () => {
     // modal can render it. It was collected + stored but dropped here (#1731).
     it('projects snmpData in the asset list response', async () => {
       const now = new Date();
+      reachabilityByAsset.set('asset-001', {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       const snmp = { sysName: 'core-sw-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1.1' };
       const row = {
         asset: {
@@ -611,6 +625,10 @@ describe('discovery routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].snmpData).toEqual(snmp);
       expect(body.data[0].discoveryMethods).toEqual(['ping', 'snmp']);
+      // W01 (spec §4.4) — the list route carries the derived reachability.
+      expect(body.data[0].reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
     });
 
     // Regression guard: the list serializer must forward typeSource and
@@ -865,6 +883,7 @@ describe('discovery routes', () => {
         profileSubnets: null,
         suggestedBridgeDeviceId: null as string | null,
         siteName: 'Main Office' as string | null,
+        siteTimezone: 'America/Chicago' as string | null,
       };
     };
     const mockSingleAsset = (rows: unknown[]) => {
@@ -885,7 +904,40 @@ describe('discovery routes', () => {
       });
     };
 
+    it('returns the site timezone alongside the site name', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.siteTimezone).toBe('America/Chicago');
+    });
+
+    it('returns a null site timezone when the asset has no site', async () => {
+      const row = buildRow();
+      row.asset.siteId = null as unknown as string;
+      row.siteName = null;
+      row.siteTimezone = null;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Null, not the string 'UTC': a site-less asset has no site zone, and
+      // the page falls back to the browser's rather than guessing UTC.
+      expect(body.data.siteTimezone).toBeNull();
+    });
+
     it('returns the single asset detail (topology node click / deep link)', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       mockSingleAsset([buildRow()]);
 
       const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
@@ -897,6 +949,45 @@ describe('discovery routes', () => {
       expect(body.data.id).toBe(ASSET_ID);
       expect(body.data.ipAddress).toBe('10.0.20.10');
       expect(body.data.snmpData).toEqual({ sysName: 'srv-files' });
+      // W01 (spec §4.4) — the detail route carries the derived reachability.
+      expect(body.data.reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
+    });
+
+    it.each([
+      { state: 'pending', observedAt: '2026-09-16T11:59:00.000Z', responseMs: null },
+      { state: 'ok', observedAt: '2026-09-16T11:59:00.000Z', responseMs: 3.2 },
+      { state: 'failed', observedAt: '2026-09-16T11:59:00.000Z', responseMs: null },
+    ])('returns the persisted $state probe alongside reachability', async (probe) => {
+      const row = buildRow();
+      mockSingleAsset([{
+        ...row,
+        asset: {
+          ...row.asset,
+          lastProbeStatus: probe.state,
+          lastProbeAt: new Date(probe.observedAt),
+          lastProbeResponseMs: probe.responseMs,
+        },
+      }]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.probe).toEqual(probe);
+    });
+
+    it('returns a null probe when the asset has never been probed', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.probe).toBeNull();
     });
 
     it('returns siteName alongside siteId', async () => {

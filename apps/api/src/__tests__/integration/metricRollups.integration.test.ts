@@ -596,7 +596,7 @@ describe('metric rollups integration', () => {
       },
     ]);
 
-    expect(rollups.every((row) => row.metricName.startsWith('hrProcessorLoad:'))).toBe(true);
+    expect(rollups.every((row) => row.metricName.startsWith('1.3.6.1.2.1.25.3.3.1.2:'))).toBe(true);
     expect(rollups.some((row) => (row.metadata as Record<string, unknown>).displayName === 'sysName')).toBe(false);
   });
 

@@ -513,6 +513,23 @@ describe('snmpWorker org authority (#3226)', () => {
       expect(updateLog).not.toContain('siteAuthorityFailure');
       warn.mockRestore();
     });
+
+    it('still scopes the agent predicate by site when the current asset site is an empty string (#5777)', async () => {
+      // `typeof asset.siteId !== 'string'` only catches null/undefined — an
+      // empty string still passes that guard as a valid site id. A prior
+      // `if (executionSiteId)` truthiness check on the *next* line then
+      // treated '' as "no site scoping" and silently fell back to selecting
+      // ANY online agent in the org (no `devices.siteId` predicate at all),
+      // defeating the site-authority fence this whole suite exists to
+      // protect. The fix keys off `!== null` instead, so an empty-string
+      // site still adds the `eq(devices.siteId, '')` predicate rather than
+      // being dropped as falsy.
+      wireAssetDispatch([{ siteId: '' }], [{ agentId: 'agent-anywhere-in-org' }]);
+
+      await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(eqCalls).toContainEqual(['devices.siteId', '']);
+    });
   });
 
   describe('dispatch outcomes via the cross-process facade (wave 3.5b #4084)', () => {

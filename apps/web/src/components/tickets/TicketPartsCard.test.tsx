@@ -142,8 +142,8 @@ describe('TicketPartsCard', () => {
   it('adds a part from the catalog — prefills fields and links catalogItemId (#1368)', async () => {
     const catItem = {
       id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
-      // unitPrice is the deprecated mirror (#3775) — the prefill must come from the price book.
-      billingType: 'one_time', unitPrice: '999.00', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
+      // The prefill must come from the price book row in the org currency.
+      billingType: 'one_time', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
       taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
       prices: [{ currencyCode: 'USD', unitPrice: '150.00' }],
     };
@@ -231,7 +231,7 @@ describe('TicketPartsCard', () => {
       expect(screen.getByTestId('ticket-parts-form-cost-basis')).toHaveValue(null);
     });
 
-    it('leaves the price blank when the book has no row in the org currency (never the unitPrice mirror)', async () => {
+    it('leaves the price blank when the book has no row in the org currency', async () => {
       fetchWithAuth.mockImplementation(async (url: string) =>
         url.startsWith('/catalog') ? jsonRes([catItem({ prices: [{ currencyCode: 'USD', unitPrice: '150.00' }] })]) : url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
       await pick('EUR');

@@ -2161,6 +2161,189 @@ describe('validateConfig', () => {
       });
     });
 
+    // --- Partner sending domains (EMAIL_DOMAINS_*) ---------------------------
+    // Deployment-mode matrix, spec §14. The load-bearing property is the FIRST
+    // case: an upgrade with none of these set must boot unchanged.
+    it('boots with every EMAIL_DOMAINS_* variable unset (upgrade is a no-op)', () => {
+      withEnv({ ...prodBase }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots with the auto-suspension thresholds unset (upgrade is a no-op)', () => {
+      withEnv({ ...prodBase }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('never requires an auto-suspension threshold, even with the provider set', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots with EMAIL_DOMAINS_PROVIDER empty — compose maps optional vars as ${VAR:-}', () => {
+      withEnv({ ...prodBase, EMAIL_DOMAINS_PROVIDER: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('refuses an unrecognised EMAIL_DOMAINS_PROVIDER value', () => {
+      withEnv({ ...prodBase, EMAIL_DOMAINS_PROVIDER: 'mailgun' }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_PROVIDER/);
+      });
+    });
+
+    it('refuses EMAIL_DOMAINS_PROVIDER=resend without EMAIL_DOMAINS_RESEND_API_KEY', () => {
+      withEnv({ ...prodBase, EMAIL_DOMAINS_PROVIDER: 'resend', EMAIL_DOMAINS_RESEND_API_KEY: '' }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_RESEND_API_KEY/);
+      });
+    });
+
+    it('accepts EMAIL_DOMAINS_PROVIDER=resend with its own key', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_platform',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('refuses EMAIL_DOMAINS_PROVIDER=fake in production', () => {
+      withEnv({ ...prodBase, EMAIL_DOMAINS_PROVIDER: 'fake' }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_PROVIDER/);
+      });
+    });
+
+    it('accepts EMAIL_DOMAINS_PROVIDER=fake outside production', () => {
+      withEnv({ ...validEnv, NODE_ENV: 'development', EMAIL_DOMAINS_PROVIDER: 'fake' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('refuses EMAIL_DOMAINS_PROVIDER=static when IS_HOSTED=true', () => {
+      withEnv({ ...prodBase, IS_HOSTED: 'true', EMAIL_DOMAINS_PROVIDER: 'static' }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_PROVIDER/);
+      });
+    });
+
+    it('accepts EMAIL_DOMAINS_PROVIDER=static when self-hosted', () => {
+      withEnv({
+        ...prodBase,
+        IS_HOSTED: 'false',
+        EMAIL_DOMAINS_PROVIDER: 'static',
+        EMAIL_DOMAINS_STATIC_ALLOWED: 'acme.com,other.com:other-slug',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('refuses an EMAIL_DOMAINS_RESEND_API_KEY identical to RESEND_API_KEY when hosted', () => {
+      withEnv({
+        ...prodBase,
+        IS_HOSTED: 'true',
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_same',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_same',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_RESEND_API_KEY/);
+      });
+    });
+
+    it('accepts identical keys when self-hosted, and says so once', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      withEnv({
+        ...prodBase,
+        IS_HOSTED: 'false',
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_same',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_same',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        const lines = [...warn.mock.calls, ...info.mock.calls].map((c) => String(c[0]));
+        expect(lines.filter((l) => l.includes('EMAIL_DOMAINS_RESEND_API_KEY'))).toHaveLength(1);
+      });
+      warn.mockRestore();
+      info.mockRestore();
+    });
+
+    it.each(['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'])(
+      'accepts EMAIL_DOMAINS_REGION=%s with the resend provider',
+      (region) => {
+        withEnv({
+          ...prodBase,
+          EMAIL_DOMAINS_PROVIDER: 'resend',
+          EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+          EMAIL_DOMAINS_REGION: region,
+        }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    it('refuses an EMAIL_DOMAINS_REGION Resend does not have — the adapter would throw on first create', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+        EMAIL_DOMAINS_REGION: 'mars-1',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_REGION/);
+      });
+    });
+
+    it('treats an empty EMAIL_DOMAINS_REGION as "use the default"', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+        EMAIL_DOMAINS_REGION: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('ignores EMAIL_DOMAINS_REGION when the provider is not resend — it is a Resend-only concept', () => {
+      withEnv({
+        ...prodBase,
+        IS_HOSTED: 'false',
+        EMAIL_DOMAINS_PROVIDER: 'static',
+        EMAIL_DOMAINS_REGION: 'mars-1',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('never keys any EMAIL_DOMAINS requirement on EMAIL_PROVIDER', () => {
+      // The self-host regression this guards: a Resend self-host that upgrades
+      // must not be asked for a partner-lane key it has never heard of.
+      withEnv({ ...prodBase, EMAIL_PROVIDER: 'resend', RESEND_API_KEY: 're_platform' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it.each([
+      'EMAIL_DOMAINS_PROVIDER',
+      'EMAIL_DOMAINS_STATIC_ALLOWED',
+      'EMAIL_DOMAINS_RESEND_API_KEY',
+      'EMAIL_DOMAINS_RESEND_SENDING_KEY',
+      'EMAIL_DOMAINS_REGION',
+      'EMAIL_DOMAINS_MAX_PER_PARTNER',
+      'EMAIL_DOMAINS_DAILY_SEND_CAP',
+      'EMAIL_DOMAINS_PARTNER_ALLOWLIST',
+      'EMAIL_DOMAINS_DENYLIST',
+      'EMAIL_DOMAINS_WEBHOOK_SECRET',
+    ])('%s is declared in the env schema', (name) => {
+      expect(ENV_SCHEMA_KEYS).toContain(name);
+    });
+
     // --- Cloudflare (CLOUDFLARE_API_TOKEN set) ------------------------------
     it('refuses to boot when CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ZONE_ID is missing', () => {
       withEnv({
@@ -3262,6 +3445,94 @@ describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
       });
     },
   );
+});
+
+describe('TOOL_SOURCES_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ENABLED');
+    expect(
+      buildEnvParseInput({ TOOL_SOURCES_ENABLED: 'sentinel' }).TOOL_SOURCES_ENABLED,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['TOOL_SOURCES_ENABLED'], () => {
+        expect(validateConfig().TOOL_SOURCES_ENABLED).toBeUndefined();
+      });
+    });
+  });
+
+  it.each(['', '   '])('treats an empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['maybe', 'ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/TOOL_SOURCES_ENABLED/);
+      });
+    },
+  );
+});
+
+describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');
+    expect(
+      buildEnvParseInput({ TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'sentinel' }).TOOL_SOURCES_ALLOW_PRIVATE_EGRESS,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j on a self-hosted deployment',
+    (value) => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'], () => {
+        expect(validateConfig().TOOL_SOURCES_ALLOW_PRIVATE_EGRESS).toBeUndefined();
+      });
+    });
+  });
+
+  it.each(['maybe', 'ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: value }, () => {
+        expect(() => validateConfig()).toThrow(/TOOL_SOURCES_ALLOW_PRIVATE_EGRESS/);
+      });
+    },
+  );
+
+  it('refuses TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true when IS_HOSTED=true', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'true', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/hosted/);
+    });
+  });
+
+  it('allows TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true when IS_HOSTED=false', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
 });
 
 describe('M365_TENANT_SYNC_ENABLED + sync knobs (wave 04)', () => {

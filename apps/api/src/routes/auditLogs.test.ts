@@ -253,7 +253,7 @@ describe('audit log routes', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toContain('text/csv');
       const body = await res.text();
-      expect(body).toContain('id,timestamp,');
+      expect(body).toContain('"id","timestamp",');
     });
 
     it('neutralizes spreadsheet formulas in CSV cells', async () => {
@@ -427,7 +427,7 @@ describe('audit log routes', () => {
 
       expect(res.status).toBe(200);
       const csv = await res.text();
-      expect(csv.split('\n')[0]).toBe('id,action');
+      expect(csv.split('\n')[0]).toBe('"id","action"');
       expect(csv).not.toContain('do-not-export');
       expect(writeRouteAudit).toHaveBeenCalledWith(
         expect.anything(),

@@ -48,7 +48,7 @@ import {
   restoreOrganizationTenantAccess,
   revokeOrganizationTenantAccess,
 } from './tenantLifecycle';
-import { abortOrganizationOffboarding } from './tenantOffboarding';
+import { abortOrganizationOffboardingAroundStatusChange } from './tenantOffboarding';
 import { createContact, ContactValidationError } from './contacts/crud';
 import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
@@ -373,27 +373,35 @@ async function handleUpdateOrg(
   if (name !== undefined) updates.name = name.slice(0, 255);
   if (status !== undefined) updates.status = status;
 
-  const [org] = await db
-    .update(organizations)
-    .set(updates)
-    .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
-    .returning({
-      id: organizations.id,
-      name: organizations.name,
-      slug: organizations.slug,
-      status: organizations.status,
-    });
-  if (!org) return jsonError('Organization not found or access denied');
+  const runUpdate = async () => {
+    const [row] = await db
+      .update(organizations)
+      .set(updates)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .returning({
+        id: organizations.id,
+        name: organizations.name,
+        slug: organizations.slug,
+        status: organizations.status,
+      });
+    return row;
+  };
 
   // Status-transition invariants from the org PATCH route: suspending/churning
   // severs agent tenant access; re-activating restores it. Any transition off
   // `offboarding` (#2774) first cancels in-flight drain uninstalls (no-op
-  // otherwise) so an uncollected self_uninstall can't survive a reactivation.
+  // otherwise) so an uncollected self_uninstall can't survive a reactivation —
+  // and #3996: that cancel must be locked and committed WITH the status write,
+  // because a tenant that has stopped reading as `offboarding` puts its whole
+  // fleet back on the ordinary command-claim path.
+  const org = status !== undefined
+    ? (await abortOrganizationOffboardingAroundStatusChange(orgId, runUpdate)).statusChange
+    : await runUpdate();
+  if (!org) return jsonError('Organization not found or access denied');
+
   if (status !== undefined && status !== 'active' && status !== 'trial') {
-    await abortOrganizationOffboarding(org.id);
     await revokeOrganizationTenantAccess(org.id);
   } else if (status === 'active' || status === 'trial') {
-    await abortOrganizationOffboarding(org.id);
     await restoreOrganizationTenantAccess(org.id);
   }
 
@@ -480,8 +488,14 @@ async function handleAddContact(
   // matching the list handler's allowedSiteIds confinement above. An absent
   // siteId is an org-level contact and stays allowed: the allowlist confines a
   // caller within an org, it does not narrow their org reach.
+  //
+  // Written on `allowedSiteIds`, NOT `canAccessSite?.(…) === false`: the
+  // optional-call form fails OPEN whenever the closure is absent, and a human
+  // AuthContext is only guaranteed to carry the restriction itself. A caller
+  // that is restricted but has no closure to evaluate it with is denied.
   const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
-  if (siteId !== undefined && auth.canAccessSite?.(siteId) === false) {
+  if (siteId !== undefined && auth.allowedSiteIds
+    && (!auth.canAccessSite || !auth.canAccessSite(siteId))) {
     return jsonError(
       'Access denied to that site. You can only add contacts to sites you have access to.',
       'site-access-denied'

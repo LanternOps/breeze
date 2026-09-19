@@ -13,14 +13,40 @@ import {
   PageHeader,
 } from './ui';
 
-type ReportType =
+/**
+ * The types a PORTAL USER may generate on demand — deliberately NARROWER than
+ * `PortalRunDto['type']`, which is the set that can be LISTED. Mirrors the
+ * server's PORTAL_REPORT_TYPES — the generate endpoint refuses anything
+ * outside it.
+ *
+ * #5784 W02/W03/W04: a managed-evidence run (`threat_detection_review`,
+ * `endpoint_management_review`, `vulnerability_management`) appears in the
+ * list once its occurrence is delivered, but the customer may never generate
+ * one — the artifact is the MSP's evidence, produced by the deliverable sweep
+ * (OD-10 = A). Keeping the two unions separate is what stops a later edit
+ * from wiring a generate button for an evidence type; the row rendering
+ * below reads `PortalRunDto` directly, so it needs no entry here.
+ */
+type GeneratableReportType =
   | 'security_compliance_posture'
   | 'executive_summary'
   | 'hardware_lifecycle';
 
+/** Every type that can APPEAR in this list. Wider than the generatable set:
+ *  `portalRunListPredicate` has no type filter, so a managed-evidence run
+ *  (#5784 W02/W03/W04) reaches the list once its occurrence is delivered.
+ *  Keeping the two unions apart is what makes "listed but not generatable"
+ *  (OD-10 = A) a compile-time fact rather than a convention. */
+type ReportType =
+  | GeneratableReportType
+  | 'threat_detection_review'
+  | 'vulnerability_management'
+  | 'identity_access_review';
+
 /** What the reader is told is happening, in their own language. The MSP-side
- *  report definition names are technical; these are not. */
-const GENERATING_COPY: Record<ReportType, string> = {
+ *  report definition names are technical; these are not. Total over
+ *  `GeneratableReportType` — a missing entry is a typecheck failure. */
+const GENERATING_COPY: Record<GeneratableReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
   hardware_lifecycle: 'Generating your hardware lifecycle plan…',
@@ -31,9 +57,16 @@ const GENERATING_COPY: Record<ReportType, string> = {
  * ("Customer portal — Security & compliance posture"); inside the customer's
  * own list the prefix is noise — they know whose portal they are in. The
  * MSP-side name is untouched, this is a render-time trim only.
+ *
+ * Managed-evidence definitions (#5784 W01) are provisioned with a second,
+ * internal-only prefix — `MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX` in
+ * `apps/api/src/services/managedEvidenceRegistry.ts` ('Service evidence — ')
+ * — and those runs reach this same list once delivered (#6101). The portal
+ * app doesn't depend on `@breeze/shared`, so this is a local mirror of that
+ * literal rather than a shared import; keep the two in sync.
  */
 export function reportDisplayName(name: string): string {
-  return name.replace(/^customer portal\s*[—–-]\s*/i, '');
+  return name.replace(/^(customer portal|service evidence)\s*[—–-]\s*/i, '');
 }
 
 /**
@@ -65,13 +98,17 @@ export function ReportRunList({
   initialRuns,
   timezone,
   error,
+  lifecycleHref = null,
 }: {
   initialRuns: PortalRunDto[];
   timezone: string;
   error?: string | null;
+  /** Where the hardware lifecycle plan lives for this org, or null when the
+   *  MSP has not turned it on. Rendered as a ruled row under the title. */
+  lifecycleHref?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
-  const [busyType, setBusyType] = useState<ReportType | null>(null);
+  const [busyType, setBusyType] = useState<GeneratableReportType | null>(null);
   const [message, setMessage] = useState(error ?? null);
   // Announced by the polite live region below the actions: a report that takes
   // a few seconds must say it is coming, and say when it has arrived — a new
@@ -79,7 +116,7 @@ export function ReportRunList({
   // whose eyes are on the buttons.
   const [status, setStatus] = useState('');
 
-  async function generate(type: ReportType) {
+  async function generate(type: GeneratableReportType) {
     setBusyType(type);
     setMessage(null);
     setStatus(GENERATING_COPY[type]);
@@ -123,6 +160,22 @@ export function ReportRunList({
         title="Reports"
         lede="Generate and download a current summary of your machines."
       />
+
+      {lifecycleHref && (
+        <a
+          href={lifecycleHref}
+          data-testid="reports-lifecycle-card"
+          className="group -mx-4 -mt-2 mb-7 flex items-center justify-between gap-4 border-y border-border/70 px-4 py-4 text-sm transition-colors hover:bg-accent/40"
+        >
+          <span>
+            <span className="block font-semibold text-foreground">Hardware lifecycle</span>
+            <span className="mt-0.5 block text-muted-foreground">
+              See the replacement plan for the machines we manage for you.
+            </span>
+          </span>
+          <span aria-hidden="true" className="text-muted-foreground transition-colors group-hover:text-foreground">&rarr;</span>
+        </a>
+      )}
 
       <div className="mb-2 flex flex-wrap gap-3">
         <button

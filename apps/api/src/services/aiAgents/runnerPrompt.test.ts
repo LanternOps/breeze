@@ -8,6 +8,7 @@ import {
   TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER,
   TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER,
   buildAgentRunSystemPrompt,
+  analysisPromptContext,
   buildAgentRunTaskPrompt,
   buildFleetDesignTaskPrompt,
   buildNarrativeTaskPrompt,
@@ -41,6 +42,51 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     ...overrides,
   };
 }
+
+describe('analysis task handoff', () => {
+  it('carries the admitted goal and frozen handles into the task instead of a fleet assessment', () => {
+    const goal = 'Run Python, Node and Bash on synthetic numbers and save results.csv.';
+    const analysis = analysisPromptContext(
+      { goal, chatSessionId: 'private-chat-id', requestedByUserId: 'private-user-id', deviceIds: ['untrusted-device'] },
+      { deviceIds: ['frozen-device'], handles: ['artifact:input'] },
+    );
+    const context = ctx({ profile: 'analysis', device: null, alert: null, analysis });
+    const task = buildAgentRunTaskPrompt(context);
+    expect(task).toContain(goal);
+    expect(task).toContain('["frozen-device"]');
+    expect(task).toContain('["artifact:input"]');
+    expect(task).toContain('workspace_collect');
+    expect(task).not.toContain('Assess the health');
+    expect(task).not.toContain('private-chat-id');
+    expect(task).not.toContain('private-user-id');
+    expect(task).not.toContain('untrusted-device');
+    expect(buildAgentRunSystemPrompt(context)).not.toContain(goal);
+  });
+
+  it('keeps an empty admitted device scope empty for synthetic analysis', () => {
+    const task = buildAgentRunTaskPrompt(ctx({
+      profile: 'analysis',
+      analysis: analysisPromptContext({ goal: 'Compute 2 + 2' }, { deviceIds: [], handles: [] }),
+    }));
+    expect(task).toContain('Admission-frozen device IDs (JSON): []');
+    expect(task).toContain('An empty set authorizes no device reads');
+    expect(task).toContain('Compute 2 + 2');
+  });
+
+  it.each([null, {}, { goal: 42 }, { goal: '  ' }])('does not invent a fleet task when the goal is missing: %j', (ref) => {
+    const task = buildAgentRunTaskPrompt(ctx({ profile: 'analysis', analysis: analysisPromptContext(ref, null) }));
+    expect(task).toContain('goal is missing');
+    expect(task).toContain('submit_analysis');
+    expect(task).not.toContain('Assess the health');
+  });
+
+  it('bounds persisted goal text and tolerates malformed historical input JSON', () => {
+    const analysis = analysisPromptContext({ goal: 'x'.repeat(3000) }, { deviceIds: [null, 'device'], handles: {} });
+    expect(analysis.goal).toHaveLength(2000);
+    expect(analysis.deviceIds).toEqual(['device']);
+    expect(analysis.handles).toEqual([]);
+  });
+});
 
 /**
  * Phase 2 wave P2-2 (scheduled sweeps) — a two-kind evidence fixture, shaped

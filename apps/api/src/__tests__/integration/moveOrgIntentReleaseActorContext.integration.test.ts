@@ -153,8 +153,8 @@ interface Scenario {
 
 /**
  * Seeds partner P -> orgA (source) + orgB (target), a ticket in orgA, a
- * partner-scope requester (holds `tickets:write` via a partner role — the
- * RBAC entry `TOOL_PERMISSIONS.manage_tickets.move_org` maps to, needed for
+ * partner-scope requester (holds `tickets:write` + `organizations:write` via a
+ * partner role — what `manage_tickets.move_org` and its route require, needed for
  * both the create-path and the release worker's requester-RBAC
  * revalidation), and an ORG-scoped admin of orgA holding `approvals:decide`
  * (the four_eyes approver — deliberately a DIFFERENT axis from the
@@ -170,7 +170,10 @@ async function seedScenario(orgAccess: 'all' | 'selected'): Promise<Scenario> {
   const orgB = await createOrganization({ partnerId: partner.id });
 
   const requesterRole = await createRole({ scope: 'partner', partnerId: partner.id });
-  await grantRolePermissions(requesterRole.id, [PERMISSIONS.TICKETS_WRITE]);
+  // move_org requires BOTH grants, exactly as `POST /tickets/:id/move-org`
+  // does (`routes/tickets/moveOrg.ts`: tickets:write AND organizations:write).
+  // The tool used to need only tickets:write — weaker than its route (#6110).
+  await grantRolePermissions(requesterRole.id, [PERMISSIONS.TICKETS_WRITE, PERMISSIONS.ORGS_WRITE]);
 
   const requester = await createUser({
     partnerId: partner.id,

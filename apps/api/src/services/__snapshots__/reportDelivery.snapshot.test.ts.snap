@@ -4,10 +4,10 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
 {
   "attachments": [
     {
-      "bytes": 75,
+      "bytes": 81,
       "contentType": "text/csv",
       "filename": "device_inventory-report-2026-07-25.csv",
-      "sha256": "a22eb80821eb44df1d950143e3cfa224d2fdf3ddadd22738d042b3170d7f6b7c",
+      "sha256": "b403b7f192d483019c3f3f2ef5d2cbc6a66d642cfd67f94dfc8999682736be3d",
     },
   ],
   "html": "<!doctype html>
@@ -45,6 +45,8 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "partnerId": "55555555-5555-4555-8555-555555555555",
+  "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
 The data is attached as CSV; open Breeze for the fully formatted report.
@@ -59,10 +61,10 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
 {
   "attachments": [
     {
-      "bytes": 75,
+      "bytes": 81,
       "contentType": "text/csv",
       "filename": "device_inventory-report-2026-07-25.csv",
-      "sha256": "a22eb80821eb44df1d950143e3cfa224d2fdf3ddadd22738d042b3170d7f6b7c",
+      "sha256": "b403b7f192d483019c3f3f2ef5d2cbc6a66d642cfd67f94dfc8999682736be3d",
     },
   ],
   "html": "<!doctype html>
@@ -100,6 +102,8 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "partnerId": "55555555-5555-4555-8555-555555555555",
+  "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
 Posture score 79.
@@ -149,6 +153,7 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "purpose": "staff.report_failure",
   "subject": "Scheduled report failed: Nightly inventory",
   "to": [
     "a@example.com",
@@ -194,6 +199,8 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "partnerId": "55555555-5555-4555-8555-555555555555",
+  "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 60000 records.
 Open Breeze to view and download the formatted report.
@@ -242,6 +249,8 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "partnerId": "55555555-5555-4555-8555-555555555555",
+  "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
 Open Breeze to view and download the formatted report.
@@ -295,6 +304,8 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     </table>
   </body>
 </html>",
+  "partnerId": "55555555-5555-4555-8555-555555555555",
+  "purpose": "report.delivery",
   "subject": "Scheduled report ready: Nightly inventory",
   "text": "Your scheduled report "Nightly inventory" has been generated with 2 records.
 The formatted report is attached as a PDF.

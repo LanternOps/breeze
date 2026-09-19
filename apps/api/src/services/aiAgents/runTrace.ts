@@ -35,6 +35,7 @@ import {
   type AiAgentMode,
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
+  type AiAgentRunSweepProposalOutcome,
   type AiAgentRunLedgerEntryDto,
   type AiAgentRunNarrativeDeliveryDto,
   type AiAgentRunStatus,
@@ -219,6 +220,42 @@ export interface RunTraceIntentRowInput {
   actionName: string;
   approvalScope: ActionIntentApprovalScope;
   decidedVia: string | null;
+}
+
+/**
+ * #4442 W05 — the live per-intent outcome the sweep projection joins on.
+ * `decided_via = 'policy'` + `approved` is `auto_executing`: the act-mode
+ * case, which reads very differently from a human approval.
+ */
+export function sweepProposalOutcome(
+  row: Pick<RunTraceIntentRowInput, 'status' | 'decidedVia'>,
+): AiAgentRunSweepProposalOutcome {
+  switch (row.status) {
+    case 'pending_approval':
+      return 'pending';
+    case 'approved':
+    case 'executing':
+      return row.decidedVia === 'policy' ? 'auto_executing' : 'pending';
+    case 'completed':
+      return 'executed';
+    case 'failed':
+      return 'failed';
+    case 'rejected':
+    case 'cancelled':
+      return 'declined';
+    case 'expired':
+      return 'expired';
+    default:
+      // The cases above exhaustively cover `actionIntentStatusEnum` today, so
+      // this is dead code — until someone adds a ninth status and does not
+      // come here. Reporting an unknown TERMINAL state as `pending` would tell
+      // an operator to go approve something that has already finished, so the
+      // fallback is loud rather than silent.
+      console.warn('[runTrace] unmapped action-intent status on a sweep proposal', {
+        status: row.status, decidedVia: row.decidedVia,
+      });
+      return 'pending';
+  }
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -428,6 +465,8 @@ export interface RunWorkspaceRowInput {
   region: 'eu' | 'us';
   status: string;
   bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
   createdAt: Date;
   readyAt: Date | null;
   destroyedAt: Date | null;
@@ -447,6 +486,7 @@ function mapWorkspace(row: RunWorkspaceRowInput | null): AiAgentRunWorkspaceDto 
     region: row.region,
     status: row.status,
     bootstrapHash: row.bootstrapHash,
+    runtimeImage: row.runtimeImage ?? null,
     createdAt: row.createdAt.toISOString(),
     readyAt: row.readyAt?.toISOString() ?? null,
     destroyedAt: row.destroyedAt?.toISOString() ?? null,
@@ -564,7 +604,15 @@ export function buildRunTrace(
     // findings — see `projectSweep`'s own safe-projection contract. The raw
     // `proposedAction` args on each finding are never carried; only the
     // proposal's disposition and, when one exists, its PENDING intent id.
-    sweep: projectSweep(run, outcome, deviceHostnames),
+    sweep: projectSweep(
+      run,
+      outcome,
+      deviceHostnames,
+      // #4442 W05 — built from the run's FULL intent set (the route reads by
+      // `requesting_agent_run_id`, not the pending-only `run.intentIds`), so
+      // an auto-executed or expired proposal still reports its outcome.
+      new Map(intents.map((row) => [row.id, sweepProposalOutcome(row)])),
+    ),
     // Phase 2 wave P2-3 (weekly org narrative), Task A7: null for every
     // non-narrative run and for a narrative run that produced nothing — see
     // `projectNarrative`'s own safe-projection contract. The weekly

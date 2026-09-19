@@ -67,6 +67,9 @@
       "on_ticket_resolve": "Livré à la résolution du ticket lié"
     },
     "autoEvidenceReport": "Joindre les exécutions de rapport comme justificatif",
+    "autoEvidenceNone": "Aucun",
+    "autoEvidenceHelp": "Le justificatif est généré le jour d'échéance et devient visible pour le client lorsque l'occurrence est livrée.",
+    "autoEvidenceEmpty": "Aucun type de rapport de justificatif géré n'est encore disponible.",
     "owner": "Responsable",
     "ticketCategory": "Catégorie de ticket",
     "portalVisible": "Afficher dans le portail client",
@@ -80,6 +83,10 @@
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance.",
+    "empty_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance.",
+    "emptyWithDate_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance ({{date}}).",
+    "emptyWithDate_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance ({{date}}).",
     "evidence": "Justificatifs",
     "noEvidence": "Aucun justificatif joint",
     "late": "En retard",
@@ -186,7 +193,8 @@
       "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
       "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
       "artifactRequired": "Justificatif requis",
-      "completionMode": "Achèvement"
+      "completionMode": "Achèvement",
+      "autoEvidenceReportType": "Type de rapport de justificatif"
     },
     "ownerScope": {
       "legend": "Pour qui est cet ensemble ?",

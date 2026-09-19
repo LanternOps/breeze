@@ -140,7 +140,7 @@ clientAiAdminUsageRoutes.get(
       details: { from: q.from, to: q.to, orgId: q.orgId ?? null, rowCount: rows.length },
     });
 
-    const lines = [CSV_HEADERS.join(',')];
+    const lines = [csvRow(CSV_HEADERS)];
     for (const r of rows) {
       lines.push(
         csvRow([

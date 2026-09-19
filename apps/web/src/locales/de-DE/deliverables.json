@@ -67,6 +67,9 @@
       "on_ticket_resolve": "Geliefert, sobald das verknüpfte Ticket gelöst wird"
     },
     "autoEvidenceReport": "Berichtsläufe als Nachweis anhängen",
+    "autoEvidenceNone": "Keine",
+    "autoEvidenceHelp": "Der Nachweis wird am Fälligkeitstag erstellt und für den Kunden sichtbar, sobald der Vorgang als geliefert markiert wird.",
+    "autoEvidenceEmpty": "Es sind noch keine verwalteten Nachweisberichtstypen verfügbar.",
     "owner": "Verantwortlich",
     "ticketCategory": "Ticket-Kategorie",
     "portalVisible": "Im Kundenportal anzeigen",
@@ -80,6 +83,10 @@
   },
   "drawer": {
     "title": "Vorkommen",
+    "empty_one": "Noch keine Vorkommen. Das erste wird {{count}} Tag vor seinem Fälligkeitsdatum geplant.",
+    "empty_other": "Noch keine Vorkommen. Das erste wird {{count}} Tage vor seinem Fälligkeitsdatum geplant.",
+    "emptyWithDate_one": "Noch keine Vorkommen. Das erste wird {{count}} Tag vor seinem Fälligkeitsdatum geplant ({{date}}).",
+    "emptyWithDate_other": "Noch keine Vorkommen. Das erste wird {{count}} Tage vor seinem Fälligkeitsdatum geplant ({{date}}).",
     "evidence": "Nachweis",
     "noEvidence": "Kein Nachweis angehängt",
     "late": "Verspätet",
@@ -186,7 +193,8 @@
       "leadDays": "So viele Tage vor Fälligkeit öffnen",
       "graceDays": "So viele Tage nach Fälligkeit als versäumt markieren",
       "artifactRequired": "Nachweis erforderlich",
-      "completionMode": "Abschluss"
+      "completionMode": "Abschluss",
+      "autoEvidenceReportType": "Nachweisberichtstyp"
     },
     "ownerScope": {
       "legend": "Für wen ist dieses Set?",

@@ -265,3 +265,64 @@ func TestApplyServiceValidation_NoErrorFallsThroughToCheckServices(t *testing.T)
 		t.Fatalf("expected Passed=true, ServicesRunning=true, got Passed=%v ServicesRunning=%v Failures=%v", result.Passed, result.ServicesRunning, result.Failures)
 	}
 }
+
+// TestApplySystemStateValidation pins the #5412 half of Validate: when the
+// run expected system state (system_image / advertised manifest) and did
+// not apply it, the verdict fails with a named check — a Validated:true on
+// a recovery that applied no OS state is what let issue #5412 ship.
+func TestApplySystemStateValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      SystemStateOutcome
+		wantPassed bool
+	}{
+		{"expected, not applied", SystemStateOutcome{Expected: true, ManifestFound: false, Applied: false}, false},
+		{"expected, manifest found, not applied", SystemStateOutcome{Expected: true, ManifestFound: true, Applied: false}, false},
+		{"expected, applied", SystemStateOutcome{Expected: true, ManifestFound: true, Applied: true}, true},
+		{"not expected, nothing found", SystemStateOutcome{}, true},
+		{"not expected, found but not applied", SystemStateOutcome{ManifestFound: true}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &ValidationResult{Passed: true}
+			applySystemStateValidation(result, tt.state)
+			if result.Passed != tt.wantPassed || result.SystemStateApplied != tt.state.Applied {
+				t.Fatalf("result = %+v, want passed=%v stateApplied=%v", result, tt.wantPassed, tt.state.Applied)
+			}
+			if tt.wantPassed {
+				if len(result.Failures) != 0 {
+					t.Fatalf("unexpected failures: %v", result.Failures)
+				}
+				return
+			}
+			if len(result.Failures) != 1 || !strings.Contains(result.Failures[0], "system state not applied") {
+				t.Fatalf("failures = %v, want the named 'system state not applied' check", result.Failures)
+			}
+		})
+	}
+}
+
+// TestValidate_StateExpectedNotApplied_Fails proves the wiring through the
+// public Validate entry point (the one bmr.go calls): whatever the network
+// and file probes say, Passed is false and the named check is present.
+func TestValidate_StateExpectedNotApplied_Fails(t *testing.T) {
+	origGoos := goos
+	t.Cleanup(func() { goos = origGoos })
+	goos = "darwin" // no-op service probe: keep this about the state check
+	result, err := Validate(nil, nil, SystemStateOutcome{Expected: true, ManifestFound: true, Applied: false})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("Passed must be false when state was expected and not applied: %+v", result)
+	}
+	found := false
+	for _, f := range result.Failures {
+		if strings.Contains(f, "system state not applied") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failures = %v, want 'system state not applied'", result.Failures)
+	}
+}

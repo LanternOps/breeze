@@ -196,6 +196,18 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const remove = (id: string, evidenceId: string) =>
     void run(t('toast.evidenceRemoved'), () => removeEvidence(fetcher, orgId, id, evidenceId));
 
+  // Nothing is materialized until the sweep reaches the lead window, so the
+  // empty state names the next due date: the server-derived nextDue, else the
+  // anchor when it is still ahead of us (a past anchor of a recurring
+  // deliverable says nothing about the next period, so omit the date then).
+  // anchorDueDate/nextDue are plain dates (no timezone), so "today" must be
+  // the viewer's LOCAL calendar date, not UTC (see OrgServiceTab's todayIso) —
+  // otherwise this is off by a day near midnight for anyone not on UTC.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const firstDue =
+    deliverable.nextDue ?? (deliverable.anchorDueDate.slice(0, 10) >= today ? deliverable.anchorDueDate : null);
+
   const saveDisabled =
     busy ||
     !action ||
@@ -218,6 +230,12 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
       ) : error ? (
         <div className="px-3 py-6 text-center text-sm text-destructive" data-testid="occurrence-drawer-error">
           {error}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="px-3 py-8 text-center text-sm text-muted-foreground" data-testid="occurrence-empty">
+          {firstDue
+            ? t('drawer.emptyWithDate', { count: deliverable.leadDays, date: formatDate(firstDue) })
+            : t('drawer.empty', { count: deliverable.leadDays })}
         </div>
       ) : (
         <ul className="divide-y" data-testid="occurrence-list">

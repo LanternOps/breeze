@@ -132,6 +132,14 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // bindings have a NULL expected_resource_org_id and remain unchanged.
   automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
 
+  // Tool catalog W01 (#5215 / #5216). Two orgs may each register a source with
+  // the same slug (`tool_sources_org_slug_uq` is per-org), so a plain repoint
+  // aborts on 23505 and a dedupe-DELETE would silently destroy a working
+  // integration. The executor renames the loser's colliding slug in-grammar and
+  // rewrites every child's qualified_name, which embeds it.
+  tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
+  tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,
@@ -439,6 +447,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // (org_id, score_date), m365_posture_rollups_org_date_uniq (org_id, rollup_date).
   m365_secure_score_snapshots: { kind: 'repoint-dedupe', key: ['score_date'] },
   m365_posture_rollups: { kind: 'repoint-dedupe', key: ['rollup_date'] },
+  // #5784 W05. History, NOT a re-derivable snapshot: Graph retains sign-in logs
+  // ~30 days, so a merge that deleted these would destroy evidence nothing can
+  // reproduce. Same disposition as the two tables above, and for the same stated
+  // reason. Dedupe key is the Graph event id, which the unique index
+  // m365_signin_events_org_graph_uniq (org_id, graph_id) already enforces:
+  // a loser row whose graph_id already exists under the survivor is dropped,
+  // the rest repoint. There is no composite FK to violate at COMMIT — the table
+  // deliberately carries no connection_id.
+  m365_signin_events: { kind: 'repoint-dedupe', key: ['graph_id'] },
   tenant_variables: { kind: 'repoint-dedupe', key: ['key'] }, // verified: tenant_variables_org_key_uniq (org_id, key) WHERE org_id IS NOT NULL — trivially true for org-scoped rows
   catalog_item_org_pricing: { kind: 'repoint-dedupe', key: ['catalog_item_id'] }, // verified: catalog_item_org_pricing_item_org_uq (catalog_item_id, org_id)
   ticket_form_org_links: { kind: 'repoint-dedupe', key: ['form_id'] }, // verified: ticket_form_org_links_form_org_uq (form_id, org_id)

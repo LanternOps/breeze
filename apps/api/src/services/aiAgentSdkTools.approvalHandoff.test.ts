@@ -15,7 +15,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { __test__, wrapExtraToolWithHooks } from './aiAgentSdkTools';
 import type { SdkTool } from './aiAgents/outcomeTools';
-import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import {
+  APPROVED_COMPLETED_MESSAGE,
+  APPROVED_COMPLETED_STATUS,
+  APPROVED_EXECUTING_MESSAGE,
+  APPROVED_EXECUTING_STATUS,
+  APPROVED_FAILED_STATUS,
+  describeIntentOutcome,
+  handoffDenialForOutcome,
+} from './aiToolHandoff';
 
 const { makeHandler, makeSessionAwareHandler } = __test__;
 
@@ -156,5 +164,76 @@ describe('pre-tool-use approval handoff (#5107)', () => {
       expect(payload.status).toBe('approved_executing');
       expect(payload.error).toBeUndefined();
     });
+  });
+});
+
+/**
+ * #6022 — the read-back outcomes ride the SAME channel, so `isError` must be
+ * derived from the STATUS, not from "a handoff marker is present".
+ *
+ * The regression this guards is the issue itself pointing the other way: if
+ * `approved_failed` were published with `isError: false` because it carries a
+ * handoff marker, the chat would paint a guardrail refusal as "Approved ·
+ * running" all over again.
+ */
+describe('post-approval terminal outcomes (#6022)', () => {
+  const guardrail =
+    'Arming autoInstall requires a human operator with devices.execute and MFA; the AI agent cannot arm software installation.';
+
+  it('publishes a FAILED outcome as isError:true carrying the refusal', async () => {
+    const ran = { called: false };
+    const post = vi.fn();
+    const denial = handoffDenialForOutcome(
+      describeIntentOutcome({ status: 'failed', errorCode: 'tool_returned_error', result: { error: guardrail } }),
+    );
+    const wrapped = wrapExtraToolWithHooks(toolThatMustNotRun(ran), async () => denial, post);
+
+    const result = await wrapped.handler({ autoInstall: true }, {});
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(firstText(result));
+    expect(payload.status).toBe(APPROVED_FAILED_STATUS);
+    expect(payload.message).toContain(guardrail);
+    // Still must not run inline — the worker already ran (and refused) it.
+    expect(ran.called).toBe(false);
+    expect(post).toHaveBeenCalledWith(
+      'manage_services',
+      { autoInstall: true },
+      expect.stringContaining(APPROVED_FAILED_STATUS),
+      true,
+      0,
+      undefined,
+      APPROVED_FAILED_STATUS,
+    );
+  });
+
+  it('publishes a COMPLETED outcome as isError:false without leaking the stored result', async () => {
+    const ran = { called: false };
+    const post = vi.fn();
+    const denial = handoffDenialForOutcome(
+      describeIntentOutcome({ status: 'completed', errorCode: null, result: { tempPassword: 'hunter2' } }),
+    );
+    const wrapped = wrapExtraToolWithHooks(toolThatMustNotRun(ran), async () => denial, post);
+
+    const result = await wrapped.handler({}, {});
+
+    expect(result.isError).toBe(false);
+    const payload = JSON.parse(firstText(result));
+    expect(payload.status).toBe(APPROVED_COMPLETED_STATUS);
+    expect(payload.message).toBe(APPROVED_COMPLETED_MESSAGE);
+    expect(firstText(result)).not.toContain('hunter2');
+    expect(ran.called).toBe(false);
+  });
+
+  it('keeps the still-running outcome a non-error', async () => {
+    const wrapped = wrapExtraToolWithHooks(
+      toolThatMustNotRun({ called: false }),
+      async () => handoffDenialForOutcome(describeIntentOutcome(null)),
+      vi.fn(),
+    );
+
+    const result = await wrapped.handler({}, {});
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(firstText(result)).message).toBe(APPROVED_EXECUTING_MESSAGE);
   });
 });

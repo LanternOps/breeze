@@ -211,7 +211,8 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -547,8 +548,10 @@
       },
       "ticketing": {
         "label": "Billetterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, ERS, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de billetterie →"
       },
+      "sendingDomains": { "label": "Adresses d'envoi", "description": "Envoyez vos courriels à partir de votre propre domaine" },
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
@@ -564,6 +567,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Bureau de service et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -594,6 +601,107 @@
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Adresses d'expéditeur personnalisées",
+    "description": "Envoyez les courriels destinés aux clients à partir de votre propre domaine plutôt que de l'adresse Breeze standard.",
+    "loadFailed": "Impossible de charger vos domaines d'envoi.",
+    "staticNote": "Les domaines d'envoi de ce serveur relèvent de sa configuration de messagerie; SPF et DKIM pour ces domaines se configurent en dehors de Breeze.",
+    "staticNotAllowed": "Demandez à votre administrateur Breeze d'autoriser ce domaine.",
+    "staticVerifyHint": "Ce domaine devient utilisable dès que votre serveur de messagerie accepte un message d'essai envoyé à partir de celui-ci.",
+    "lockedTitle": "Les adresses d'expéditeur personnalisées ne sont pas encore offertes",
+    "lockedProbation": "Votre compte est encore en vérification. Les adresses d'expéditeur personnalisées seront débloquées une fois celle-ci terminée.",
+    "lockedRestricted": "Votre compte est restreint; les adresses d'expéditeur personnalisées ne sont donc pas offertes.",
+    "lockedNotAllowlisted": "Les adresses d'expéditeur personnalisées sont déployées par étapes et ne sont pas encore activées pour votre compte.",
+    "lockedPartnerInactive": "Votre compte n'est pas actif; les adresses d'expéditeur personnalisées ne sont donc pas offertes.",
+    "lockedProviderKeySendOnly": "La clé de messagerie de ce serveur peut envoyer des messages, mais pas gérer de domaines. Demandez à votre administrateur Breeze une clé avec accès complet.",
+    "lockedShowVerification": "Voir l'état de la vérification",
+    "addTitle": "Ajouter un domaine d'envoi",
+    "addLabel": "Nom de domaine",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addInvalid": "Entrez un domaine comme mail.yourcompany.com.",
+    "addSubmit": "Ajouter le domaine",
+    "added": "Domaine ajouté. Préparation des enregistrements DNS.",
+    "recommendTitle": "Nous recommandons un sous-domaine dédié",
+    "recommendReason1": "Il garde la réputation d'envoi de vos courriels Breeze à part du reste de votre messagerie.",
+    "recommendReason2": "Un domaine racine déjà vérifié ailleurs chez notre fournisseur de courriel ne peut pas être ajouté ici : nous ne retirons jamais un domaine à un autre compte.",
+    "recommendReason3": "Certains filtres signalent un expéditeur externe qui se sert du domaine du destinataire, même quand DKIM passe. Un sous-domaine contourne cette règle de correspondance exacte, ce qui compte surtout pour les équipes internes dont les clients sont des collègues.",
+    "statusProvisioning": "Préparation des enregistrements DNS…",
+    "statusPending": "En attente du DNS",
+    "statusVerified": "Vérifié",
+    "statusAtRisk": "À surveiller",
+    "statusFailed": "Échec",
+    "statusSuspended": "Suspendu",
+    "statusRemoving": "Retrait…",
+    "provisioningSlow": "C'est plus long qu'à l'habitude. Nous continuons d'essayer : vous pouvez quitter cette page et revenir plus tard.",
+    "recordsTitle": "Publiez ces enregistrements DNS",
+    "recordsNote": "Les changements DNS peuvent prendre jusqu'à 72 heures avant de nous parvenir, et nous continuons de vérifier. Si les enregistrements demeurent invisibles après ce délai, le domaine passe en échec et vous pouvez réessayer.",
+    "recordsType": "Type d'enregistrement",
+    "recordsHost": "Libellé d'hôte",
+    "recordsFqdn": "Nom complet",
+    "recordsValue": "Valeur",
+    "recordsPriority": "Priorité",
+    "recordsCopied": "Copié dans le presse-papiers",
+    "checkNow": "Vérifier maintenant",
+    "checkStarted": "Vérification du DNS en cours.",
+    "atRiskBanner": "Nous ne voyons plus l'enregistrement {{type}} à {{fqdn}}. Les courriels partent encore de ce domaine, mais republiez cet enregistrement d'ici 72 heures, sinon le domaine passe en échec.",
+    "failedProviderConflict": "Ce domaine est peut-être déjà inscrit chez Breeze ou chez notre fournisseur de courriel. Servez-vous d'un sous-domaine dédié ou écrivez au soutien technique.",
+    "failedProviderRejected": "Notre fournisseur de courriel a refusé ce domaine.",
+    "failedQuotaExhausted": "Ce serveur Breeze a atteint sa limite de domaines chez le fournisseur de courriel. Écrivez au soutien technique.",
+    "failedDnsNotDetected": "Nous n'avons pas trouvé les enregistrements DNS en 72 heures.",
+    "failedDnsRemoved": "Les enregistrements DNS ont été retirés.",
+    "failedUnknown": "La vérification ne s'est pas terminée.",
+    "retry": "Réessayer",
+    "removeConfirm": "Retirer {{domain}}? Ses courriels reviennent à l'expéditeur Breeze standard.",
+    "removeConfirmUnmanaged": "Retirer {{domain}} de Breeze? Le domaine demeure dans le compte de votre fournisseur de courriel : Breeze ne supprime jamais un domaine qu'il n'a pas créé.",
+    "removeStarted": "Retrait du domaine en cours.",
+    "suspendedNotice": "Breeze a suspendu ce domaine. Écrivez au soutien technique.",
+    "lastSendError": "Dernier problème de livraison : {{error}}",
+    "identitiesTitle": "Adresses d'expéditeur",
+    "identitiesDescription": "Choisissez l'adresse d'où part chaque type de courriel. Ce que vous laissez vide demeure sur l'expéditeur Breeze standard.",
+    "identitiesNoDomain": "Vérifiez d'abord un domaine, puis choisissez les adresses d'expéditeur.",
+    "streamSupportName": "Soutien à la clientèle",
+    "streamBillingName": "Facturation",
+    "streamGeneralName": "Notifications générales",
+    "streamSupportMail": "Mises à jour de billets aux clients, invitations au portail et réinitialisations de mot de passe du portail.",
+    "streamBillingMail": "Soumissions et factures.",
+    "streamGeneralMail": "Envois de rapports planifiés.",
+    "repliesSupport": "Le courriel de billets fixe Reply-To à {{inbound}}, de sorte que la réponse d'un client revient au billet. Les invitations au portail et les réinitialisations de mot de passe ne fixent pas de Reply-To : ces réponses vont à l'adresse ci-dessous.",
+    "repliesSupportNoInbound": "Ce serveur n'a pas d'adresse de réception, alors les réponses au courriel de billets vont à l'adresse ci-dessous. Prenez une boîte que quelqu'un lit, ou un alias qui réachemine vers Breeze.",
+    "repliesBilling": "Les soumissions et les factures fixent Reply-To à votre courriel de facturation; les réponses s'y rendent donc.",
+    "repliesGeneral": "Rien ici ne fixe son propre Reply-To : les réponses vont à l'adresse ci-dessous, ou au Reply-To que vous indiquez.",
+    "repliesMailboxHint": "Les gens et les réponses automatiques répondent parfois à l'adresse d'expéditeur : faites de chacune une vraie boîte ou un alias.",
+    "identityDomain": "Domaine vérifié",
+    "identityLocalPart": "Adresse",
+    "identityDisplayName": "Nom affiché",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Adresse Reply-To (facultatif)",
+    "identityFrom": "Envoie à partir de {{address}}",
+    "identityClear": "Utiliser l'expéditeur standard",
+    "identitySaved": "Adresse d'expéditeur enregistrée.",
+    "identityCleared": "Retour à l'expéditeur Breeze standard.",
+    "identityLocalPartInvalid": "Servez-vous de lettres, de chiffres, de points, de traits d'union, de plus et de traits soulignés, sans commencer ni terminer par un signe de ponctuation.",
+    "identityLocalPartReserved": "postmaster, abuse et mailer-daemon sont réservés.",
+    "identityDisplayNameInvalid": "Un nom affiché ne peut pas contenir d'adresse courriel ni de lien.",
+    "identityReplyToInvalid": "Entrez une adresse courriel complète.",
+    "testTitle": "Envoyer un courriel d'essai",
+    "testDescription": "Nous envoyons un message à partir de ce domaine vers votre propre adresse de connexion.",
+    "testSubmit": "Envoyer le courriel d'essai",
+    "testQueued": "Courriel d'essai mis en file.",
+    "testPending": "Courriel d'essai en cours…",
+    "testLastSent": "Dernier essai envoyé le {{when}}.",
+    "testLastFailed": "Dernier essai en échec le {{when}} : {{error}}",
+    "errorDomainUnavailable": "Ce domaine est peut-être déjà inscrit chez Breeze ou chez notre fournisseur de courriel. Servez-vous d'un sous-domaine dédié ou écrivez au soutien technique.",
+    "errorDomainLimitReached": "Vous pouvez détenir au plus {{max}} domaines d'envoi. Retirez-en un d'abord.",
+    "errorRateLimited": "Trop de tentatives. Attendez un moment et réessayez.",
+    "errorNotFound": "Ce domaine n'existe plus. Actualisez la page.",
+    "errorDomainNotSendable": "Ce domaine n'est pas encore vérifié; il ne peut donc pas servir d'adresse d'expéditeur.",
+    "errorUnsupported": "Les adresses d'expéditeur personnalisées ne sont pas activées sur ce serveur.",
+    "errorAddFailed": "Impossible d'ajouter le domaine.",
+    "errorCheckFailed": "Impossible de lancer la vérification DNS.",
+    "errorRemoveFailed": "Impossible de retirer le domaine.",
+    "errorIdentityFailed": "Impossible d'enregistrer l'adresse d'expéditeur.",
+    "errorTestFailed": "Impossible d'envoyer le courriel d'essai."
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -896,7 +1004,10 @@
     },
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
-      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page."
+      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
+      "saveError": "Échec de l’enregistrement du CSS personnalisé.",
+      "loadError": "Impossible de charger le CSS personnalisé actuellement enregistré. La modification est désactivée tant qu’il n’est pas chargé.",
+      "saveBlockedByLoadError": "Le CSS personnalisé n’a pas été enregistré : la valeur actuelle n’a pas pu être vérifiée. Rechargez la page et réessayez."
     },
     "preview": {
       "action": "Prévisualiser",
@@ -1130,6 +1241,10 @@
       "description": "Choisissez les renseignements de service que ce client peut voir dans le portail.",
       "enableAll": "Activer toute la visibilité",
       "toggles": {
+        "enableDevices": {
+          "label": "Appareils",
+          "description": "Afficher la page Appareils. Le libre-service donne également accès à cette page."
+        },
         "enableDashboard": {
           "label": "Tableau de bord",
           "description": "Affiche un résumé de l'état du service à la connexion."
@@ -1162,6 +1277,20 @@
           "label": "Cycle de vie du matériel",
           "description": "Affiche le plan de remplacement à jour des appareils de votre client."
         }
+      }
+    },
+    "accent": {
+      "title": "Accent du portail",
+      "description": "La couleur des boutons et des liens dans le portail de vos clients. Les couleurs de statut ne changent jamais.",
+      "options": {
+        "spruce": "Épinette",
+        "ink": "Encre",
+        "oxblood": "Bordeaux",
+        "navy": "Marine",
+        "plum": "Prune",
+        "bronze": "Bronze antique",
+        "teal": "Sarcelle",
+        "forest": "Forêt"
       }
     },
     "support": {
@@ -1441,7 +1570,7 @@
     "completeReview": "Revue complète"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilisation et budget de l’IA",
+    "aIUsageBudget": "Utilisation de l’IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
@@ -1491,7 +1620,19 @@
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "creditsRemaining": "Crédits IA Breeze restants"
+    "creditsRemaining": "Crédits IA Breeze restants",
+    "defaultValue": "Par défaut ({{value}})",
+    "viewPartnerWideBudgets": "Budgets IA du partenaire",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "effectiveBudget": "Budget en vigueur",
+    "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
+    "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
+    "sourcePartner": "Défini par le partenaire",
+    "sourceOrganization": "Défini par l’organisation",
+    "sourceDefault": "Par défaut",
+    "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
+    "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
+    "thresholdsOff": "Désactivé"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1528,6 +1669,7 @@
       "actMode": {
         "label": "Mode d'action",
         "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "deploymentDisabledHint": "Le mode action est indisponible car BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED est désactivé pour ce déploiement. Communiquez avec votre administrateur pour l’activer.",
         "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
         "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
         "disableForOrg": "Désactiver le mode d'action pour cette organisation",
@@ -1601,7 +1743,9 @@
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
-      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
+      "designerAct": "Activé",
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -1876,6 +2020,20 @@
         "empty": "Aucun constat signalé.",
         "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
         "proposalCreated": "Approbation demandée",
+        "actSummary": "Action sans supervision sur {{acted}} appareils sur {{proposed}} — les autres attendent une approbation.",
+        "outcomes": {
+          "auto_executing": "Exécution sans supervision",
+          "executed": "Terminé",
+          "failed": "Échec",
+          "declined": "Refusé",
+          "expired": "Expiré",
+          "unknown": "Résultat inconnu"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite quotidienne du parc atteinte",
+          "day_cap": "limite quotidienne d’actions atteinte",
+          "occurrence_cap": "plafond d’appareils par balayage atteint"
+        },
         "columns": {
           "kind": "Vérification",
           "severity": "Gravité",
@@ -2085,11 +2243,13 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un billet",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du billet",
-          "attachedToTicket": "Joint au billet",
-          "attachFailed": "Impossible de joindre le fichier à ce billet"
+          "attachedToTicket": "Joint au billet comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce billet",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au billet",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",
@@ -2207,6 +2367,7 @@
       "emptyState": {
         "title": "Aucun résultat d’IA pour cette période",
         "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "descriptionWidestWindow": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Il n’y a pas encore assez de données, même pour la période de rapport la plus longue — configurez un agent pour commencer.",
         "action": "Configurer un agent"
       },
       "tileGroups": {
@@ -2394,7 +2555,8 @@
         "below_threshold": "Il n’y a pas encore assez d’exécutions vérifiées.",
         "too_recent": "La première exécution vérifiée est encore trop récente.",
         "has_failures": "Un échec ou une récurrence a été consigné durant cette période.",
-        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée.",
+        "below_sweep_threshold": "Il faut plus de correctifs vérifiés pour lesquels un balayage planifié a choisi la cible."
       },
       "confirm": {
         "title": "Demander une préautorisation",
@@ -3022,6 +3184,11 @@
       "searchPlaceholder": "Rechercher des scripts…",
       "selectedCount_one": "{{count}} script autorisé",
       "selectedCount_other": "{{count}} scripts autorisés"
+    },
+    "designerNote": {
+      "title": "Cet agent ne fait que lire et rédiger des rapports",
+      "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
+      "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3359,7 +3526,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs.",
+    "distributorsLink": "Gérer les connexions aux distributeurs →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -4057,6 +4225,7 @@
     "languageLoadFailed": "Préférence enregistrée, mais la langue ne se chargeait pas — l’anglais montré. Vérifiez votre connexion et réessayez."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Saisie de temps par défaut (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
     "ticketing": "Billetterie",
@@ -4158,7 +4327,10 @@
     "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "Courriel",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -4312,6 +4484,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget IA",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
+  },
   "orgSettingsPage": {
     "loading": "Chargement des paramètres d’organisation...",
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
@@ -4365,7 +4542,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",
       "ticketing": "Billetterie",
-      "ticketingDescription": "SLA et les dérogations de facturation"
+      "ticketingDescription": "SLA et les dérogations de facturation",
+      "ai": "IA",
+      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -5126,7 +5305,15 @@
     "columns": {
       "email": "Courriel",
       "role": "Rôle",
-      "lastLogin": "Dernière connexion"
+      "lastLogin": "Dernière connexion",
+      "mfaStatus": "Statut MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrit",
+      "pending": "En attente",
+      "pendingByDate": "En attente — à inscrire avant le {{date}}",
+      "overdue": "En retard",
+      "notRequired": "Non requise"
     },
     "status": {
       "active": "Actif",
@@ -5197,6 +5384,7 @@
     "confirmYourPassword": "Confirmez votre mot de passe"
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
     "title": "Variables",
     "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
     "loading": "Chargement des variables…",
@@ -5236,6 +5424,16 @@
     "empty": {
       "title": "Aucune variable pour l'instant",
       "description": "Créez-en une pour ne plus coller le même jeton dans les scripts de chaque client."
+    },
+    "filters": {
+      "searchLabel": "Rechercher des variables",
+      "searchPlaceholder": "Rechercher par clé ou description",
+      "scopeGroupLabel": "Filtrer par portée",
+      "scopeAll": "Toutes les portées"
+    },
+    "noMatches": {
+      "title": "Aucune variable ne correspond à vos filtres",
+      "description": "Essayez un autre terme de recherche ou effacez le filtre de portée."
     },
     "errors": {
       "load": "Impossible de charger les variables."
@@ -5530,5 +5728,18 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de billetterie",
+    "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les importations du catalogue et le remplissage automatique de l'éditeur de soumissions — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
   }
 }

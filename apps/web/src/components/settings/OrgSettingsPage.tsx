@@ -20,7 +20,8 @@ import {
   ScrollText,
   Shield,
   Ticket,
-  Archive
+  Archive,
+  Wallet
 } from 'lucide-react';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
@@ -35,6 +36,7 @@ import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgAiBudgetSettings from './OrgAiBudgetSettings';
 import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
@@ -48,7 +50,7 @@ import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
+  | 'approval-security' | 'ai' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
   | 'extensions';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
@@ -81,6 +83,10 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'security', hash: 'security', label: 'orgSettingsPage.nav.security', description: 'orgSettingsPage.nav.securityDescription', icon: Shield },
       { key: 'approval-security', hash: 'approval-security', label: 'orgSettingsPage.nav.approvalSecurity', description: 'orgSettingsPage.nav.approvalSecurityDescription', icon: Fingerprint },
+      // #6004: the AI budget editor moved off /settings/ai-usage to here, so it
+      // sits with the other partner-enforced org settings instead of on a usage
+      // report that has no org context under "All organizations".
+      { key: 'ai', hash: 'ai', label: 'orgSettingsPage.nav.ai', description: 'orgSettingsPage.nav.aiDescription', icon: Wallet },
       { key: 'remote-access', hash: 'remote-access', label: 'orgSettingsPage.nav.remoteAccess', description: 'orgSettingsPage.nav.remoteAccessDescription', icon: Monitor },
       { key: 'event-logs', hash: 'event-logs', label: 'orgSettingsPage.nav.eventLogs', description: 'orgSettingsPage.nav.eventLogsDescription', icon: ScrollText },
       { key: 'audit-retention', hash: 'audit-retention', label: 'orgSettingsPage.nav.auditRetention', description: 'orgSettingsPage.nav.auditRetentionDescription', icon: Archive },
@@ -140,7 +146,9 @@ type OrgDetails = {
       primaryColor?: string;
       secondaryColor?: string;
       theme?: 'light' | 'dark' | 'system';
-      customCss?: string;
+      // customCss deliberately absent (#5952) — it now lives in
+      // portal_branding, loaded/saved by OrgBrandingEditor via
+      // /orgs/organizations/:id/portal-settings, not here.
       portalSubdomain?: string;
     };
     defaults?: {
@@ -408,10 +416,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   }, [fetchOrgDetails]);
 
   const handleSaveSettings = useCallback(async (section: string, data: Record<string, unknown>) => {
-    if (!effectiveOrgId) return;
+    if (!effectiveOrgId) return false;
     if (isArchived) {
       setError(t('orgSettingsPage.archived.saveBlocked'));
-      return;
+      return false;
     }
 
     try {
@@ -427,7 +435,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             method: 'PATCH',
             body: JSON.stringify({ settings: updatedSettings })
           }),
-        successMessage: t('orgSettingsPage.toasts.settingsSaved'),
+        successMessage: section === 'branding' ? undefined : t('orgSettingsPage.toasts.settingsSaved'),
         errorFallback: t('orgSettingsPage.errors.saveSettings'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
@@ -437,11 +445,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         hasUnsavedChanges: false,
         lastSavedAt: formatTime(new Date())
       });
+      return true;
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
       if (!(err instanceof ActionError)) {
         setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveSettings'));
       }
+      return false;
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
 
@@ -584,9 +594,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return (
           <OrgBrandingEditor
             organizationName={displayOrg.name}
+            orgId={effectiveOrgId}
             branding={orgDetails?.settings?.branding}
             onDirty={handleDirty}
-            onSave={(data) => handleSave('branding', data)}
+            onSave={(data) => handleSaveSettings('branding', data)}
             locked={locked}
           />
         );
@@ -637,6 +648,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         );
       case 'approval-security':
         return <OrgApprovalSecurityTab />;
+      case 'ai':
+        // No onDirty: the tab owns its own draft AND its own save, so wiring
+        // the page's dirty channel would strand it as permanently unsaved
+        // (#3432).
+        return <OrgAiBudgetSettings orgId={effectiveOrgId} />;
       case 'event-logs':
         return (
           <OrgEventLogSettings

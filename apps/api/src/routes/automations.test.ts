@@ -607,6 +607,106 @@ describe('automations routes', () => {
     expect(body.trigger.type).toBe('manual');
   });
 
+  describe('script action elevation at the HTTP boundary', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const elevated = { type: 'run_script', scriptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', runAs: 'elevated' };
+    const ordinary = { ...elevated, runAs: 'system' };
+
+    function stored(actions: unknown[], orgId = 'org-123') {
+      const row = { id, orgId, name: 'Existing', trigger: { type: 'manual' }, actions };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }) }),
+      } as any);
+      const set = vi.fn((updates) => ({ where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ ...row, ...updates }]),
+      }) }));
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return set;
+    }
+
+    it('refuses elevated actions on create before any write', async () => {
+      const res = await app.request('/automations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New', trigger: { type: 'manual' }, actions: [elevated] }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'elevated_automation_action_refused' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it.each(['PUT', 'PATCH'])('%s preserves an existing elevated action when editing', async (method) => {
+      const set = stored([elevated]);
+      const actions = [{ ...elevated, parameters: { message: 'edited' } }];
+      const res = await app.request(`/automations/${id}`, {
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed', actions }),
+      });
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ actions }));
+      expect((await res.json()).actions[0].runAs).toBe('elevated');
+    });
+
+    it.each(['PUT', 'PATCH'])('%s preserves elevation on an unrelated save', async (method) => {
+      const set = stored([elevated]);
+      const res = await app.request(`/automations/${id}`, {
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]?.[0]).not.toHaveProperty('actions');
+      expect((await res.json()).actions[0].runAs).toBe('elevated');
+    });
+
+    it.each([
+      { before: elevated, after: { type: 'run_script', script_id: elevated.scriptId, runAs: 'elevated' } },
+      { before: { type: 'run_script', script_id: elevated.scriptId, runAs: 'elevated' }, after: elevated },
+    ])('preserves elevation when the same script uses a different ID alias', async ({ before, after }) => {
+      const set = stored([before]);
+      const res = await app.request(`/automations/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actions: [after] }),
+      });
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ actions: [after] }));
+    });
+
+    it.each([
+      { label: 'swapping the script in an elevated slot', before: [elevated], after: [{ ...elevated, scriptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }] },
+      { label: 'swapping the script through the legacy alias', before: [elevated], after: [{ type: 'run_script', script_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', runAs: 'elevated' }] },
+      { label: 'changing system to elevated', before: [ordinary], after: [elevated] },
+      { label: 'appending elevated', before: [elevated], after: [elevated, elevated] },
+      { label: 'moving elevated to an ordinary position', before: [elevated, ordinary], after: [ordinary, elevated] },
+      { label: 'replacing a non-script action', before: [{ type: 'execute_command', command: 'true', runAs: 'elevated' }], after: [elevated] },
+    ])('refuses $label on update', async ({ before, after }) => {
+      stored(before);
+      const res = await app.request(`/automations/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actions: after }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'elevated_automation_action_refused' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('does not grant the exception for a foreign organization', async () => {
+      stored([elevated], 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+      const res = await app.request(`/automations/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actions: [elevated] }),
+      });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it.each(['root', 1, {}])('rejects invalid script runAs %j rather than silently defaulting', async (runAs) => {
+      const res = await app.request('/automations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New', trigger: { type: 'manual' }, actions: [{ ...ordinary, runAs }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects a foreign standalone reference before storing the automation or bindings', async () => {
     const insertSpy = vi.fn();
     const tx = { insert: insertSpy };

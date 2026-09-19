@@ -57,11 +57,15 @@ func main() {
 }
 
 func runDesktopHelper() {
-	logDir := filepath.Dir(config.Default().LogFile)
-	_ = os.MkdirAll(logDir, 0700)
+	// On macOS this resolves to ~/Library/Logs/Breeze, not the root-owned
+	// 0700 shared agent log directory the user-session LaunchAgent cannot
+	// write (#5877). Other platforms keep the shared directory.
+	logDir, homeErr := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logPath := filepath.Join(logDir, "desktop-helper.log")
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		output = f
 	}
 	logging.Init("text", "info", output)
@@ -104,7 +108,23 @@ func runDesktopHelper() {
 			AuthMonitor:  authMon,
 		})
 		defer logging.StopShipper()
+	} else {
+		// Say so once, loudly: without a shipper nothing this process logs
+		// ever reaches Agent Logs, and the WebRTC session diagnostics are the
+		// only evidence for remote-desktop triage (#5929). Report which keys
+		// are missing, never their values.
+		log.Warn("Log shipping disabled: helper config is missing required keys",
+			"missing", missingShipperKeys(cfg),
+		)
 	}
+
+	// Always record where diagnostics are going. The pre-#5877 code fell
+	// back to stdout silently, and this LaunchAgent's plist points stdout
+	// and stderr at /dev/null, so an unwritable log directory looked like
+	// an empty log with no explanation anywhere. Emitted after the shipper
+	// is up so the warn reaches Agent Logs even when nothing local can be
+	// written.
+	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
 
 	startupProbe := collectProbeOutput(false, true)
 	attrs := []any{

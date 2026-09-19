@@ -378,7 +378,7 @@ describe('evaluateAgentTriggerFilters', () => {
     ['severity not in list', triggers({ alertSeverities: ['low'] }), ctx, false],
     ['empty severity list matches nothing', triggers({ alertSeverities: [] }), ctx, false],
     ['absent alertRuleIds = all rules', triggers(), ctx, true],
-    ['empty alertRuleIds = all rules', triggers({ alertRuleIds: [] }), ctx, true],
+    ['empty alertRuleIds = no rules', triggers({ alertRuleIds: [] }), ctx, false],
     ['matching alertRuleIds', triggers({ alertRuleIds: [RULE_B, RULE_A] }), ctx, true],
     ['non-matching alertRuleIds', triggers({ alertRuleIds: [RULE_B] }), ctx, false],
     ['alertRuleIds set but ruleId null', triggers({ alertRuleIds: [RULE_A] }), { ...ctx, ruleId: null }, false],
@@ -389,11 +389,11 @@ describe('evaluateAgentTriggerFilters', () => {
     ['non-matching alertCategories', triggers({ alertCategories: ['patching'] }), { ...ctx, category: 'monitor' }, false],
     ['alertCategories set but category unresolved', triggers({ alertCategories: ['patching'] }), ctx, false],
     ['alertCategories set but category null', triggers({ alertCategories: ['patching'] }), { ...ctx, category: null }, false],
-    ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
+    ['empty siteIds = no sites', triggers({ siteIds: [] }), ctx, false],
     ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
     ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
     ['siteIds set but siteId null', triggers({ siteIds: [SITE_A] }), { ...ctx, siteId: null }, false],
-    ['empty deviceTags = all devices', triggers({ deviceTags: [] }), ctx, true],
+    ['empty deviceTags = no devices', triggers({ deviceTags: [] }), ctx, false],
     ['intersecting deviceTags', triggers({ deviceTags: ['sql', 'other'] }), ctx, true],
     ['disjoint deviceTags', triggers({ deviceTags: ['other'] }), ctx, false],
     ['deviceTags set but device untagged', triggers({ deviceTags: ['sql'] }), { ...ctx, deviceTags: [] }, false],
@@ -421,10 +421,10 @@ describe('evaluateAgentTriggerFilters', () => {
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
 
-    it('empty deviceGroupIds = unrestricted (no membership query)', async () => {
+    it('empty deviceGroupIds = denied (no membership query)', async () => {
       expect(
         await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [] }), ctx, DEVICE_ID, ORG_ID),
-      ).toBe(true);
+      ).toBe(false);
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
 
@@ -501,7 +501,7 @@ describe('evaluateTicketTriggerFilters', () => {
 
   const cases: Array<[string, AiAgentTriggers, TicketFilterContext, boolean]> = [
     ['absent ticketCategories = unrestricted', triggers(), ctx, true],
-    ['empty ticketCategories = unrestricted', triggers({ ticketCategories: [] }), ctx, true],
+    ['empty ticketCategories = denied', triggers({ ticketCategories: [] }), ctx, false],
     ['matching ticketCategories by name', triggers({ ticketCategories: ['hardware'] }), ctx, true],
     ['non-matching ticketCategories by name', triggers({ ticketCategories: ['software'] }), ctx, false],
     ['ticketCategories set but category null', triggers({ ticketCategories: ['hardware'] }), { ...ctx, category: null }, false],
@@ -511,7 +511,7 @@ describe('evaluateTicketTriggerFilters', () => {
     ['ticketCategories set to a UUID but categoryId null', triggers({ ticketCategories: [CATEGORY_ID] }), { ...ctx, categoryId: null }, false],
     ['mixed name+id list matches on either', triggers({ ticketCategories: ['software', CATEGORY_ID] }), ctx, true],
     ['absent ticketPriorities = unrestricted', triggers(), ctx, true],
-    ['empty ticketPriorities = unrestricted', triggers({ ticketPriorities: [] }), ctx, true],
+    ['empty ticketPriorities = denied', triggers({ ticketPriorities: [] }), ctx, false],
     ['matching ticketPriorities', triggers({ ticketPriorities: ['high', 'urgent'] }), ctx, true],
     ['non-matching ticketPriorities', triggers({ ticketPriorities: ['low', 'normal'] }), ctx, false],
     [
@@ -549,22 +549,22 @@ describe('evaluateAnomalyTriggerFilters', () => {
 
   const cases: Array<[string, AiAgentTriggers, AnomalyFilterContext, boolean]> = [
     ['absent anomalyTypes = unrestricted', triggers(), ctx, true],
-    ['empty anomalyTypes = unrestricted', triggers({ anomalyTypes: [] }), ctx, true],
+    ['empty anomalyTypes = denied', triggers({ anomalyTypes: [] }), ctx, false],
     ['matching anomalyTypes', triggers({ anomalyTypes: ['cpu_spike', 'disk_full'] }), ctx, true],
     ['non-matching anomalyTypes', triggers({ anomalyTypes: ['disk_full'] }), ctx, false],
     ['absent metricNames = unrestricted', triggers(), ctx, true],
-    ['empty metricNames = unrestricted', triggers({ metricNames: [] }), ctx, true],
+    ['empty metricNames = denied', triggers({ metricNames: [] }), ctx, false],
     ['intersecting metricNames', triggers({ metricNames: ['cpu_percent', 'other'] }), ctx, true],
     ['disjoint metricNames', triggers({ metricNames: ['other'] }), ctx, false],
     ['absent minAnomalyScore = unrestricted', triggers(), ctx, true],
     ['peakScore at the minAnomalyScore floor passes', triggers({ minAnomalyScore: 5 }), ctx, true],
     ['peakScore above the minAnomalyScore floor passes', triggers({ minAnomalyScore: 4.9 }), ctx, true],
     ['peakScore below the minAnomalyScore floor fails', triggers({ minAnomalyScore: 5.1 }), ctx, false],
-    ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
+    ['empty siteIds = no sites', triggers({ siteIds: [] }), ctx, false],
     ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
     ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
     ['siteIds set but siteId null', triggers({ siteIds: [SITE_A] }), { ...ctx, siteId: null }, false],
-    ['empty deviceTags = all devices', triggers({ deviceTags: [] }), ctx, true],
+    ['empty deviceTags = no devices', triggers({ deviceTags: [] }), ctx, false],
     ['intersecting deviceTags', triggers({ deviceTags: ['sql', 'other'] }), ctx, true],
     ['disjoint deviceTags', triggers({ deviceTags: ['other'] }), ctx, false],
     [
@@ -605,6 +605,35 @@ describe('evaluateAnomalyTriggerFilters', () => {
       ).toBe(false);
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
     });
+  });
+});
+
+describe('resource scope applies to every admission path', () => {
+  it.each(['siteIds', 'deviceTags', 'deviceGroupIds'] as const)('refuses a manual org-wide run scoped by %s', async (key) => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ [key]: ['restricted'] }) }));
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual', deviceId: null }));
+    expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  it('manual device run cannot bypass the configured site', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ siteIds: [SITE_A] }) }));
+    dbMockState.rowQueues.devices = [[{ siteId: SITE_B, tags: [] }]];
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual' }));
+    expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  // #6096 D5b — the positive control the deny cases above need: the gate must
+  // ADMIT an in-scope device, or "everything is refused" would read identical.
+  it('admits a manual device run inside the configured site', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ siteIds: [SITE_A] }) }));
+    seedAdmissionReads();
+    // The scope check's own device read comes first, then the ownership probe.
+    dbMockState.rowQueues.devices = [[{ siteId: SITE_A, tags: [] }], [{ id: DEVICE_ID }]];
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual' }));
+    expect(result).toMatchObject({ created: true });
+    expect(enqueueAgentRunJob).toHaveBeenCalledTimes(1);
   });
 });
 

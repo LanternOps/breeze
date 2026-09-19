@@ -183,6 +183,19 @@ describe('artifact attachments (live DB)', () => {
     });
   });
 
+  runDb('refuses inserting an artifact-backed row with no artifact_id (#5955)', async () => {
+    // The backend CHECK deliberately allows artifact_id IS NULL so the FK's
+    // ON DELETE SET NULL (the retention sweeper) can null a row that HAD a
+    // valid pointer. It must NOT allow a row to be born with a null pointer —
+    // that's a trigger's job (BEFORE INSERT only, never fires on the
+    // sweeper's UPDATE), covered by the "nulls both back-references..." test
+    // above which proves the sweeper path still works.
+    await expect(withSystemDbAccessContext(() => db
+      .insert(ticketAttachments)
+      .values(artifactAttachment({ artifactId: null, byteSize: 10 })),
+    )).rejects.toMatchObject(expectSqlState('23514'));
+  });
+
   runDb('refuses an artifact row that also carries a storage key', async () => {
     await expect(withSystemDbAccessContext(() => db
       .insert(ticketAttachments)

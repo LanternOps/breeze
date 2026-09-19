@@ -1,12 +1,23 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gt, gte, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceCommands, devices, softwareComplianceStatus, softwarePolicies, softwareRemediationRequests, type RemediationError } from '../db/schema';
+import { deviceCommands, devices, organizations, softwareComplianceStatus, softwarePolicies, softwareRemediationRequests, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
-import { evaluateSoftwarePolicyArming, recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import {
+  evaluateSoftwarePolicyArming,
+  recordSoftwarePolicyAudit,
+  SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
+} from '../services/softwarePolicyService';
+import {
+  createPolicyOwnedInstallDeployment,
+  hasUnfinishedPolicyOwnedInstall,
+  resolvePolicyInstallTarget,
+  type PolicyInstallSkipReason,
+  type PolicyInstallTarget,
+} from '../services/softwarePolicyInstallRemediation';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -327,6 +338,39 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
     };
   }
 
+  // Both automatic jobs and unverified manual jobs must still belong to the
+  // policy owner. The device lock above keeps this check valid through enqueue.
+  let ownsDevice = Boolean(deviceRow && policy.orgId && deviceRow.orgId === policy.orgId);
+  if (deviceRow && !policy.orgId && policy.partnerId) {
+    const [organization] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, deviceRow.orgId))
+      .limit(1);
+    ownsDevice = organization?.partnerId === policy.partnerId;
+  }
+  if (!deviceRow || !ownsDevice) {
+    const reason = 'device_org_changed';
+    console.warn('[SoftwareRemediationWorker] Device no longer belongs to policy owner', {
+      policyId: policy.id, deviceId: data.deviceId, reason,
+    });
+    await db.update(softwareComplianceStatus).set({
+      remediationStatus: 'failed',
+      remediationErrors: [{ message: reason }],
+    }).where(eq(softwareComplianceStatus.id, compliance.id));
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: 'remediation_failed',
+      actor: 'system',
+      details: { policyName: policy.name, reason },
+    });
+    recordSoftwareRemediationDecision(reason);
+    return { policyId: data.policyId, deviceId: data.deviceId, commandsQueued: 0, errors: 1 };
+  }
+
   // Arming re-check (#3543, incident #3381). This worker is the last hop before
   // `software_uninstall` commands reach real machines, and until now it
   // uninstalled whatever it was handed — the gate existed only in the compliance
@@ -570,7 +614,9 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
             policyId: policy.id,
             complianceStatusId: compliance.id,
             source: 'software_policy',
-          }
+          },
+          undefined,
+          { submittedOrgId: deviceRow.orgId },
         );
         commandsQueued += 1;
         inFlightKeys.add(key);
@@ -640,42 +686,443 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   }
 }
 
+/**
+ * #5505 W03 — turn one enqueued install-remediation job into policy-owned
+ * software_deployments rows, replacing W02's parking branch.
+ *
+ * Deliberately a SEPARATE function from processRemediateDevice rather than a
+ * branch inside it: the uninstall path carries the #3553 manual-authorization
+ * machinery (single-use token consume, ownership TOCTOU lock, manual override
+ * of the arming gate) and none of it applies to install remediation, which has
+ * no manual route in this feature. Every install job is therefore `auto` and
+ * unconditionally gated — there is no override to reach.
+ *
+ * The arming re-check here is the same defence-in-depth as #3543 for uninstall
+ * (incident #3381, 259 devices mass-uninstalled by a stale job): this worker is
+ * the last hop before real software lands on a customer machine, so a policy
+ * disarmed AFTER its job was enqueued, or a replayed/hand-enqueued job, must
+ * not install anything.
+ *
+ * ON THE PAYLOAD'S catalogIds. W02 resolves and dedupes them from the device's
+ * `missing` violations at enqueue time, and they are the right ORDERING and the
+ * right intent — but they are not trusted as the authority. BullMQ payloads
+ * live in Redis and carry no authentication of their own (see readTrigger),
+ * and resolvePolicyInstallTarget's tenancy predicate cannot help here: a forged
+ * job may name a catalog item that IS perfectly reachable from the device's own
+ * org and that the policy simply never asked for. So the processor intersects
+ * the payload with what the compliance row says is STILL missing. That single
+ * step closes the forgery gap AND makes a stale job install only what the
+ * policy currently still wants.
+ *
+ * W03 never writes installRemediationAttempts: that counter and the 'gave_up'
+ * transition are the compliance worker's (W02), and double-incrementing it
+ * would halve the effective attempt budget.
+ *
+ * Exported for tests and for the BullMQ processor switch.
+ */
+export async function processRemediateDeviceInstall(
+  data: InstallRemediateDeviceJobData
+): Promise<{
+  policyId: string;
+  deviceId: string;
+  deploymentsCreated: number;
+  skipped: number;
+  errors: number;
+}> {
+  const nothing = {
+    policyId: data.policyId,
+    deviceId: data.deviceId,
+    deploymentsCreated: 0,
+    skipped: 0,
+    errors: 0,
+  };
+
+  const [policy] = await db
+    .select({
+      id: softwarePolicies.id,
+      orgId: softwarePolicies.orgId,
+      partnerId: softwarePolicies.partnerId,
+      name: softwarePolicies.name,
+      isActive: softwarePolicies.isActive,
+      mode: softwarePolicies.mode,
+      enforceMode: softwarePolicies.enforceMode,
+      remediationOptions: softwarePolicies.remediationOptions,
+      approvalGeneration: softwarePolicies.approvalGeneration,
+    })
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.id, data.policyId))
+    .limit(1);
+
+  if (!policy || !policy.isActive) {
+    console.warn(
+      '[SoftwareRemediationWorker] Policy not found or inactive, skipping install remediation',
+      { policyId: data.policyId, deviceId: data.deviceId }
+    );
+    // Metric, not just a log line: this return does not throw, so it never
+    // reaches attachWorkerObservability's Sentry hook either. Without the
+    // counter a policy deleted mid-pass drops every one of its install jobs
+    // with no signal anywhere.
+    recordSoftwareRemediationDecision('install_policy_not_found');
+    return nothing;
+  }
+
+  // Site-ceiling gate contract §3, the obligation W02's payload docstring
+  // assigns to this wave: the policy was edited after this job was queued, so
+  // its premise no longer holds. Refuse rather than enforce a shape the
+  // operator has already replaced. Mirrors softwareComplianceWorker.ts:487.
+  if (data.generation !== undefined && policy.approvalGeneration !== data.generation) {
+    console.warn(
+      `[SoftwareRemediationWorker] Policy ${data.policyId} generation mismatch (job=${data.generation}, current=${policy.approvalGeneration}) — skipping superseded install job`
+    );
+    recordSoftwareRemediationDecision('install_generation_mismatch');
+    // The counter is fleet-wide; a per-device investigation reads
+    // software_policy_audit, so the superseded job has to leave a row there
+    // too or it is invisible exactly where someone would look for it.
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.skipped,
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        reason: 'generation_mismatch',
+        jobGeneration: data.generation,
+        currentGeneration: policy.approvalGeneration,
+      },
+    });
+    return nothing;
+  }
+
+  // FOR UPDATE mirrors the uninstall path: it pins this device row for the
+  // worker's system transaction so a concurrent org move cannot land between
+  // reading the device's org and creating a deployment under it (#3553).
+  const [deviceRow] = await db
+    .select({ orgId: devices.orgId, osType: devices.osType, isEphemeral: devices.isEphemeral })
+    .from(devices)
+    .where(eq(devices.id, data.deviceId))
+    .limit(1)
+    .for('update');
+
+  // Quick Support exclusion: an ephemeral device is a stranger's personal
+  // machine borrowed for one ~20-minute session. Installing software on it
+  // would be strictly worse than the uninstall this same guard already blocks.
+  if (!deviceRow || deviceRow.isEphemeral) {
+    // This guard is defence-in-depth — the compliance evaluator already
+    // excludes ephemeral devices — which makes a hit here a signal that the
+    // upstream filter regressed. Silent absorption would hide that forever.
+    console.warn(
+      '[SoftwareRemediationWorker] Skipping install remediation for a missing or ephemeral device',
+      { policyId: data.policyId, deviceId: data.deviceId, missing: !deviceRow }
+    );
+    recordSoftwareRemediationDecision(
+      deviceRow ? 'install_ephemeral_device' : 'install_device_not_found'
+    );
+    return nothing;
+  }
+
+  // Dual-owner audit (#2126): a per-device event under a partner-wide policy
+  // (policy.orgId NULL) must carry the DEVICE's org so the org admin sees it.
+  const auditOrgId = policy.orgId ?? deviceRow.orgId ?? null;
+
+  const [compliance] = await db
+    .select()
+    .from(softwareComplianceStatus)
+    .where(
+      and(
+        eq(softwareComplianceStatus.policyId, data.policyId),
+        eq(softwareComplianceStatus.deviceId, data.deviceId)
+      )
+    )
+    .limit(1);
+
+  if (!compliance) {
+    console.warn(
+      '[SoftwareRemediationWorker] Compliance record not found for install remediation',
+      { policyId: data.policyId, deviceId: data.deviceId }
+    );
+    // The row W02 wrote when it enqueued this job is gone. That is an anomaly,
+    // not an expected skip, and it deserves a counter someone can alert on.
+    recordSoftwareRemediationDecision('install_compliance_row_missing');
+    return nothing;
+  }
+
+  // The device lock keeps ownership stable through deployment creation, but
+  // the device may already have moved since this policy's job was queued.
+  let ownsDevice = Boolean(policy.orgId && deviceRow.orgId === policy.orgId);
+  if (!policy.orgId && policy.partnerId) {
+    const [organization] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, deviceRow.orgId))
+      .limit(1);
+    ownsDevice = organization?.partnerId === policy.partnerId;
+  }
+  if (!ownsDevice) {
+    const reason = 'device_org_changed';
+    console.warn('[SoftwareRemediationWorker] Device no longer belongs to install policy owner', {
+      policyId: policy.id, deviceId: data.deviceId, reason,
+    });
+    await db.update(softwareComplianceStatus)
+      .set({ installRemediationStatus: 'failed' })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.failed,
+      actor: 'system',
+      details: { policyName: policy.name, reason },
+    });
+    recordSoftwareRemediationDecision(reason);
+    return { ...nothing, errors: 1 };
+  }
+
+  const arming = evaluateSoftwarePolicyArming(policy, 'install');
+  if (!arming.armed) {
+    console.warn(
+      '[SoftwareRemediationWorker] Policy is not armed for install, skipping remediation',
+      { policyId: policy.id, deviceId: data.deviceId, reason: arming.reason }
+    );
+    fireAudit({
+      orgId: auditOrgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: 'remediation_skipped_unarmed',
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        verb: 'install',
+        reason: arming.reason,
+        mode: policy.mode,
+        enforceMode: policy.enforceMode,
+      },
+    });
+    recordSoftwareRemediationDecision('policy_not_armed');
+    // The INSTALL column only. Writing remediationStatus here would make a
+    // refused install indistinguishable from a refused uninstall — the exact
+    // ambiguity the separate columns exist to prevent.
+    await db
+      .update(softwareComplianceStatus)
+      .set({ installRemediationStatus: 'failed' })
+      .where(eq(softwareComplianceStatus.id, compliance.id))
+      .catch((err: unknown) => {
+        console.error('[SoftwareRemediationWorker] Failed to record refused install status:', err);
+        captureException(err);
+      });
+    return nothing;
+  }
+
+  const now = new Date();
+
+  // Dedup gate, evaluated ONCE per job: unfinished policy-owned work for this
+  // (policy, device) means queue nothing at all this pass. Checked before the
+  // in_progress write so a deduped pass does not churn the status column, and
+  // 'pending' is re-stamped so the compliance worker keeps reading the device
+  // as in-flight rather than re-queueing it behind this same deployment.
+  if (await hasUnfinishedPolicyOwnedInstall(policy.id, data.deviceId)) {
+    recordSoftwareRemediationDecision('command_deduped');
+    await db
+      .update(softwareComplianceStatus)
+      .set({ installRemediationStatus: 'pending', lastInstallRemediationAttempt: now })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+    return nothing;
+  }
+
+  await db
+    .update(softwareComplianceStatus)
+    .set({ installRemediationStatus: 'in_progress', lastInstallRemediationAttempt: now })
+    .where(eq(softwareComplianceStatus.id, compliance.id));
+
+  try {
+    // What the compliance row says is STILL missing, in payload order, deduped.
+    // Two rules may name the same catalog item; installing it twice is never
+    // right. A rule with no catalogId is detectable but not installable — it is
+    // counted so the audit can name it, never dropped silently.
+    const rawViolations = Array.isArray(compliance.violations) ? compliance.violations : [];
+    const missingByCatalogId = new Map<string, string>();
+    let missingWithoutCatalogId = 0;
+    for (const violation of rawViolations) {
+      if (!violation || typeof violation !== 'object') continue;
+      const typed = violation as { type?: string; rule?: { name?: string; catalogId?: string } };
+      if (typed.type !== 'missing') continue;
+      const rawCatalogId = typed.rule?.catalogId;
+      const catalogId = typeof rawCatalogId === 'string' ? rawCatalogId.trim() : '';
+      if (catalogId.length === 0) {
+        missingWithoutCatalogId += 1;
+        continue;
+      }
+      if (!missingByCatalogId.has(catalogId)) {
+        missingByCatalogId.set(catalogId, typed.rule?.name ?? '(unnamed rule)');
+      }
+    }
+
+    const requested: Array<{ catalogId: string; ruleName: string }> = [];
+    const droppedByIntersection: string[] = [];
+    const seenRequested = new Set<string>();
+    for (const raw of Array.isArray(data.catalogIds) ? data.catalogIds : []) {
+      if (typeof raw !== 'string') continue;
+      const catalogId = raw.trim();
+      // Deduped: the producer already dedupes, but the payload is untrusted.
+      if (catalogId.length === 0 || seenRequested.has(catalogId)) continue;
+      seenRequested.add(catalogId);
+      const ruleName = missingByCatalogId.get(catalogId);
+      // The intersection. A payload id the compliance row no longer reports
+      // missing produces no deployment — either the job is stale, or it was
+      // forged. RECORDED, never dropped silently: an implicit gap between
+      // requestedCatalogIds and resolvedCatalogIds is not something a
+      // technician can be expected to set-diff by eye, and it carries no
+      // reason. This is the same promise the no-catalogId branch above keeps.
+      if (ruleName === undefined) {
+        droppedByIntersection.push(catalogId);
+        continue;
+      }
+      requested.push({ catalogId, ruleName });
+    }
+
+    if (requested.length === 0 && missingWithoutCatalogId === 0 && missingByCatalogId.size === 0) {
+      // Nothing is missing any more — the device converged between enqueue and
+      // now. Settle the status so the next pass is not read against a stale
+      // in_progress.
+      await db
+        .update(softwareComplianceStatus)
+        .set({ installRemediationStatus: 'completed', lastInstallRemediationAttempt: now })
+        .where(eq(softwareComplianceStatus.id, compliance.id));
+      recordSoftwareRemediationDecision('no_violations');
+      return nothing;
+    }
+
+    const skips: Array<{ rule: string; catalogId?: string; reason: PolicyInstallSkipReason }> = [];
+    const targets: Array<{ rule: string; target: PolicyInstallTarget }> = [];
+
+    // A missing rule that names nothing to install can never produce a
+    // deployment. Surfaced as an explicit skip so a technician can read WHY.
+    for (let i = 0; i < missingWithoutCatalogId; i += 1) {
+      skips.push({ rule: '(rule without catalogId)', reason: 'no_catalog_id' });
+    }
+    for (const catalogId of droppedByIntersection) {
+      skips.push({ rule: '(not in current violations)', catalogId, reason: 'not_currently_missing' });
+    }
+
+    for (const entry of requested) {
+      const resolution = await resolvePolicyInstallTarget({
+        catalogId: entry.catalogId,
+        deviceOrgId: deviceRow.orgId,
+        deviceOsType: deviceRow.osType,
+      });
+      if (resolution.ok) {
+        targets.push({ rule: entry.ruleName, target: resolution.target });
+      } else {
+        skips.push({ rule: entry.ruleName, catalogId: entry.catalogId, reason: resolution.reason });
+      }
+    }
+
+    const errors: Array<{ rule: string; message: string }> = [];
+    const deploymentIds: string[] = [];
+    for (const entry of targets) {
+      try {
+        const created = await createPolicyOwnedInstallDeployment({
+          policyId: policy.id,
+          policyName: policy.name,
+          // The DEVICE's org, never the policy's — a partner-wide policy has none.
+          orgId: deviceRow.orgId,
+          deviceId: data.deviceId,
+          target: entry.target,
+        });
+        deploymentIds.push(created.deploymentId);
+        recordSoftwareRemediationDecision('command_queued');
+      } catch (error) {
+        errors.push({
+          rule: entry.rule,
+          message: error instanceof Error ? error.message : 'Failed to create install deployment',
+        });
+        recordSoftwareRemediationDecision('command_failed');
+      }
+    }
+
+    const installRemediationStatus = (() => {
+      if (deploymentIds.length > 0) return 'pending';
+      if (errors.length > 0) return 'failed';
+      return 'skipped';
+    })();
+
+    await db
+      .update(softwareComplianceStatus)
+      .set({ installRemediationStatus, lastInstallRemediationAttempt: now })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+
+    fireAudit({
+      orgId: auditOrgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      // Three outcomes, three actions. Collapsing the created-nothing case
+      // onto `queued` put "an install was queued for this device" in the
+      // durable trail for a pass that queued nothing — `action` is what a
+      // technician filters on, so that read as a false positive.
+      action:
+        deploymentIds.length > 0
+          ? SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.queued
+          : errors.length > 0
+            ? SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.failed
+            : SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.skipped,
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        attempt: data.attempt,
+        requestedCatalogIds: data.catalogIds,
+        resolvedCatalogIds: requested.map((entry) => entry.catalogId),
+        deploymentsCreated: deploymentIds.length,
+        deploymentIds,
+        // "Skip it and say so": there is no install-errors jsonb column (W02
+        // ships only status/timestamp/attempts), so the audit row is the only
+        // durable place a technician can read WHY a rule was skipped.
+        skipped: skips,
+        errors,
+      },
+    });
+
+    return {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+      deploymentsCreated: deploymentIds.length,
+      skipped: skips.length,
+      errors: errors.length,
+    };
+  } catch (error) {
+    console.error(
+      `[SoftwareRemediationWorker] Unhandled install-remediation error for device ${data.deviceId}, policy ${data.policyId}:`,
+      error
+    );
+    await db
+      .update(softwareComplianceStatus)
+      .set({ installRemediationStatus: 'failed' })
+      .where(eq(softwareComplianceStatus.id, compliance.id))
+      .catch((resetErr: unknown) => {
+        console.error(
+          '[SoftwareRemediationWorker] Failed to reset installRemediationStatus to failed:',
+          resetErr
+        );
+      });
+    throw error;
+  }
+}
+
 export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJobData> {
   return new Worker<SoftwareRemediationJobData>(
     SOFTWARE_REMEDIATION_QUEUE,
     async (job: Job<SoftwareRemediationJobData>) => {
       return runWithSystemDbAccess(async () => {
+        // #5505 W03: the two verbs are separate processors, replacing W02's
+        // parking branch. Discriminating on job.data.type keeps the uninstall
+        // path (and its #3553 manual-authorization machinery) byte-identical:
+        // processRemediateDevice is uninstall-specific end to end and would
+        // misread an install payload.
         if (job.data.type === 'install-remediate-device') {
-          // W03 (#5508) installs the real install processor here.
-          //
-          // Until it lands this job is PARKED, never routed to
-          // processRemediateDevice: that function is uninstall-specific end to
-          // end (manual-authorization consumption, unauthorized-violation
-          // selection, remediation_status writes) and would misread install job
-          // data. Parking is the safe intermediate state, not a leak: the
-          // compliance row stays at 'pending', which
-          // shouldQueueAutoRemediation reads as in_progress, so the device is
-          // queued exactly ONCE and no reinstall loop can form. W03 replaces
-          // this branch and clears those rows on its first pass.
-          console.warn(
-            '[SoftwareRemediationWorker] install-remediate-device received but no processor is installed yet (feature #5505 W03) — parking',
-            { policyId: job.data.policyId, deviceId: job.data.deviceId, catalogIds: job.data.catalogIds }
-          );
-          // Sentry, not just a log line. A parked job reaching production means
-          // W02 was deployed ahead of W03 and some policy already has
-          // autoInstall armed — the device will sit at 'pending' until W03
-          // lands and reconciles it. That is a deploy-ordering signal someone
-          // has to see, and a console.warn in a worker is not seen.
-          captureException(
-            new Error('[SoftwareRemediationWorker] install-remediate-device parked: no processor until #5505 W03'),
-          );
-          recordSoftwareRemediationDecision('install_processor_unavailable');
-          return {
-            policyId: job.data.policyId,
-            deviceId: job.data.deviceId,
-            commandsQueued: 0,
-            errors: 0,
-          };
+          return processRemediateDeviceInstall(job.data);
         }
         return processRemediateDevice(job.data);
       });

@@ -47,6 +47,7 @@ import {
 } from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { agentRunMatchesResourceScope } from './runResourceScope';
 import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
 
@@ -172,6 +173,14 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - patchMaxTurns         — run loop (patchLimits(), patchProfile.ts):
  *                            substitutes for maxTurnsPerRun on a
  *                            patch-profile run; not enforced here.
+ *  - maxUnattendedDevicesPerSweep — persistSweepFindings' readiness-cohort
+ *                            walk (sweepActCohort.ts, #4442 W05): bounds how
+ *                            many DISTINCT devices one sweep occurrence may
+ *                            mint act-eligible. Merged with min.
+ *  - sweepPromoteThreshold — graduationService.evaluateEligibility (#4442
+ *                            W05): an extra bar, on top of promoteThreshold,
+ *                            over verified evidence from SWEEP-minted
+ *                            intents only. Merged with max.
  */
 
 export interface CreateAgentRunInput {
@@ -452,10 +461,11 @@ async function deviceMatchesAnyGroup(
 /**
  * Spec §5.3 trigger filters.
  *
- * Asymmetry is deliberate and load-bearing: `alertSeverities` is an explicit
- * opt-in list (empty matches NOTHING — an agent with no severities selected
- * must not fire on everything), while every other filter is a narrowing one
- * where empty/absent means "all".
+ * Asymmetry is deliberate and load-bearing. `alertSeverities` is REQUIRED and
+ * has NO spelling that means unrestricted: it is an explicit opt-in list, and
+ * an empty one matches NOTHING (an agent with no severities selected must not
+ * fire on everything). Every other filter here is optional and narrowing:
+ * ABSENT means "all", and PRESENT — including `[]` — means "only these".
  *
  * `deviceGroupIds` (wave 6 PR 4, #3828 Task 1 — previously "deliberately NOT
  * evaluated", see git history for the old docstring): resolves group
@@ -485,22 +495,23 @@ export async function evaluateAgentTriggerFilters(
   if (!severities.includes(ctx.severity)) return false;
 
   const ruleIds = triggers.alertRuleIds ?? [];
-  if (ruleIds.length > 0 && (ctx.ruleId === null || !ruleIds.includes(ctx.ruleId))) return false;
+  if (triggers.alertRuleIds !== undefined && (ctx.ruleId === null || !ruleIds.includes(ctx.ruleId))) return false;
 
   // AI patch agent W04 (#5750) — template category, beside alertRuleIds and
   // with its exact null semantics: an unresolved category fails a non-empty
   // filter rather than passing it.
   const categories = triggers.alertCategories ?? [];
-  if (categories.length > 0 && (ctx.category == null || !categories.includes(ctx.category))) return false;
+  if (triggers.alertCategories !== undefined && (ctx.category == null || !categories.includes(ctx.category))) return false;
 
   const siteIds = triggers.siteIds ?? [];
-  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+  if (triggers.siteIds !== undefined && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
 
   const deviceTags = triggers.deviceTags ?? [];
-  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+  if (triggers.deviceTags !== undefined && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
 
   const groupIds = triggers.deviceGroupIds ?? [];
-  if (groupIds.length > 0) {
+  if (triggers.deviceGroupIds !== undefined) {
+    if (groupIds.length === 0) return false;
     // W04: a device-less reactive patch run judges its FOCUS device.
     const groupDeviceId = deviceId ?? ctx.focusDeviceId ?? null;
     if (groupDeviceId === null) return false;
@@ -516,7 +527,7 @@ export async function evaluateAgentTriggerFilters(
  * `effectivePolicy` since the original PR but never evaluated anywhere,
  * so a helpdesk agent fired on EVERY ticket created in the org regardless
  * of its configured filters. This mirrors `evaluateAgentTriggerFilters`
- * above: same narrowing (empty/absent = unrestricted) convention as
+ * above: same narrowing (absent = unrestricted, empty = deny) convention as
  * `siteIds`/`deviceTags`, NOT `alertSeverities`' opt-in-list asymmetry —
  * `AiAgentTriggers.ticketCategories`/`ticketPriorities` are both declared
  * `undefined`-means-unrestricted in the validator (`.min(1)`-or-undefined).
@@ -540,7 +551,7 @@ export function evaluateTicketTriggerFilters(
   ctx: NonNullable<CreateAgentRunInput['ticketContext']>,
 ): boolean {
   const categories = triggers.ticketCategories ?? [];
-  if (categories.length > 0) {
+  if (triggers.ticketCategories !== undefined) {
     const matchesCategory = categories.some((value) => (
       PG_UUID_REGEX.test(value)
         ? ctx.categoryId !== null && value.toLowerCase() === ctx.categoryId.toLowerCase()
@@ -550,7 +561,7 @@ export function evaluateTicketTriggerFilters(
   }
 
   const priorities = triggers.ticketPriorities ?? [];
-  if (priorities.length > 0 && !priorities.includes(ctx.priority)) return false;
+  if (triggers.ticketPriorities !== undefined && !priorities.includes(ctx.priority)) return false;
 
   return true;
 }
@@ -559,7 +570,7 @@ export function evaluateTicketTriggerFilters(
  * Wave 6 PR 4 (#3828 Task 3) — anomaly-trigger narrowing filters.
  *
  * `anomalyTypes`/`metricNames`/`minAnomalyScore` follow the same
- * narrowing (empty/absent = unrestricted) convention as every OTHER filter
+ * narrowing (absent = unrestricted, empty = deny) convention as every OTHER filter
  * here — NOT `alertSeverities`' opt-in-list asymmetry — matching the
  * validator's `.min(1)`-or-undefined declaration for these fields
  * (`packages/shared/src/validators/aiAgents.ts`). `minAnomalyScore` is a
@@ -578,21 +589,22 @@ export async function evaluateAnomalyTriggerFilters(
   orgId: string,
 ): Promise<boolean> {
   const anomalyTypes = triggers.anomalyTypes ?? [];
-  if (anomalyTypes.length > 0 && !anomalyTypes.includes(ctx.anomalyType)) return false;
+  if (triggers.anomalyTypes !== undefined && !anomalyTypes.includes(ctx.anomalyType)) return false;
 
   const metricNames = triggers.metricNames ?? [];
-  if (metricNames.length > 0 && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
+  if (triggers.metricNames !== undefined && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
 
   if (triggers.minAnomalyScore !== undefined && ctx.peakScore < triggers.minAnomalyScore) return false;
 
   const siteIds = triggers.siteIds ?? [];
-  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+  if (triggers.siteIds !== undefined && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
 
   const deviceTags = triggers.deviceTags ?? [];
-  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+  if (triggers.deviceTags !== undefined && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
 
   const groupIds = triggers.deviceGroupIds ?? [];
-  if (groupIds.length > 0) {
+  if (triggers.deviceGroupIds !== undefined) {
+    if (groupIds.length === 0) return false;
     if (deviceId === null) return false;
     if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
   }
@@ -1039,14 +1051,17 @@ export async function createAndEnqueueAgentRun(
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
+  if (!(await agentRunMatchesResourceScope(effective.triggers, orgId, deviceId))) {
+    return skip('trigger_filter_mismatch');
+  }
   // Wave 6 PR 3 (#3828) — design authority: a ticket-triggered run is ALWAYS
   // shadow, regardless of the agent's configured effective mode. This is a
   // downgrade only ('off' already skipped above at mode_off — a ticket
-  // trigger can never turn a disabled agent on). Placed here (immediately
-  // after the mode_off check, before the circuit breaker / trigger filter /
-  // maintenance-window / admission-counter gates below) so every earlier and
-  // later admission rule sees the SAME modeAtStart a real 'act'-mode agent
-  // would have produced for any other trigger kind — forcing shadow changes
+  // trigger can never turn a disabled agent on). Placed here (after the
+  // mode_off and resource-scope gates above, before the circuit breaker /
+  // trigger filter / maintenance-window / admission-counter gates below) so
+  // every earlier and later admission rule sees the SAME modeAtStart a real
+  // 'act'-mode agent would have produced for any other trigger kind — forcing shadow changes
   // only what the run records and how the guardrail tool gate treats it
   // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
   // ticket runs are also always device-less), never admission precedence.

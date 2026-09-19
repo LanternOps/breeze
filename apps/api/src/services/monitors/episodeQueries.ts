@@ -13,6 +13,7 @@ import { db } from '../../db';
 import { devices, monitorDeviceState, monitorEpisodes } from '../../db/schema';
 import type { MonitorDeviceLastState } from '../../db/schema/monitorEpisodes';
 import type { AuthContext } from '../../middleware/auth';
+import { deviceScopeCondition, filterToDeviceScope, siteScopeCondition } from '../aiToolsSiteScope';
 
 export interface MonitorDeviceActivity {
   deviceId: string;
@@ -56,6 +57,16 @@ export async function listMonitorDeviceActivity(
   const conditions: (SQL | undefined)[] = [
     eq(monitorDeviceState.monitorId, monitorId),
     auth.orgCondition(monitorDeviceState.orgId),
+    // Exact-device axis. These rows are device-attributable and the caller
+    // names no device here, so an org-only scope would hand a device-bound
+    // agent run every sibling device's breach state (#6086). Axis-independent
+    // on purpose: the device-LESS analysis shape carries `allowedDeviceIds`
+    // with no `allowedSiteIds`, so a site-keyed guard would no-op for it.
+    deviceScopeCondition(auth, monitorDeviceState.deviceId),
+    // Site axis, independent of the above. `devices` is already INNER JOINed, so
+    // this narrows in the same query: a site-restricted technician sees only the
+    // breach/escalation state of devices in their sites (audit 2026-09-17 §1.1).
+    siteScopeCondition(auth, devices.siteId),
   ];
 
   const rows = await db
@@ -88,7 +99,9 @@ export async function listMonitorDeviceActivity(
     .where(and(...conditions))
     .limit(1000);
 
-  return rows.map((row) => ({
+  // Belt-and-braces: the SQL narrowing above is the enforcement, this makes it
+  // observable at the boundary and fails closed if the condition is ever lost.
+  return filterToDeviceScope(auth, rows, (row) => row.deviceId).map((row) => ({
     deviceId: row.deviceId,
     deviceName: row.displayName || row.hostname || row.deviceId,
     orgId: row.orgId,
@@ -114,6 +127,15 @@ export async function listMonitorEpisodes(
   const conditions: (SQL | undefined)[] = [
     eq(monitorEpisodes.monitorId, monitorId),
     auth.orgCondition(monitorEpisodes.orgId),
+    // Exact-device axis — see `listMonitorDeviceActivity`. `opts.deviceId` is
+    // an optional caller filter, NOT an authorization bound: absent it, this
+    // listed the whole org's episodes.
+    deviceScopeCondition(auth, monitorEpisodes.deviceId),
+    // Site axis, independent of the above and of `opts.deviceId` (a caller
+    // FILTER, never an authorization bound). `devices` is LEFT JOINed, so this
+    // also denies an episode whose device row is gone/invisible — the right
+    // answer for a restricted caller, who cannot attribute it to one of its sites.
+    siteScopeCondition(auth, devices.siteId),
   ];
   if (opts.deviceId) conditions.push(eq(monitorEpisodes.deviceId, opts.deviceId));
   // Keyset pagination on the same key the list is ordered by. An unparseable
@@ -145,8 +167,9 @@ export async function listMonitorEpisodes(
     .orderBy(desc(monitorEpisodes.startedAt))
     .limit(opts.limit + 1);
 
-  const page = rows.slice(0, opts.limit);
-  const nextCursor = rows.length > opts.limit
+  const scoped = filterToDeviceScope(auth, rows, (row) => row.deviceId);
+  const page = scoped.slice(0, opts.limit);
+  const nextCursor = scoped.length > opts.limit
     ? iso(page[page.length - 1]?.startedAt)
     : null;
 
