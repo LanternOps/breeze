@@ -44,6 +44,8 @@ function isExportDataset(value: unknown): value is ExportDataset {
 export function registerExportTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('export_dataset', {
     tier: 1,
+    domain: 'admin',
+    searchHint: 'dataset file exports: logs, device and software inventory, metrics, vulnerabilities and custom fields',
     captureExempt: true,
     // The central gate runs org+site verifyDeviceAccess on every id here
     // BEFORE this handler is entered. The run-target check below is a second,

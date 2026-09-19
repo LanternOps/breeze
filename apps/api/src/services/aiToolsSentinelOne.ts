@@ -47,6 +47,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'SentinelOne integration health, EDR coverage and action backlog',
     definition: {
       name: 'get_s1_status',
       description: 'Get SentinelOne integration health, EDR coverage, and action backlog for an organization.',
@@ -180,6 +182,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'SentinelOne threats by severity, status, device or search text',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_s1_threats',
@@ -320,6 +324,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'integrations',
+    searchHint: 'SentinelOne device containment: isolate or unisolate endpoints',
     deviceArgs: ['deviceId', 'deviceIds'],
     definition: {
       name: 's1_isolate_device',
@@ -387,6 +393,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'integrations',
+    searchHint: 'SentinelOne threats: kill, quarantine or rollback',
     definition: {
       name: 's1_threat_action',
       description: 'Execute a SentinelOne threat action (kill, quarantine, rollback). This is a high-risk action.',

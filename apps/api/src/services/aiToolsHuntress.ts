@@ -39,6 +39,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Huntress integration health, agent coverage and incident summary',
     definition: {
       name: 'get_huntress_status',
       description: 'Get Huntress integration health, agent coverage, and incident summary metrics.',
@@ -259,6 +261,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Huntress incidents by severity, status, device or integration',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_huntress_incidents',
@@ -374,6 +378,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'integrations',
+    searchHint: 'Huntress integration data: trigger a manual sync',
     definition: {
       name: 'sync_huntress_data',
       description: 'Trigger a manual Huntress sync for a partner-level integration.',

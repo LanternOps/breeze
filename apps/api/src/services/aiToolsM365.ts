@@ -404,6 +404,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 users: list or get directory accounts and enabled state',
     definition: {
       name: 'm365_query_users',
       description: 'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -440,6 +442,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 Entra sign-in activity, failed logins and conditional access outcomes',
     definition: {
       name: 'm365_query_signins',
       description: 'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
@@ -470,6 +474,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft Intune managed devices: list or get device inventory and compliance',
     definition: {
       name: 'm365_query_intune_devices',
       description: 'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -509,6 +515,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 groups: list, get and view group members',
     definition: {
       name: 'm365_query_groups',
       description: 'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -543,6 +551,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft 365 tenant organization profile and license SKU inventory',
     definition: {
       name: 'm365_query_org',
       description: 'Get the Microsoft 365 tenant\'s organization profile or its license/SKU inventory. Each call returns a single organization record or the full SKU list (no client-settable limit). Data is read live from the customer\'s Microsoft 365 tenant.',
@@ -568,6 +578,8 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 1,
+    domain: 'integrations',
+    searchHint: 'Microsoft SharePoint sites: search or get site details',
     definition: {
       name: 'm365_query_sites',
       description: 'Query SharePoint sites (search or get one). List mode returns a single page of results with no client-settable limit. Data is read live from the customer\'s Microsoft 365 tenant.',
