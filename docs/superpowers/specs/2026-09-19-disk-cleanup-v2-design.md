@@ -1,7 +1,7 @@
 # Disk Cleanup v2 — Correctness, Multi-Volume, Finished UI, OS-Native Cleaners
 
 - **Date:** 2026-09-19
-- **Status:** Approved design (Todd, 2026-09-19); Codex advisor quorum recorded in §12
+- **Status:** Approved design (Todd, 2026-09-19); advisor quorum recorded in §13
 - **Branch:** `spec/disk-cleanup-v2`
 - **Supersedes:** nothing. The 2026-06-15 winapp2 spec (`2026-06-15-disk-cleanup-winapp2-design.md`) was approved but never implemented and has no tracking issue; it stays parked. This spec does not preclude it — §6's rule table is the seam a future ruleset would replace.
 - **Tracking issue:** filled in by `writing-plans` (`tracking_issue: LanternOps/breeze#<parent>`)
@@ -118,6 +118,7 @@ All routes stay under `/devices/:id/filesystem`. Gating unchanged: `authMiddlewa
 
   Execution is bounded by an overall `CLEANUP_EXECUTE_BUDGET_MS = 240_000`; paths not reached are reported `status: 'skipped_budget'` and the run is `executed` with `partial: true` in `executedActions`. `bytesReclaimed` stays snapshot-size based for file runs (the agent returns the pre-delete size in `file_delete`'s result already; if it differs, the agent's value wins).
 - Response shape unified: every 2xx is `{ success: true, data }`; failures are `{ success: false, error, data? }` with 4xx/5xx. All-fail is `500` with `error: 'all cleanup actions failed'` and the `actions[]` detail in `data`.
+- **Run lifecycle (W03, adopted from the plan):** execute **claims the pinned run in place** — `UPDATE … SET status='running' WHERE id=$1 AND status='previewed'` — and finalises the same row to `executed`/`failed`, rather than inserting a second row. This gives replay protection (a second execute on the same run returns `409`), makes the 90-day candidate trim meaningful (the candidates blob is stored once, on the run that executed), and matches the system-run lifecycle in §5.3. Retention ages a `kind='files'` run stuck in `running` for more than 24 h to `failed`.
 - `GET /filesystem/cleanup-runs?limit=&cursor=` (W03) → paginated history of both kinds, newest first, without the `plan.candidates` blob (a separate `GET /filesystem/cleanup-runs/:runId` returns the full row).
 - Retention (W03): a daily BullMQ repeatable job (`upsertJobScheduler`, template `services/warrantyWorker.ts`) deletes `previewed` runs older than 7 days and trims `plan.candidates` from `executed`/`failed` runs older than 90 days (the summary and `executedActions` stay). Runs under `withSystemDbAccessContext`.
 
@@ -259,7 +260,7 @@ One registry feeds three surfaces. `apps/api/src/services/aiTools.ts` is the cor
 ### 9.2 Behaviour over MCP (verified against `routes/mcpServer.ts`)
 
 - **Tier 3 is a hard deny over MCP, not an approval flow.** `tools/call` computes `max(baseTier, guardrailTier)` and returns `MCP_APPROVAL_REQUIRED` before scope checks, RBAC, ledger or execution. So `disk_cleanup execute` is already unavailable to MCP clients today, and `system_cleanup run` will be too. Both tools stay listed because they are mixed multiplexers: `tools/list` appends "Actions "execute"/"run" require interactive approval" via `gatedActionsForTool`; a wholly Tier 3 tool would be hidden. MCP clients therefore get `analyze_disk_usage`, `disk_cleanup preview`, and `system_cleanup list` — read-only diagnosis — and hand off the destructive step to a tech in the web UI or the in-app chat with approval. This is the intended contract and is stated in `mcp-server.mdx`.
-- **Org resolution** for device-scoped tools comes from `deviceArgs` declared in `aiTools.ts` (`resolveMcpExecutionContext` → `verifyDeviceAccess`); `system_cleanup` declares `deviceArgs: 'deviceId'` or MCP calls fail with `-32602`.
+- **Org resolution** for device-scoped tools comes from the `deviceArgs` array declared in `aiTools.ts` (`resolveMcpExecutionContext` → `collectSuppliedDeviceIds` → `verifyDeviceAccess`). `system_cleanup` must declare `deviceArgs: ['deviceId']`. Omitting it **fails open**, not closed: `collectSuppliedDeviceIds` returns `[]` and the ledger and audit attribute the call to the caller's first accessible org instead of the device's org. `aiTools.deviceArgsCoverage.contract.test.ts` is the guard.
 - **Rate limits** are the same per-tool sliding windows as in-app (`checkToolRateLimit` at the MCP call site) plus the transport limits (`MCP_SSE_RATE_LIMIT_PER_MINUTE`, `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE`); no MCP-specific limit is added.
 - No MCP prompt references disk cleanup today (`mcpGuidance.ts` prompts are fleet-triage, device-investigate, patch-remediate, incident-kickoff, turnkey-setup), so no prompt changes; `MCP_TOOL_COUNT_APPROX` stays within its tolerance test after adding one tool.
 
@@ -300,7 +301,11 @@ One registry feeds three surfaces. `apps/api/src/services/aiTools.ts` is the cor
 - **Lab (W05, before the agent release; acceptance gate for W04):** Windows rig `WIN-IMDR2GAIDMV` — scan `C:\` and a second volume, empty its bin, run `Update Cleanup` + DISM as the SYSTEM service and confirm (a) the runner observes the whole cleanmgr process tree exiting in session 0 without hanging, (b) the measured free-space delta is non-zero after the flagged reboot; KIT `lab-ubuntu-src` — `apt-get clean`, journal vacuum, autoremove estimate matches the simulated output. Results recorded on the W05 sub-issue.
 - **Docs:** `apps/docs/src/content/docs/features/filesystem-analysis.mdx` rewritten for volumes, the finished tab, the native catalog, and the new tables/columns; `agents/commands.mdx` (two new command types), `features/ai.mdx`, `features/mcp-server.mdx`, `features/playbooks.mdx` (tool and playbook changes); `apps/api/src/data/docsIndex.json` regenerated; release notes entry including the W02 rolling-deploy note.
 
-## 12. Advisor quorum
+## 12. Plan amendments
+
+The five wave plans (`docs/superpowers/plans/devices/2026-09-19-disk-cleanup-v2*.md`) verified every claim above against the code and recorded their deviations in each plan's "Plan amendments" section; the plan index summarises them. Where a plan and this document disagree, **the plan wins** — it was checked later and against the tree. The two amendments that changed a safety statement were folded back into §5.2 (run lifecycle) and §9.2 (`deviceArgs` fails open) above.
+
+## 13. Advisor quorum
 
 Fable position: the design above. Independent reviews and their resolution:
 
