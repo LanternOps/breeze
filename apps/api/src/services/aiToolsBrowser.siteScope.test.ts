@@ -31,7 +31,7 @@ vi.mock('./partnerTrust.commands', async () => ({
 }));
 
 import { db } from '../db';
-import { policyWithinSiteWriteScope, registerBrowserTools } from './aiToolsBrowser';
+import { policyWithinSiteReadScope, policyWithinSiteWriteScope, registerBrowserTools } from './aiToolsBrowser';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { TrustDeniedError } from './partnerTrust.commands';
@@ -215,9 +215,6 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
         payload: expect.objectContaining({ policyId: 'p1' }),
         userId: 'u1',
         expectedOrgId: 'org-1',
-        // The insert this replaced queued for OFFLINE devices too; `false`
-        // keeps that under every DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED setting.
-        previouslyRejected: false,
       }),
     );
   });
@@ -247,5 +244,115 @@ describe('get_browser_security — read site narrowing', () => {
       expect(parsed.extensions).toEqual([]);
       expect(extensionQueryRan).toBe(false);
     });
+  });
+});
+
+describe('manage_browser_policy list — site read scope (audit §1.1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const POLICIES = [
+    { id: 'p-org', name: 'Org wide', targetType: 'org', targetIds: [] },
+    { id: 'p-in', name: 'Site 1', targetType: 'site', targetIds: ['site-1'] },
+    { id: 'p-out', name: 'Site 2', targetType: 'site', targetIds: ['site-2'] },
+    { id: 'p-span', name: 'Both', targetType: 'site', targetIds: ['site-1', 'site-2'] },
+    { id: 'p-dev', name: 'Device', targetType: 'device', targetIds: ['d-out'] },
+  ];
+
+  function mockList(orgDevices: Array<{ id: string; siteId: string }> = []) {
+    let deviceScans = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object)) {
+        deviceScans++;
+        return { from: () => ({ where: () => Promise.resolve(orgDevices) }) };
+      }
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(POLICIES) }) }) }) };
+    });
+    return () => deviceScans;
+  }
+
+  it('hides policies targeted at sites the caller cannot access', async () => {
+    mockList([{ id: 'd-out', siteId: 'site-2' }]);
+    const raw = await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(raw);
+    expect(parsed.policies.map((p: any) => p.id)).toEqual(['p-org', 'p-in']);
+    // the out-of-scope site id and its device must not leak through targetIds
+    expect(raw).not.toContain('site-2');
+    expect(raw).not.toContain('d-out');
+  });
+
+  it('shows every policy to an unrestricted caller and runs no device scan', async () => {
+    const scans = mockList();
+    const parsed = JSON.parse(
+      await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(undefined)) as string,
+    );
+    expect(parsed.policies).toHaveLength(5);
+    expect(scans()).toBe(0);
+  });
+});
+
+describe('policyWithinSiteReadScope — fail-closed on unattributable device targets (review #6110)', () => {
+  const restricted = makeAuth(['site-1']);
+  const unrestricted = makeAuth(undefined);
+
+  it('keeps every policy visible to an unrestricted caller', () => {
+    expect(policyWithinSiteReadScope(unrestricted, 'device', ['d-x'], null)).toBe(true);
+    expect(policyWithinSiteReadScope(unrestricted, 'site', [], null)).toBe(true);
+  });
+
+  it('denies a device-targeted policy whose device set could not be resolved', () => {
+    // `null` used to read as "unrestricted" on the device branch while the
+    // site branch failed closed — the two arms must agree.
+    expect(policyWithinSiteReadScope(restricted, 'device', ['d-x'], null)).toBe(false);
+  });
+
+  it('denies a device-targeted policy with an EMPTY target list', () => {
+    // `[].every(...)` is vacuously true; an unattributable policy is denied to
+    // a restricted caller, exactly as the `site` branch already does.
+    expect(policyWithinSiteReadScope(restricted, 'device', [], ['d-in'])).toBe(false);
+    expect(policyWithinSiteReadScope(restricted, 'device', null, ['d-in'])).toBe(false);
+  });
+
+  it('still shows a device policy wholly inside the resolved set', () => {
+    expect(policyWithinSiteReadScope(restricted, 'device', ['d-in'], ['d-in', 'd-2'])).toBe(true);
+    expect(policyWithinSiteReadScope(restricted, 'device', ['d-in', 'd-out'], ['d-in'])).toBe(false);
+  });
+
+  it('leaves org/group/tag targets visible', () => {
+    expect(policyWithinSiteReadScope(restricted, 'org', [], null)).toBe(true);
+    expect(policyWithinSiteReadScope(restricted, 'group', ['g-1'], null)).toBe(true);
+    expect(policyWithinSiteReadScope(restricted, 'tag', ['t-1'], null)).toBe(true);
+  });
+});
+
+describe('manage_browser_policy list — page completeness (review #6110)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('over-scans and annotates a narrowed page', async () => {
+    const policies = Array.from({ length: 260 }, (_, i) => ({
+      id: `p-${i}`, name: `P${i}`, targetType: 'site', targetIds: [i < 210 ? 'site-2' : 'site-1'],
+    }));
+    let requestedLimit = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object)) {
+        return { from: () => ({ where: () => Promise.resolve([]) }) };
+      }
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: (n: number) => { requestedLimit = n; return Promise.resolve(policies.slice(0, n)); } }) }) }) };
+    });
+    const raw = await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(raw);
+    expect(requestedLimit).toBeGreaterThan(200);
+    expect(parsed.policies).toHaveLength(50);
+    expect(parsed.scopeNote).toBeTruthy();
+  });
+
+  it('does not over-scan or annotate for an unrestricted caller', async () => {
+    let requestedLimit = 0;
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit: (n: number) => { requestedLimit = n; return Promise.resolve([{ id: 'p-1', targetType: 'org', targetIds: [] }]); } }) }) }),
+    }));
+    const raw = await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(undefined)) as string;
+    const parsed = JSON.parse(raw);
+    expect(requestedLimit).toBe(200);
+    expect(parsed.scopeNote).toBeUndefined();
   });
 });

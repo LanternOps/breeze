@@ -45,6 +45,10 @@ export function contractActorFrom(c: { get: (k: string) => unknown }): ContractA
     partnerId: auth.partnerId ?? null,
     accessibleOrgIds: auth.accessibleOrgIds,
     permissions: granted,
+    // Site axis (app-layer only — RLS does not defend it). Same leak over HTTP as
+    // through the AI door: without this a site-restricted technician reaches every
+    // contract in the org. See contractLineSiteDenied in contractService.ts.
+    allowedSiteIds: auth.allowedSiteIds,
   };
 }
 export function handleContractError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {

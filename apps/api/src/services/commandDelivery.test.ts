@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.APP_ENCRYPTION_KEY = process.env.APP_ENCRYPTION_KEY || 'test-app-encryption-key-for-vitest';
 
@@ -35,7 +35,6 @@ vi.mock('./scriptSecretDelivery', () => ({
 }));
 
 import {
-  decryptClaimedCommandsForDelivery,
   deliveryRefreshers,
   prepareClaimedCommandsForDelivery,
   refreshPayloadForDelivery,
@@ -58,7 +57,7 @@ const undecryptable = {
   executedAt: claimedAt,
 };
 
-describe('decryptClaimedCommandsForDelivery (#2414)', () => {
+describe('prepareClaimedCommandsForDelivery (#2414)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
@@ -72,7 +71,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
       undecryptable,
     ];
 
-    const delivered = await decryptClaimedCommandsForDelivery(claimed);
+    const delivered = await prepareClaimedCommandsForDelivery(claimed);
 
     expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-plain', 'cmd-good']);
     expect((delivered[1]?.payload as Record<string, unknown> | undefined)?.password).toBe('pw');
@@ -88,7 +87,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
   });
 
   it('does not touch the release path when every command decrypts', async () => {
-    const delivered = await decryptClaimedCommandsForDelivery([
+    const delivered = await prepareClaimedCommandsForDelivery([
       { id: 'cmd-1', type: 'run_script', deviceId: CLAIM_DEVICE, payload: { scriptId: 's-1' }, executedAt: claimedAt },
     ]);
 
@@ -100,7 +99,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
   it('still returns the deliverable siblings (and captures) when the release itself fails', async () => {
     releaseClaimedCommandDeliveryMock.mockRejectedValueOnce(new Error('db down'));
 
-    const delivered = await decryptClaimedCommandsForDelivery([
+    const delivered = await prepareClaimedCommandsForDelivery([
       { id: 'cmd-plain', type: 'run_script', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt },
       undecryptable,
     ]);
@@ -115,7 +114,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
   });
 
   it('captures instead of releasing when a failed row is missing its claim timestamp', async () => {
-    const delivered = await decryptClaimedCommandsForDelivery([
+    const delivered = await prepareClaimedCommandsForDelivery([
       { ...undecryptable, executedAt: null },
     ]);
 
@@ -129,7 +128,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
   });
 
   it('returns an empty array for an empty batch', async () => {
-    await expect(decryptClaimedCommandsForDelivery([])).resolves.toEqual([]);
+    await expect(prepareClaimedCommandsForDelivery([])).resolves.toEqual([]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
   });
 
@@ -158,7 +157,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
         { id: 'cmd-good', type: 'encryption_rotate_key', deviceId: CLAIM_DEVICE, payload: goodEncrypted, executedAt: claimedAt },
       ];
 
-      const delivered = await decryptClaimedCommandsForDelivery(claimed);
+      const delivered = await prepareClaimedCommandsForDelivery(claimed);
 
       expect(failClaimedSecretCommandsMock).toHaveBeenCalledTimes(1);
       // Called with the RAW claimed rows — still sealed, never the decrypted
@@ -175,7 +174,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
     it('decrypts and delivers ONLY what the gate returned', async () => {
       failClaimedSecretCommandsMock.mockResolvedValueOnce([plainCommand]);
 
-      const delivered = await decryptClaimedCommandsForDelivery([plainCommand, secretCommand]);
+      const delivered = await prepareClaimedCommandsForDelivery([plainCommand, secretCommand]);
 
       expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
     });
@@ -186,7 +185,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
       // incapable agent on the next claim.
       failClaimedSecretCommandsMock.mockResolvedValueOnce([plainCommand]);
 
-      const delivered = await decryptClaimedCommandsForDelivery([plainCommand, secretCommand]);
+      const delivered = await prepareClaimedCommandsForDelivery([plainCommand, secretCommand]);
 
       expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
       expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
@@ -196,7 +195,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
     it('still releases a DECRYPT failure among the gate survivors (#2414 is unaffected)', async () => {
       failClaimedSecretCommandsMock.mockResolvedValueOnce([plainCommand, undecryptable]);
 
-      const delivered = await decryptClaimedCommandsForDelivery([plainCommand, undecryptable, secretCommand]);
+      const delivered = await prepareClaimedCommandsForDelivery([plainCommand, undecryptable, secretCommand]);
 
       expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
       expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledTimes(1);
@@ -204,12 +203,12 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
     });
 
     it('threads a caller-reported capability through to the gate as authoritative', async () => {
-      await decryptClaimedCommandsForDelivery([secretCommand], { reportedScriptSecretEnvVersion: 0 });
+      await prepareClaimedCommandsForDelivery([secretCommand], { reportedScriptSecretEnvVersion: 0 });
       expect(failClaimedSecretCommandsMock).toHaveBeenCalledWith([secretCommand], { reportedVersion: 0 });
     });
 
     it('passes no reported version when the caller has none (stored-column fallback)', async () => {
-      await decryptClaimedCommandsForDelivery([secretCommand]);
+      await prepareClaimedCommandsForDelivery([secretCommand]);
       expect(failClaimedSecretCommandsMock).toHaveBeenCalledWith([secretCommand], {});
     });
 
@@ -221,7 +220,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
       failClaimedSecretCommandsMock.mockRejectedValueOnce(new Error('reportedVersion contract violation'));
 
       await expect(
-        decryptClaimedCommandsForDelivery([plainCommand, secretCommand], {
+        prepareClaimedCommandsForDelivery([plainCommand, secretCommand], {
           reportedScriptSecretEnvVersion: 1,
         }),
       ).rejects.toThrow('reportedVersion contract violation');
@@ -233,6 +232,11 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
 
 describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
   const original = { ...deliveryRefreshers };
+
+  afterEach(() => {
+    __resetDeliveryRefreshersForTests();
+    Object.assign(deliveryRefreshers, original);
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -346,10 +350,6 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     await expect(refreshPayloadForDelivery('script', { a: 1 })).resolves.toEqual({ a: 1 });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('decryptClaimedCommandsForDelivery is still exported as an alias of the new name', () => {
-    expect(decryptClaimedCommandsForDelivery).toBe(prepareClaimedCommandsForDelivery);
   });
 });
 

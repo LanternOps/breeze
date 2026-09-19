@@ -4,6 +4,7 @@ import { ClientRouter } from 'astro:transitions';
 import { withBase } from '../lib/basePath';
 import { loadPortalBranding } from '../lib/server';
 import { buildDocAccentCss } from '../lib/docAccent';
+import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 import { buildPortalCustomCss } from '../lib/customCss';
 
 interface Props {
@@ -23,10 +24,17 @@ const accentCss = buildDocAccentCss(branding.primaryColor);
 const customCssContent = buildPortalCustomCss(branding.customCss);
 const cspNonce = Astro.locals.cspNonce;
 const portalName = branding.name || 'Customer Portal';
+// Curated chrome accent (packages/shared/src/types/portalChromeAccent.ts) — the
+// sign-in page uses branding too, so the primary button and focus ring here
+// must match the same org's accent the signed-in shell will show.
+const chromeAccent =
+  isPortalChromeAccent(branding.chromeAccent) && branding.chromeAccent !== PORTAL_CHROME_ACCENT_DEFAULT
+    ? branding.chromeAccent
+    : undefined;
 ---
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-accent={chromeAccent}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

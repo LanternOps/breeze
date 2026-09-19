@@ -38,6 +38,7 @@ import { m365ReadActionSchema, type M365ReadAction } from '@breeze/shared/m365';
 import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365ControlPlane/readActionService';
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 
 const env = {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
@@ -157,6 +158,25 @@ function requireString(input: Record<string, unknown>, key: string): string | nu
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+/**
+ * Site/exact-device ceiling for the MUTATING helpdesk tools.
+ *
+ * Every m365_* write is gated on `organizations:write` (aiGuardrails.ts), which
+ * a site-restricted technician can legitimately hold — so after the permission
+ * remap they could disable a user or reset a password through chat. These Graph
+ * operations act on the WHOLE customer tenant: there is no per-site slice of a
+ * directory account to narrow to, so they fail closed exactly as every other
+ * org-wide governance object does (`canMutateOrgWideGovernance`). Reads are
+ * unaffected — they are already narrowed by the control plane's authz ladder.
+ *
+ * Returns the denial string to hand straight back, or `null` to proceed.
+ */
+function siteCeilingDenied(auth: AuthContext): string | null {
+  return canMutateOrgWideGovernance(auth)
+    ? null
+    : errorString('site_scope_denied', SITE_CEILING_WRITE_DENIED_MESSAGE);
+}
+
 export async function m365LookupUserHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
@@ -219,6 +239,8 @@ export async function m365DisableUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const reason = requireString(input, 'reason');
   if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
 
@@ -247,6 +269,8 @@ export async function m365ResetPasswordHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<SecretToolResult> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return { kind: 'error', llmText: ceiling };
   const reason = requireString(input, 'reason');
   if (!reason) return { kind: 'error', llmText: errorString('missing_reason', 'A reason is required for this action.') };
 

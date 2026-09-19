@@ -37,3 +37,56 @@ export function autoresponseSuppressionReason(
   }
   return null;
 }
+
+/**
+ * The Message-ID shapes `outboundThreading.ts` generates, as a matcher.
+ *
+ * Generator (services/inboundEmail/outboundThreading.ts):
+ *   ticketThreadAnchor(ticketId)          -> `<ticket-${ticketId}@${domain}>`
+ *   commentMessageId(ticketId, commentId) -> `<ticket-${ticketId}-${commentId}@${domain}>`
+ *
+ * Both are `<ticket-` + an id run containing no `@`, `<`, `>` or whitespace,
+ * then `@` + TICKETS_INBOUND_DOMAIN + `>`. The domain is regex-escaped, so its
+ * dots are literal and `ticketsXexampleXcom` does not match.
+ *
+ * Only the message's OWN Message-ID is tested. In-Reply-To and References are
+ * deliberately NOT: every genuine customer reply carries our anchor there, and
+ * matching on them would drop exactly the mail this pipeline exists to receive.
+ */
+export function outboundMessageIdPattern(inboundDomain: string): RegExp {
+  const domain = inboundDomain.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^<ticket-[^@<>\\s]+@${domain}>$`, 'i');
+}
+
+/**
+ * Is this inbound message our OWN outbound mail, looping back? (spec §8.5)
+ *
+ * Two signals, both about the MESSAGE:
+ *   - it carries X-Breeze-Outbound (every partner-lane message does);
+ *   - its own Message-ID was minted by outboundThreading.ts.
+ *
+ * Forging the header only gets the forger's own mail ignored, so trusting it
+ * from untrusted inbound is safe.
+ *
+ * What is deliberately NOT a signal: the SENDING DOMAIN or the identity
+ * address. With a root sending domain every technician's address is on it, and
+ * a technician may legitimately write in from the shared mailbox — suppressing
+ * by domain would drop their mail. The existing sender-domain rule inside
+ * `autoresponseSuppressionReason` stays scoped to TICKETS_INBOUND_DOMAIN, which
+ * is ours and nobody else's.
+ *
+ * With no inbound domain configured (self-hosted without inbound email) the
+ * Message-ID rule is inert — there is no anchor to have generated — but the
+ * marker still applies.
+ */
+export function ownOutboundReason(
+  n: NormalizedInboundEmail,
+  inboundDomain: string | null | undefined,
+): 'outbound-marker' | 'own-message-id' | null {
+  if (n.outboundMarker && n.outboundMarker.trim() !== '') return 'outbound-marker';
+  const domain = inboundDomain?.trim();
+  if (!domain) return null;
+  const messageId = n.messageId?.trim();
+  if (messageId && outboundMessageIdPattern(domain).test(messageId)) return 'own-message-id';
+  return null;
+}

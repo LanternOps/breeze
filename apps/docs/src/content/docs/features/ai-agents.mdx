@@ -10,7 +10,7 @@ An AI agent is a named, permission-scoped worker you configure once. It wakes on
 Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
 
 <Aside type="caution" title="Act mode runs unattended — read this before enabling it">
-  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
+  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself, but every proposal still lands in the Approvals inbox as a normal, real card: approving one executes it immediately, the same as approving any other request — shadow mode does not turn approval into a dry run. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
 </Aside>
 
 ## What an agent does
@@ -27,7 +27,7 @@ Each agent carries its own limits — devices per run, concurrent runs, runs per
 
 ## Fleet designer
 
-A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and cannot run in shadow mode because there is nothing to shadow. For a designer, **Act** simply means "run and write reports".
+A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and has no shadow mode because there is nothing to shadow — the mode picker offers only **Off** and **On** for this kind, and a new designer starts on **On** ("run and write reports").
 
 It runs when you start a Fleet Design for an organization, or on a schedule that targets a Fleet designer agent and fires at most once a month. Its evidence bundle is pinned to the organization and covers devices, software, network, posture, health, automation and the shape of the event log.
 
@@ -35,8 +35,10 @@ Each run produces a **Fleet Design** report — the recommended device functions
 
 The designer also assesses a **function** for each device — domain controller, file server, kiosk, finance workstation and so on — shown next to the billable Device Role on the device's Info tab; see [Device function](/features/devices/#device-function). A function set by hand is never overwritten by the designer.
 
+You do not have to create the agent by hand. If the organization's partner has no Fleet designer yet — or has one that is off — the **Fleet Design** page says so and offers **Enable Fleet Designer**, which creates the partner-wide designer agent on **On** with you as its recipient (or turns the existing one on). The button appears only for a partner administrator with `ai_agents:write`; an organization-scoped user sees who to ask instead.
+
 <Aside>
-  Like every other kind, a Fleet designer produces nothing until an administrator creates one for the organization, and in this release nothing in a design is applied to the fleet automatically — the report is for a technician to act on.
+  A Fleet designer resolves through the partner-wide agent, so an organization can tighten it (turn it off for one customer) but cannot create it alone. Nothing in a design is applied to the fleet automatically until a technician approves it.
 </Aside>
 
 ## Runs

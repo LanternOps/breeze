@@ -48,7 +48,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 **Workflow for a new tenant-scoped table:**
 1. Pick a shape; add policies in the same migration that creates the table — never defer.
-   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (shard 2) — a unit-green PR still goes red there (#4585 did).
+   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (one of the 8 shards — which one shifted when the job went 4→8 shards, so don't assume a specific shard number) — a unit-green PR still goes red there (#4585 did).
 2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
 3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
 4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.** Adding a **column** to an already-registered table is not exempt: see the export-policy row.
@@ -139,6 +139,32 @@ if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401
 ```
 
 The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/web-ui/2026-05-15-ws-a-action-feedback-design.md`.
+
+### Settings — one concept, one home
+
+Rules from the 2026-09-17 billing/ticketing settings audit
+(`docs/superpowers/specs/web-ui/2026-09-17-billing-ticketing-settings-audit.md`),
+enforced going forward for every settings surface, not just billing/ticketing:
+
+1. **One concept, one home.** A setting is edited in exactly one place per level.
+2. **Settings live with their domain.** Billing settings under Billing, ticketing
+   under Ticketing. Actions and reports are not settings.
+3. **Two levels, one direction.** Partner default → org override → snapshotted on
+   the document. The org always wins; a stated exception must say so in the UI
+   where it applies.
+4. **One inheritance control.** Blank = inherit; the field always shows the
+   inherited *value* and where it comes from.
+5. **One resolver per concept**, used by draft, issue and render.
+6. **One snapshot moment.** Whatever prints on a customer document is frozen when
+   the document becomes customer-visible.
+7. **One save pattern per screen type.** Forms: page Save. Lists: row drawer Save.
+   Switches with immediate effect: autosave with a toast. Never mixed in a card.
+8. **Every screen is in the nav, at one URL.** Old URLs redirect. Enforced by
+   `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts`.
+9. **A PR that adds a setting states its home, level, resolver, and the number of
+   places the concept is configured before and after.** A count that goes up needs
+   a removal plan. Required in the PR description for any PR touching
+   `pages/settings/**` or a `*Settings*` component — see the PR template.
 
 ---
 
@@ -260,7 +286,7 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in the **`integration-test`** job (4 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
+- Integration tests run in the **`integration-test`** job (8 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
 
 ### Running Tests Locally
 ```bash

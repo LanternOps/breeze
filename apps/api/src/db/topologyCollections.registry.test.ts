@@ -31,7 +31,7 @@ const M1_COLLECTION_TABLES = [
 ] as const;
 
 const MIGRATION_SQL = readFileSync(
-  new URL('../../migrations/2026-10-17-150400-topology-m1-collection.sql', import.meta.url),
+  new URL('../../migrations/2026-10-20-150400-topology-m1-collection.sql', import.meta.url),
   'utf8',
 );
 

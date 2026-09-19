@@ -10,17 +10,17 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v13, AI sweeps act mode W05 #4442)', () => {
-  it('is the literal 13', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v14, #5870 designWallClockSeconds)', () => {
+  it('is the literal 14', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(14);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-13', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-14', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | … | 13`. If a future bump forgets to widen the union, `tsc`
+    // to `1 | … | 14`. If a future bump forgets to widen the union, `tsc`
     // fails this assignment, not a runtime check.
-    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 });
 

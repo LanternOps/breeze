@@ -6,7 +6,12 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn(() => ({ where: mocks.where })) })) },
 }));
 import { db } from '../db';
-import { deviceIdSiteDenied, deviceSiteDenied, resolveSiteAllowedDeviceIds, resolveSiteDevicePartition } from './aiToolsSiteScope';
+import {
+  deviceIdSiteDenied, deviceSiteDenied, resolveSiteAllowedDeviceIds, resolveSiteDevicePartition,
+  scopeDeviceIdsToCaller, siteScopeCondition,
+} from './aiToolsSiteScope';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { devices } from '../db/schema/devices';
 
 function auth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
@@ -92,5 +97,75 @@ describe('exact device scope intersects site scope', () => {
     expect(await deviceIdSiteDenied(auth({ allowedDeviceIds: ['target'] }), 'target')).toBe(true);
     mocks.rows = [];
     expect(await deviceIdSiteDenied(auth({ allowedDeviceIds: ['target'] }), 'target')).toBe(true);
+  });
+});
+
+// ── Direct coverage for the two primitives every caller-side guard leans on ──
+// Both were only ever exercised through their consumers, so a regression in
+// either (dropping an axis, or collapsing "unrestricted" with "nothing in
+// scope") would surface as a leak in some distant tool rather than here.
+
+describe('scopeDeviceIdsToCaller', () => {
+  it('intersects BOTH axes — a device in the allowlist but outside the site is dropped', async () => {
+    // 'outside' passes the exact-device filter and then fails the site scan.
+    expect(await scopeDeviceIdsToCaller(
+      auth({ allowedDeviceIds: ['target', 'outside'] }), 'org-1', ['target', 'outside'],
+    )).toEqual(['target']);
+  });
+
+  it('drops ids outside the exact-device allowlist without a site scan', async () => {
+    expect(await scopeDeviceIdsToCaller(
+      auth({ allowedSiteIds: undefined, canAccessSite: undefined, allowedDeviceIds: ['target'] }),
+      'org-1', ['target', 'sibling'],
+    )).toEqual(['target']);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('drops ids outside the site allowlist for a site-restricted human', async () => {
+    expect(await scopeDeviceIdsToCaller(auth(), 'org-1', ['target', 'outside', 'no-site']))
+      .toEqual(['target']);
+  });
+
+  it('returns [] — never null — for a restricted caller with nothing in scope', async () => {
+    // `canAccessSite` is derived from `allowedSiteIds` in a real AuthContext, so
+    // an empty allowlist must reject every site here too.
+    expect(await scopeDeviceIdsToCaller(
+      auth({ allowedSiteIds: [], canAccessSite: () => false }), 'org-1', ['target'],
+    )).toEqual([]);
+    expect(await scopeDeviceIdsToCaller(auth({ allowedDeviceIds: [] }), 'org-1', ['target'])).toEqual([]);
+  });
+
+  it('returns null and issues zero queries for an unrestricted caller', async () => {
+    expect(await scopeDeviceIdsToCaller(
+      auth({ allowedSiteIds: undefined, canAccessSite: undefined }), 'org-1', ['target', 'outside'],
+    )).toBeNull();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-string and non-array inputs rather than trusting them', async () => {
+    expect(await scopeDeviceIdsToCaller(auth(), 'org-1', ['target', 42, null])).toEqual(['target']);
+    expect(await scopeDeviceIdsToCaller(auth(), 'org-1', 'target')).toEqual([]);
+    expect(await scopeDeviceIdsToCaller(auth(), 'org-1', undefined)).toEqual([]);
+  });
+});
+
+describe('siteScopeCondition', () => {
+  const render = (cond: unknown) => new PgDialect().sqlToQuery(cond as never);
+
+  it('returns undefined — no narrowing, no cost — for an unrestricted caller', () => {
+    expect(siteScopeCondition(auth({ allowedSiteIds: undefined, canAccessSite: undefined }), devices.siteId))
+      .toBeUndefined();
+  });
+
+  it('renders an IN over the allowlist for a site-restricted caller', () => {
+    const q = render(siteScopeCondition(auth({ allowedSiteIds: ['site-1', 'site-2'] }), devices.siteId));
+    expect(q.sql).toMatch(/site_id/);
+    expect(q.params).toEqual(['site-1', 'site-2']);
+  });
+
+  it('renders SQL false — matching nothing — for an EMPTY allowlist', () => {
+    const q = render(siteScopeCondition(auth({ allowedSiteIds: [] }), devices.siteId));
+    expect(q.sql).toMatch(/\bfalse\b/);
+    expect(q.params).toEqual([]);
   });
 });

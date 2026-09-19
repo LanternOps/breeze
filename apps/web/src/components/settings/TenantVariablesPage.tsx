@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { KeyRound, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { TenantVariable } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { applyOrgId, fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -41,6 +41,57 @@ function draftFrom(variable: TenantVariable): Draft {
   };
 }
 
+type VariableListResult = { ok: true; data: TenantVariable[] } | { ok: false };
+
+// Module-level (survives an Astro soft-navigation remount, since the JS module
+// graph stays loaded across it — see lib/orgSwitch.ts): coalesce an identical
+// in-flight GET across component instances. An org switch fires the "re-run on
+// org switch" effect below on the STILL-MOUNTED outgoing page instance (whose
+// result is discarded on unmount) moments before the soft navigation tears it
+// down and mounts a fresh instance that fetches again on its own mount —
+// without this, the same query goes out twice for one switch (#6103).
+//
+// The cache stores the PARSED result, not the raw Response: a Response body
+// can only be read once, so handing the same in-flight Response to two
+// coalesced callers would throw "body stream already read" on whichever
+// awaits `.json()` second (an uncaught rejection inside `void load()`, with
+// no setError/setLoading cleanup for that caller).
+let inFlightListKey: string | null = null;
+let inFlightListRequest: Promise<VariableListResult> | null = null;
+
+function fetchVariableList(
+  url: string,
+  ambientOrgId: string | null,
+  options: { fresh?: boolean } = {}
+): Promise<VariableListResult> {
+  // Key on the fully-resolved URL (post orgId injection), matching exactly
+  // what fetchWithAuth will request — not the raw path. Two calls for the
+  // same path but different orgs (a rapid org switch landing mid-flight) must
+  // never be coalesced into the wrong tenant's data.
+  const key = applyOrgId(url, { ambient: ambientOrgId });
+  // `fresh` is for the reload after a save/delete: joining a GET that was
+  // already in flight BEFORE the mutation committed would repaint the
+  // pre-mutation list. Such a reload always issues its own request.
+  if (!options.fresh && inFlightListKey === key && inFlightListRequest) {
+    return inFlightListRequest;
+  }
+  const request = (async (): Promise<VariableListResult> => {
+    const response = await fetchWithAuth(url).catch(() => null);
+    if (!response || !response.ok) return { ok: false };
+    const body = (await response.json()) as { data?: TenantVariable[] };
+    return { ok: true, data: body.data ?? [] };
+  })();
+  inFlightListKey = key;
+  inFlightListRequest = request;
+  void request.finally(() => {
+    if (inFlightListKey === key) {
+      inFlightListKey = null;
+      inFlightListRequest = null;
+    }
+  });
+  return request;
+}
+
 /**
  * Tenant variables management (#3409). A variable is defined once — for one
  * org or for every org under the partner — and referenced from scripts.
@@ -61,21 +112,24 @@ export default function TenantVariablesPage() {
   const [search, setSearch] = useState('');
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { fresh?: boolean } = {}) => {
     setLoading(true);
     setError(false);
     // A selected org includes its inherited partner rows. All Organizations
     // instead lists only partner-wide definitions (#5353).
-    const response = await fetchWithAuth(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables').catch(() => null);
-    if (!response || !response.ok) {
+    const result = await fetchVariableList(
+      partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables',
+      orgScope.orgId,
+      options
+    );
+    if (!result.ok) {
       setError(true);
       setLoading(false);
       return;
     }
-    const body = (await response.json()) as { data?: TenantVariable[] };
-    setVariables(body.data ?? []);
+    setVariables(result.data);
     setLoading(false);
-  }, [partnerOnly]);
+  }, [partnerOnly, orgScope.orgId]);
 
   // Re-run on an org switch (not just mount): `load()` reads whatever org
   // fetchWithAuth currently injects, so a stale list otherwise lingers on
@@ -163,7 +217,7 @@ export default function TenantVariablesPage() {
         onUnauthorized: UNAUTHORIZED
       });
       closeEditor();
-      await load();
+      await load({ fresh: true });
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
       // ActionError already toasted via runAction; keep the editor open.
@@ -186,7 +240,7 @@ export default function TenantVariablesPage() {
           errorFallback: t('tenantVariablesPage.toasts.deleteFailed'),
           onUnauthorized: UNAUTHORIZED
         });
-        await load();
+        await load({ fresh: true });
       } catch (err) {
         if (!(err instanceof ActionError)) throw err;
       }

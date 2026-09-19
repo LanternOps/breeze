@@ -95,7 +95,9 @@
     "aiRisk": "Risco de IA",
     "deviceBackup": "Backup de Dispositivos",
     "sectionServiceDesk": "Central de serviços",
-    "serviceManagement": "Gestão de serviços"
+    "serviceManagement": "Gestão de serviços",
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Modelos de entregáveis"
   },
   "documentTitles": {
     "dashboard": "Painel",

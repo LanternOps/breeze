@@ -138,6 +138,9 @@ for (const result of ['failure', 'cancelled', 'skipped', '']) {
         encoding: 'utf8',
         env: {
           ...process.env, ...passing, IS_PR: isPr, CODE_CHANGED: 'true', DOCS_CHANGED: 'false',
+          // Non-`_RESULT` classifier outputs the fail-closed gates require
+          // (see the AGENT_CHANGED/APP_CHANGED three-branch checks below).
+          AGENT_CHANGED: 'true', APP_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true',
           MOBILE_NATIVE_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
           SMOKE_TEST_RESULT: 'skipped', GUIDED_SETUP_SMOKE_RESULT: 'skipped',
         },

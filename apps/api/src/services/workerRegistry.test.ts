@@ -84,6 +84,9 @@ const EXPECTED_WORKER_NAMES = [
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
+  // Partner sending domains W03 (#6183) — the one place that calls the
+  // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
+  'sendingDomainsWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

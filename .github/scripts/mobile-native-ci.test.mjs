@@ -83,6 +83,14 @@ for (const [label, detector, required, result, passes] of [
       encoding: 'utf8',
       env: {
         ...process.env, ...passingResults, IS_PR: 'true',
+        // These non-`_RESULT` classifier outputs are not covered by
+        // `passingResults` (auto-discovered only from `*_RESULT:` env lines),
+        // but ci-success's fail-closed gates require them to be exactly
+        // 'true'/'false' or the whole check goes red regardless of the
+        // mobile-specific fixture below.
+        AGENT_CHANGED: 'true',
+        APP_CHANGED: 'true',
+        TOPOLOGY_BROWSER_CHANGED: 'true',
         MOBILE_NATIVE_CHANGES_RESULT: detector,
         MOBILE_NATIVE_REQUIRED: required,
         BUILD_MOBILE_IOS_RESULT: result,

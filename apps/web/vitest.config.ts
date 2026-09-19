@@ -1,9 +1,22 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+
+// monaco-editor >=0.56's package.json `exports` map only publishes
+// `"./*.js"` / `"./*"` -> `esm/vs/*.js` — it no longer exposes the AMD
+// `min/vs/**` assets (including CSS) via any subpath specifier, so
+// `ScriptForm.tsx`'s `import 'monaco-editor/min/vs/editor/editor.main.css'`
+// fails module resolution under Vite. Mirrored from the same alias in
+// astro.config.mjs — keep both in sync.
+const require = createRequire(import.meta.url);
+const monacoRoot = path.dirname(path.dirname(path.dirname(require.resolve('monaco-editor'))));
+const monacoEditorMainCss = path.join(monacoRoot, 'min/vs/editor/editor.main.css');
 
 export default defineConfig({
   resolve: {
     alias: {
+      'monaco-editor/min/vs/editor/editor.main.css': monacoEditorMainCss,
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       // Mirrors the `@breeze/shared` path in apps/web/tsconfig.json so vitest
       // can resolve workspace imports without a build step. Required for

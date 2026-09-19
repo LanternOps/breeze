@@ -143,6 +143,18 @@ function selectWhereLimitResult(rows: unknown[]) {
   };
 }
 
+function selectJoinWhereLimitResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    })
+  };
+}
+
 function selectWhereOrderLimitResult(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
@@ -806,7 +818,7 @@ describe('device patch routes', () => {
 
   it('queues rollback_patches command for a device patch', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
-    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinWhereLimitResult([
       { id: PATCH_ID, source: 'apple', externalId: 'apple:example', title: 'Example Patch' }
     ]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -838,5 +850,51 @@ describe('device patch routes', () => {
       },
       { userId: USER_ID, preferHeartbeat: false }
     );
+  });
+
+  it('binds the rollback target to the device\'s own installed observation (#5565)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    const observationLimit = vi.fn().mockResolvedValue([
+      { id: PATCH_ID, source: 'apple', externalId: 'apple:example', title: 'Example Patch' }
+    ]);
+    const observationWhere = vi.fn().mockReturnValue({ limit: observationLimit });
+    const observationInnerJoin = vi.fn().mockReturnValue({ where: observationWhere });
+    // The direct `where` member keeps this boundary test runnable against the
+    // vulnerable baseline, where the query started from the global catalog.
+    const observationFrom = vi.fn().mockReturnValue({
+      innerJoin: observationInnerJoin,
+      where: observationWhere
+    });
+    vi.mocked(db.select).mockReturnValueOnce({ from: observationFrom } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-rollback-bound', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(observationFrom).toHaveBeenCalledWith(devicePatches);
+    expect(observationInnerJoin).toHaveBeenCalledWith(patches, expect.anything());
+    const where = JSON.stringify(observationWhere.mock.calls[0]?.[0]);
+    expect(where).toContain(DEVICE_ID);
+    expect(where).toContain('installed');
+    expect(where).toContain(PATCH_ID);
+  });
+
+  it('returns 404 and does not queue when the device has no installed observation of the patch (#5565)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinWhereLimitResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Patch is not installed on this device' });
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });

@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "No occurrences yet. The first one is planned {{count}} day before its due date.",
+    "empty_other": "No occurrences yet. The first one is planned {{count}} days before its due date.",
+    "emptyWithDate_one": "No occurrences yet. The first one is planned {{count}} day before its due date ({{date}}).",
+    "emptyWithDate_other": "No occurrences yet. The first one is planned {{count}} days before its due date ({{date}}).",
     "evidence": "Evidence",
     "noEvidence": "No evidence attached",
     "late": "Late",

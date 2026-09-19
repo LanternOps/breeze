@@ -13,6 +13,8 @@ import { defineConfig } from 'vitest/config';
 // Run with: pnpm -F @breeze/api test:site-scope-coverage
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     include: ['src/__tests__/integration/site-scope-coverage.integration.test.ts'],

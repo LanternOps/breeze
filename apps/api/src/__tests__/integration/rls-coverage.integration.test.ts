@@ -115,6 +115,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
+  'email_provider_domain_releases', // Provider-side "delete this domain" outbox (spec 2026-09-17 partner sending domains §3.3). Deliberately carries NO partner_id: cascadeDeletePartner deletes from every table that has one, which would erase the provider handle this table exists to keep across the partner's deletion. No tenant axis. Forced RLS, single system-only policy → only system context. Not in EXEMPT_TABLES: with no org_id and no shape-list entry, no offender scan reaches it.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -316,6 +317,30 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
+  // partner sending domains W02): the MSP's custom outbound From domain and
+  // one sender identity per (partner, mail stream). Partner-axis (Shape 3),
+  // deliberately no org_id — the From domain is the MSP's identity, and a
+  // per-org sending domain is the internal-phishing shape (spec §3.1). No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases both, and its
+  // topological order puts identities before domains via the composite FK.
+  // GRANT includes DELETE for that sweep. The sibling outbox
+  // email_provider_domain_releases is INTENTIONAL_UNSCOPED above — it must
+  // never gain a partner_id column.
+  // Functional cross-partner forge proof: partnerSendingDomainsRls.integration.test.ts.
+  ['partner_sending_domains', 'partner_id'],
+  ['partner_sender_identities', 'partner_id'],
+  // partner_sending_daily_stats (spec 2026-09-17 §9.3, partner sending domains
+  // W06): per-partner, per-UTC-day delivery counters written by the Resend
+  // delivery webhook. Partner-axis (Shape 3) like its two siblings above, and
+  // deliberately without a domain_id dimension — the spec's bounce/complaint
+  // thresholds and the auto-suspension kill switch are both per PARTNER. No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases it, and the GRANT
+  // includes DELETE for that sweep.
+  // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
+  ['partner_sending_daily_stats', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

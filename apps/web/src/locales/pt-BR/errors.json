@@ -7,5 +7,6 @@
   "LIMIT_REACHED": "Limite para essa ação atingido",
   "MFA_REQUIRED": "Autenticação multifator é necessária",
   "INVALID_CREDENTIALS": "Credenciais inválidas",
-  "EXPIRED": "Expirado"
+  "EXPIRED": "Expirado",
+  "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
 }

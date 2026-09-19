@@ -37,7 +37,12 @@ import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
-import { fleetDesignApprovalSchema, triggerFleetDesignRunSchema, type FleetDesignReportSummary } from '@breeze/shared';
+import {
+  enableFleetDesignerSchema,
+  fleetDesignApprovalSchema,
+  triggerFleetDesignRunSchema,
+  type FleetDesignReportSummary,
+} from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { reportRuns, reports, sites } from '../db/schema';
@@ -49,6 +54,7 @@ import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
 import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
+import { DesignerEnableError, describeDesignerSetup, enableDesigner } from '../services/fleetDesign/designerSetup';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
@@ -112,6 +118,26 @@ function callerCanWriteContracts(c: Context): boolean {
 function siteRestricted(c: Context): boolean {
   const perms = c.get('permissions') as UserPermissions | undefined;
   return Array.isArray(perms?.allowedSiteIds);
+}
+
+/** #6214: every refusal the enable path can raise, by HTTP class. `detail`
+ *  (the `missing` list, the invalid recipient ids) is spread so the page
+ *  can say what to fix rather than just that something is wrong. */
+const DESIGNER_ENABLE_STATUS: Record<DesignerEnableError['code'], 403 | 409 | 422> = {
+  partner_scope_required: 403,
+  partner_admin_required: 403,
+  kill_switch_off: 409,
+  agent_kind_exists: 409,
+  act_prerequisites_not_met: 422,
+  invalid_recipients: 422,
+};
+
+function mapDesignerEnableError(c: Context, err: unknown) {
+  if (err instanceof DesignerEnableError) {
+    return c.json({ error: err.code, ...err.detail }, DESIGNER_ENABLE_STATUS[err.code]);
+  }
+  if (err instanceof PartnerWideWriteDeniedError) return c.json({ error: 'partner_admin_required', message: err.message }, 403);
+  throw err;
 }
 
 function mapApplyError(c: Context, err: unknown) {
@@ -206,6 +232,67 @@ fleetDesignRoutes.post(
     // so a "Run now" button can never toast "queued" for a run that never was.
     if (!result.created) return c.json({ success: false, skipped: result.skipped }, 200);
     return c.json({ runId: result.run.id }, 202);
+  },
+);
+
+// #6214: the Fleet Design page's setup probe. Registered before `/:reportRunId`
+// so the literal segment wins the match; a read, so ai_agents:read suffices
+// (same gate as the list/detail routes below).
+fleetDesignRoutes.get('/designer', scopes, requireAiRead, async (c) => {
+  const auth = c.get('auth');
+  const rawOrgId = c.req.query('orgId');
+  if (!rawOrgId) return c.json({ error: 'orgId is required' }, 400);
+  const parsed = UUID.safeParse(rawOrgId);
+  // Same 404 posture as the run trigger: a malformed id and a cross-tenant
+  // id read identically.
+  if (!parsed.success || !auth.canAccessOrg(parsed.data)) return c.json({ error: 'not_found' }, 404);
+  return c.json({ data: await describeDesignerSetup(auth, parsed.data) });
+});
+
+// #6214: one click that creates the partner's designer agent (or turns an
+// existing one on). Same gates as creating/patching the agent by hand in
+// Settings → AI Agents (`POST/PATCH /ai/agents`: ai_agents:write + MFA) —
+// this is that write, reached from the page that needs it.
+fleetDesignRoutes.post(
+  '/designer/enable',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', enableFleetDesignerSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId } = c.req.valid('json');
+    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'not_found' }, 404);
+
+    try {
+      const setup = await enableDesigner(auth, orgId);
+      // createAgent/updateAgent each write their own agent-mutation audit
+      // row; this one records that the change came from the Fleet Design
+      // page's enable button, and for which org — the same "who asked"
+      // record the manual trigger above keeps.
+      writeRouteAudit(c, {
+        orgId,
+        action: 'ai_fleet_design.designer.enable',
+        resourceType: 'ai_agent',
+        resourceId: setup.agentId ?? orgId,
+        details: { status: setup.status },
+        result: 'success',
+      });
+      return c.json({ data: setup });
+    } catch (err) {
+      const code = err instanceof DesignerEnableError ? err.code
+        : err instanceof PartnerWideWriteDeniedError ? 'partner_admin_required'
+        : 'error';
+      writeRouteAudit(c, {
+        orgId,
+        action: 'ai_fleet_design.designer.enable',
+        resourceType: 'ai_agent',
+        resourceId: orgId,
+        details: { error: code },
+        result: 'failure',
+      });
+      return mapDesignerEnableError(c, err);
+    }
   },
 );
 

@@ -5,7 +5,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { portalBranding, portalUsers } from '../../db/schema';
+import { organizations, portalBranding, portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
@@ -556,8 +556,30 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
 
   const [user] = await withSystemDbAccessContext(() =>
     db
-      .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId, authMethod: portalUsers.authMethod })
+      .select({
+        id: portalUsers.id,
+        email: portalUsers.email,
+        orgId: portalUsers.orgId,
+        authMethod: portalUsers.authMethod,
+        // The partner that owns this customer's org — the `support` stream's
+        // sender (spec §8.2). PUBLIC, UNAUTHENTICATED ROUTE: the id is derived
+        // from the org the portal_users row points at, never from the request
+        // body, whose only tenant input (`orgId`) is already constrained by the
+        // WHERE below. portal_users.org_id is NOT NULL with an FK to
+        // organizations, so the inner join never drops a row that the old query
+        // would have returned.
+        //
+        // This read MUST stay inside withSystemDbAccessContext. An
+        // unauthenticated request carries no DB access context, and
+        // organizations is org-axis: outside a context the query matches zero
+        // rows SILENTLY under forced RLS rather than raising, so a mocked-DB
+        // test cannot see the breakage. The live proof drives THIS route with
+        // no auth context and asserts the envelope that reaches the transport:
+        // __tests__/integration/portalPasswordResetPartnerLane.integration.test.ts.
+        partnerId: organizations.partnerId,
+      })
       .from(portalUsers)
+      .innerJoin(organizations, eq(organizations.id, portalUsers.orgId))
       .where(
         orgId
           ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
@@ -593,7 +615,9 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       try {
         await emailService.sendPasswordReset({
           to: user.email,
-          resetUrl
+          resetUrl,
+          purpose: 'portal.password_reset',
+          partnerId: user.partnerId ?? null
         });
       } catch (error) {
         console.error('[portal] Failed to send password reset email:', error);

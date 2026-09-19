@@ -196,7 +196,7 @@ export function toAgentCommandFrame(
  * drop a `null` rather than deliver it: a single un-decryptable command must
  * never fail the whole batch or heartbeat response. Callers that CLAIMED the
  * command before decrypting must also release it back to `pending` (see
- * `decryptClaimedCommandsForDelivery` in services/commandDelivery.ts, #2414) —
+ * `prepareClaimedCommandsForDelivery` in services/commandDelivery.ts, #2414) —
  * otherwise it strands as `sent` and the eventual reaper timeout misattributes
  * a server-side decrypt failure to agent unreachability. For non-sensitive
  * command types this is a pure passthrough that cannot throw. Never logs
