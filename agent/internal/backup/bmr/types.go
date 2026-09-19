@@ -14,10 +14,11 @@ type RecoveryConfig struct {
 	TargetPaths   map[string]string `json:"targetPaths,omitempty"` // original -> target path overrides
 
 	// ExpectSystemState is derived from the recovery bootstrap payload (see
-	// session.go, RunRecoveryWithTokenContext) rather than set by a caller:
-	// it is true when bootstrap.Snapshot.SystemStateManifest is present and
-	// non-null, i.e. the snapshot's producer captured system state for this
-	// run. applySystemState (bmr.go) uses it to distinguish "this snapshot
+	// session.go, RunRecoveryWithTokenContext / SnapshotExpectsSystemState)
+	// rather than set by a caller: it is true when the snapshot's backupType
+	// is "system_image" OR bootstrap.Snapshot.SystemStateManifest is present
+	// and non-null (#5412 — a system_image snapshot whose state collection
+	// failed has a NULL manifest and must still be held to it). applySystemState (bmr.go) uses it to distinguish "this snapshot
 	// never had system state" (fine — the existing soft-skip path) from
 	// "state was advertised but couldn't be downloaded/applied" (fatal).
 	// Before this field existed, both cases looked identical to bmr.go, so a
@@ -52,6 +53,12 @@ type AuthenticatedSnapshot struct {
 	FileCount           int             `json:"fileCount"`
 	HardwareProfile     json.RawMessage `json:"hardwareProfile"`
 	SystemStateManifest json.RawMessage `json:"systemStateManifest"`
+	// BackupType is backup_snapshots.backup_type as the server sends it on
+	// both the authenticate and exchange bootstraps ("file" |
+	// "system_image"; see apps/api/src/services/recoveryBootstrap.ts and
+	// routes/backup/bmrRecoveries.ts). "system_image" alone is enough to
+	// expect system state — see SnapshotExpectsSystemState (#5412).
+	BackupType string `json:"backupType"`
 }
 
 type AuthenticatedDevice struct {

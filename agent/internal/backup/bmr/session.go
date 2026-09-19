@@ -87,7 +87,7 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
 	}
 	if bootstrap.Snapshot != nil {
-		effectiveCfg.ExpectSystemState = hasSystemStateManifest(bootstrap.Snapshot.SystemStateManifest)
+		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
 	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
@@ -95,6 +95,24 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		result = runResult
 	}
 	return completeAndReturn(runErr)
+}
+
+// BackupTypeSystemImage is the backup_snapshots.backup_type value of a
+// whole-machine capture — the only kind bare-metal recovery can rebuild.
+const BackupTypeSystemImage = "system_image"
+
+// SnapshotExpectsSystemState is the single derivation every bootstrap-driven
+// recovery path (bmr-recover, breeze-backup rebuild --token, the recovery
+// console) uses to decide whether the snapshot MUST carry system state: a
+// system_image backup always does, and any snapshot advertising a state
+// manifest does. Keying on the manifest column alone (the pre-#5412 rule)
+// let a system_image snapshot whose state collection failed — NULL
+// manifest — recover "completed" with no OS state applied.
+func SnapshotExpectsSystemState(snap *AuthenticatedSnapshot) bool {
+	if snap == nil {
+		return false
+	}
+	return snap.BackupType == BackupTypeSystemImage || hasSystemStateManifest(snap.SystemStateManifest)
 }
 
 // hasSystemStateManifest reports whether raw (bootstrap.Snapshot's
