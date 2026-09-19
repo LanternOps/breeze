@@ -65,6 +65,7 @@ vi.mock('../../services/filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(),
   getLatestFilesystemCleanupSnapshot: vi.fn(),
   readPlanPreviewCandidates: vi.fn(() => []),
+  readPlanScanPath: vi.fn(() => null),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash']
 }));
 
@@ -91,6 +92,7 @@ import {
   readCheckpointPendingDirectories,
   buildCleanupPreview,
   readPlanPreviewCandidates,
+  readPlanScanPath,
 } from '../../services/filesystemAnalysis';
 
 const AGED = new Date(Date.now() - 72 * 3600_000).toISOString();
@@ -933,6 +935,154 @@ describe('device filesystem routes', () => {
         expect.objectContaining({ scanMode: 'baseline' }),
         expect.anything(),
       );
+    });
+  });
+
+  describe('cleanup preview/execute — volume pinning (spec §5.2)', () => {
+    const windowsDevice = { id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'windows', agentVersion: '0.115.0' };
+
+    function captureInsert() {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'run-1' }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values } as never);
+      return values;
+    }
+
+    it('previews the requested volume and pins it into the stored plan and the row', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+      vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue({
+        id: 'snap-d', scanPath: 'D:\\', capturedAt: new Date(), partial: false, cleanupCandidates: [],
+      } as never);
+      vi.mocked(buildCleanupPreview).mockReturnValue({
+        snapshotId: 'snap-d', estimatedBytes: 4096, candidateCount: 1,
+        categories: [{ category: 'temp_files', count: 1, estimatedBytes: 4096 }],
+        candidates: [{ path: 'D:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED }],
+      } as never);
+      const values = captureInsert();
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: 'd:/' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(getLatestFilesystemCleanupSnapshot).toHaveBeenCalledWith(deviceId, 'D:\\');
+      expect(body.data.scanPath).toBe('D:\\');
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        scanPath: 'D:\\',
+        plan: expect.objectContaining({ snapshotId: 'snap-d', scanPath: 'D:\\' }),
+      }));
+    });
+
+    it('previews the OS root when no path is given', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+      vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue(null as never);
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(getLatestFilesystemCleanupSnapshot).toHaveBeenCalledWith(deviceId, 'C:\\');
+      expect(body.scanPath).toBe('C:\\');
+    });
+
+    it('executes against the volume the pinned run recorded, not the OS root', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ plan: { scanPath: 'D:\\' }, scanPath: 'D:\\' }]),
+          }),
+        }),
+      } as never);
+      vi.mocked(readPlanScanPath).mockReturnValue('D:\\');
+      vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+        { path: 'D:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+      ] as never);
+      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      const values = captureInsert();
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paths: ['D:\\Windows\\Temp\\a.tmp'],
+          cleanupRunId: '22222222-2222-2222-2222-222222222222',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.scanPath).toBe('D:\\');
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        scanPath: 'D:\\',
+        plan: expect.objectContaining({ scanPath: 'D:\\' }),
+      }));
+      // The pinned lane must never re-derive candidates from a snapshot.
+      expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('recovers the volume from the stored plan when the row predates the column', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ plan: { scanPath: 'D:\\' }, scanPath: null }]),
+          }),
+        }),
+      } as never);
+      vi.mocked(readPlanScanPath).mockReturnValue('D:\\');
+      vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+        { path: 'D:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+      ] as never);
+      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      captureInsert();
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paths: ['D:\\Windows\\Temp\\a.tmp'],
+          cleanupRunId: '22222222-2222-2222-2222-222222222222',
+        }),
+      });
+
+      const body = await res.json();
+      expect(body.data.scanPath).toBe('D:\\');
+    });
+
+    it('falls back to the OS root snapshot on the unpinned lane', async () => {
+      // Before W02 this lane took the newest snapshot of ANY path, which is
+      // defect 6: a D:\ scan became the snapshot a C:\ execute deleted from.
+      // W03 makes cleanupRunId required and deletes this lane entirely.
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+      vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue({
+        id: 'snap-c', scanPath: 'C:\\', capturedAt: new Date(), partial: false, cleanupCandidates: [],
+      } as never);
+      vi.mocked(buildCleanupPreview).mockReturnValue({
+        snapshotId: 'snap-c', estimatedBytes: 4096, candidateCount: 1,
+        categories: [], candidates: [{ path: 'C:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED }],
+      } as never);
+      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      captureInsert();
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: ['C:\\Windows\\Temp\\a.tmp'] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getLatestFilesystemCleanupSnapshot).toHaveBeenCalledWith(deviceId, 'C:\\');
+      const body = await res.json();
+      expect(body.data.scanPath).toBe('C:\\');
     });
   });
 });

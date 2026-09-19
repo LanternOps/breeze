@@ -27,6 +27,7 @@ import {
   readCheckpointPendingDirectories,
   readHotDirectories,
   readPlanPreviewCandidates,
+  readPlanScanPath,
   safeCleanupCategories,
   type FilesystemCleanupCandidate,
 } from '../../services/filesystemAnalysis';
@@ -60,6 +61,8 @@ const scanFilesystemBodySchema = z.object({
 });
 
 const cleanupPreviewBodySchema = z.object({
+  /** Which volume to preview. Defaults to the device's OS root. */
+  path: z.string().min(1).max(2048).optional(),
   categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
 });
 
@@ -344,7 +347,7 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { categories } = c.req.valid('json');
+    const { path: requestedPath, categories } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -354,9 +357,11 @@ filesystemRoutes.post(
       return failJson(c, 'Device not found', 404);
     }
 
-    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, requestedPath ?? osRootScanPath(osType));
+    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
     if (!snapshot) {
-      return failJson(c, 'No filesystem snapshot available. Run a scan first.', 404);
+      return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);
     }
 
     const preview = buildCleanupPreview(snapshot, categories);
@@ -365,9 +370,12 @@ filesystemRoutes.post(
       .values({
         deviceId,
         orgId: device.orgId,
+        // Nullable during W02; the snapshot was selected by this exact key.
+        scanPath: snapshot.scanPath ?? scanPath,
         requestedBy: auth.user.id,
         plan: {
           snapshotId: snapshot.id,
+          scanPath: snapshot.scanPath ?? scanPath,
           categories: categories ?? safeCleanupCategories,
           preview,
         },
@@ -383,6 +391,7 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         snapshotId: snapshot.id,
+        scanPath: snapshot.scanPath ?? scanPath,
         categories: categories ?? safeCleanupCategories,
         estimatedBytes: preview.estimatedBytes,
         candidateCount: preview.candidateCount,
@@ -391,6 +400,7 @@ filesystemRoutes.post(
 
     return okJson(c, {
       cleanupRunId: cleanupRun?.id ?? null,
+      scanPath: snapshot.scanPath ?? scanPath,
       ...preview,
     });
   }
@@ -416,10 +426,13 @@ filesystemRoutes.post(
       return failJson(c, 'Device not found', 404);
     }
 
+    const osType = (device as { osType?: unknown }).osType;
+
     // Resolve the authoritative candidate set. When the caller pins a cleanup
     // run, use exactly the candidates it previewed; otherwise fall back to the
-    // latest snapshot's safe candidates.
+    // OS root snapshot's safe candidates.
     let candidates: FilesystemCleanupCandidate[];
+    let scanPath: string;
     let sourceSnapshotId: string | null = null;
     // When the operator looked at this plan. The agent refuses any target whose
     // mtime is newer (spec §13 row 2). Epoch fallback keeps missing timestamps
@@ -429,6 +442,7 @@ filesystemRoutes.post(
       const [run] = await db
         .select({
           plan: deviceFilesystemCleanupRuns.plan,
+          scanPath: deviceFilesystemCleanupRuns.scanPath,
           requestedAt: deviceFilesystemCleanupRuns.requestedAt,
         })
         .from(deviceFilesystemCleanupRuns)
@@ -448,10 +462,13 @@ filesystemRoutes.post(
         // stored preview is missing/corrupt), so no selection could ever match.
         return failJson(c, 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.', 400);
       }
+      // Prefer the column, then legacy plan metadata, then the OS root.
+      scanPath = run.scanPath ?? readPlanScanPath(run.plan) ?? osRootScanPath(osType);
     } else {
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
+      scanPath = osRootScanPath(osType);
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
       if (!snapshot) {
-        return failJson(c, 'No filesystem snapshot available. Run a scan first.', 404);
+        return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);
       }
       previewedAt = snapshot.capturedAt ?? new Date(0);
       sourceSnapshotId = snapshot.id;
@@ -522,10 +539,12 @@ filesystemRoutes.post(
       .values({
         deviceId,
         orgId: device.orgId,
+        scanPath,
         requestedBy: auth.user.id,
         approvedAt: new Date(),
         plan: {
           snapshotId: sourceSnapshotId,
+          scanPath,
           previewedAt: previewedAt.toISOString(),
           sourceCleanupRunId: cleanupRunId ?? null,
           requestedPaths: requested,
@@ -551,6 +570,7 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         cleanupRunId: cleanupRun?.id ?? null,
+        scanPath,
         requestedCount: requested.length,
         selectedCount: dispatchedPaths.length,
         failedCount: counts.failed,
@@ -567,6 +587,7 @@ filesystemRoutes.post(
 
     const responseData = {
       cleanupRunId: cleanupRun?.id ?? null,
+      scanPath,
       status: runStatus,
       bytesReclaimed: outcome.bytesReclaimed,
       selectedCount: dispatchedPaths.length,
