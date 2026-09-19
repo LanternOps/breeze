@@ -40,7 +40,7 @@ Numbered per wave; each is verified at file:line in the wave plan's own "Plan am
 4. `db:check-drift` does not compare the Drizzle mirror to the database, so the composite PK / index / CHECK shape is proved by a new live replay integration suite.
 5. The agent result handler has no OS in scope (`AgentAuthContext` carries none); one indexed `devices.os_type` lookup is added and the handler bails rather than guessing POSIX.
 6. Cascade lists verified unchanged with the greps recorded; the export policy is the only list that fires (five new columns, all `included`), and a unit test is added so that failure lands in Test API rather than only Integration Tests.
-7. Migration names re-checked against `origin/main` on 2026-09-19 12:10 MDT: two `2026-10-20-150000-*` files landed on main this morning, so the spec's `150000`/`150100` were bumped to `160000`/`160100` (W03's contraction migration is `160200`). Re-check at commit time.
+7. Migration names re-checked against `origin/main` on 2026-09-19 12:10 MDT: two `2026-10-20-150000-*` files landed on main this morning, so the spec's `150000`/`150100` were bumped to `170000`/`170100` (W03's contraction migration is `170200`). Re-check at commit time.
 8. `listFilesystemVolumes` issues two bounded queries per volume (max 24) rather than one `DISTINCT ON`, for mockability; swappable later.
 
 ### W03

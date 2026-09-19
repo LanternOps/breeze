@@ -45,7 +45,7 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 12. **Locale values must not be bare filesystem paths.** `apps/web/src/lib/i18n/localeParity.test.ts:442` fails any locale leaf that "looks like a route or filesystem path". The volume chip therefore interpolates the mount point (`{{mountPoint}}`) rather than storing `C:\` in a catalog, and every new key is translated for real in all eight locales (`en`, `pt-BR`, `es-419`, `fr-FR`, `fr-CA`, `de-DE`, `it-IT`, `tr-TR` — the exact set asserted at `:422`).
 
-13. **Migration filenames re-verified against `origin/main` at 12:10 MDT on 2026-09-19 and BUMPED.** `git ls-tree -r --name-only origin/main -- apps/api/migrations | grep '\.sql$' | sort | tail` now ends with two `2026-10-20-150000-*` files (`bare-metal-recoveries-dr-link`, `partner-api-contract-scopes`) that landed this morning, so the spec's original `150000`/`150100` would have sorted BEFORE `…-partner-api-contract-scopes.sql` and failed `check-migration-naming.sh` rule 3. Both files are therefore `2026-10-20-160000-filesystem-multi-volume.sql` and `2026-10-20-160100-filesystem-cleanup-run-status-running.sql` (W03's contraction migration is `160200`). Task 2 Step 1 re-runs `scripts/check-migration-naming.sh --against-ref origin/main` at commit time; if `main` has moved past `160100`, bump the time component on all three files (this wave's two and W03's) and record it here.
+13. **Migration filenames re-verified against `origin/main` at 12:10 MDT on 2026-09-19 and BUMPED.** `git ls-tree -r --name-only origin/main -- apps/api/migrations | grep '\.sql$' | sort | tail` now ends with two `2026-10-20-150000-*` files (`bare-metal-recoveries-dr-link`, `partner-api-contract-scopes`) that landed this morning, so the spec's original `150000`/`150100` would have sorted BEFORE `…-partner-api-contract-scopes.sql` and failed `check-migration-naming.sh` rule 3. Both files are therefore `2026-10-20-170000-filesystem-multi-volume.sql` and `2026-10-20-170100-filesystem-cleanup-run-status-running.sql` (W03's contraction migration is `170200`). Task 2 Step 1 re-runs `scripts/check-migration-naming.sh --against-ref origin/main` at commit time; if `main` has moved past `160100`, bump the time component on all three files (this wave's two and W03's) and record it here.
 14. **W02 does NOT remove `DeviceFilesystemTab.tsx` from `runActionAllowlist.ts`.** Spec §8 says the tab "leaves `runActionAllowlist.ts`" — that is a W03 item, when the tab's mutations are rewritten. Verified `apps/web/src/lib/runActionAllowlist.ts:17` lists the file today. W02 adds only GET traffic (the volumes hook) and re-points existing request bodies; it introduces no new mutation, so the entry stays and `no-silent-mutations.test.ts` is unaffected.
 
 > Amendments 15–18 come from the Codex `gpt-6-astra` xhigh quorum review recorded in spec §13 (findings #7, #8 and #18, plus one defect the review's #18 narrative exposed). All three §13 findings are adopted verbatim; they tighten rollout contracts the spec's §4 stated too loosely, and they supersede §4 where the two disagree.
@@ -60,11 +60,13 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 ---
 
+19. **Migration names bumped a second time at dispatch (2026-09-19 16:05 MDT).** `origin/main` gained `2026-10-20-160000-ai-tool-executions-created-at-idx.sql` after the plan was written; a same-prefix tie would sort only by slug, so this wave ships `2026-10-20-170000-filesystem-multi-volume.sql` and `2026-10-20-170100-filesystem-cleanup-run-status-running.sql`, and W03's contraction file is `2026-10-20-170200-filesystem-scan-path-not-null.sql`. All references in this document, the index, the spec and the W03 plan were updated in the W02 PR.
+
 ## Global Constraints
 
 - **Schema and code ship in ONE PR.** `upsertFilesystemScanState` currently uses `onConflictDoUpdate({ target: deviceFilesystemScanState.deviceId })` (`apps/api/src/services/filesystemAnalysis.ts:177-180`); once the single-column key is dropped that target names no unique index and every upsert fails with `42P10`. Never split this wave into a schema PR and a code PR (spec §4, "Writer contract change").
 - **Expand only; contract in W03.** Every column this wave adds is nullable or defaulted. No `SET NOT NULL`, no primary key, nothing an old replica can violate (amendments 15–16, spec §13 #7). **W03 owes `2026-10-20-15xx00-filesystem-scan-path-not-null.sql`**: `SET NOT NULL` on `device_filesystem_snapshots.scan_path` and `device_filesystem_scan_state.scan_path`, then `ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx`. That file is named in the W03 plan and in this PR's body; it is the only contract step, and it must not be attempted here.
-- **Migration filenames must sort strictly after every committed migration.** `2026-10-20-160000-filesystem-multi-volume.sql` then `2026-10-20-160100-filesystem-cleanup-run-status-running.sql`; re-check with `bash scripts/check-migration-naming.sh --against-ref origin/main` before pushing (CLAUDE.md, "Schema Migration Workflow").
+- **Migration filenames must sort strictly after every committed migration.** `2026-10-20-170000-filesystem-multi-volume.sql` then `2026-10-20-170100-filesystem-cleanup-run-status-running.sql`; re-check with `bash scripts/check-migration-naming.sh --against-ref origin/main` before pushing (CLAUDE.md, "Schema Migration Workflow").
 - **The enum add is its own file with no other statements.** A label added by `ALTER TYPE` cannot be used in the transaction that added it, and `autoMigrate` wraps each file in one (spec §4; precedent `apps/api/migrations/2026-10-17-110400-report-type-endpoint-management-review.sql`).
 - **Any migration that writes rows elects system scope first.** `PERFORM set_config('breeze.scope', 'system', true);` as the first statement inside every `DO` block that writes, per `apps/api/src/db/migrationRlsScope.test.ts`. Without it the backfill silently matches zero rows and `RAISE WARNING` prints a truthful-looking `0`. **Never add a file to that suite's `UNSCOPED_DML_BASELINE`.**
 - **Migrations are idempotent and never edited once shipped.** `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP INDEX IF EXISTS`, `pg_constraint` existence checks, backfills gated on `WHERE scan_path IS NULL`. No inner `BEGIN;`/`COMMIT;` — `autoMigrate` owns the transaction.
@@ -90,8 +92,8 @@ Every spec claim this wave depends on was re-verified against the working tree o
 |---|---|
 | `packages/shared/src/utils/scanPath.ts` (+ `.test.ts`) | `ScanPathOsType`, `osRootScanPath`, `normalizeScanPath` — the single definition of the key (Task 1) |
 | `packages/shared/src/utils/index.ts` | barrel export for the above (Task 1) |
-| `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql` | nullable `scan_path` ×3 + the two-pass backfills + the `(device_id, scan_path)` unique index + `kind`/`command_id`/`scan_generation` (Task 2) |
-| `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql` | `ALTER TYPE … ADD VALUE 'running'`, alone (Task 3) |
+| `apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql` | nullable `scan_path` ×3 + the two-pass backfills + the `(device_id, scan_path)` unique index + `kind`/`command_id`/`scan_generation` (Task 2) |
+| `apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql` | `ALTER TYPE … ADD VALUE 'running'`, alone (Task 3) |
 | `apps/api/src/db/schema/filesystem.ts` | Drizzle mirror: nullable `scanPath`, `kind`, `commandId`, `scanGeneration`, the unique index, the swapped snapshot index, the fourth enum label (Task 4) |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts:230-232` | the six new columns classified `included` (Task 4) |
 | `apps/api/src/__tests__/integration/filesystemMultiVolumeMigration.integration.test.ts` | backfill correctness, PK/index/constraint shape, replay idempotency (Task 5) |
@@ -412,7 +414,7 @@ EOF
 ### Task 2: Migration 1 — the scan-path axis, the PK swap, and the normalising backfills
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql`
+- Create: `apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql`
 
 **Interfaces:**
 - Consumes: `public.devices.os_type` (amendment 2), `public.device_filesystem_snapshots.raw_payload`, `public.device_disks.mount_point`.
@@ -434,12 +436,12 @@ Expected: the last line is `2026-10-20-150000-partner-api-contract-scopes.sql` (
 - [ ] **Step 2: Write the failing test** — this task's test is Task 5's replay suite, which cannot be written before the migration exists. The red step here is the guard that DOES run now: assert the file is absent and that the naming guard is clean once it lands. Run, before creating the file:
 
 ```bash
-ls apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+ls apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql
 ```
 
-Expected failure: `ls: apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql: No such file or directory`.
+Expected failure: `ls: apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql: No such file or directory`.
 
-- [ ] **Step 3: Implement** — create `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql`:
+- [ ] **Step 3: Implement** — create `apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql`:
 
 ```sql
 -- Disk Cleanup v2 W02 — the scan-path axis for filesystem analysis (spec §4,
@@ -711,7 +713,7 @@ DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path(text, text);
 - [ ] **Step 4: Run the naming guard and watch it pass**
 
 ```bash
-git add apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+git add apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql
 bash scripts/check-migration-naming.sh --staged
 bash scripts/check-migration-naming.sh --against-ref origin/main
 ```
@@ -737,7 +739,7 @@ Expected: `Test Files  1 passed (1)` — the filename matches the runner's `^\d{
 - [ ] **Step 7: Prove this migration adds no NOT NULL and no primary key (amendment 15)**
 
 ```bash
-grep -nE 'SET NOT NULL|ADD PRIMARY KEY|PRIMARY KEY \(' apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+grep -nE 'SET NOT NULL|ADD PRIMARY KEY|PRIMARY KEY \(' apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql
 ```
 
 Expected: **no output.** This is the expand half; a single `SET NOT NULL` here loses a snapshot for every scan an old replica completes during the deploy (spec §13 #7). The contract half is W03's file.
@@ -745,7 +747,7 @@ Expected: **no output.** This is the expand half; a single `SET NOT NULL` here l
 - [ ] **Step 8: Prove the helper does not leak into the schema**
 
 ```bash
-grep -c 'DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path' apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+grep -c 'DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path' apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql
 ```
 
 Expected: `2` — once before the `CREATE` (so a half-applied earlier attempt cannot block it) and once at the end of the file. The helper is a migration-local tool and must not survive it.
@@ -753,7 +755,7 @@ Expected: `2` — once before the `CREATE` (so a half-applied earlier attempt ca
 - [ ] **Step 9: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+git add apps/api/migrations/2026-10-20-170000-filesystem-multi-volume.sql
 git commit -m "$(cat <<'EOF'
 feat(db): scan-path axis for filesystem analysis (expand half)
 
@@ -798,7 +800,7 @@ EOF
 ### Task 3: Migration 2 — the `running` cleanup-run status, alone in its file
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql`
+- Create: `apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql`
 
 **Interfaces:**
 - Consumes: the `filesystem_cleanup_run_status` enum (`apps/api/migrations/0006-filesystem-analysis.sql:8`).
@@ -807,12 +809,12 @@ EOF
 - [ ] **Step 1: Write the failing check**
 
 ```bash
-ls apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
+ls apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql
 ```
 
-Expected failure: `ls: apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql: No such file or directory`.
+Expected failure: `ls: apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql: No such file or directory`.
 
-- [ ] **Step 2: Implement** — create `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql`:
+- [ ] **Step 2: Implement** — create `apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql`:
 
 ```sql
 -- Disk Cleanup v2 W02: the `running` cleanup-run status (spec §4). W04's
@@ -831,7 +833,7 @@ ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';
 - [ ] **Step 3: Run the guards and watch them pass**
 
 ```bash
-git add apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
+git add apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql
 bash scripts/check-migration-naming.sh --staged
 bash scripts/check-migration-naming.sh --against-ref origin/main
 cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
@@ -842,7 +844,7 @@ Expected: the two guard scripts exit 0; `Test Files  2 passed (2)`.
 - [ ] **Step 4: Prove the file contains exactly one statement**
 
 ```bash
-grep -c ';' apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
+grep -c ';' apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql
 ```
 
 Expected: `1`. More than one statement in an enum-add file is the bug this file's separation exists to prevent.
@@ -850,7 +852,7 @@ Expected: `1`. More than one statement in an enum-add file is the bug this file'
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
+git add apps/api/migrations/2026-10-20-170100-filesystem-cleanup-run-status-running.sql
 git commit -m "$(cat <<'EOF'
 feat(db): add the `running` filesystem cleanup-run status
 
@@ -1228,8 +1230,8 @@ EOF
 
 ```ts
 /**
- * Live-Postgres proof for 2026-10-20-160000-filesystem-multi-volume.sql and
- * 2026-10-20-160100-filesystem-cleanup-run-status-running.sql (spec §4).
+ * Live-Postgres proof for 2026-10-20-170000-filesystem-multi-volume.sql and
+ * 2026-10-20-170100-filesystem-cleanup-run-status-running.sql (spec §4).
  *
  * Prerequisites:
  *   pnpm test-stack up
@@ -1246,7 +1248,7 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
-const MIGRATION = '2026-10-20-160000-filesystem-multi-volume.sql';
+const MIGRATION = '2026-10-20-170000-filesystem-multi-volume.sql';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 async function seedDevice(osType: 'windows' | 'linux') {
@@ -5856,12 +5858,12 @@ state. Release-notes item.
 
 ## Migrations
 
-- `2026-10-20-160000-filesystem-multi-volume.sql` — nullable `scan_path` on all
+- `2026-10-20-170000-filesystem-multi-volume.sql` — nullable `scan_path` on all
   three tables, `scan_generation` on scan state, the `(device_id, scan_path)`
   unique index, the swapped snapshot index, `kind` + `command_id` on cleanup
   runs. Both backfills elect `breeze.scope = 'system'`, share one
   migration-local normalisation helper, and report their counts.
-- `2026-10-20-160100-filesystem-cleanup-run-status-running.sql` — the enum add,
+- `2026-10-20-170100-filesystem-cleanup-run-status-running.sql` — the enum add,
   alone in its file.
 
 The scan-state backfill runs in two passes (§13 #8): a legacy row keeps its

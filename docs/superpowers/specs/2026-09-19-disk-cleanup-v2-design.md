@@ -64,8 +64,8 @@ Mixed-version behaviour during W01 rollout (new API, old agent): old agents igno
 
 Two migrations (both idempotent; the first elects `SELECT set_config('breeze.scope','system',true)` before any write and reports backfill counts via `RAISE WARNING`). Names below sort after the newest files on `origin/main` as of 2026-09-19 12:10 MDT (two `2026-10-20-150000-*` files; the original `150000`/`150100` choice was bumped when they landed); the plan re-checks with `scripts/check-migration-naming.sh --against-ref origin/main` at commit time and bumps the time component if main has moved — the files must sort strictly after everything shipped.
 
-- `2026-10-20-160000-filesystem-multi-volume.sql` — DDL + backfill.
-- `2026-10-20-160100-filesystem-cleanup-run-status-running.sql` — `ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';` **alone**, per the repo convention (an added label cannot be used in the transaction that adds it, and autoMigrate wraps each file in one; precedent `2026-10-17-110400-report-type-endpoint-management-review.sql`).
+- `2026-10-20-170000-filesystem-multi-volume.sql` — DDL + backfill.
+- `2026-10-20-170100-filesystem-cleanup-run-status-running.sql` — `ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';` **alone**, per the repo convention (an added label cannot be used in the transaction that adds it, and autoMigrate wraps each file in one; precedent `2026-10-17-110400-report-type-endpoint-management-review.sql`).
 
 ```sql
 -- device_filesystem_snapshots
