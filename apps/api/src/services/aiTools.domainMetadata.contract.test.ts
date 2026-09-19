@@ -13,7 +13,7 @@ import {
 } from './aiTools';
 import { m365ToolSearchHints, m365ToolTiers } from './aiToolsM365';
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
-import { TOOL_TIERS, listChatSurfaceToolNames } from './aiAgentSdkTools';
+import { TOOL_TIERS, listChatSurfaceToolNames, buildBreezeSdkTools } from './aiAgentSdkTools';
 
 /** Provisional core set (spec "Domains" row `core`). A-W04 replaces this from A-W01 telemetry. */
 const CORE_ALWAYS_LOAD = ['list_organizations', 'query_devices', 'resolve_device_context', 'search_documentation'];
@@ -67,12 +67,25 @@ describe('AI tool domain metadata (A-W02)', () => {
     expect([...AI_TOOL_DOMAINS].filter((d) => !used.has(d))).toEqual([]);
   });
 
-  it('listChatSurfaceToolNames is TOOL_TIERS ∩ registry, sorted, and every entry has a domain', () => {
+  it('listChatSurfaceToolNames is sorted, a subset of TOOL_TIERS ∩ registry, every entry has a domain, and matches what buildBreezeSdkTools actually declares under the current env', () => {
     const chat = listChatSurfaceToolNames();
     expect(chat).toEqual([...chat].sort());
     const registered = new Set(names);
-    expect(chat).toEqual(Object.keys(TOOL_TIERS).filter((n) => registered.has(n)).sort());
+    const tieredAndRegistered = new Set(Object.keys(TOOL_TIERS).filter((n) => registered.has(n)));
+    expect(chat.every((n) => tieredAndRegistered.has(n))).toBe(true);
     expect(chat.filter((n) => !getToolDomain(n))).toEqual([]);
     expect(aiTools.size).toBeGreaterThan(0);
+
+    // The index must track what the chat/Helper SDK server actually declares
+    // under the CURRENT env, not the full TOOL_TIERS ∩ registry set (which
+    // includes tools env-gated off, e.g. m365_*/google_*/script proposal
+    // tools on a default install with no flags set).
+    const fakeAuth = () => { throw new Error('must not invoke tool handlers'); };
+    const declared = new Set(
+      buildBreezeSdkTools(fakeAuth as never)
+        .map((t) => t.name)
+        .filter((n) => registered.has(n)),
+    );
+    expect(new Set(chat)).toEqual(declared);
   });
 });

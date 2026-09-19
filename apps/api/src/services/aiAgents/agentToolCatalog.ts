@@ -65,7 +65,7 @@ export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standa
  * Widen an entry in the same commit as the tool that needs it, with a reason.
  */
 export const CAPABILITY_DOMAINS: Readonly<Record<AgentCapabilityId, readonly AiToolDomain[]>> = {
-  alerts_monitoring: ['monitoring', 'integrations', 'devices'], // notification channels; fleet hygiene findings
+  alerts_monitoring: ['monitoring', 'integrations', 'devices', 'patching'], // notification channels; fleet hygiene findings; manage_maintenance_windows domain is patching (#6341)
   services_startup: ['devices'],
   files_disk: ['devices'],
   scripts_commands: ['scripts', 'devices'],

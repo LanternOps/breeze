@@ -367,13 +367,26 @@ export const TOOL_TIERS = {
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 /**
- * Names the chat/Helper Agent SDK server registers: TOOL_TIERS keys that
- * resolve to registered tools. Lives here to avoid a reverse import cycle
- * from aiTools.ts and a CommonJS require in the ESM source runtime.
+ * Names the chat/Helper Agent SDK server ACTUALLY declares right now: the
+ * names `buildBreezeSdkTools` returns under the current process env (so
+ * env-gated tools — M365, Google Workspace, AI script authoring — drop out
+ * when their flag is off), intersected with the registry (so a chat-only
+ * SDK-bridge tool with no `aiTools`/tier-map entry, e.g.
+ * `propose_action_plan`, stays out). Evaluated fresh on every call — this is
+ * read once per `buildSystemPrompt` invocation, so it tracks env at session
+ * time, not at module-load time. `getAuth` is a throwing no-op: only the
+ * `tool()` declarations are built here, no handler ever runs. Lives here to
+ * avoid a reverse import cycle from aiTools.ts and a CommonJS require in the
+ * ESM source runtime.
  */
 export function listChatSurfaceToolNames(): string[] {
   const registered = new Set(getAllRegisteredToolNames());
-  return Object.keys(TOOL_TIERS).filter((name) => registered.has(name)).sort();
+  const fakeAuth = (): AuthContext => {
+    throw new Error('listChatSurfaceToolNames must not invoke tool handlers');
+  };
+  const declared = buildBreezeSdkTools(fakeAuth);
+  const names = new Set(declared.map((t) => t.name).filter((name) => registered.has(name)));
+  return [...names].sort();
 }
 
 // All tool names, prefixed for SDK MCP format

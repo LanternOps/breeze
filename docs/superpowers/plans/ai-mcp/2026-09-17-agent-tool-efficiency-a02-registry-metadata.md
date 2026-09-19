@@ -380,7 +380,7 @@ Three commits, one per group, so review stays readable. Every registration in th
 | `aiToolsFilesystem.ts`, `aiToolsRemote.ts`, `aiToolsPerformance.ts`, `aiToolsFleetStatus.ts` | devices | `manage_startup_items` devices; `get_invite_funnel` **admin** |
 | `aiToolsScripts.ts` | scripts | `manage_processes`, `manage_services`, `manage_scheduled_tasks`, `registry_operations` **devices**; the rest scripts |
 | `aiToolsScriptProposals.ts`, `aiToolsPlaybooks.ts` | scripts | all |
-| `aiToolsFleet.ts` | (per tool) | `manage_alert_rules`, `manage_service_monitors`, `manage_maintenance_windows` **monitoring**; `manage_patches`, `manage_deployments` **patching**; `manage_automations` **scripts**; `manage_groups`, `get_fleet_findings` **devices**; `generate_report` **admin** |
+| `aiToolsFleet.ts` | (per tool) | `manage_alert_rules`, `manage_service_monitors` **monitoring**; `manage_patches`, `manage_deployments`, `manage_maintenance_windows` **patching**; `manage_automations` **scripts**; `manage_groups`, `get_fleet_findings` **devices**; `generate_report` **admin** |
 | `aiToolsPolicyPrereqs.ts` | (per tool) | `manage_update_rings`, `manage_software_policies` **patching**; `manage_peripheral_policies` **security**; `manage_backup_configs`, `manage_backup_profiles` **backup** |
 | `aiToolsCompliance.ts`, `aiToolsSoftwarePolicyAudit.ts` | patching | `manage_software_policy`, `get_software_compliance`, `remediate_software_violation` patching; `get_compliance_status`, `query_compliance_policies` **security** |
 | `aiToolsVulnerability.ts` | patching | all three (spec: vulnerabilities sit under patching) |

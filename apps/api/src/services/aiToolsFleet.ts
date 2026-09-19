@@ -1848,7 +1848,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
-    domain: 'monitoring',
+    // Spec's Domains table (2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md)
+    // lists maintenance windows under `patching`, alongside patches, update
+    // rings and deployments — a patch-cadence construct, not monitoring.
+    domain: 'patching',
     searchHint: 'maintenance windows: list, get, check active now',
     deviceArgs: ['deviceIds'],
     definition: {
