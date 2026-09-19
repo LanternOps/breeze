@@ -36,6 +36,15 @@ describe('work_types partner-axis RLS', () => {
 
   afterAll(async () => {
     await withSystemDbAccessContext(() => db.execute(sql`
+      DELETE FROM time_entries WHERE partner_id IN (${partnerA}, ${partnerB})
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      DELETE FROM ticket_categories WHERE partner_id IN (${partnerA}, ${partnerB})
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      DELETE FROM users WHERE partner_id IN (${partnerA}, ${partnerB})
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
       DELETE FROM work_types WHERE partner_id IN (${partnerA}, ${partnerB})
     `));
     await withSystemDbAccessContext(() => db.execute(sql`
@@ -87,6 +96,62 @@ describe('work_types partner-axis RLS', () => {
       db.execute(sql`SELECT id FROM work_types WHERE id = ${id}`),
     )) as unknown as Array<{ id: string }>;
     expect(rows).toHaveLength(0);
+  });
+
+  it('FORGE: a time entry cannot point at another partner\'s work type (composite FK, 23503)', async () => {
+    const wtA = randomUUID();
+    const userB = randomUUID();
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO users (id, partner_id, email, name)
+      VALUES (${userB}, ${partnerB}, ${`wt-fk-${userB}@example.test`}, 'Work type FK user')
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO work_types (id, partner_id, name) VALUES (${wtA}, ${partnerA}, 'CrossFk')
+    `));
+
+    // System scope proves the constraint, not RLS. A real user and the exact
+    // constraint name prevent an unrelated foreign-key failure from passing.
+    await expect(
+      withSystemDbAccessContext(() => db.execute(sql`
+        INSERT INTO time_entries (partner_id, user_id, started_at, work_type_id)
+        VALUES (${partnerB}, ${userB}, now(), ${wtA})
+      `)),
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'time_entries_work_type_partner_fk' },
+    });
+
+    const wtB = randomUUID();
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO work_types (id, partner_id, name) VALUES (${wtB}, ${partnerB}, 'CrossFk')
+    `));
+    // Same-partner control: only the referenced work type changes.
+    await expect(
+      withSystemDbAccessContext(() => db.execute(sql`
+        INSERT INTO time_entries (partner_id, user_id, started_at, work_type_id)
+        VALUES (${partnerB}, ${userB}, now(), ${wtB})
+      `)),
+    ).resolves.toBeDefined();
+  });
+
+  it('FORGE: a category cannot default to another partner\'s work type (composite FK, 23503)', async () => {
+    const wtA = randomUUID();
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO work_types (id, partner_id, name) VALUES (${wtA}, ${partnerA}, 'CategoryFk')
+    `));
+    await expect(
+      withSystemDbAccessContext(() => db.execute(sql`
+        INSERT INTO ticket_categories (partner_id, name, default_work_type_id)
+        VALUES (${partnerB}, 'Cross-partner default', ${wtA})
+      `)),
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'ticket_categories_default_work_type_partner_fk' },
+    });
+    await expect(
+      withSystemDbAccessContext(() => db.execute(sql`
+        INSERT INTO ticket_categories (partner_id, name, default_work_type_id)
+        VALUES (${partnerA}, 'Same-partner default', ${wtA})
+      `)),
+    ).resolves.toBeDefined();
   });
 
   it('UNIQUE (partner_id, lower(name)) is case-insensitive within a partner and does NOT collide across partners', async () => {
