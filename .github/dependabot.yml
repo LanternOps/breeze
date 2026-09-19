@@ -16,7 +16,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/New_York"
-    open-pull-requests-limit: 10
+    # 15, not 10: the root batch hit exactly 10 every Monday from
+    # 2026-08-17 through 2026-09-07, so anything sorted past the limit
+    # was starved indefinitely.
+    open-pull-requests-limit: 15
     groups:
       # Expo SDK packages must move together: a solo expo major bump
       # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.
@@ -109,6 +112,16 @@ updates:
           - "eslint"
           - "@eslint/*"
           - "prettier"
+        update-types:
+          - "minor"
+          - "patch"
+      # Agent SDK and API client move together (agent-sdk peers on sdk).
+      # Ungrouped they needed two of the weekly PR slots and lost every
+      # Monday from 2026-08 on — the batch saturated at the limit and
+      # both packages sat 90+ releases behind (checked 2026-09-14).
+      anthropic:
+        patterns:
+          - "@anthropic-ai/*"
         update-types:
           - "minor"
           - "patch"

@@ -2174,6 +2174,237 @@ describe('releaseApprovedIntent', () => {
         { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
       );
     });
+
+    // -----------------------------------------------------------------------
+    // #6200: `manage_patches:install` has the exact same shape as
+    // log_time_entry — `patch_jobs.created_by` is a `users` FK NOT NULL and
+    // `services/aiToolsFleet.ts`'s install branch writes `auth.user.id` into
+    // it. Released under the rebuilt AGENT auth that id is an `aiAgents.id`,
+    // so the insert is a guaranteed 23503 the technician sees as
+    // `execution_error` right after their WebAuthn approval (observed three
+    // times on US prod 2026-09-18). The approver owns the job they approved.
+    // -----------------------------------------------------------------------
+    describe('manage_patches:install (#6200)', () => {
+      const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+      const PATCH_ID = '33333333-3333-4333-8333-333333333333';
+      const installArgs = {
+        action: 'install',
+        patchIds: [PATCH_ID],
+        deviceIds: [DEVICE_ID],
+      };
+
+      function installIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+        return baseIntent({
+          actionName: 'manage_patches',
+          arguments: installArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(installArgs)),
+          riskTier: 3,
+          approvalScope: 'supervised',
+          requestedByUserId: null,
+          requestingAgentRunId: 'run-1',
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: 'agent-1',
+          decidedByUserId: APPROVER_ID,
+          ...overrides,
+        } as Partial<ActionIntent>);
+      }
+
+      it('releases an install intent as the approving technician so patch_jobs.created_by is a real user', async () => {
+        const intent = installIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true, jobId: 'job-1' }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ id: intent.id }), APPROVER_ID,
+        );
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          'manage_patches',
+          expect.objectContaining({ action: 'install', deviceIds: [DEVICE_ID] }),
+          approverAuth,
+          {
+            context: {
+              actionIntentId: intent.id,
+              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+              approverRelease: { approverUserId: APPROVER_ID },
+            },
+          },
+        );
+        // The DB context the install ran under is the approver's, not the
+        // agent's — `patch_jobs.created_by` is only a valid users FK because
+        // of this swap.
+        expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+        expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_patches', installArgs, approverAuth);
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.anything(),
+        );
+      });
+
+      it('refuses to release an install intent with no decided_by_user_id (fails closed, never executes)', async () => {
+        const intent = installIntent({ decidedByUserId: null });
+        primeAgentRelease(intent);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'approver_required' }),
+        );
+      });
+
+      it('fails closed with rbac_denied when the approver lacks patches:write', async () => {
+        const intent = installIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission: patches:write');
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+        );
+      });
+
+      it('leaves a non-user-owned manage_patches action (scan) on the rebuilt agent auth', async () => {
+        const scanArgs = { action: 'scan', deviceIds: [DEVICE_ID] };
+        const intent = installIntent({
+          arguments: scanArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(scanArgs)),
+        });
+        primeAgentRelease(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          'manage_patches', expect.anything(), agentAuth,
+          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+        );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // #6200 review round: `USER_OWNED_RELEASE_ACTIONS`'s own header requires
+    // "a pair only with its own release test". `manage_patches:install` got
+    // one above; these are the other two entries. `manage_deployments:create`
+    // matters most — it is a DIFFERENT tool with its own org/site plumbing, so
+    // nothing above proves the worker hands IT an approver auth; and
+    // `manage_patches:rollback` is the only four_eyes entry, where
+    // `decided_by_user_id` is the single deciding approver (four_eyes means
+    // the agent proposes and one human disposes, not two human approvers).
+    // -----------------------------------------------------------------------
+    describe.each([
+      {
+        label: 'manage_deployments:create (supervised, deployments.created_by)',
+        tool: 'manage_deployments',
+        scope: 'supervised' as const,
+        args: {
+          action: 'create',
+          name: 'Agent-proposed rollout',
+          type: 'script',
+          payload: { scriptId: '44444444-4444-4444-8444-444444444444' },
+          targetType: 'device_group',
+          targetConfig: { groupId: '55555555-5555-4555-8555-555555555555' },
+          rolloutConfig: { batchSize: 10 },
+        },
+      },
+      {
+        label: 'manage_patches:rollback (four_eyes, patch_rollbacks.initiated_by)',
+        tool: 'manage_patches',
+        scope: 'four_eyes' as const,
+        args: {
+          action: 'rollback',
+          patchId: '66666666-6666-4666-8666-666666666666',
+          deviceIds: ['77777777-7777-4777-8777-777777777777'],
+        },
+      },
+    ])('$label', ({ tool, scope, args: releaseArgs }) => {
+      function siblingIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+        return baseIntent({
+          actionName: tool,
+          arguments: releaseArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(releaseArgs)),
+          riskTier: 3,
+          approvalScope: scope,
+          requestedByUserId: null,
+          requestingAgentRunId: 'run-1',
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: 'agent-1',
+          decidedByUserId: APPROVER_ID,
+          ...overrides,
+        } as Partial<ActionIntent>);
+      }
+
+      it('releases as the approving technician, never the agent', async () => {
+        const intent = siblingIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ id: intent.id }), APPROVER_ID,
+        );
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          tool,
+          expect.objectContaining({ action: releaseArgs.action }),
+          approverAuth,
+          {
+            context: {
+              actionIntentId: intent.id,
+              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia },
+              approverRelease: { approverUserId: APPROVER_ID },
+            },
+          },
+        );
+        expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+        expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(tool, releaseArgs, approverAuth);
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.anything(),
+        );
+      });
+
+      it('refuses with no decided_by_user_id (fails closed, never executes)', async () => {
+        const intent = siblingIntent({ decidedByUserId: null });
+        primeAgentRelease(intent);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'approver_required' }),
+        );
+      });
+
+      it("fails closed with rbac_denied when the approver lacks the tool's own permission", async () => {
+        const intent = siblingIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission');
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+        );
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

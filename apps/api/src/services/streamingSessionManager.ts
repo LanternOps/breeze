@@ -587,10 +587,13 @@ export interface ActiveSession {
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
   /**
-   * Results of `analysis` runs this session launched that have finished but
-   * whose summary has not yet been shown to the model (execution-plane spec
-   * §5.5). Filled by `services/workspace/chatRunBridge.ts` out of band; drained
-   * by `POST /ai/sessions/:id/messages` and prepended to the next user message.
+   * Results of `analysis` runs associated with this session that have
+   * finished but whose summary has not yet been shown to the model
+   * (execution-plane spec §5.5). Chat-initiated launch is currently disabled
+   * (#6086), so nothing populates this from a live chat turn today; the field
+   * is retained for when delegated authorization lands. Filled by
+   * `services/workspace/chatRunBridge.ts` out of band; drained by
+   * `POST /ai/sessions/:id/messages` and prepended to the next user message.
    * Optional so existing `ActiveSession` fixtures compile unchanged.
    */
   pendingRunResults?: PendingRunResult[];

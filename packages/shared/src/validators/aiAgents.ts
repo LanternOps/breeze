@@ -83,6 +83,10 @@ const limitsFields = z.object({
   maxDesignRunsPerDay: z.number().int().min(1).max(24),
   designBudgetCentsPerRun: z.number().int().min(25).max(2000),
   designMaxTurns: z.number().int().min(8).max(120),
+  // #5870 — pinned design-profile wall clock; same bounds as
+  // analysisWallClockSeconds (60s floor, 1800s ceiling — the validator's
+  // global wallClockSeconds max).
+  designWallClockSeconds: z.number().int().min(60).max(1800),
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring. Per-day cap over a
   // 24h window like design; a patch run is one-per-org-per-day.

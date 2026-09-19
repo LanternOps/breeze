@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
@@ -14,6 +15,7 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { PERMISSIONS } from '../services/permissions';
+import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -36,9 +38,8 @@ import { PERMISSIONS } from '../services/permissions';
  *   membership, site scope, role grants, session ownership, device state,
  *   agent connectivity, and policy.
  *
- * Known gaps (documented, not bugs): `<base href>` injection fixes relative
- * URLs in most printer UIs, but absolute-URL or JS-constructed URLs that point
- * straight at the LAN host won't be rewritten and will 404 through the proxy.
+ * HTML/CSS URLs and common browser request APIs are rewritten to the tunnel.
+ * Direct JavaScript location assignments and WebSocket upgrades remain unsupported.
  * Per-user rate limiting is intentionally deferred to the Task 8 security pass.
  */
 export const tunnelHttpRoutes = new Hono();
@@ -91,7 +92,6 @@ const HOP_BY_HOP = new Set([
 const FORWARDABLE_REQUEST_HEADERS = new Set([
   'accept',
   'accept-language',
-  'accept-encoding',
   'user-agent',
   'content-type',
   'content-length',
@@ -250,17 +250,6 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
   return out;
 }
 
-/** Inject `<base href>` so relative URLs in the framed page resolve via proxy. */
-function injectBaseTag(html: string, basePath: string): string {
-  const tag = `<base href="${basePath}">`;
-  const headMatch = html.match(/<head[^>]*>/i);
-  if (headMatch && headMatch.index !== undefined) {
-    const idx = headMatch.index + headMatch[0].length;
-    return html.slice(0, idx) + tag + html.slice(idx);
-  }
-  return tag + html;
-}
-
 // ---------------------------------------------------------------------------
 // The proxy route.
 // ---------------------------------------------------------------------------
@@ -313,10 +302,11 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
     });
 
+    // Subresources originate in the sandbox's opaque origin: Lax is insufficient.
     setCookie(c, authCookieName, await signTunnelCookie(consumed.userId, tunnelId), {
       httpOnly: true,
       secure: true,
-      sameSite: 'Lax',
+      sameSite: 'None',
       path: basePath,
       maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
     });
@@ -376,7 +366,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: 'None',
     path: basePath,
     maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
   });
@@ -514,8 +504,31 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Set-Cookie headers already appended above.
   respHeaders.append('set-cookie', refreshedCookie);
 
-  if (contentType.toLowerCase().includes('text/html')) {
-    body = injectBaseTag(body.toString('utf8'), basePath);
+  const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
+    ? `[${session.targetHost}]` : session.targetHost;
+  const rewriteOptions = { basePath, targetOrigin: `${scheme}://${targetHost}:${session.targetPort}` };
+  const isHtml = contentType.toLowerCase().includes('text/html');
+  if (isHtml || contentType.toLowerCase().includes('text/css')) {
+    const encodings = (respHeaders.get('content-encoding') ?? 'identity')
+      .split(',').map((encoding) => encoding.trim().toLowerCase());
+    // Check the entire stack first: an unknown encoding must pass through with
+    // its original bytes and headers, even when another layer is supported.
+    if (encodings.every((encoding) => ['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
+      try {
+        for (const encoding of encodings.reverse()) {
+          if (encoding === 'gzip') body = gunzipSync(body);
+          else if (encoding === 'deflate') body = inflateSync(body);
+          else if (encoding === 'br') body = brotliDecompressSync(body);
+        }
+      } catch {
+        return c.text('Malformed upstream content encoding', 502);
+      }
+      body = isHtml
+        ? rewriteTunnelHtml(body.toString('utf8'), rewriteOptions)
+        : rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
+      respHeaders.delete('content-encoding');
+      respHeaders.set('content-length', String(Buffer.byteLength(body)));
+    }
   }
 
   // Buffer isn't a DOM `BodyInit`; hand the runtime a Uint8Array for binary

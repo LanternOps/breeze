@@ -67,6 +67,21 @@
     "openInBrowser": "Im Browser öffnen",
     "policyDisabled": "Remote-Desktop ist durch Richtlinie deaktiviert",
     "policyDisabledNamed": "Der Remotedesktop ist durch die Richtlinie „{{name}}“ deaktiviert.",
+    "revoked": {
+      "title": "Sitzung widerrufen",
+      "setUpMfa": "MFA einrichten",
+      "reasons": {
+        "session_ended": "Die Sitzung war bereits beendet.",
+        "user_inactive": "Ihr Konto ist nicht mehr aktiv.",
+        "epoch_baseline_missing": "Ihre Berechtigungen konnten nicht überprüft werden. Versuchen Sie erneut, eine Verbindung herzustellen.",
+        "permissions_changed": "Ihre Berechtigungen haben sich geändert, nachdem diese Sitzung begonnen hat. Stellen Sie die Verbindung erneut her, um mit Ihrem aktuellen Zugriff fortzufahren.",
+        "membership_removed": "Sie haben keinen Zugriff mehr auf diese Organisation oder dieses Gerät.",
+        "site_scope_lost": "Dieses Gerät liegt außerhalb Ihres zugewiesenen Standortbereichs.",
+        "mfa_required": "Für den Remote-Desktop-Zugriff ist jetzt eine Multi-Faktor-Authentifizierung erforderlich.",
+        "hard_deadline": "Diese Sitzung hat die maximal zulässige Dauer erreicht.",
+        "default": "Die Sitzung wurde durch eine Sicherheitsrichtlinie beendet. Versuchen Sie es erneut."
+      }
+    },
     "unavailable": {
       "default": "Desktop ist auf diesem Gerät nicht verfügbar",
       "headless": "Dieses Gerät verfügt über keine Anzeige – der Remote-Desktop ist nicht verfügbar",

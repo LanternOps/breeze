@@ -11,6 +11,7 @@ import {
 } from '../../db/schema/scriptProposals';
 import { sha256Content } from '../scriptVersions';
 import type { AuthContext } from '../../middleware/auth';
+import { scopeDeviceIdsToCaller } from '../aiToolsSiteScope';
 
 export type ScriptProposalAuthor =
   // sessionId is nullable: the chat SDK's tool handlers receive `(input, auth)`
@@ -121,14 +122,41 @@ export async function attachProposalToSession(
 export async function getScriptProposalForPrincipal(
   auth: AuthContext,
   proposalId: string,
-): Promise<ScriptProposalRow | null> {
+): Promise<(ScriptProposalRow & { scopedDeviceIds: string[] | null }) | null> {
   const orgCond = auth.orgCondition(scriptProposals.orgId);
   const [row] = await db
     .select()
     .from(scriptProposals)
     .where(orgCond ? and(eq(scriptProposals.id, proposalId), orgCond) : eq(scriptProposals.id, proposalId))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  // Exact-device axis (#6096 #12). A proposal is device-attributable through
+  // `target_device_ids` — its goal, script body and static-scan hits are ABOUT
+  // those machines — and this read takes no deviceId, so nothing else narrows
+  // it. A proposal naming none of the caller's devices fails closed.
+  const scoped = await scopedTargetDeviceIds(auth, row.orgId, row.targetDeviceIds);
+  if (scoped !== null && scoped.length === 0) return null;
+  // The scoped list rides back on the row so the tool's echo does not re-run the
+  // device scan (and cannot forget to narrow).
+  return { ...row, scopedDeviceIds: scoped };
+}
+
+/**
+ * The proposal's target device ids this caller may see: `null` for a caller
+ * restricted on NEITHER axis (no narrowing), otherwise the intersection of the
+ * exact-device allowlist AND the caller's sites. Used both to admit the read
+ * above and to filter the ids echoed back to the model.
+ *
+ * Site is included because branching on `auth.allowedDeviceIds` alone narrowed
+ * an agent run correctly and was a complete no-op for a site-restricted human —
+ * the caller this axis exists to constrain (audit 2026-09-17 §1.1).
+ */
+export function scopedTargetDeviceIds(
+  auth: AuthContext,
+  orgId: string,
+  targetDeviceIds: unknown,
+): Promise<string[] | null> {
+  return scopeDeviceIdsToCaller(auth, orgId, targetDeviceIds);
 }
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;

@@ -26,20 +26,12 @@ describe('runFrozenDeviceIds', () => {
     expect(runFrozenDeviceIds(auth({}))).toBeNull();
   });
 
-  it('returns null when a site axis is present, leaving device-bound runs unchanged', () => {
-    // A full/verdict/triage run reads its device's SITE today. Silently
-    // tightening that to the single device is a behaviour change nobody asked
-    // for, so the helper deliberately declines to narrow here.
-    expect(runFrozenDeviceIds(auth({
-      allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'],
-    }))).toBeNull();
+  it('retains the exact device scope when a site axis is present', () => {
+    expect(runFrozenDeviceIds(auth({ allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] }))).toEqual(['d1']);
   });
 
-  it('returns null for an empty frozen set rather than "match nothing"', () => {
-    // An analysis run admitted with zero devices reads no device data by
-    // construction; `[]` here would be indistinguishable from "unrestricted"
-    // at the call sites, which is the failure mode worth being explicit about.
-    expect(runFrozenDeviceIds(auth({ allowedDeviceIds: [] }))).toBeNull();
+  it('returns an empty set for a caller allowed no devices', () => {
+    expect(runFrozenDeviceIds(auth({ allowedDeviceIds: [] }))).toEqual([]);
   });
 
   it('copies the array, so a caller cannot mutate the AuthContext through it', () => {

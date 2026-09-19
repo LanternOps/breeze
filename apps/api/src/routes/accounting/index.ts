@@ -3,9 +3,10 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections, invoices } from '../../db/schema';
+import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import {
   authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
 } from '../../middleware/auth';
@@ -760,6 +761,55 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
     lastReconcileAt: connection.lastReconcileAt,
     // Phase D2 — whether Breeze pushes its own payments into QuickBooks.
     pushPayments: connection.pushPayments,
+  });
+});
+
+// Read from the outbox, not surviving payments: an owed delete must remain
+// visible after voidPayment removes its invoice_payments row.
+accountingRoutes.get('/:provider/owed-operations', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const invoiceMapping = alias(accountingEntityMappings, 'owed_invoice_mapping');
+  const rows = await db.select({
+    id: accountingEntityMappings.id,
+    pendingOp: accountingEntityMappings.pendingOp,
+    lastError: accountingEntityMappings.lastError,
+    pendingSince: sql<Date>`coalesce(${accountingEntityMappings.pendingSince}, ${accountingEntityMappings.createdAt})`.mapWith(accountingEntityMappings.createdAt),
+    invoiceId: invoices.id,
+    invoiceNumber: invoices.invoiceNumber,
+  }).from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+      eq(accountingConnections.provider, provider),
+    ))
+    .leftJoin(invoicePayments, eq(invoicePayments.id, accountingEntityMappings.breezeEntityId))
+    // Payment remote ids encode Payment/Invoice. This recovers the invoice
+    // after deletion; both mapping axes must match to avoid crossing realms.
+    .leftJoin(invoiceMapping, and(
+      eq(invoiceMapping.integrationId, accountingEntityMappings.integrationId),
+      eq(invoiceMapping.partnerId, accountingEntityMappings.partnerId),
+      eq(invoiceMapping.breezeEntityType, 'invoice'),
+      eq(invoiceMapping.remoteEntityId, sql`split_part(${accountingEntityMappings.remoteEntityId}, '/', 2)`),
+    ))
+    .leftJoin(invoices, and(
+      eq(invoices.id, sql`coalesce(${invoicePayments.invoiceId}, ${invoiceMapping.breezeEntityId})`),
+      eq(invoices.partnerId, partner.partnerId),
+    ))
+    .where(and(
+      eq(accountingEntityMappings.partnerId, partner.partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      isNotNull(accountingEntityMappings.pendingOp),
+    ))
+    .orderBy(asc(accountingEntityMappings.pendingSince), asc(accountingEntityMappings.id));
+  const now = Date.now();
+  return c.json({
+    count: rows.length,
+    data: rows.map((row) => ({
+      ...row,
+      ageSeconds: Math.max(0, Math.floor((now - row.pendingSince.getTime()) / 1000)),
+    })),
   });
 });
 

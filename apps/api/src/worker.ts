@@ -90,12 +90,14 @@
  *      then the phases run (drain → workers → queues → eventbus → redis → db →
  *      sentry), mirroring index.ts's Part A semantics.
  */
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { resolveReadinessTiming } from './config/readinessConfig';
 import { validateConfig } from './config/validate';
@@ -450,7 +452,10 @@ export async function bootWorker(): Promise<void> {
     getDbPoolHealthWindowMs,
     startDbPoolHealthMonitor,
     stopDbPoolHealthMonitor,
+    startWedgedBackendMonitor,
+    stopWedgedBackendMonitor,
   } = await import('./db/dbPoolHealthMonitor');
+  const { getWedgedBackendMinAgeMs } = await import('./db/wedgedBackends');
   // Registers the role-agnostic runtime series onto the shared registry and
   // binds the CONNECT_TIMEOUT counter recorder. Dynamic because its graph
   // reaches `db/dbPoolHealthMonitor` -> `postgres`; the health server above is
@@ -475,6 +480,23 @@ export async function bootWorker(): Promise<void> {
       `[worker][db-pool-health] Watchdog started (interval ${dbPoolHealthIntervalMs}ms, `
       + `window ${getDbPoolHealthWindowMs()}ms, probe threshold `
       + `${getDbPoolHealthMinTimeouts()} CONNECT_TIMEOUT(s) per window)`,
+    );
+  }
+
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[worker][db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[worker][db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
     );
   }
 
@@ -580,6 +602,7 @@ export async function bootWorker(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
 
@@ -652,6 +675,7 @@ export async function bootWorker(): Promise<void> {
     // `database-unreachable` about a process that is simply shutting down).
     stopEventLoopMonitor();
     stopDbPoolHealthMonitor();
+    stopWedgedBackendMonitor();
 
     if (auditRetryInterval) {
       clearInterval(auditRetryInterval);

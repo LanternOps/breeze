@@ -362,6 +362,7 @@ import {
   getRefreshRateWindowSeconds,
   beginAuthIssuance,
   finishAuthIssuance,
+  cancelAuthIssuance,
   issueUserSession,
   bindIssuedUserSession,
   recordAuthTransitionLegacyIssuer,
@@ -1041,6 +1042,90 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /login — MFA branch fails closed when Redis is unavailable (#6177)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: ['scrypt$v1$hash-1'],
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+    process.env.E2E_MODE = 'true';
+    vi.mocked(getRedis).mockReset();
+    vi.mocked(getRedis).mockImplementation(() => ({ setex: vi.fn(async () => 'OK') }) as any);
+  });
+
+  it('returns a retryable 503 (not a crash, not a token) when getRedis() is null at the MFA branch', async () => {
+    vi.mocked(getRedis).mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Service temporarily unavailable' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    // The admitted issuance capability is released rather than finished.
+    expect(finishAuthIssuance).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 503 when Redis flips unavailable between the rate-limit check and the MFA branch', async () => {
+    process.env.E2E_MODE = '';
+    const setexMock = vi.fn(async () => 'OK');
+    // The top-of-handler rate-limit read sees a live client; every later
+    // getRedis() call — including the one in the MFA branch — sees null,
+    // i.e. the connection dropped mid-request.
+    vi.mocked(getRedis)
+      .mockReturnValueOnce({ setex: setexMock } as any)
+      .mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 without a tempToken when the pending-record write rejects (e.g. Redis OOM under noeviction)', async () => {
+    const setexMock = vi.fn(async () => {
+      throw new Error("OOM command not allowed when used memory > 'maxmemory'.");
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(setexMock).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

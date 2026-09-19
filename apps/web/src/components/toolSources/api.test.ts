@@ -130,6 +130,23 @@ describe('tool sources API client', () => {
     expect(JSON.parse(fetcher.mock.calls[5]![1].body as string)).toEqual({ mode: 'enable_reads' });
   });
 
+  it('resolves a successful delete even though the route answers {success,id}, not a data envelope', async () => {
+    // DELETE /tool-sources/:id returns `{ success: true, id }` like every
+    // other delete route (CLAUDE.md delete-route convention) — it never
+    // carries a `data` envelope. Running it through `unwrapData` would throw
+    // "missing data envelope" on a successful delete.
+    fetcher.mockResolvedValueOnce(ok({ success: true, id: 's-1' }));
+    await expect(deleteToolSource(fetcher, 's-1')).resolves.toBeUndefined();
+  });
+
+  it('rejects a failed delete with the server-provided error', async () => {
+    fetcher.mockResolvedValueOnce(ok({ error: 'Partner-wide sources require partner-policy access' }, 403));
+    await expect(deleteToolSource(fetcher, 's-1')).rejects.toMatchObject({
+      status: 403,
+      message: 'Partner-wide sources require partner-policy access',
+    });
+  });
+
   it('ids are URL-encoded, so a hostile id cannot escape the path', async () => {
     fetcher.mockResolvedValueOnce(ok({ data: {} }));
     await getToolSource(fetcher, 'a/b?c');

@@ -142,11 +142,16 @@ async function sendDeploymentInvitesHandler(
         customMessage: input.custom_message,
       });
 
+      // Platform sender, deliberately (spec §8.2, D3): deployment invites carry
+      // installer links to arbitrary typed addresses — the exact shape hosted
+      // abuse takes — so the recipient must see Breeze's name and abuse contact,
+      // never an MSP's domain. `partnerId` is in scope here and is NOT passed.
       await emailSvc.sendEmail({
         to: email,
         subject: tmpl.subject,
         html: tmpl.html,
         text: tmpl.text,
+        purpose: 'deployment.invite',
       });
 
       const [row] = await db

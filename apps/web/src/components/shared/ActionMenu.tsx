@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreHorizontal } from 'lucide-react';
 import { useMenuKeyboard } from '../billing/shared/menuKeyboard';
 
@@ -40,7 +41,16 @@ export interface ActionMenuProps {
  * and Escape closes and returns focus to the trigger. Renders nothing when there
  * are no items, so callers can pass a permission-filtered list without
  * guarding the trigger themselves.
+ *
+ * The popup renders through a portal into `document.body` with `position:
+ * fixed`, anchored to the trigger's rect. A row menu lives inside
+ * `ResponsiveTable`'s `overflow-x-auto` wrapper, and any non-visible overflow
+ * on one axis clips BOTH axes — an `absolute` popup was cut off by the table
+ * on the last rows. It flips above the trigger when there is no room below,
+ * and follows the trigger on scroll/resize.
  */
+const MENU_GAP_PX = 4;
+
 export function ActionMenu({ label, items, testId, triggerClassName, triggerTabIndex }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -52,11 +62,45 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
   useEffect(() => {
     if (!open) return;
     const onDocumentMouseDown = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // The popup is portalled out of `rootRef`, so it has to be checked too —
+      // otherwise a mousedown on an item closes the menu before its click lands.
+      if (rootRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDocumentMouseDown);
     return () => document.removeEventListener('mousedown', onDocumentMouseDown);
   }, [open]);
+
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({ position: 'fixed', top: 0, right: 0 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const menuHeight = listRef.current?.offsetHeight ?? 0;
+      const below = rect.bottom + MENU_GAP_PX;
+      // Flip above the trigger when the menu would run off the viewport bottom
+      // and there is more room above than below.
+      const flip = below + menuHeight > window.innerHeight && rect.top > window.innerHeight - rect.bottom;
+      setMenuStyle({
+        position: 'fixed',
+        top: flip ? Math.max(MENU_GAP_PX, rect.top - MENU_GAP_PX - menuHeight) : below,
+        right: Math.max(0, window.innerWidth - rect.right),
+      });
+    };
+    place();
+    // Capture phase: a scroll inside ANY ancestor (the table's own x-scroller
+    // included) moves the trigger, and scroll events do not bubble.
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [open, listRef]);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -65,6 +109,10 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
       triggerRef.current?.focus();
       return;
     }
+    // The popup is portalled to the end of <body>, so a natural Tab from an
+    // item would leave the page. Hand focus to the trigger first (no
+    // preventDefault): the browser's Tab / Shift+Tab then moves on from the row.
+    if (event.key === 'Tab') triggerRef.current?.focus();
     onMenuKeyDown(event);
   };
 
@@ -104,13 +152,14 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
       >
         <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={listRef}
           role="menu"
           aria-label={label}
           onKeyDown={handleKeyDown}
-          className="absolute right-0 z-20 mt-1 min-w-44 overflow-hidden rounded-md border bg-popover py-1 shadow-md"
+          style={menuStyle}
+          className="z-50 min-w-44 overflow-hidden rounded-md border bg-popover py-1 shadow-md"
         >
           {items.map((item) => {
             const body = (
@@ -134,7 +183,8 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
               </Fragment>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

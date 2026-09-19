@@ -106,6 +106,62 @@ function effectiveDeadline(deadline: Date, grantedAt: Date | null, graceDays: nu
   return shortened.getTime() < deadline.getTime() ? shortened : deadline;
 }
 
+/** Raw, already-fetched per-user facts a read-only caller (e.g. an admin list
+ * view) has on hand — no DB access, so no `readGraceFacts` round trip. */
+export interface MfaGracePreviewInput {
+  /** `mfa_enabled === true` OR a live passkey exists. */
+  hasFactor: boolean;
+  /** `users.mfa_epoch` — 1 means the account has never held a factor. */
+  mfaEpoch: number;
+  /** Persisted `users.mfa_enrollment_deadline`, or null if never granted. */
+  deadline: Date | null;
+  /** Persisted `users.mfa_enrollment_grace_granted_at`, or null. */
+  grantedAt: Date | null;
+  /** Resolved `security.mfaEnrollmentGraceDays` (already clamped). */
+  graceDays: number;
+  /** Injectable for tests; defaults to wall-clock `new Date()`. */
+  now?: Date;
+}
+
+/**
+ * Read-only counterpart to `evaluateMfaEnrollmentGrace`, for callers (the
+ * Admin → Users list) that must derive display status for MANY users without
+ * issuing a grant per row — `evaluateMfaEnrollmentGrace` writes
+ * `mfa_enrollment_deadline` exactly once per account, which a GET endpoint
+ * must never trigger as a side effect of being viewed.
+ *
+ * When a grant already exists, this reproduces `evaluateMfaEnrollmentGrace`'s
+ * decision exactly (same `effectiveDeadline` math). When no grant exists yet
+ * (the account has never hit the live enrollment gate), there is nothing
+ * persisted to read — this previews what a grant made right now would look
+ * like (`now + graceDays`) purely for display. It is NOT what
+ * `evaluateMfaEnrollmentGrace` will necessarily grant (the real grant runs on
+ * the DB clock at first login) and this function never writes anything.
+ */
+export function previewMfaEnrollmentGrace(input: MfaGracePreviewInput): MfaGraceFacts {
+  if (input.hasFactor) return { hasFactor: true, deadline: null, expired: false };
+  if (input.mfaEpoch !== 1) {
+    // Same rule as evaluateMfaEnrollmentGrace: an account that has ever held a
+    // factor (enrolled, self-disabled, or admin-reset) gets no window.
+    return { hasFactor: false, deadline: null, expired: false };
+  }
+
+  const now = input.now ?? new Date();
+  if (input.deadline) {
+    const effective = effectiveDeadline(input.deadline, input.grantedAt, input.graceDays);
+    return { hasFactor: false, deadline: effective, expired: now.getTime() >= effective.getTime() };
+  }
+
+  // No grant persisted yet — preview only, not a real deadline. `graceDays` is
+  // legally 0 (resolveMfaGraceDays clamps only < 0, not === 0 — "0 disables
+  // the window" per its own JSDoc), in which case a real grant right now would
+  // set deadline = grantedAt immediately, i.e. already expired. Report that
+  // truthfully — otherwise a partner running graceDays=0 sees "pending" for a
+  // user real enforcement would gate this instant.
+  const preview = new Date(now.getTime() + input.graceDays * 86_400_000);
+  return { hasFactor: false, deadline: preview, expired: input.graceDays <= 0 };
+}
+
 type Executor = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
 
 /**

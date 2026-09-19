@@ -1,9 +1,12 @@
 /**
  * Worker run events → a live chat session (execution-plane spec §5.5).
  *
- * `workspace_launch_analysis` admits a run and returns immediately; the run then
- * executes on the WORKER role. Its terminal event is published to Redis by
- * `finishRun` (`aiAgents/runLoop.ts`), but `EventBus.subscribe` handlers fire
+ * Chat-initiated launch is currently disabled (#6086; the launch tool is
+ * fully deregistered — see `workspaceLaunchLimits.ts`), so nothing seeds this
+ * bridge from within a turn today. The wiring is retained for when delegated
+ * authorization lands: a launch admits a run and returns immediately, the run
+ * then executes on the WORKER role, and its terminal event is published to
+ * Redis by `finishRun` (`aiAgents/runLoop.ts`) — but `EventBus.subscribe` handlers fire
  * only in the publishing process — so an API process holding the technician's
  * chat session would never see it. This bridge closes that gap the same way
  * `services/eventDispatcher.ts` does for the events WebSocket: one Redis

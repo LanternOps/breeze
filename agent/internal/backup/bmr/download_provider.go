@@ -62,7 +62,7 @@ var retrySleep = func(ctx context.Context, d time.Duration) error {
 }
 
 // downloadStatusError is a typed HTTP-status download failure so callers
-// (shouldRefresh, the retry loop) can branch on the status code directly
+// (isSessionExpired, the retry loop) can branch on the status code directly
 // instead of substring-matching the formatted error text.
 type downloadStatusError struct {
 	statusCode int
@@ -98,8 +98,8 @@ func (e *downloadStatusError) Is(target error) bool {
 
 // isRetryableDownloadStatus reports whether a status is a transient
 // condition worth retrying with backoff. Any other 4xx (401/403/404/etc.) is
-// permanent — 401/403 are instead handled by the existing re-authenticate
-// path in Download.
+// permanent here — a 401 is instead handled by Download's session refresh
+// (download_session.go).
 func isRetryableDownloadStatus(code int) bool {
 	switch code {
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
@@ -206,8 +206,33 @@ type recoveryDownloadProvider struct {
 	serverURL string
 	token     string
 
+	// mu guards descriptor, generation and lostErr.
 	mu         sync.RWMutex
 	descriptor *AuthenticatedDownloadDescriptor
+	// generation counts successful session refreshes, so a download that
+	// hit 401 on generation N can tell whether someone else already
+	// refreshed past N (see refreshAfterUnauthorized).
+	generation uint64
+	// lostErr, once set, is a run-level failure (wraps
+	// ErrRecoverySessionLost): every later Download returns it without
+	// touching the network. See download_session.go.
+	lostErr error
+
+	// sessionMu serialises session refreshes (single-flight) and guards the
+	// fields below. It is never held while a download is in flight.
+	sessionMu sync.Mutex
+	// lastAuthAt is when the current session was established, on the
+	// LOCAL clock (monotonic) — the proactive refresh's rate bound.
+	lastAuthAt time.Time
+	// authNotBefore is the earliest time another authenticate may be sent
+	// (a server Retry-After, or our own backoff).
+	authNotBefore time.Time
+	// proactiveTriedFor is the descriptor expiresAt a proactive refresh was
+	// already attempted for — at most one attempt per expiry.
+	proactiveTriedFor time.Time
+
+	// now is the clock seam for tests.
+	now func() time.Time
 }
 
 func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, descriptor *AuthenticatedDownloadDescriptor) *recoveryDownloadProvider {
@@ -216,6 +241,10 @@ func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, d
 		serverURL:  serverURL,
 		token:      token,
 		descriptor: rewriteDescriptorOrigin(serverURL, descriptor),
+		// The bootstrap carrying descriptor was authenticated just before
+		// the provider is built (authenticate or exchange).
+		lastAuthAt: time.Now(),
+		now:        time.Now,
 	}
 }
 
@@ -306,40 +335,53 @@ func (p *recoveryDownloadProvider) Download(remotePath, localPath string) error 
 		return fmt.Errorf("bmr: create destination directory: %w", err)
 	}
 
-	if err := p.downloadWithRetry(remotePath, localPath); err == nil {
-		return nil
-	} else if !p.shouldRefresh(err) {
+	if err := p.sessionLost(); err != nil {
+		return err
+	}
+	p.maybeRefreshBeforeExpiry()
+
+	generation := p.sessionGeneration()
+	err := p.downloadWithRetry(remotePath, localPath)
+	if err == nil || !isSessionExpired(err) {
 		return err
 	}
 
-	bootstrap, authErr := authenticateRecoverySessionContext(p.ctx, p.serverURL, p.token)
-	if authErr != nil {
-		return fmt.Errorf("%w; re-authenticate failed: %v", authErr, authErr)
+	if refreshErr := p.refreshAfterUnauthorized(generation); refreshErr != nil {
+		return refreshErr
 	}
-	if bootstrap.Download == nil {
-		return fmt.Errorf("bmr: refreshed bootstrap missing download descriptor")
-	}
-	p.mu.Lock()
-	p.descriptor = rewriteDescriptorOrigin(p.serverURL, bootstrap.Download)
-	p.mu.Unlock()
 
-	return p.downloadWithRetry(remotePath, localPath)
+	err = p.downloadWithRetry(remotePath, localPath)
+	if err != nil && isSessionExpired(err) {
+		// The session was re-established a moment ago and still answers
+		// 401: authenticating again cannot help, and doing it per file is
+		// the flood #5635 is about.
+		return p.markSessionLost(fmt.Errorf("download still unauthorized after re-authenticating: %w", err))
+	}
+	return err
 }
 
-func (p *recoveryDownloadProvider) shouldRefresh(err error) bool {
+// isSessionExpired reports whether a download failure means the recovery
+// session (not this one object) is no longer accepted. Only 401: the
+// recovery download route answers every session-level rejection — expired
+// window, revoked/expired/used token, invalid token — with 401 and never
+// sends 403. A 403 can only come from a storage redirect target (an S3/MinIO
+// presigned URL answering AccessDenied for one object), which a new session
+// cannot fix; treating it as a session expiry re-authenticated once per such
+// file.
+func isSessionExpired(err error) bool {
 	var statusErr *downloadStatusError
 	if !errors.As(err, &statusErr) {
 		return false
 	}
-	return statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden
+	return statusErr.statusCode == http.StatusUnauthorized
 }
 
 // downloadWithRetry retries downloadOnce with exponential backoff on a
 // transient status (429/502/503/504), honoring the server's Retry-After
 // header when present instead of the internal schedule. It keeps retrying
 // until it has waited at least downloadRetryMaxTotalWait cumulative time,
-// then gives up. Non-retryable errors (including 401/403, left for
-// Download's existing re-authenticate path, and any non-HTTP error) return
+// then gives up. Non-retryable errors (including 401, left for Download's
+// session refresh, and any non-HTTP error) return
 // immediately on the first attempt.
 func (p *recoveryDownloadProvider) downloadWithRetry(remotePath, localPath string) error {
 	delay := downloadRetryInitialDelay

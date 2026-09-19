@@ -1,9 +1,13 @@
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), handleSessionExpired: vi.fn() }));
+vi.mock('@/lib/downloadBlob', () => ({ downloadBlob: vi.fn() }));
 
 import RunArtifactsSection from './RunArtifactsSection';
+import { fetchWithAuth } from '@/stores/auth';
+import { downloadBlob } from '@/lib/downloadBlob';
 
 const artifact = {
   id: 'a1',
@@ -42,6 +46,26 @@ describe('RunArtifactsSection (spec §5.8, §8)', () => {
     expect(queryByTestId('run-artifact-preview-a1')).toBeNull();
     fireEvent.click(getByTestId('run-artifact-preview-toggle-a1'));
     expect(getByTestId('run-artifact-preview-a1').textContent).toContain('alice,09:14');
+  });
+
+  it.each([
+    'application/pdf', 'application/octet-stream',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ])('keeps downloads but hides historical binary previews for %s', (contentType) => {
+    const { getByTestId, queryByTestId } = render(<RunArtifactsSection artifacts={[{ ...artifact, contentType }]} />);
+    expect(getByTestId('run-artifact-download-a1')).toBeTruthy();
+    expect(queryByTestId('run-artifact-preview-toggle-a1')).toBeNull();
+    expect(queryByTestId('run-artifact-preview-a1')).toBeNull();
+  });
+
+  it('downloads through authenticated fetch when the artifact link is clicked', async () => {
+    const blob = new Blob(['user,when\nalice,09:14']);
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, headers: new Headers(), blob: async () => blob } as Response);
+    const { getByTestId } = render(<RunArtifactsSection artifacts={[artifact]} />);
+    fireEvent.click(getByTestId('run-artifact-download-a1'));
+    await waitFor(() => expect(downloadBlob).toHaveBeenCalledWith(blob, 'failed-logons.csv'));
+    expect(fetchWithAuth).toHaveBeenCalledWith('/api/v1/ai/artifacts/a1');
   });
 
   it('never interprets preview bytes as markup', () => {

@@ -25,6 +25,11 @@ type AssetMonitoringDetail = {
   snmpDevice: SnmpDevice | null;
   networkMonitors?: { totalCount: number; activeCount: number };
 };
+type SuggestTemplateEnvelope = {
+  sysObjectId: string | null;
+  assetType: string | null;
+  suggestion: TemplateSuggestion | null;
+};
 type AssetNetworkCheck = {
   id: string;
   name: string;
@@ -117,7 +122,9 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     if (suggestionFailed && suggestResult.status === 'rejected') {
       console.warn('[network-settings] template suggestion failed', assetId, suggestResult.reason);
     }
-    setSuggestion(suggestResult.status === 'fulfilled' ? suggestResult.value ?? null : null);
+    setSuggestion(suggestResult.status === 'fulfilled'
+      ? (suggestResult.value as SuggestTemplateEnvelope | null)?.suggestion ?? null
+      : null);
     setLoading(false);
   }, [assetId, t]);
 
@@ -189,10 +196,18 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     }
     const payload: SnmpUpsertInput = {
       snmpVersion: draft.snmpVersion,
-      templateId: draft.templateId || null,
       pollingInterval: draft.pollingInterval,
       port: draft.port,
     };
+    // #6099: the server treats an ABSENT templateId as "no explicit choice,
+    // auto-apply a suggestion" and an explicit `null` as "clear it" — two
+    // different requests. Only include the key when the user actually
+    // touched the template selector in this edit (a pick or an explicit
+    // clear); leaving it untouched must omit the key so server-side
+    // auto-apply stays reachable.
+    if (draft.templateId !== baseline.templateId) {
+      payload.templateId = draft.templateId || null;
+    }
     if (draft.snmpVersion === 'v3') {
       if (draft.username.trim()) payload.username = draft.username.trim();
       payload.authProtocol = draft.authProtocol;

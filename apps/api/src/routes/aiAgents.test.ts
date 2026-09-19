@@ -1326,6 +1326,7 @@ const runDetailResponseSchema = z.object({
       region: z.enum(['eu', 'us']),
       status: z.string(),
       bootstrapHash: z.string().nullable(),
+      runtimeImage: z.string().nullable(),
       createdAt: z.string(),
       readyAt: z.string().nullable(),
       destroyedAt: z.string().nullable(),
@@ -2275,7 +2276,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }));
     selectMock.mockReturnValueOnce(selectChain([
       {
-        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc',
+        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc', runtimeImage: 'analysis@sha256:abc',
         createdAt: new Date('2026-09-13T10:00:00Z'), readyAt: new Date('2026-09-13T10:00:04Z'),
         destroyedAt: new Date('2026-09-13T10:03:00Z'),
         cpuMs: 41_000, wallMs: 176_000, memAllocatedMb: 2048,
@@ -2297,6 +2298,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.artifacts[0]!.downloadPath)
       .toBe('/api/v1/ai/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(parsed.data.workspace?.steps[0]!.language).toBe('python');
+    expect(parsed.data.workspace?.runtimeImage).toBe('analysis@sha256:abc');
     expect(parsed.data.computeCents).toBe(0);
     // The blob key never leaves the API — asserted on the RAW body, because the
     // strict schema above would have thrown on an extra key but says nothing
@@ -3595,6 +3597,27 @@ describe('POST /ai-agents/graduation/promote', () => {
         },
       }),
     );
+  });
+
+  // Site ceiling (audit §1.1): this route raises the very same
+  // `manage_ai_agents:authorize_supervised_key` grant the AI tool does, and
+  // the tool's handler refuses a site-restricted raiser
+  // (`canMutateOrgWideGovernance`, services/aiToolsAiAgentGovernance.ts). The
+  // HTTP twin had only `canAccessOrg`, so the ceiling was bypassable by
+  // calling the route directly. The grant is org-wide by construction — there
+  // is no per-site slice of "this org may run this op unattended".
+  it('denies a SITE-RESTRICTED caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedSiteIds: [SITE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an exact-device-restricted caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedDeviceIds: [DEVICE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
   });
 
   it('409s while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off, without raising anything', async () => {

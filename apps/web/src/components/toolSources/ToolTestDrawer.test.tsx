@@ -121,6 +121,32 @@ describe('ToolTestDrawer', () => {
     expect(screen.getByTestId('tool-test-error')).toBeTruthy();
   });
 
+  // #6102: a tool whose source has flipped to `error` must read as a
+  // distinct, actionable message — not the generic 404 a real access/missing
+  // problem gets. `testSourceTool` (api.ts) already surfaces the server's
+  // `code` on the thrown ActionError; `runAction`'s existing `errors:<CODE>`
+  // lookup (see lib/runAction.ts) picks it up and swaps in the translated
+  // copy before ToolTestDrawer ever sees the raw server string.
+  it('renders the translated tool_source_unavailable message, not the raw server text', async () => {
+    const user = userEvent.setup();
+    testSourceTool.mockRejectedValueOnce(
+      new ActionError(
+        'Tool source "Hudu" is not active (status: error)',
+        503,
+        'tool_source_unavailable',
+        { error: 'Tool source "Hudu" is not active (status: error)', code: 'tool_source_unavailable', sourceStatus: 'error' },
+      ),
+    );
+    render(<ToolTestDrawer sourceId="s-1" tool={tool()} onClose={vi.fn()} />);
+
+    await user.click(screen.getByTestId('tool-test-run'));
+
+    expect((await screen.findByTestId('tool-test-error')).textContent).toBe(
+      "This tool's source is currently unavailable",
+    );
+    expect(screen.queryByTestId('tool-test-result')).toBeNull();
+  });
+
   it('leaves a 401 to the auth redirect rather than painting it inline', async () => {
     const user = userEvent.setup();
     testSourceTool.mockRejectedValueOnce(new ActionError('Unauthorized', 401));

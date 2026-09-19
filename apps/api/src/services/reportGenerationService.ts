@@ -350,6 +350,30 @@ type DeviceInventoryRow = {
   serialNumber: string | null;
 };
 
+/** Shared row query; callers retain their own authority checks and narrowing. */
+export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) {
+  return db
+    .select({
+      deviceId: devices.id,
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+      osType: devices.osType,
+      osVersion: devices.osVersion,
+      agentVersion: devices.agentVersion,
+      status: devices.status,
+      lastSeenAt: devices.lastSeenAt,
+      enrolledAt: devices.enrolledAt,
+      cpuModel: deviceHardware.cpuModel,
+      ramTotalMb: deviceHardware.ramTotalMb,
+      diskTotalGb: deviceHardware.diskTotalGb,
+      serialNumber: deviceHardware.serialNumber
+    })
+    .from(devices)
+    .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), ...conditions))
+    .orderBy(devices.hostname);
+}
+
 export async function generateDeviceInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -386,28 +410,7 @@ export async function generateDeviceInventoryReport(
     conditions.push(inArray(devices.osType, filters.osTypes));
   }
 
-  const whereCondition = and(...conditions);
-
-  const data = await db
-    .select({
-      deviceId: devices.id,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-      osType: devices.osType,
-      osVersion: devices.osVersion,
-      agentVersion: devices.agentVersion,
-      status: devices.status,
-      lastSeenAt: devices.lastSeenAt,
-      enrolledAt: devices.enrolledAt,
-      cpuModel: deviceHardware.cpuModel,
-      ramTotalMb: deviceHardware.ramTotalMb,
-      diskTotalGb: deviceHardware.diskTotalGb,
-      serialNumber: deviceHardware.serialNumber
-    })
-    .from(devices)
-    .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
-    .where(whereCondition)
-    .orderBy(devices.hostname);
+  const data = await readDeviceInventoryRows(orgId, conditions);
 
   const rows: DeviceInventoryRow[] = [...data];
 
@@ -475,6 +478,22 @@ export async function generateDeviceInventoryReport(
   return { rows, rowCount: rows.length };
 }
 
+/** Shared row query; the org/non-ephemeral predicates are mandatory. */
+export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]) {
+  return db
+    .select({
+      softwareName: deviceSoftware.name,
+      version: deviceSoftware.version,
+      publisher: deviceSoftware.publisher,
+      installDate: deviceSoftware.installDate,
+      deviceHostname: devices.hostname
+    })
+    .from(deviceSoftware)
+    .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), ...conditions))
+    .orderBy(deviceSoftware.name, devices.hostname);
+}
+
 export async function generateSoftwareInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -492,20 +511,7 @@ export async function generateSoftwareInventoryReport(
     return emptyRowsReport();
   }
 
-  const whereCondition = and(...conditions);
-
-  const data = await db
-    .select({
-      softwareName: deviceSoftware.name,
-      version: deviceSoftware.version,
-      publisher: deviceSoftware.publisher,
-      installDate: deviceSoftware.installDate,
-      deviceHostname: devices.hostname
-    })
-    .from(deviceSoftware)
-    .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
-    .where(whereCondition)
-    .orderBy(deviceSoftware.name, devices.hostname);
+  const data = await readSoftwareInventoryRows(orgId, conditions);
 
   return { rows: data, rowCount: data.length };
 }
