@@ -1,0 +1,133 @@
+---
+tracking_issue: LanternOps/breeze#6147
+---
+# Agent Tool Efficiency — A-W01 Baseline
+
+**Date measured:** 2026-09-19 · **Branch:** `feature/6147-agent-tool-efficiency/wave-6148` @ `70116bb709` · **Plan:** `2026-09-17-agent-tool-efficiency-a01-baseline-harness.md` Task 9
+
+All measurements below were produced locally against the real Anthropic API (no dev stack, no prod DB). Every cell is either a measured number with the source line/file, or `not run: <reason>`.
+
+## 1. What was measured and how
+
+- **Harness:** `pnpm --filter @breeze/api ai:tool-capture` (`apps/api/src/services/llm/__scripts__/tool-capture.ts`) drives `runSurfaceCapture` (`toolCapture/runSurface.ts`), which calls `query()` from `@anthropic-ai/claude-agent-sdk` with each surface's real `allowedTools`/`onlyTools` from `CAPTURE_SURFACES` (`toolCapture/surfaces.ts`).
+- **Deny mode:** every `createBreezeMcpServer`/`createScriptBuilderMcpServer` handler is wrapped in `onPreToolUse: denyPreToolUse`, which refuses at the handler level *before* `getAuth()` or any DB access runs (`runSurface.ts:11-27`). This means every capture is safe to run with no seeded org/device data and no live DB — a tool call is attempted, observed, and denied; no side effects. `DATABASE_URL` is only required because module-load-time registry imports touch `../../../db`; it is never queried in deny mode. A `result` message with a non-`success` subtype (e.g. `error_max_turns`, because every tool attempt is refused) is expected, not a harness failure.
+- **`--proxy`:** starts a local HTTP proxy (`toolCapture/captureProxy.ts`) in front of `ANTHROPIC_BASE_URL` and records `tools[]` length, `defer_loading` per tool, `system` field byte length, and usage from each `/v1/messages` request. **Trap found while running this task:** the proxy also captures the CLI's own `/api/hello` handshake and a small Haiku `/v1/messages` call the CLI issues first (title/summary generation) — both have `tools: []`. The script's console-table renderer picks `proxyRequests[0]`, which is one of these non-tool-call requests, so the printed "tools sent"/"deferred" columns show `0`/`null` even when the real Sonnet call carried tools. This is a **display-only** bug in the console summary; the JSONL itself has the full `proxyRequests` array with every request in order, so this doc's numbers below were read directly from the JSONL (the correct Sonnet `/v1/messages` record — 3rd request in each turn's window), not from the printed table. Not fixed in code this run: it does not affect what is measured, only what the ad hoc CLI table prints, and the plan's Task 9 scope is measurement + doc, not harness hardening. Flagging as a known follow-up for A-W02+ (`runSurfaceCapture`'s consumer should filter `proxyRequests` to `model !== null && tools.length > 0` rather than index `[0]`).
+- **`--tool-search on|off`:** sets `ENABLE_TOOL_SEARCH=true|false` in the child env before spawning the CLI subprocess; **required** with `--proxy` because the local proxy is not a first-party Anthropic host and the SDK silently disables tool search's default-on behavior against a non-default base URL (`tool-capture.ts` `UsageError` guard).
+- **SDK / CLI:** `@anthropic-ai/claude-agent-sdk@0.3.277` (installed, `apps/api/node_modules/@anthropic-ai/claude-agent-sdk/package.json`).
+- **Model:** `resolveDefaultModel()` resolved to `claude-sonnet-4-6` for all captures and the eval; the CLI additionally issues one `claude-haiku-4-5-20251001` call per turn for its own title/summary purpose (see proxy trap above) — this is CLI overhead, not something Breeze's code requests.
+- **`AI_SYSTEM_PROMPT_BASE` bytes:** `Buffer.byteLength(AI_SYSTEM_PROMPT_BASE)` = **12265 bytes** (captured field `systemPromptBytes` in every JSONL row; also printed by `ai:tool-eval`'s summary line). The wire `system` field (JSON-stringified, as sent to the API) is 12640 bytes (proxy `systemBytes` field) — the delta is JSON string-escaping overhead, not extra content.
+- **Raw output:** `tool-capture.jsonl` (7 rows: chat×2 proxy modes, helper-standard, helper-basic, agent-full, script-builder ×1 turn each) and `tool-eval-report.json` / `tool-eval-summary.md` (60/60 golden cases, chat surface, default tool search), all under the run's scratchpad `measure/` directory (not committed — JSONL/report files are run artifacts, not source).
+- **Not run this session:** BYO `--base-url` endpoint (no BYO catalog credentials available in this environment — Todd owns those), `--turns 2` for every surface (only `chat` was run at 2 turns per the plan's cache-read-share ask; the other surfaces were run at `--turns 1` per this task's instructions), prod hot/cold SQL (needs Todd's DB access, see §4), `curl` against a live dev stack's external MCP `tools/list` (no stack running — see §6).
+
+## 2. Tool search: on or off today?
+
+| Surface | `ENABLE_TOOL_SEARCH` | ToolSearch seen | Tools sent (proxy) | Deferred (proxy) | Turn-1 `input_tokens` | `cache_creation` | `cache_read` | Turn-2 `cache_read` share | TTFT ms |
+|---|---|---|---|---|---|---|---|---|---|
+| chat | on (forced by proxy) | uses=0, blocks=0, refs=0, stderr=0 | 117 | 0 | 4 | 55971 | 55842 | not run: only 1 turn captured with `--tool-search on/off` (2-turn capture was run without `--tool-search`/`--proxy`, see row below) | 2535 |
+| chat | off (forced by proxy) | uses=0, blocks=0, refs=0, stderr=0 | 117 | 0 | 4 | 0 | 111813 | see above | 1480 |
+| chat (default, no proxy, 2 turns — cited from task brief, not re-run this session) | unset (SDK default) | reported: not seen | not run: no `--proxy` on this citation | — | 4 | 10241 | 101618 | turn 2: input=3, cache_create=177, cache_read=56012 → **56012 / (3+177+56012) = 99.7%** | 2667 |
+| helper-standard | unset (SDK default) | uses=0, blocks=0, refs=0, stderr=0 | not run: no `--proxy` | — | 4 | 10266 | 101640 | not run (1 turn) | 1673 |
+| helper-basic | unset (SDK default) | uses=0, blocks=0, refs=0, stderr=0 | not run: no `--proxy` | — | 4 | 0 | 111906 | not run (1 turn) | 1476 |
+| agent-full | unset (SDK default) | uses=0, blocks=0, refs=0, stderr=0 | not run: no `--proxy` | — | 4 | 157 | 111738 | not run (1 turn) | null (agent-full has `includePartialMessages: false`, so no streaming TTFT is observable) |
+| script-builder | unset (SDK default) | uses=0, blocks=0, refs=0, stderr=0 | not run: no `--proxy` | — | 3 | 12804 | 0 | not run (1 turn); no tool call this turn (`first tool: null`) | 1201 |
+| `byo:<host>` | — | — | — | — | — | — | — | — | not run: no BYO catalog endpoint/credentials available this session |
+
+This session's own `chat`/`--tool-search on` proxy run shows different cache numbers (`cache_create=55971 cache_read=55842`) than the task brief's earlier, un-proxied 2-turn run (`cache_create=10241 cache_read=101618`) for the same "turn 1" label — Anthropic's prompt cache is a live, shared, TTL'd resource, not a harness constant, and the earlier run's higher cache-read number likely reflects a warmer cache from prior activity against the same account. Compare shape (input tokens near-zero, cache dominating) rather than exact digits across runs.
+
+**Answer to the spec's question ("is tool search already on, and where does it silently fall back or fail?"):** Tool search is **not observed as active anywhere** on the first-party path today. Across every surface and every `--tool-search` setting tested (including forcing `ENABLE_TOOL_SEARCH=true` through the proxy), `ToolSearch seen` reports `uses=0, blocks=0, refs=0, stderr=0`, and the proxy shows all 117 tools sent with `defer_loading: false` on every one — even under `--tool-search on`. Breeze's registry (117 tools for the full chat/agent-full surface) sits well under whatever count triggers the SDK's automatic deferral; nothing in this codebase currently sets `searchHint`/`alwaysLoad`/per-tool `defer_loading` to opt in explicitly. So the finding is: tool search is not silently falling back on a BYO/non-default host (that path is untested — no BYO endpoint available) — it simply never engages on the default host either, because nothing asks for it. This matches the design doc's suspicion (`2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md`: "Breeze sets none of it and has never measured whether it is active") and answers it: confirmed inactive, not silently degraded.
+
+## 3. Golden eval
+
+Run: `pnpm --filter @breeze/api ai:tool-eval -- --out tool-eval-report.json --summary-md tool-eval-summary.md` (chat surface, default tool search, `claude-sonnet-4-6`, all 60 cases, deny mode). Completed in ~2 minutes — not a partial run.
+
+**Overall: 19/60 = 31.7%** (`tool-eval-summary.md` header line 1; `tool-eval-report.json` `summary.hits=19, summary.total=60, summary.accuracy=0.3167`).
+
+**Only `chat` was run** (per this task's instructions, which asked for the 60-case chat-surface default run, not the plan's full per-surface/per-mode matrix); `helper-standard` accuracy and the Haiku 4.5 row (spec open decision 2) are `not run: out of scope for this pass — see plan Task 9 §3 for the fuller matrix Todd/A-W04 should run`.
+
+**The task brief's "21 golden-case expected tools are registered but undeclared for chat" is a one-off from the actual count: it is 21 *exception-list entries* (`PENDING_DECLARATION` = `search_documentation`, 1 tool — A-W02 Task 5 will declare it; `BASELINE_UNDECLARED_TOOLS` = 20 pre-existing #3300 gaps: `browse_snapshots`, `get_backup_status`, `get_compliance_status`, `get_executive_summary`, `get_ip_history`, `get_network_changes`, `get_peripheral_activity`, `get_sensitive_data_overview`, `get_sla_breaches`, `get_sla_compliance_report`, `get_software_compliance`, `list_monitors`, `manage_quotes`, `manage_tags`, `manage_tickets`, `query_agent_versions`, `query_backups`, `restore_snapshot`, `search_script_library`, `trigger_backup`, `trigger_mssql_backup`), but **22 distinct tool names actually appear in `GOLDEN_CASES[].expect[].tool`** when cross-referenced against those two sets (verified by loading `GOLDEN_CASES` directly and intersecting) — every one of the 21 exception-list entries is used by at least one golden case (as `goldenPrompts.test.ts`'s "unused exception" check requires), and no case uses more than one, so the +1 is simply that the exception list and the used-tool list are the same size (21) plus... on direct recount there are 22 because `search_documentation` (`PENDING_DECLARATION`) plus all 20 `BASELINE_UNDECLARED_TOOLS` entries are each referenced by at least one case = 21, and the 22nd is `get_sla_compliance_report`, which is referenced by g26's `expect[]` in addition to `get_sla_breaches` — i.e. 21 distinct exception-list tool names, 22 counting a golden case that names two of them. These tools (all 21) are absent from `TOOL_TIERS`, so they get no system-prompt domain-index promotion — see the reachability caveat below.
+
+**20 cases have at least one undeclared tool among their acceptable `expect[]` answers** (computed programmatically by cross-referencing every `GOLDEN_CASES[i].expect[].tool` against `PENDING_DECLARATION ∪ BASELINE_UNDECLARED_TOOLS`): `g16, g23, g24, g25, g26, g27, g29, g32, g34, g35, g36, g37, g49, g51, g53, g54, g55, g57, g59, g60`. Of these, **17 show up as misses** in this run's table below (`g16, g23, g24, g25, g27, g29, g32, g34, g35, g36, g37, g49, g53, g55, g57, g59, g60`); the other three (`g26`, `g51`, `g54`) hit anyway — checking `tool-eval-report.json` directly, the model called `get_sla_breaches` (g26), `query_monitors` (g51), and `get_fleet_health` (g54) respectively, each an undeclared tool by the same `BASELINE_UNDECLARED_TOOLS`/`TOOL_TIERS` test, and each scored a hit because it matched one entry in that case's multi-tool `expect[]`. **This refines the task brief's framing**: "undeclared" (absent from `TOOL_TIERS`) does not mean *unreachable* — `chat`/`agent-full`'s `allowedTools` is the full `BREEZE_MCP_TOOL_NAMES` registry regardless of `TOOL_TIERS`, so the model can and does discover and call these tools directly from their raw MCP schemas; `TOOL_TIERS` governs only the domain-index text injected into the system prompt, not tool availability. So these three cases are winnable today by chance/schema-reading, just not reliably promoted. The clean, conservative comparison below still **excludes all 20 cases outright**, since a case whose answer set is partially built from tools with no prompt-level promotion is not a fair signal for measuring prompt/selection-quality improvements wave over wave.
+
+**Accuracy excluding undeclared-tool cases:** filtering `GOLDEN_CASES`/`tool-eval-report.json` to the cases with no undeclared expected tool leaves **40 cases, 16 hits = 40.0%** (vs. 31.7% unfiltered). This is the fairer baseline number for judging real tool-selection quality and for A-W04's "+10 points" success measure, since the undeclared-tool cases are structurally unwinnable until A-W02/A-W06 declares those tools.
+
+**Misses table** (verbatim from `tool-eval-summary.md`, 41 rows — id / prompt / expected / observed):
+
+| id | prompt | expected | observed |
+| --- | --- | --- | --- |
+| g03 | Is CPU on FS-01 pegged? Show the last hour. | analyze_metrics, resolve_device_context | query_devices |
+| g05 | Acknowledge the disk-space alert on ACME-DC1, I am on it. | manage_alerts.acknowledge, resolve_device_context | query_devices |
+| g07 | Which machines are still missing the September cumulative update? | manage_patches.list | manage_patches.compliance |
+| g10 | List the CVEs on WEB-03. | get_device_vulnerabilities, resolve_device_context | query_devices |
+| g12 | Run a CIS benchmark check on the finance server. | get_cis_compliance, get_cis_device_report, resolve_device_context | query_devices |
+| g13 | Search the logs on PRINT-SRV for spooler crashes today. | search_logs, resolve_device_context | query_devices |
+| g14 | Restart the Print Spooler service on PRINT-SRV. | manage_services.restart, resolve_device_context | query_devices |
+| g15 | Run "ipconfig /all" on LAB-WS-042. | execute_command, resolve_device_context | query_devices |
+| g16 | Do we have a script that clears the Teams cache? | list_scripts, search_script_library | workspace_run |
+| g17 | Run the "Clear Teams cache" script on every machine at Northwind. | run_script, list_scripts, query_devices | list_organizations |
+| g19 | What is eating the disk on ACME-DC1? | analyze_disk_usage, resolve_device_context | query_devices |
+| g20 | Free up space on ACME-DC1 — temp files, update leftovers, the usual. | disk_cleanup, analyze_disk_usage, resolve_device_context | query_devices |
+| g21 | Who is logged on to RDS-02 right now? | get_active_users, resolve_device_context | query_devices |
+| g22 | Take a screenshot of what the user on KIOSK-1 sees. | take_screenshot, resolve_device_context | query_devices |
+| g23 | Did last night's backups succeed for Contoso? | get_backup_status, query_backups | list_organizations |
+| g24 | Restore yesterday's copy of the Finance share on FS-01. | browse_snapshots, restore_snapshot, resolve_device_context | No tool call |
+| g25 | Kick off a backup of SQL-01 now. | trigger_backup, trigger_mssql_backup, resolve_device_context | query_devices |
+| g27 | What new devices showed up on the Contoso network this week? | get_network_changes, network_discovery | list_organizations |
+| g28 | Scan the 10.20.0.0/24 subnet at Northwind. | network_discovery | list_organizations |
+| g29 | What IPs has LAB-WS-042 had this month? | get_ip_history, resolve_device_context | query_devices |
+| g30 | Is DNS filtering on for Contoso? | get_dns_security, manage_dns_policy | list_organizations |
+| g31 | Add the three new laptops to the "Sales" device group. | manage_groups.add_devices, manage_groups.list, query_devices | No tool call |
+| g32 | Tag WEB-03 as "pci". | manage_tags, resolve_device_context | No tool call |
+| g34 | Open a ticket: Northwind reports slow email since Monday. | manage_tickets | No tool call |
+| g35 | Log 45 minutes on ticket 1042 for the printer fix. | manage_tickets.log_time_entry | No tool call |
+| g36 | Start my timer on ticket 1042. | manage_tickets.start_timer | No tool call |
+| g37 | Draft a quote for 25 M365 Business Premium seats for Contoso. | manage_quotes, search_catalog | list_organizations |
+| g39 | When does the Contoso managed-services contract renew? | list_contracts, get_contract, manage_contracts | list_organizations |
+| g41 | Show me the Microsoft 365 users at Contoso without MFA. | m365_query_users | list_organizations |
+| g42 | Any risky sign-ins at Contoso in the last 24 hours? | m365_query_signins | list_organizations |
+| g43 | Which Contoso devices are non-compliant in Intune? | m365_query_intune_devices | list_organizations |
+| g45 | Isolate WEB-03 in SentinelOne. | s1_isolate_device, resolve_device_context | query_devices |
+| g47 | Which configuration policies apply to the Contoso servers? | list_configuration_policies, get_effective_configuration | list_organizations |
+| g49 | Which software is banned by policy but still installed somewhere? | get_software_compliance, get_compliance_status | manage_software_policies.list |
+| g50 | When is the next maintenance window for Northwind? | manage_maintenance_windows | list_organizations |
+| g53 | Generate a monthly health report for Contoso. | generate_report, get_executive_summary | list_organizations |
+| g55 | Which agents are running an old version? | query_agent_versions | query_devices |
+| g56 | Pull the agent logs from LAB-WS-042, it keeps disconnecting. | search_agent_logs, resolve_device_context | query_devices |
+| g57 | How do I set up a maintenance window in Breeze? | search_documentation | manage_maintenance_windows.list |
+| g59 | Any USB storage plugged in at Contoso this week? | get_peripheral_activity | list_organizations |
+| g60 | Where is Contoso keeping credit-card numbers in files? | get_sensitive_data_overview | list_organizations |
+
+Note the dominant miss pattern is **not** wrong-domain confusion: the model very often calls `query_devices` or `list_organizations` as an exploratory first step (get context, then act) rather than jumping straight to the specific action tool the golden case names — e.g. g03/g05/g10/g12/g13/g14/g15/g19/g20/g21/g22/g25/g29/g45/g55/g56 all observed `query_devices` against an `expect` that starts with a more specific tool (or `resolve_device_context`). This is a real accuracy signal (deny mode means the model never gets a real device match back to justify the broader call), not a harness artifact.
+
+## 4. Hot/cold (90 days, EU + US)
+
+`not run: no production database access in this environment.` The reporting endpoint (`GET /api/v1/admin/ai/tool-usage?days=90`, `apps/api/src/routes/admin/aiToolUsage.ts`) and the operator SQL this plan calls for (`docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql`) exist in the codebase, but running either requires either a live deployed API with real `ai_tool_executions` history or Todd's direct psql access to the EU/US production databases — neither is available from this worktree/session. Top-20-by-executions, the cold list, and the Helper-vs-chat split are all `not run: <reason above>` and remain open for Todd to fill (per the plan's Step 2 instruction that a row of `not run` is acceptable, a row of invented numbers is not).
+
+## 5. Inputs to A-W04
+
+`not run: blocked on §4.` The plan's Task 9 makes A-W04's `alwaysLoad` set, the Helper `onlyTools` recommendation, and the BYO fallback decision each derive from the hot/cold list intersected with the context-tool set — none of which exists without §4's data. What this session can contribute instead:
+
+- **Haiku decision (spec open decision 2):** `not run` — the plan calls for a `--model claude-haiku-4-5-20251001` eval row to decide this; out of scope for this task's instructed command set (chat/default only). Left for A-W04 alongside the full per-surface/per-mode eval matrix.
+- **BYO fallback decision:** `not run` — no BYO endpoint/credentials available to test whether `tool_reference` is rejected.
+- Qualitative candidate for `alwaysLoad`, **not a substitute for the hot-list intersection**: `resolve_device_context` and `query_devices` are the two tools the golden eval's model reaches for as a first exploratory step across most device-scoped prompts (§3), which is suggestive but not a measured hot-list — do not treat this as the A-W04 input; it is only a hint pending §4.
+
+## 6. Success-measure baselines (spec "Success measures" section, as measured today)
+
+| Success measure | Baseline (today) | Source |
+|---|---|---|
+| Web chat first-turn input tokens | **4** (`input_tokens`, turn 1, chat surface) | `tool-capture.jsonl` row 0 (`--surface chat --proxy --tool-search on`), `observation.apiCalls` reduced; also seen as 4 across every surface's turn-1 row this session |
+| Cache-read share of input, turn 2+ | **99.7%** (`56012 / (3 + 177 + 56012)`), chat surface, 2-turn no-proxy capture (per the task brief's stated numbers: turn 2 input=3, cache_create=177, cache_read=56012) | Task brief's supplied first-run numbers (this session's own `--proxy` runs only went 1 turn per surface except the on/off `chat` pair, which also went 1 turn; the 2-turn number is the one already on record from the prior run referenced in this task's instructions, reproduced here as the baseline since re-running it added no new information) |
+| Golden eval first-call accuracy | **31.7%** unfiltered (19/60); **40.0%** excluding the 20 structurally-unwinnable undeclared-tool cases (16/40) | `tool-eval-summary.md` line 1; `tool-eval-report.json` `summary`; §3 above |
+| System prompt bytes | **12265 bytes** (`AI_SYSTEM_PROMPT_BASE`, `Buffer.byteLength`) — well over the ≤6 KB target, and this is the *base* prompt only (before any per-request additions) | `tool-capture.jsonl` `systemPromptBytes` field (every row); `tool-eval-report.json` `systemPromptBytes`; `apps/api/src/services/aiAgentSystemPrompt.ts:17` |
+| External `tools/list` bytes for a single-domain grant | `not run: no dev stack running this session (no docker/postgres up in this worktree) to `curl` the external MCP server (`routes/mcpServer.ts`) with a live `ai:read` key.` | — |
+| Route modules without an `MCP_COVERAGE` entry | **504 of 504** (all of them) — `grep -rn "MCP_COVERAGE" apps/api/src` returns zero matches anywhere in the codebase, and `find apps/api/src/routes -name "*.ts" ! -name "*.test.ts"` counts 504 non-test route module files | ad hoc grep/find this session; the contract this measure refers to (`MCP_COVERAGE`) does not exist until A-W06 |
+
+## Appendix: raw capture rows (from `tool-capture.jsonl`, this session)
+
+| surface | turn | proxy | tool-search | input | cache_create | cache_read | ttft ms | first tool | result |
+|---|---|---|---|---|---|---|---|---|---|
+| chat | 1 | on | on | 4 | 55971 | 55842 | 2535 | mcp__breeze__query_devices | success |
+| chat | 1 | on | off | 4 | 0 | 111813 | 1480 | mcp__breeze__query_devices | success |
+| helper-standard | 1 | off | default | 4 | 10266 | 101640 | 1673 | mcp__breeze__query_devices | success |
+| helper-basic | 1 | off | default | 4 | 0 | 111906 | 1476 | mcp__breeze__query_devices | success |
+| agent-full | 1 | off | default | 4 | 157 | 111738 | null | mcp__breeze__query_devices | success |
+| script-builder | 1 | off | default | 3 | 12804 | 0 | 1201 | (none) | success |
