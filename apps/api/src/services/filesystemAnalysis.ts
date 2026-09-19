@@ -114,6 +114,7 @@ export async function getLatestFilesystemCleanupSnapshot(deviceId: string) {
   const [snapshot] = await db
     .select({
       id: deviceFilesystemSnapshots.id,
+      capturedAt: deviceFilesystemSnapshots.capturedAt,
       cleanupCandidates: deviceFilesystemSnapshots.cleanupCandidates,
     })
     .from(deviceFilesystemSnapshots)
