@@ -19,7 +19,7 @@
     { "os": "linux", "path": "/opt/app/tmp/build.log", "ageHours": 48, "category": null, "granularity": null, "note": "spec negative: /opt/<app>/tmp must not be in scope" },
     { "os": "linux", "path": "/TMP/build.tmp", "ageHours": 48, "category": null, "granularity": null, "note": "§13 row 10: linux is case-SENSITIVE; /TMP is a different directory" },
     { "os": "linux", "path": "/home/bob/.cache\\v", "ageHours": 48, "category": null, "granularity": null, "note": "§13 row 10: a backslash is an ordinary filename character on POSIX, not a separator" },
-    { "os": "darwin", "path": "/Users/alice/.cache\\v", "ageHours": 1, "category": null, "granularity": null, "note": "§13 row 10: darwin folds case but keeps backslashes" },
+    { "os": "darwin", "path": "/Users/alice/Library/Caches\\v", "ageHours": 1, "category": null, "granularity": null, "note": "§13 row 10: darwin folds case but keeps backslashes — the appended \\v makes the final component 'Caches\\v', not a descendant of the real Library/Caches rule" },
     { "os": "windows", "path": "C:\\USERS\\X\\APPDATA\\LOCAL\\TEMP\\BUILD.TMP", "ageHours": 48, "category": "temp_files", "granularity": "file", "note": "§13 row 10: windows folds case AND separators" },
 
     { "os": "windows", "path": "C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache\\f_000001", "ageHours": 1, "category": "browser_cache", "granularity": "file", "note": "spec positive" },
