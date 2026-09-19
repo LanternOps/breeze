@@ -243,6 +243,9 @@ jobs:
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
 
+      - name: Test mobile lockfile closure gate
+        run: node --test .github/scripts/mobile-lockfile-closure.test.mjs
+
       - name: Test docs-only CI contract
         run: node --test .github/scripts/classify-pr-paths.test.mjs
 
@@ -706,10 +709,18 @@ jobs:
         run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
 
   test-web:
-    name: Test Web
+    name: Test Web (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    # ~1030 jsdom vitest files, 17 min unsharded — the longest job on an
+    # api-only queue entry once the iOS build is gated. Split like test-api;
+    # vitest partitions by file so `clearMocks`/`restoreMocks` in
+    # vitest.config.ts keep each shard order-independent.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -733,7 +744,7 @@ jobs:
       - name: Run Web tests
         # Source aliases in vitest.config.ts avoid a production Astro build.
         # build-web still runs prebuild (checksums/Monaco assets) and Astro.
-        run: pnpm --filter=@breeze/web test --run
+        run: pnpm --filter=@breeze/web test --run --shard=${{ matrix.shard }}/4
 
   # REQUIRED check: asserted in ci-success (see #3941, and #3139 for the
   # original gap).
@@ -780,7 +791,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' }}
+      mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' || steps.lockfile.outputs.changed == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -798,8 +809,6 @@ jobs:
             mobile:
               - 'apps/mobile/**'
               - 'packages/**'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
               - '.npmrc'
               - '.node-version'
@@ -807,6 +816,33 @@ jobs:
               - 'patches/**'
               - '.github/workflows/ci.yml'
               - '.github/scripts/mobile-native-ci.test.mjs'
+              - '.github/scripts/mobile-lockfile-closure.mjs'
+            lockfile:
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+
+      # `pnpm-lock.yaml` and the root `package.json` (overrides) used to be
+      # native-build inputs outright, so every api/web dependency bump and every
+      # lockfile regeneration on the merge queue paid for the ~34-minute macOS
+      # simulator build (30 queue entries on 2026-09-18, the critical path of
+      # each). Now they only count when the `apps/mobile` importer's resolved
+      # dependency closure actually differs between base and head. The script
+      # fails CLOSED (missing base, parse error → changed=true).
+      - name: Compare the mobile dependency closure
+        id: lockfile
+        if: steps.changes.outputs.lockfile == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BASE_SHA}" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "No base sha for ${GITHUB_EVENT_NAME}; treating the lockfile change as a mobile input."
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          git show "${BASE_SHA}:pnpm-lock.yaml" > "${RUNNER_TEMP}/pnpm-lock.base.yaml"
+          node .github/scripts/mobile-lockfile-closure.mjs "${RUNNER_TEMP}/pnpm-lock.base.yaml" pnpm-lock.yaml | tee -a "$GITHUB_OUTPUT"
 
   build-mobile-ios:
     name: Build Mobile iOS (Simulator)

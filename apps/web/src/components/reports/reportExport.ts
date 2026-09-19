@@ -4,7 +4,7 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   IdentityAccessSummary,
 } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
+import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv, rowsToTsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
@@ -18,22 +18,6 @@ export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, downloadBlo
 // PostureSummary is single-sourced in @breeze/shared (also consumed by the API
 // generator that produces it); re-export so existing local importers still work.
 export type { PostureSummary } from '@breeze/shared';
-
-/** Convert an unknown cell value to a display string. */
-function cellToString(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  return String(value);
-}
-
-/** Extract column headers and string[][] body from raw row objects. */
-function extractTable(rows: unknown[]): { headers: string[]; body: string[][] } {
-  const headers = Object.keys(rows[0] as Record<string, unknown>);
-  const body = rows.map(row => {
-    const record = row as Record<string, unknown>;
-    return headers.map(h => cellToString(record[h]));
-  });
-  return { headers, body };
-}
 
 /** Return the browser's IANA timezone string. */
 export function getBrowserTimezone(): string {
@@ -81,24 +65,14 @@ export async function exportReport(
 
   if (format === 'csv') {
     if (rows.length === 0) throw new Error('No data to export');
-    const { headers, body } = extractTable(rows);
-    const csvContent = [
-      headers.join(','),
-      ...body.map(row =>
-        row.map(escapeCsvCell).join(',')
-      ),
-    ].join('\n');
+    const csvContent = rowsToCsv(rows);
     downloadBlob(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), `${baseFilename}.csv`);
     return;
   }
 
   if (format === 'excel') {
     if (rows.length === 0) throw new Error('No data to export');
-    const { headers, body } = extractTable(rows);
-    const tsvContent = [
-      headers.join('\t'),
-      ...body.map(row => row.map(escapeTsvCell).join('\t')),
-    ].join('\n');
+    const tsvContent = rowsToTsv(rows);
     downloadBlob(new Blob([tsvContent], { type: 'application/vnd.ms-excel' }), `${baseFilename}.xls`);
     return;
   }

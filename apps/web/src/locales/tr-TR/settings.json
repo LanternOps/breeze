@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Portal vurgusu",
+      "description": "Müşteri portalınızdaki düğmelerin ve bağlantıların rengi. Durum renkleri asla değişmez.",
+      "options": {
+        "spruce": "Ladin",
+        "ink": "Mürekkep",
+        "oxblood": "Boğa kanı",
+        "navy": "Lacivert",
+        "plum": "Erik",
+        "bronze": "Bronz",
+        "teal": "Petrol",
+        "forest": "Orman yeşili"
+      }
+    },
     "support": {
       "title": "Destek iletişim kişisi",
       "description": "Portalda müşterilere gösterilir.",

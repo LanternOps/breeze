@@ -230,3 +230,15 @@ describe('LifecyclePlanTable', () => {
     expect(link).toHaveAttribute('href', '/devices#SAM4');
   });
 });
+
+describe('LifecyclePlanTable — phone reflow', () => {
+  it('only forces the wide layout at sm and up, and labels every cell for the phone card', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/lifecycle/LifecyclePlanTable.tsx', 'utf8');
+    expect(src).toMatch(/sm:min-w-\[52rem\]/);
+    expect(src).not.toMatch(/[\s"]min-w-\[52rem\]/);
+    for (const label of ['Operating system', 'Age', 'Purchased', 'Warranty', 'Status', 'Replacement timeline']) {
+      expect((src.match(new RegExp(`>${label}<`, 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
+    }
+  });
+});

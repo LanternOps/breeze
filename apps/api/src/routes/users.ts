@@ -1311,6 +1311,34 @@ userRoutes.post(
       return c.json({ error: rolePermissionError }, 403);
     }
 
+    // Write-time ownership check on a 'selected' org list. The ids are
+    // persisted verbatim into partner_users.org_ids and become the invitee's
+    // organization allowlist, so every one of them must be an organization of
+    // the CALLER's partner. Downstream access resolution re-scopes by partner,
+    // but a foreign id must never be stored in the first place (defense in
+    // depth + data integrity). Absent and foreign ids get the same answer so
+    // the probe is not a cross-partner existence oracle.
+    //
+    // Reach: this SELECT runs under the caller's own request DB context, so
+    // RLS (`breeze_has_org_access(id)`) bounds it to the orgs the caller can
+    // see — for the full-access partner member the router gate above requires,
+    // that is every active/trial, non-deleted org of the partner. A suspended
+    // or soft-deleted in-partner org is therefore refused too. Deliberate:
+    // an inviter cannot grant an invitee an org the inviter cannot see, and
+    // the failure mode is fail-closed. Do NOT lift this probe into a system
+    // context to "fix" that.
+    if (scopeContext.scope === 'partner' && (data.orgAccess ?? 'none') === 'selected') {
+      const requestedOrgIds = [...new Set(data.orgIds ?? [])];
+      const ownedOrgs = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, scopeContext.partnerId), inArray(organizations.id, requestedOrgIds)));
+      const owned = new Set(ownedOrgs.map((o) => o.id));
+      if (requestedOrgIds.some((id) => !owned.has(id))) {
+        return c.json({ error: 'One or more organizations are not part of your partner' }, 403);
+      }
+    }
+
     const normalizedEmail = data.email.toLowerCase();
 
     // RMM-QA-166 (D9): a neutralized tombstone (disabled + no password) may still
@@ -1437,7 +1465,7 @@ userRoutes.post(
         }
 
         const orgAccess = data.orgAccess ?? 'none';
-        const orgIds = orgAccess === 'selected' ? data.orgIds ?? [] : null;
+        const orgIds = orgAccess === 'selected' ? [...new Set(data.orgIds ?? [])] : null;
 
         const [link] = await tx
           .insert(partnerUsers)
