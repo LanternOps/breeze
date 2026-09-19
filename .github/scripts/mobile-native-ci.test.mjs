@@ -90,6 +90,8 @@ for (const [label, detector, required, result, passes] of [
         // mobile-specific fixture below.
         AGENT_CHANGED: 'true',
         APP_CHANGED: 'true',
+        // Every per-area flag true (same fail-closed tri-state as AGENT_CHANGED).
+        API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
         MOBILE_NATIVE_CHANGES_RESULT: detector,
         MOBILE_NATIVE_REQUIRED: required,
         BUILD_MOBILE_IOS_RESULT: result,

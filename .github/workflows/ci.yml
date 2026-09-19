@@ -70,6 +70,12 @@ jobs:
       docs: ${{ steps.classify.outputs.docs }}
       agent: ${{ steps.classify.outputs.agent }}
       app: ${{ steps.classify.outputs.app }}
+      api: ${{ steps.classify.outputs.api }}
+      web: ${{ steps.classify.outputs.web }}
+      portal: ${{ steps.classify.outputs.portal }}
+      addins: ${{ steps.classify.outputs.addins }}
+      m365: ${{ steps.classify.outputs.m365 }}
+      rust: ${{ steps.classify.outputs.rust }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -102,7 +108,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too.
@@ -249,6 +255,9 @@ jobs:
       - name: Test CI build reuse contract
         run: node --test .github/scripts/ci-build-reuse.test.mjs
 
+      - name: Test per-area job gating contract
+        run: node --test .github/scripts/ci-area-gating.test.mjs
+
       # The classifier fast-tracks changes to OTHER workflow files (app=false), and
       # security.yml — which also runs this suite — does not report `CI Success`, so
       # it cannot block a merge. lint runs on `code` alone, which makes this the
@@ -327,7 +336,7 @@ jobs:
     name: Test API (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     # ~2470 vitest files, import-time dominated, 26-34 min unsharded. Only the
     # main `test:run` invocation below is split across shards (mirrors
     # integration-test's sharding); every other named step here is a
@@ -468,7 +477,7 @@ jobs:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -496,7 +505,7 @@ jobs:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -524,7 +533,7 @@ jobs:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -573,7 +582,7 @@ jobs:
     name: Check Migrations
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.api == 'true'
     services:
       postgres:
         image: postgres:16
@@ -648,7 +657,7 @@ jobs:
     name: Check Migrations (non-superuser)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     services:
       postgres:
         image: postgres:16
@@ -709,7 +718,7 @@ jobs:
     name: Test Web
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -882,7 +891,7 @@ jobs:
     name: Test Portal
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -949,7 +958,7 @@ jobs:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -980,7 +989,7 @@ jobs:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1008,7 +1017,7 @@ jobs:
     name: Test Word Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1039,7 +1048,7 @@ jobs:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1079,7 +1088,7 @@ jobs:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1205,7 +1214,7 @@ jobs:
     name: Build API
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1250,7 +1259,7 @@ jobs:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1284,7 +1293,7 @@ jobs:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1320,7 +1329,7 @@ jobs:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1356,7 +1365,7 @@ jobs:
     name: Build Web
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1399,7 +1408,7 @@ jobs:
     name: Build Portal
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2344,7 +2353,7 @@ jobs:
     name: Rust Check (Tauri apps)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true'
     timeout-minutes: 35
 
     steps:
@@ -2550,7 +2559,7 @@ jobs:
     # it only means an integration run against code that also fails lint
     # runs to completion in parallel instead of being blocked behind it.
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
@@ -2797,7 +2806,7 @@ jobs:
     name: Build Smoke Image (${{ matrix.image }})
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
     strategy:
@@ -2862,7 +2871,7 @@ jobs:
     name: Smoke Test
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes, build-smoke-images]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 15
 
@@ -3189,7 +3198,7 @@ jobs:
     name: Guided Setup Smoke (self-host installer)
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes, build-smoke-images]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 30
 
@@ -3663,6 +3672,12 @@ jobs:
           DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
           AGENT_CHANGED: ${{ needs.changes.outputs.agent }}
           APP_CHANGED: ${{ needs.changes.outputs.app }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          WEB_CHANGED: ${{ needs.changes.outputs.web }}
+          PORTAL_CHANGED: ${{ needs.changes.outputs.portal }}
+          ADDINS_CHANGED: ${{ needs.changes.outputs.addins }}
+          M365_CHANGED: ${{ needs.changes.outputs.m365 }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           WORKSPACE_RUNTIME_RESULT: ${{ needs.workspace-runtime.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -3716,6 +3731,14 @@ jobs:
           # through to the assertions, where every skipped code job fails them.
           # docs-check is the mirror image: required unless `docs` is literally
           # `false`, so an empty output demands a docs-check that never ran.
+          # The smoke jobs boot the whole stack, so they run when api, web OR portal
+          # changed. A non-boolean area flag is rejected by the per-area legs below.
+          # (A `case`, not an `if`: the contract tests locate the blocking
+          # condition as the first `if [[` in this script.)
+          STACK_CHANGED=false
+          case " ${API_CHANGED} ${WEB_CHANGED} ${PORTAL_CHANGED} " in
+            *" true "*) STACK_CHANGED=true ;;
+          esac
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
@@ -3723,37 +3746,81 @@ jobs:
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              { [[ "${APP_CHANGED}" == "true" ]] && { \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
-             [[ "${TEST_API_RESULT}" != "success" ]] || \
-             [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${TEST_WEB_RESULT}" != "success" ]] || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${TEST_API_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
+             { [[ "${API_CHANGED}" == "false" ]] && [[ "${TEST_API_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${WEB_CHANGED}" == "true" ]] && [[ "${TEST_WEB_RESULT}" != "success" ]]; } || \
+             { [[ "${WEB_CHANGED}" != "true" ]] && [[ "${WEB_CHANGED}" != "false" ]]; } || \
+             { [[ "${WEB_CHANGED}" == "false" ]] && [[ "${TEST_WEB_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
              [[ "${MOBILE_NATIVE_CHANGES_RESULT}" != "success" ]] || \
              { [[ "${MOBILE_NATIVE_REQUIRED}" == "true" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "success" ]]; } || \
              { [[ "${MOBILE_NATIVE_REQUIRED}" != "true" ]] && [[ "${MOBILE_NATIVE_REQUIRED}" != "false" ]]; } || \
              { [[ "${MOBILE_NATIVE_REQUIRED}" == "false" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]]; } || \
-             [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
+             { [[ "${PORTAL_CHANGED}" == "true" ]] && [[ "${TEST_PORTAL_RESULT}" != "success" ]]; } || \
+             { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
+             { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${TEST_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
-             [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
-             [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]] || \
-             [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]] || \
-             [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "success" ]] || \
-             [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "success" ]] || \
-             [[ "${BUILD_API_RESULT}" != "success" ]] || \
-             [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
-             [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
-             [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
+             { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "success" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "skipped" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "success" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
+             { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "skipped" ]]; } || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${BUILD_API_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
+             { [[ "${API_CHANGED}" == "false" ]] && [[ "${BUILD_API_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${M365_CHANGED}" == "true" ]] && [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]]; } || \
+             { [[ "${M365_CHANGED}" != "true" ]] && [[ "${M365_CHANGED}" != "false" ]]; } || \
+             { [[ "${M365_CHANGED}" == "false" ]] && [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]]; } || \
+             { [[ "${WEB_CHANGED}" == "true" ]] && [[ "${BUILD_WEB_RESULT}" != "success" ]]; } || \
+             { [[ "${WEB_CHANGED}" != "true" ]] && [[ "${WEB_CHANGED}" != "false" ]]; } || \
+             { [[ "${WEB_CHANGED}" == "false" ]] && [[ "${BUILD_WEB_RESULT}" != "skipped" ]]; } || \
+             { [[ "${PORTAL_CHANGED}" == "true" ]] && [[ "${BUILD_PORTAL_RESULT}" != "success" ]]; } || \
+             { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
+             { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
-             [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
-             [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
+             { [[ "${API_CHANGED}" == "false" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]]; } || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
+             { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "skipped" ]]; } || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
-             [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; } || \
+             { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_RESULT}" != "skipped" ]]; } || \
+             { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "skipped" ]]; } || \
+             { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${SMOKE_TEST_RESULT}" != "skipped" ]]; } || \
+             { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "skipped" ]]; } || \
+             { [[ "${RUST_CHANGED}" == "true" ]] && [[ "${RUST_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${RUST_CHANGED}" != "true" ]] && [[ "${RUST_CHANGED}" != "false" ]]; } || \
+             { [[ "${RUST_CHANGED}" == "false" ]] && [[ "${RUST_CHECK_RESULT}" != "skipped" ]]; }; }; } || \
              { [[ "${APP_CHANGED}" != "true" ]] && [[ "${APP_CHANGED}" != "false" ]]; } || \
              { [[ "${APP_CHANGED}" == "false" ]] && { \
              [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]] || \
@@ -3815,17 +3882,17 @@ jobs:
             exit 1
           fi
           # The shared producer has the same policy as its smoke consumers.
-          if [[ "${IS_PR}" != "true" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "success" ]]; then
+          if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "success" ]]; then
             echo "Smoke image build failed during merge-queue or manual validation"
             exit 1
           fi
           # Smoke test: non-blocking on PRs, required in the merge queue and manual validation
-          if [[ "${IS_PR}" != "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
+          if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
             echo "Smoke test failed on main branch push"
             exit 1
           fi
           # Guided installer smoke: same policy — non-blocking on PRs, required on main
-          if [[ "${IS_PR}" != "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
+          if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
             echo "Guided setup smoke failed on main branch push"
             exit 1
           fi

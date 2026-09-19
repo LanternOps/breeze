@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
@@ -238,8 +238,15 @@ test('cross-area scan finds the known references (guards against a vacuous scan)
 test('every cross-area reference sets the reading area when the referenced path changes', () => {
   const missing = [];
   for (const { area, target, at } of crossAreaRefs()) {
-    // Probe both the path itself and something beneath it (it may be a directory).
-    for (const probe of [target, `${target}/probe.ts`]) {
+    // A changed-file list only ever names files: probe the path itself when it
+    // names one, and something beneath it when it may be a directory (or an
+    // extensionless import specifier).
+    const abs = join(REPO_ROOT, target);
+    const probes = existsSync(abs) && statSync(abs).isDirectory()
+      ? [`${target}/probe.ts`]
+      : existsSync(abs) ? [target] : ['.ts', '.tsx', '.js', '.mjs'].map((ext) => `${target}${ext}`).filter((p) => existsSync(join(REPO_ROOT, p)));
+    if (probes.length === 0) missing.push(`${area} ← ${target} (${at}): referenced path does not exist; fix the scanner`);
+    for (const probe of probes) {
       if (classify([probe])[area] !== 'true') missing.push(`${area} ← ${probe} (${at})`);
     }
   }
@@ -425,6 +432,12 @@ for (const [area, vars] of Object.entries(gatedVars)) {
     });
   }
 }
+test('lint runs this suite (it is the only thing that enforces the area contract)', () => {
+  const lint = job('lint');
+  assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, 'lint must stay code-only so it runs on every code PR');
+  assert.match(lint, /^        run: node --test \.github\/scripts\/ci-area-gating\.test\.mjs$/mu);
+});
+
 for (const flag of Object.values(FLAG)) {
   for (const bad of ['', 'maybe']) {
     test(`CI Success (areas): ${flag}=${JSON.stringify(bad)} fails closed`, () => {
