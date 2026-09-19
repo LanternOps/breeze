@@ -239,6 +239,55 @@ describe('compactToolResultForChat — secret material is still redacted (#6140)
     expect(out.privateKeys).toBe(REDACTED);
   });
 
+  // Review finding: recursing into a `session`-named container must not let a
+  // BARE string element slip past every key rule. An array element has no key
+  // of its own, so it is judged under the array's key.
+  it('bare string elements of an array under a session-named key are redacted', () => {
+    const out = parse('any_tool', {
+      activeSessions: ['opaque_vendor_token_000111222'],
+      sessionIds: ['sid_abcdef123456', 'sid_ghijkl789012'],
+      sessionKeys: ['k_aaa'],
+      sessions: ['sid_bare_one'],
+      // Nested one level deeper, to prove the label is inherited through the walk.
+      nested: { rdpSessions: ['sid_nested_one'] },
+    });
+
+    expect(out.activeSessions).toEqual([REDACTED]);
+    expect(out.sessionIds).toEqual([REDACTED, REDACTED]);
+    expect(out.sessionKeys).toEqual([REDACTED]);
+    expect(out.sessions).toEqual([REDACTED]);
+    expect(out.nested.rdpSessions).toEqual([REDACTED]);
+  });
+
+  it('an array of session OBJECTS still survives while its string siblings do not', () => {
+    const out = parse('list_remote_sessions', {
+      sessions: [{ id: 'rs_1', hostname: 'WS-01', durationSeconds: 5 }, 'sid_bare'],
+    });
+
+    expect(out.sessions[0]).toMatchObject({ id: 'rs_1', hostname: 'WS-01', durationSeconds: 5 });
+    expect(out.sessions[1]).toBe(REDACTED);
+  });
+
+  // Review finding: the old blanket wipe of `session*` containers incidentally
+  // caught secrets carried under an innocuous key inside them. Recursion gives
+  // that up, so the bare vendor-token shapes now run on every tool-output
+  // string leaf (previously only on the non-JSON branch).
+  it('bare vendor-token shapes are caught under a key that names nothing sensitive', () => {
+    const out = parse('list_remote_sessions', {
+      sessions: [
+        { id: 'rs_1', raw: 'ghp_abcdefghijklmnopqrstuvwxyz0123' },
+        { id: 'rs_2', note: 'used AKIAIOSFODNN7EXAMPLE to connect' },
+        { id: 'rs_3', blob: 'eyJhbGciOiJIUzI1NiJ9abcdefghijkl.eyJzdWIiOiIxMjM0NTY3ODkwIn0x.dBjftJeZ4CV' },
+      ],
+    });
+
+    expect(out.sessions[0].raw).toBe(REDACTED);
+    expect(out.sessions[0].id).toBe('rs_1');
+    expect(out.sessions[1].note).toContain(REDACTED);
+    expect(out.sessions[1].note).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(out.sessions[2].blob).toBe(REDACTED);
+  });
+
   it('inline secret assignments inside ordinary string leaves are still scrubbed', () => {
     const out = parse('any_tool', {
       sessions: [

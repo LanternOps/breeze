@@ -69,6 +69,20 @@ export function redactLogMessage(message: string): string {
   );
 }
 
+/** Resolve one `key: value` pair against the policy and recurse if told to. */
+function applyPolicy(
+  key: string,
+  entry: unknown,
+  redactString: (text: string) => string,
+  depth: number,
+  policy: FieldPolicy
+): unknown {
+  const action = policy(key, entry);
+  if (action === 'redact') return REDACTED;
+  if (action === 'keep') return entry;
+  return redactFieldsWith(entry, redactString, depth + 1, policy, key);
+}
+
 /**
  * Shared deep walk. `redactString` is applied to every string leaf, so callers
  * can layer extra passes (see redactAgentLogFields) without duplicating the
@@ -78,12 +92,25 @@ function redactFieldsWith(
   value: unknown,
   redactString: (text: string) => string,
   depth: number,
-  policy: FieldPolicy = logFieldPolicy
+  policy: FieldPolicy = logFieldPolicy,
+  /**
+   * The key that labels `value` when `value` is an array (#6140). An array
+   * element has no key of its own, so the array's key is its nearest label and
+   * the policy must be applied to the element under that key — otherwise
+   * `activeSessions: ["sk_live_…"]` would walk straight past every key-based
+   * rule and emit the raw string. Ignored for records, whose entries carry
+   * their own keys.
+   */
+  arrayKey?: string
 ): unknown {
   if (depth > 8) return REDACTED;
 
   if (Array.isArray(value)) {
-    return value.map((entry) => redactFieldsWith(entry, redactString, depth + 1, policy));
+    return value.map((entry) =>
+      arrayKey === undefined
+        ? redactFieldsWith(entry, redactString, depth + 1, policy)
+        : applyPolicy(arrayKey, entry, redactString, depth, policy)
+    );
   }
 
   if (!isRecord(value)) {
@@ -92,13 +119,7 @@ function redactFieldsWith(
 
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    const action = policy(key, entry);
-    const redactedEntry =
-      action === 'redact'
-        ? REDACTED
-        : action === 'keep'
-          ? entry
-          : redactFieldsWith(entry, redactString, depth + 1, policy);
+    const redactedEntry = applyPolicy(key, entry, redactString, depth, policy);
 
     // `redacted[key] = …` for the literal key `__proto__` does NOT create an own
     // property — it invokes the setter inherited from Object.prototype (#3129):
@@ -148,6 +169,8 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 //   * ISO-8601 timestamp string            -> kept. Same argument
 //     (`tokenExpiresAt`, `secretRotatedAt`). Any other string under a secret
 //     key is still redacted, so `*At` naming does not license a payload.
+//   * array ELEMENTS are policy-checked under the ARRAY's key, since an element
+//     has no key of its own (`activeSessions: ["sk_live_…"]` -> redacted).
 //   * array / object                       -> recursed, UNLESS the key names
 //     secret material (SECRET_MATERIAL_KEY_PATTERN). Recursion keeps the
 //     structure and still redacts every secret leaf inside it by key and by the
@@ -178,12 +201,23 @@ const toolOutputFieldPolicy: FieldPolicy = (key, value) => {
 };
 
 /**
- * `redactLogFields` for AI tool results: same denylist and same string pass,
- * but it will not replace a non-secret-bearing value with `[REDACTED]` just
- * because its key contains `session`/`token`/… See the note above.
+ * `redactLogFields` for AI tool results: same denylist, but it will not replace
+ * a non-secret-bearing value with `[REDACTED]` just because its key contains
+ * `session`/`token`/… See the note above.
+ *
+ * `redactString` runs on every surviving string leaf. Callers should pass the
+ * tool-output string pass (`redactAiToolOutputText`, which layers the bare
+ * vendor-token shapes on top of `redactLogMessage`) so a secret sitting under a
+ * key that names nothing sensitive is still caught by its shape. It is injected
+ * rather than imported to keep this module free of a cycle back into
+ * `aiToolOutput`.
  */
-export function redactToolOutputFields(value: unknown, depth = 0): unknown {
-  return redactFieldsWith(value, redactLogMessage, depth, toolOutputFieldPolicy);
+export function redactToolOutputFields(
+  value: unknown,
+  redactString: (text: string) => string = redactLogMessage,
+  depth = 0
+): unknown {
+  return redactFieldsWith(value, redactString, depth, toolOutputFieldPolicy);
 }
 
 // ---------------------------------------------------------------------------
