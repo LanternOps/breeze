@@ -51,6 +51,12 @@ export interface InvoiceBranding {
    *  for drafts (no link exists) and when minting fails — the PDF renders
    *  without the line rather than failing. */
   payOnlineUrl?: string | null;
+  /** DRAFT-ONLY display fallback for the BILL TO block (sweep paper cut #16),
+   *  set by loadInvoiceForRender via resolveDraftBillTo — the org's billing
+   *  contact email, shown only when the invoice's own billToName was blank
+   *  and a fallback name/email were resolved. Never set for an issued
+   *  invoice, so this is a no-op there. */
+  billToEmailFallback?: string | null;
 }
 
 export const APPENDIX_ROW_CAP = 2000;
@@ -200,6 +206,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
           <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">${escapeHtml(invoice.billToName ?? '')}</div>
           ${billTo.map((l) => `<div style="font-size:13px;color:#4b5563;">${escapeHtml(l)}</div>`).join('')}
           ${invoice.billToTaxId ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Tax ID: ${escapeHtml(invoice.billToTaxId)}</div>` : ''}
+          ${branding.billToEmailFallback ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">${escapeHtml(branding.billToEmailFallback)}</div>` : ''}
         </div>
         <div style="text-align:right;font-size:13px;color:#4b5563;">
           ${invoice.issueDate ? `<div>Issued: ${escapeHtml(formatDate(invoice.issueDate))}</div>` : ''}
@@ -366,6 +373,7 @@ export function renderInvoicePdfBuffer(
       doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
       for (const aline of addressLines(invoice.billToAddress as BillToAddress | null)) { doc.text(aline, rightX, billY, { width: rightW }); billY += 13; }
       if (invoice.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${invoice.billToTaxId}`, rightX, billY, { width: rightW }); billY += 13; }
+      if (branding.billToEmailFallback) { doc.fillColor('#6b7280').fontSize(9).text(branding.billToEmailFallback, rightX, billY, { width: rightW }); billY += 13; }
       doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
       if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
       if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
@@ -601,6 +609,32 @@ export function resolveInvoiceFooter(input: {
   return input.invoiceTerms ?? input.partnerFooter ?? input.brandingFooter ?? null;
 }
 
+/**
+ * DRAFT-ONLY bill-to display fallback (sweep paper cut #16). A draft invoice
+ * has no bill-to snapshot yet — billToName/billToAddress/billToTaxId are
+ * stamped only at issue (invoiceService.issueInvoice) — so before issue the
+ * BILL TO block would otherwise render completely blank, not even the
+ * organization name (which the quote PDF's equivalent draft fallback prints —
+ * see quoteService's draft billTo resolution). This resolves a DISPLAY-only
+ * name + email for that case; it never writes anything back to the invoices
+ * row, and an already-issued invoice's own frozen billToName (even when null)
+ * is always returned untouched — the "one snapshot moment" rule.
+ *
+ * Pure — no DB access — so loadInvoiceForRender (which does the org read) can
+ * be exercised without a database, mirroring resolveInvoiceFooter above.
+ */
+export function resolveDraftBillTo(input: {
+  status: string;
+  billToName: string | null;
+  orgName: string | null;
+  orgBillingContact: unknown;
+}): { billToName: string | null; billToEmail: string | null } {
+  if (input.status !== 'draft' || input.billToName?.trim()) {
+    return { billToName: input.billToName, billToEmail: null };
+  }
+  return { billToName: input.orgName ?? null, billToEmail: resolveBillingEmail(input.orgBillingContact) };
+}
+
 async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
@@ -626,6 +660,23 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
   // the From block still renders (issued docs use the frozen column).
   if (!invoice.sellerSnapshot && partner) {
     (invoice as { sellerSnapshot: unknown }).sellerSnapshot = buildSellerSnapshot(partner);
+  }
+  // Draft BILL TO fallback (sweep paper cut #16) — same rationale as the
+  // sellerSnapshot synthesis just above: only reached pre-issue, and mutates
+  // only this in-memory object, never the invoices row. resolveDraftBillTo is
+  // a no-op once issued (status !== 'draft'), so the extra org read below is
+  // skipped entirely for every already-issued invoice.
+  let billToEmailFallback: string | null = null;
+  if (invoice.status === 'draft' && !invoice.billToName?.trim()) {
+    const [org] = await db
+      .select({ name: organizations.name, billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
+    const resolved = resolveDraftBillTo({
+      status: invoice.status, billToName: invoice.billToName,
+      orgName: org?.name ?? null, orgBillingContact: org?.billingContact ?? null,
+    });
+    (invoice as { billToName: string | null }).billToName = resolved.billToName;
+    billToEmailFallback = resolved.billToEmail;
   }
   return {
     invoice,
@@ -654,6 +705,7 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
       // Stamped snapshot wins; unstamped (draft/legacy) rows follow the
       // partner's current language.
       locale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
+      billToEmailFallback,
     },
   };
 }
