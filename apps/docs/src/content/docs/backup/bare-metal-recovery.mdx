@@ -128,6 +128,8 @@ The run ends with a status and a short result summary (`filesRestored`, `failedF
 | `partial` | Some files restored or the state was applied, but something else failed — read `warnings`. A `system_image` run whose state manifest was found but could not be applied (missing required step, failed checksum) is never reported as `completed`. |
 | `failed` | Nothing was restored. Also the outcome when the token's snapshot advertised system state that could not be found, or a step the snapshot marks as **required** was never collected. |
 
+A snapshot counts as advertising system state when its backup type is `system_image` **or** it recorded a state manifest — so a `system_image` snapshot whose state collection failed is held to the same rule rather than recovering "successfully" with files only. The same gate applies to [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) and the recovery media, which refuse such a snapshot before touching the disk.
+
 <Aside type="caution" title="Before v0.112.0, a completed system_image recovery applied nothing">
   Snapshots taken before v0.112.0 published their OS-state artifacts under a location the recovery binary never looked at, so a `system_image` recovery downloaded them, applied nothing and still reported `completed` with `stateApplied: false`. Both halves are fixed in v0.112.0 — the agent publishes state where the consumer reads it, and the consumer refuses to report `completed` when advertised state was not applied — but only for snapshots **taken by a v0.112.0 or later agent**. To recover OS state, take a fresh `system_image` backup after upgrading.
 </Aside>
@@ -208,16 +210,19 @@ breeze-backup rebuild \
 | `--dry-run` | Run the preflight only — fetch and verify the layout, plan the partitions, check the target — and print the plan without writing anything. |
 | `--state-dir` | Where the resumable state file lives (default `/var/lib/breeze/rebuild`). |
 | `--force-reprovision`, `--allow-partial`, `--no-initramfs` | Re-partition even if a previous run already did; continue when some files failed to restore; skip the initramfs regeneration. |
+| `--expect-system-state` | `auto` (default), `true` or `false`: whether the snapshot must carry system state that the rebuild applies. `auto` says yes for a `system_image` snapshot (the recovery media and `--token` mode take this from the server's bootstrap; `--provider-config` mode infers it from a `layout.json` or state manifest in the snapshot). `false` rebuilds a file-only snapshot with a warning. |
 
 The rebuild runs seven phases in order — **preflight → provision → restore → boot → identity → encryption → validate**:
 
-1. **Preflight** downloads `layout.json`, refuses a snapshot that is not restorable or not Linux, checks the target is safe and large enough, plans the partitions, and downloads and checksum-verifies the snapshot and system-state manifests. Nothing is written.
+1. **Preflight** downloads `layout.json`, refuses a snapshot that is not restorable or not Linux, checks the target is safe and large enough, plans the partitions, and downloads and checksum-verifies the snapshot and system-state manifests. Nothing is written. A `system_image` snapshot whose `system-state/manifest.json` is missing (or lists no artifacts) is **refused** here — the rebuild never proceeds files-only when system state was expected.
 2. **Provision** wipes the target, recreates the GPT partitions with their original type codes, GUIDs, names and filesystem UUIDs/labels, and formats them.
 3. **Restore** mounts the new partitions, restores the file snapshot into them, then applies the system state **offline** into that tree. Unlike a live `bmr-recover`, `/etc` is restored **without** the identity/network excludes (`fstab`, `machine-id`, `hostname` and network configuration do land, because the rebuilt disk is the original machine), services are enabled with `systemctl --root`, crontabs are written straight into the spool, and firewall rules are written to `/etc/iptables/rules.v4` (or `/etc/breeze/recovery/iptables.rules` with a warning if `iptables-persistent` is absent). Package reinstall is skipped offline.
 4. **Boot** installs GRUB for UEFI (Debian/Ubuntu via `grub-install` + `update-grub`, RHEL-family via `grub2-mkconfig` + `efibootmgr`), regenerates the initramfs, and always writes the removable-media fallback loader (`EFI/BOOT/BOOTX64.EFI` / `BOOTAA64.EFI`). Other distribution families are not supported.
 5. **Identity** applies the `--identity` choice.
 6. **Encryption** is a no-op in this release — encrypted layouts are refused at preflight.
-7. **Validate** spot-checks a sample of restored files against their checksums, confirms the bootloader and `grub.cfg` exist, cross-checks `fstab` UUIDs against the new partitions, then syncs and unmounts.
+7. **Validate** spot-checks a sample of restored files against their checksums, confirms the bootloader and `grub.cfg` exist, cross-checks `fstab` UUIDs against the new partitions, then syncs and unmounts. When system state was expected, it also fails with `system state not applied` if the restore phase did not apply it.
+
+The result JSON carries `stateManifestFound` and `stateApplied` alongside `status`; a rebuild is never `completed` unless `stateApplied` is `true` whenever system state was expected.
 
 Progress is checkpointed to `<state-dir>/rebuild-<snapshot>-<target>.json` after every phase. If a run is interrupted, re-running the same command **resumes**: phases already completed are skipped, the partitions are re-attached rather than re-created, and the state file is removed only on success.
 
