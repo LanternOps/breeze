@@ -313,6 +313,12 @@ moveOrgRoutes.post(
         // this introduces no new deadlock pair. Matches the maintenance entry
         // path (routes/devices/commands.ts), which takes the same actor lock
         // first.
+        //
+        // Consuming here means a later in-transaction refusal (currency,
+        // PAM, deliverable-pin 409s; a vanished org) burns the grant with the
+        // move rolled back. Accepted: the currency retry needs a NEW grant
+        // anyway (acceptCurrencyMismatch is part of the digest), the PAM and
+        // pin blocks do not clear on retry, and a vanished org is a race.
         if (grantBinding && (!(await lockActorAssurance(tx, auth, grantBinding))
           || !(await consumeStepUpGrant(stepUpGrant!, grantBinding)))) {
           throw new MoveOrgStepUpConsumedError();

@@ -34,6 +34,12 @@ describe('lockActorAssurance', () => {
     expect(await lockActorAssurance(tx, staleAuth, binding)).toBe(false);
   });
 
+  it('is false when only the TOKEN mfa epoch is stale (mep checked independently of aep)', async () => {
+    const { tx } = txResolving([{ status: 'active', authEpoch: 3, mfaEpoch: 2 }]);
+    const staleMfaAuth = { user: { id: 'user-1' }, token: { aep: 3, mep: 1 } } as unknown as AuthContext;
+    expect(await lockActorAssurance(tx, staleMfaAuth, binding)).toBe(false);
+  });
+
   it('is false for a non-active actor', async () => {
     const { tx } = txResolving([{ status: 'disabled', authEpoch: 3, mfaEpoch: 2 }]);
     expect(await lockActorAssurance(tx, auth, binding)).toBe(false);

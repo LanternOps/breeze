@@ -1900,6 +1900,16 @@ describe('POST /devices/:id/move-org', () => {
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
+    it('answers 503 when the live epochs cannot be read (cannot bind a grant)', async () => {
+      const { getUserEpochs } = await import('../../services/authEpochs');
+      vi.mocked(getUserEpochs).mockResolvedValueOnce(null);
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(503);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it('moves with a valid grant: locks the actor, consumes with the exact binding BEFORE the org locks, and audits stepUp: grant', async () => {
       const rig = rigMove();
       // lockActorAssurance / consumeStepUpGrant are mocks that issue no SQL, so
