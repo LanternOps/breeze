@@ -9,6 +9,7 @@ vi.mock('@/lib/i18n', () => ({ default: {} }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 import PartnerServicePrincipalsPage from './PartnerServicePrincipalsPage';
+import enSettings from '../../locales/en/settings.json';
 
 const PRINCIPAL_ID = '22222222-2222-4222-8222-222222222222';
 const KEY_ID = '33333333-3333-4333-8333-333333333333';
@@ -36,6 +37,15 @@ describe('PartnerServicePrincipalsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.fetchWithAuth.mockResolvedValue(principalListResponse());
+  });
+
+  it('empty state gives a next-step sentence, not just a bare noun phrase (matches sibling Settings pages)', () => {
+    // A bare "No service principals yet." (no second sentence, no call to
+    // action) is the paper cut — sibling empty states (e.g. enrollment keys:
+    // "No enrollment keys found. Create one to get started.") always add one.
+    const empty = enSettings.partnerServicePrincipals.empty;
+    expect(empty.trim().split('. ').length).toBeGreaterThan(1);
+    expect(empty.toLowerCase()).toContain('create');
   });
 
   it('lists only masked prefixes', async () => {

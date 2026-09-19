@@ -95,7 +95,7 @@
     "loading": "Cargando principales de servicio…",
     "loadFailed": "No se pudieron cargar los principales de servicio.",
     "retry": "Reintentar",
-    "empty": "Aún no hay principales de servicio.",
+    "empty": "Aún no hay principales de servicio. Cree uno para empezar.",
     "name": "Nombre",
     "principalDescription": "Descripción",
     "scopes": "Alcances",

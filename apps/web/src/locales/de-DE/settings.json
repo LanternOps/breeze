@@ -95,7 +95,7 @@
     "loading": "Dienstprinzipale werden geladen…",
     "loadFailed": "Dienstprinzipale konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
-    "empty": "Noch keine Dienstprinzipale.",
+    "empty": "Noch keine Dienstprinzipale. Erstellen Sie eines, um loszulegen.",
     "name": "Name",
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",

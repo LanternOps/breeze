@@ -95,7 +95,7 @@
     "loading": "Caricamento delle entità servizio...",
     "loadFailed": "Impossibile caricare le entità servizio.",
     "retry": "Riprova",
-    "empty": "Non sono ancora presenti entità servizio.",
+    "empty": "Non sono ancora presenti entità servizio. Creane una per iniziare.",
     "name": "Nome",
     "principalDescription": "Descrizione",
     "scopes": "Ambiti",

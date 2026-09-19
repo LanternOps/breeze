@@ -174,7 +174,7 @@
   "templates": {
     "pageTitle": "Çıktı şablonları",
     "pageDescription": "Bir hizmet katmanını bir kez tanımlayın ve herhangi bir müşteriye uygulayın. Ortak genelindeki şablon setleri, yönettiğiniz her kuruluş için kullanılabilir.",
-    "empty": "Henüz şablon seti yok.",
+    "empty": "Henüz şablon seti yok. Müşterileriniz için yeniden kullanılabilir bir hizmet katmanı tanımlamak üzere bir tane oluşturun.",
     "allOrganizations": "Tüm kuruluşlar",
     "actions": {
       "newSet": "Yeni şablon seti",

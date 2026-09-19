@@ -95,7 +95,7 @@
     "loading": "Carregando entidades de serviço…",
     "loadFailed": "Falha ao carregar as entidades de serviço.",
     "retry": "Tentar novamente",
-    "empty": "Nenhuma entidade de serviço ainda.",
+    "empty": "Nenhuma entidade de serviço ainda. Crie uma para começar.",
     "name": "Nome",
     "principalDescription": "Descrição",
     "scopes": "Escopos",

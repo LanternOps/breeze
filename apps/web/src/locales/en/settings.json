@@ -95,7 +95,7 @@
     "loading": "Loading service principals…",
     "loadFailed": "Failed to load service principals.",
     "retry": "Try again",
-    "empty": "No service principals yet.",
+    "empty": "No service principals yet. Create one to get started.",
     "name": "Name",
     "principalDescription": "Description",
     "scopes": "Scopes",

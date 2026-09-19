@@ -95,7 +95,7 @@
     "loading": "Chargement des principaux de service…",
     "loadFailed": "Échec du chargement des principaux de service.",
     "retry": "Réessayer",
-    "empty": "Aucun principal de service pour le moment.",
+    "empty": "Aucun principal de service pour le moment. Créez-en un pour commencer.",
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",

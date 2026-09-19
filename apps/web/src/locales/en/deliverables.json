@@ -174,7 +174,7 @@
   "templates": {
     "pageTitle": "Deliverable templates",
     "pageDescription": "Define a service tier once and apply it to any customer. Partner-wide sets are available to every organization you manage.",
-    "empty": "No template sets yet.",
+    "empty": "No template sets yet. Create one to define a reusable service tier for your customers.",
     "allOrganizations": "All orgs",
     "actions": {
       "newSet": "New template set",

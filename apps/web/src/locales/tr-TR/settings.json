@@ -95,7 +95,7 @@
     "loading": "Hizmet sorumluları yükleniyor…",
     "loadFailed": "Hizmet sorumluları yüklenemedi.",
     "retry": "Tekrar deneyin",
-    "empty": "Henüz hizmet sorumlusu yok.",
+    "empty": "Henüz hizmet sorumlusu yok. Başlamak için bir tane oluşturun.",
     "name": "Ad",
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
