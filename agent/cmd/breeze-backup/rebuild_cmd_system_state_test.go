@@ -232,3 +232,27 @@ func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// #5412: in token mode the server's word stands. An operator cannot weaken
+// the gate with --expect-system-state false; the run is still refused.
+func TestRebuildCommand_TokenModeIgnoresExplicitExpectFalse(t *testing.T) {
+	server, statuses := newSystemImageTokenServer(t)
+	prevSystem := rebuildSystemForTest
+	rebuildSystemForTest = noopTestSystem{}
+	t.Cleanup(func() { rebuildSystemForTest = prevSystem })
+
+	dir := t.TempDir()
+	cmd := newRebuildCommand()
+	cmd.SetArgs([]string{
+		"--token", "brz_rec_test", "--server", server.URL,
+		"--target", "image:" + filepath.Join(dir, "t.img"), "--image-size", "16G",
+		"--state-dir", dir, "--expect-system-state", "false",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "system state expected but system-state/manifest.json is missing") {
+		t.Fatalf("err = %v, want the #5412 preflight refusal despite --expect-system-state false", err)
+	}
+	if got := statuses(); len(got) != 1 || got[0] != "refused" {
+		t.Fatalf("posted statuses = %v, want [refused]", got)
+	}
+}

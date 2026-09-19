@@ -135,11 +135,13 @@ func newRebuildCommand() *cobra.Command {
 				// preflight when it is missing instead of rebuilding
 				// files-only and reporting completed. --expect-system-state
 				// can only override away from auto for the local mode
-				// below; in token mode the server's word stands.
-				if expectStateAuto {
-					opts.ExpectSystemState = bmr.SnapshotExpectsSystemState(bs.Snapshot)
-				} else {
-					opts.ExpectSystemState = expectState
+				// below; in token mode the server's word stands. An
+				// explicit "true" may strengthen it, "false" never weakens it.
+				opts.ExpectSystemState = bmr.SnapshotExpectsSystemState(bs.Snapshot)
+				if !expectStateAuto && expectState {
+					opts.ExpectSystemState = true
+				} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
 				}
 
 				report = func(u bmr.ProgressUpdate) {
