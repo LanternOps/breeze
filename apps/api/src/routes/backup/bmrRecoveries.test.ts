@@ -108,16 +108,21 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+// W05a: the cancel / reissue-code routes are asserted to sit behind MFA and
+// BACKUP_WRITE, so the middleware mocks are switchable per test.
+let mfaSatisfied = true;
+let deniedPermission: string | null = null;
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => {
     c.set('auth', authState);
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => {
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
     c.set('auth', authState);
+    if (deniedPermission === `${resource}:${action}`) return c.json({ error: 'forbidden' }, 403);
     return next();
   }),
-  requireMfa: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => (mfaSatisfied ? next() : c.json({ error: 'mfa_required' }, 403))),
 }));
 
 const writeRouteAuditMock = vi.fn();
@@ -125,6 +130,12 @@ const writeAuditEventMock = vi.fn();
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
   writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...(args as [])),
+}));
+// W05a: create/cancel/reissue audits are written by bareMetalRecoveryService
+// through createAuditLogAsync (no Hono context in the DR / Restore-as-VM callers).
+const createAuditLogAsyncMock = vi.fn(async () => undefined);
+vi.mock('../../services/auditService', () => ({
+  createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...(args as [])),
 }));
 
 const authorizeResilienceResourcesMock = vi.fn(async () => ({ ok: true, authorization: { resources: [] } }));
@@ -179,6 +190,8 @@ describe('bare-metal recoveries routes', () => {
       token: { sub: 'user-123' },
     };
     authorizeResilienceResourcesMock.mockResolvedValue({ ok: true, authorization: { resources: [] } });
+    mfaSatisfied = true;
+    deniedPermission = null;
     enforcePublicRateLimitMock.mockResolvedValue(null);
     enforceTokenRateLimitMock.mockResolvedValue(null);
     runInRecoveryOrgContextMock.mockImplementation((_orgId: string, fn: () => any) => fn());
@@ -221,7 +234,11 @@ describe('bare-metal recoveries routes', () => {
       expect(inserted.codeHash).toMatch(/^[0-9a-f]{64}$/);
       expect(inserted.nonceHash).toMatch(/^[0-9a-f]{64}$/);
       expect(inserted).not.toHaveProperty('nonce');
-      expect(writeRouteAuditMock).toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'bmr.recovery.create',
+        actorId: 'user-123',
+        details: expect.objectContaining({ source: 'route', identity: 'original' }),
+      }));
     });
 
     it('refuses a snapshot the guard marked non-restorable, naming the reasons', async () => {
@@ -246,6 +263,109 @@ describe('bare-metal recoveries routes', () => {
       });
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ error: 'recovery_in_progress', recoveryId: 'rec-0', status: 'restoring' });
+    });
+  });
+
+  function fullRecoveryRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'new',
+      status: 'created', codeHash: 'a'.repeat(64), codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+      target: null, plan: null, result: null, failureReason: null, warnings: null, createdBy: 'user-123',
+      createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+      validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      ...overrides,
+    };
+  }
+
+  describe('POST /backup/bmr/recoveries/:id/cancel', () => {
+    it('cancels a non-terminal recovery, authorizes the device, and audits bmr.recovery.cancel', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'restoring' })]));
+      updateMock.mockReturnValueOnce(chainMock([fullRecoveryRow({ status: 'failed', failureReason: 'cancelled' })]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'stuck rehearsal' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ id: RECOVERY_ID, status: 'failed', failureReason: 'cancelled' });
+      expect(authorizeResilienceResourcesMock).toHaveBeenCalledWith(
+        expect.anything(), ORG_ID, [{ kind: 'device', id: DEVICE_ID, role: 'target' }], 'revoke',
+      );
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'bmr.recovery.cancel', resourceId: RECOVERY_ID }));
+    });
+
+    it('409s invalid_state for a terminal recovery', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'completed' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'invalid_state' });
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('404s an unknown recovery before any authorization side effect', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(404);
+    });
+
+    it('requires MFA', async () => {
+      mfaSatisfied = false;
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('requires backup:write', async () => {
+      deniedPermission = 'backup:write';
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/cancel`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /backup/bmr/recoveries/:id/reissue-code', () => {
+    it('rotates the code, rate-limits per recovery, and returns the new code once', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'media_booted' })]));
+      updateMock.mockReturnValueOnce(chainMock([fullRecoveryRow({ status: 'media_booted' })]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
+      expect(body).not.toHaveProperty('codeHash');
+      expect(enforceTokenRateLimitMock).toHaveBeenCalledWith(expect.anything(), 'reissue', RECOVERY_ID, 5, 3600);
+      expect(authorizeResilienceResourcesMock).toHaveBeenCalledWith(
+        expect.anything(), ORG_ID, [{ kind: 'device', id: DEVICE_ID, role: 'target' }], 'token',
+      );
+      const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+      expect(set.codeHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(set.codeHash).not.toBe('a'.repeat(64));
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'bmr.recovery.reissue_code', resourceId: RECOVERY_ID }));
+    });
+
+    it('returns the rate-limit response without touching the row', async () => {
+      enforceTokenRateLimitMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 }) as never);
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'created' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+      expect(res.status).toBe(429);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('409s invalid_state once the helper has moved past media_booted', async () => {
+      selectMock.mockReturnValue(chainMock([fullRecoveryRow({ status: 'planned' })]));
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'invalid_state' });
+    });
+
+    it('requires MFA and backup:write', async () => {
+      mfaSatisfied = false;
+      expect((await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' })).status).toBe(403);
+      mfaSatisfied = true;
+      deniedPermission = 'backup:write';
+      expect((await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}/reissue-code`, { method: 'POST' })).status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
     });
   });
 

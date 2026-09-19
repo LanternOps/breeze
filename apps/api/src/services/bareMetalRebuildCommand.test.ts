@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { queueCommandForExecutionMock, createAuditLogAsyncMock, encryptMock } = vi.hoisted(() => ({
-  queueCommandForExecutionMock: vi.fn(),
-  createAuditLogAsyncMock: vi.fn(async () => undefined),
+  queueCommandForExecutionMock: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
+  createAuditLogAsyncMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(async () => undefined),
   encryptMock: vi.fn((_type: string, payload: Record<string, unknown>) => ({ ...payload, token: 'enc:' + String(payload.token) })),
 }));
 
@@ -10,7 +10,7 @@ vi.mock('./commandQueue', () => ({
   queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
 }));
 vi.mock('./auditService', () => ({
-  createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...(args as [])),
+  createAuditLogAsync: (entry: Record<string, unknown>) => createAuditLogAsyncMock(entry),
 }));
 vi.mock('./sensitiveCommandPayload', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./sensitiveCommandPayload')>();
@@ -97,7 +97,7 @@ describe('queueBareMetalRebuild', () => {
     await queueBareMetalRebuild({ orgId: ORG_ID, hostDeviceId: HOST_ID, payload: validPayload, userId: USER_ID });
 
     expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
-    const entry = createAuditLogAsyncMock.mock.calls[0]![0] as Record<string, unknown>;
+    const entry = createAuditLogAsyncMock.mock.calls[0]![0];
     expect(entry).toMatchObject({
       orgId: ORG_ID,
       action: 'bmr.rebuild.command',
