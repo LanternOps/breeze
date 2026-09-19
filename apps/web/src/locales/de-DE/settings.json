@@ -1276,6 +1276,10 @@
         "enableLifecycle": {
           "label": "Hardware-Lebenszyklus",
           "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
+        },
+        "enableNetworkVisibility": {
+          "label": "Netzwerksichtbarkeit",
+          "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."
         }
       }
     },

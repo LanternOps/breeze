@@ -54,6 +54,9 @@ export const portalBranding = pgTable('portal_branding', {
   // MSP can turn on generic report self-service before exposing the
   // replacement plan, which names specific machines.
   enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
+  // Customer Portal Network Visibility (#5861): independent, fail-closed
+  // visibility gate for the read-only networking surface.
+  enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

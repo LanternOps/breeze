@@ -93,6 +93,11 @@ describe('updatePortalSettingsSchema', () => {
     });
   });
 
+  it.each([true, false])('accepts the Network Visibility flag=%s', (enableNetworkVisibility) => {
+    expect(updatePortalSettingsSchema.parse({ enableNetworkVisibility }))
+      .toEqual({ enableNetworkVisibility });
+  });
+
   it('rejects non-boolean portal visibility flags', () => {
     expect(updatePortalSettingsSchema.safeParse({
       enableDashboard: 'true',

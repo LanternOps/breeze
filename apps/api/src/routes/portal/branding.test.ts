@@ -76,6 +76,7 @@ describe('GET /branding (authenticated)', () => {
       enableService: true,
       enableDocuments: false,
       enableLifecycle: true,
+      enableNetworkVisibility: true,
     }];
 
     const response = await authenticatedApp.request('/branding');
@@ -113,6 +114,7 @@ describe('GET /branding (authenticated)', () => {
         'enableService',
         'enableDocuments',
         'enableLifecycle',
+        'enableNetworkVisibility',
       ]),
     );
   });
@@ -143,6 +145,7 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableService');
     expect(body).not.toHaveProperty('enableDocuments');
     expect(body).not.toHaveProperty('enableLifecycle');
+    expect(body).not.toHaveProperty('enableNetworkVisibility');
   });
 
   it('applies private cache headers scoped to the authenticated viewer', async () => {
@@ -207,6 +210,7 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableService');
     expect(body.branding).not.toHaveProperty('enableDocuments');
     expect(body.branding).not.toHaveProperty('enableLifecycle');
+    expect(body.branding).not.toHaveProperty('enableNetworkVisibility');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
     // Same reasoning as the authenticated case: the mock ignores the
@@ -223,6 +227,7 @@ describe('GET /branding/:domain (public)', () => {
       'enableService',
       'enableDocuments',
       'enableLifecycle',
+      'enableNetworkVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
     }

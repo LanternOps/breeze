@@ -1276,6 +1276,10 @@
         "enableLifecycle": {
           "label": "Hardware lifecycle",
           "description": "Show the live replacement plan for your customer's machines."
+        },
+        "enableNetworkVisibility": {
+          "label": "Network visibility",
+          "description": "Show read-only network health and discovered assets in the customer portal."
         }
       }
     },

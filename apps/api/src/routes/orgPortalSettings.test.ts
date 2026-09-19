@@ -84,6 +84,7 @@ vi.mock('../db/schema', () => ({
     enableService: 'enableService',
     enableDocuments: 'enableDocuments',
     enableLifecycle: 'enableLifecycle',
+    enableNetworkVisibility: 'enableNetworkVisibility',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -120,6 +121,7 @@ const FULL_ROW = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableNetworkVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -177,6 +179,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
@@ -210,6 +213,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
@@ -234,7 +238,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSecurity: false,
       enableBackups: false,
       enableReports: false,
-      enableSupportUsage: false
+      enableSupportUsage: false,
+      enableNetworkVisibility: false
     });
   });
 
@@ -373,14 +378,16 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableReports: true,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     }]);
 
     const res = await patch({
       enableDashboard: true,
       enableReports: true,
       enableService: true,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
 
     expect(res.status).toBe(200);
@@ -392,7 +399,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableSupportUsage: false,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
       orgId: ORG_ID,
@@ -401,7 +409,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableDashboard: true,
         enableReports: true,
         enableService: true,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       },
       current: {
         enableDashboard: true,
@@ -411,7 +420,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableSupportUsage: false,
         enableService: true,
         enableDocuments: false,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       }
     });
   });
