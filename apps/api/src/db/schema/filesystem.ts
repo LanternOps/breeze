@@ -17,7 +17,7 @@ import { users } from './users';
 
 export const filesystemSnapshotTriggerEnum = pgEnum('filesystem_snapshot_trigger', ['on_demand', 'threshold']);
 // `running` is last because that is the order ALTER TYPE added it
-// (2026-10-20-170100-…), which is the order Postgres sorts the labels in.
+// (2026-10-21-110100-…), which is the order Postgres sorts the labels in.
 export const filesystemCleanupRunStatusEnum = pgEnum('filesystem_cleanup_run_status', ['previewed', 'executed', 'failed', 'running']);
 
 export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', {

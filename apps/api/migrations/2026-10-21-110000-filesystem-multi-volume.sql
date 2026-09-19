@@ -10,7 +10,7 @@
 -- there is no primary key and no nullability contraction. An old API replica still
 -- draining during the deploy supplies no `scan_path`; a NOT NULL column would
 -- fail its snapshot INSERT with 23502 and lose a completed scan outright.
--- W03 ships the contract half — `2026-10-20-170200-filesystem-scan-path-not-null.sql`
+-- W03 ships the contract half — `2026-10-21-110200-filesystem-scan-path-not-null.sql`
 -- — once W02 is deployed everywhere.
 --
 -- SHIPS WITH ITS CODE. `upsertFilesystemScanState` uses

@@ -202,7 +202,7 @@ export async function upsertFilesystemScanState(
     .insert(deviceFilesystemScanState)
     .values(insertValues)
     .onConflictDoUpdate({
-      // The (device_id, scan_path) key (2026-10-20-170000). It is a UNIQUE
+      // The (device_id, scan_path) key (2026-10-21-110000). It is a UNIQUE
       // INDEX in W02, not a primary key (amendment 16) — Postgres infers
       // either one from this column list, so nothing here changes when W03
       // promotes it. A single-column target names no unique index at all once

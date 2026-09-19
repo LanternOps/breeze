@@ -1,6 +1,6 @@
 /**
- * Live-Postgres proof for 2026-10-20-170000-filesystem-multi-volume.sql and
- * 2026-10-20-170100-filesystem-cleanup-run-status-running.sql (spec §4).
+ * Live-Postgres proof for 2026-10-21-110000-filesystem-multi-volume.sql and
+ * 2026-10-21-110100-filesystem-cleanup-run-status-running.sql (spec §4).
  *
  * Prerequisites:
  *   pnpm test-stack up
@@ -24,7 +24,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 
-const MIGRATION = '2026-10-20-170000-filesystem-multi-volume.sql';
+const MIGRATION = '2026-10-21-110000-filesystem-multi-volume.sql';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 async function seedDevice(osType: 'windows' | 'linux' | 'macos') {
@@ -67,7 +67,7 @@ async function scanPathOf(snapshotId: string): Promise<string | null> {
   return rows[0]?.scan_path ?? null;
 }
 
-describe('2026-10-20-170000 — snapshot scan_path backfill', () => {
+describe('2026-10-21-110000 — snapshot scan_path backfill', () => {
   runDb('matches the shared runtime normalizer fixture table', async () => {
     const snapshots: Array<{ id: string; expected: string }> = [];
     for (const fixture of scanPathFixtures) {
@@ -167,7 +167,7 @@ describe('2026-10-20-170000 — snapshot scan_path backfill', () => {
   });
 });
 
-describe('2026-10-20-170000 — scan-state key and the rest of the shape', () => {
+describe('2026-10-21-110000 — scan-state key and the rest of the shape', () => {
   /** Seeds a legacy scan-state row: no scan_path, with resume state attached. */
   async function seedLegacyScanState(
     deviceId: string,

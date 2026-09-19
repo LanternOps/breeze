@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const migration = readFileSync(new URL('../../migrations/2026-10-20-170000-filesystem-multi-volume.sql', import.meta.url), 'utf8');
+const migration = readFileSync(new URL('../../migrations/2026-10-21-110000-filesystem-multi-volume.sql', import.meta.url), 'utf8');
 
 describe('filesystem multi-volume migration safety contracts', () => {
   it('normalises bare drives, drive-relative paths and UNC prefixes explicitly', () => {
