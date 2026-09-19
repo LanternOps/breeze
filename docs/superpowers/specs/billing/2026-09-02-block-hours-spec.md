@@ -7,6 +7,14 @@
 **Advisor quorum:** Fable design + Codex `gpt-5.6-sol` xhigh read-only review (2026-09-02). Codex found nine confirmed defects in the first draft, all folded in below; the one place we still disagree is Open Decision 8.
 **Origin:** MSP demo follow-up, 2026-09-02.
 
+## Amendments — 2026-09-19 (from the billing-profiles spec, #4628 §5; approved by Todd)
+
+These override the text below wherever they conflict.
+
+1. **`contract` is terminal only when `contract_line_id IS NOT NULL`.** Billing profiles (#4628) mark a card-*included* entry `billing_status = 'contract'` at creation with no `contract_line_id`. That entry must stay editable by a holder of `time_entries:manage_billing` — it is how out-of-scope work on an otherwise-included work type gets billed. The guard in §2 ("`contract` must become a terminal disposition") therefore locks an entry only when a block close stamped a `contract_line_id` on it. The double-billing hole it closes is unchanged: every block-drawn entry carries the line id.
+2. **Drawdown reads `COALESCE(billable_minutes, duration_minutes)`.** #4628 W03 adds service-written `time_entries.billable_minutes` (minimums and rounding applied). The close query and the live open-period `SUM` both read the coalesced value, so a block is drawn by what the customer would have been billed, and the spec still works before that column exists.
+3. **Included hours do not draw down a block.** A card-included entry is born `contract`, so it never meets the `billing_status = 'not_billed'` eligibility test. "Included" means covered by the flat fee, not by the hour bank. No change to the eligibility rule — recorded so nobody "fixes" it.
+
 ## Problem
 
 MSPs sell blocks of prepaid support hours — "10 hours a month", "40 hours for the term". Technician time draws the block down, the customer sees what is left, and hours past the block bill at a contracted overage rate. Unused hours either expire or roll forward.
@@ -98,7 +106,7 @@ Codex further showed (finding 3, CONFIRMED) that a `NOT EXISTS (invoice_lines �
 So the close **claims rows, it does not count them**:
 
 ```
-1. SELECT id, duration_minutes, hourly_rate, currency_code
+1. SELECT id, COALESCE(billable_minutes, duration_minutes) AS minutes, hourly_rate, currency_code   -- amendment 2
      FROM time_entries
     WHERE org_id = :org AND is_billable AND billing_status = 'not_billed'
       AND ended_at >= :periodStart AND ended_at < :periodEnd
@@ -118,7 +126,7 @@ So the close **claims rows, it does not count them**:
 
 **Aggregate math, never a split entry.** A 2.5 h entry straddling the block boundary cannot be expressed as "1 h absorbed, 1.5 h overage" on one row. So every eligible entry in the period is marked, and the overage is one line for `max(0, consumed − opening)` hours at `overage_rate`. No entry is ever split.
 
-**`contract` must become a terminal disposition.** `BILLED_LOCKED_ENTRY_FIELDS` only fires when `billing_status === 'billed'` (`timeEntryService.ts:721`), so today a technician can flip a `contract`-marked entry back to `not_billed` and have it billed again ad hoc — the customer pays for the same hour twice (Codex 13, CONFIRMED). This slice extends that guard to `'contract'`. Correcting a mis-drawn entry then means an explicit adjustment, not a silent status flip; the mechanism is Open Decision 6's sibling and is called out in Out of scope.
+**`contract` must become a terminal disposition** *(narrowed by amendment 1: only when `contract_line_id IS NOT NULL`)***.** `BILLED_LOCKED_ENTRY_FIELDS` only fires when `billing_status === 'billed'` (`timeEntryService.ts:721`), so today a technician can flip a `contract`-marked entry back to `not_billed` and have it billed again ad hoc — the customer pays for the same hour twice (Codex 13, CONFIRMED). This slice extends that guard to `'contract'`. Correcting a mis-drawn entry then means an explicit adjustment, not a silent status flip; the mechanism is Open Decision 6's sibling and is called out in Out of scope.
 
 **Period arithmetic.** `computePeriod(startDate, intervalMonths, idx)` from `contractMath.ts`, unchanged — the block's period *is* the contract's billing period. `periodEnd` is the next period's start, so the range is half-open `[start, end)` and the predicate uses `< periodEnd`, deliberately not `<=`, so a boundary entry is counted exactly once.
 
