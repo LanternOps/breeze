@@ -59,6 +59,20 @@ jobs:
   # output is the literal string `false`. If this job fails, is skipped, or
   # emits nothing, the code jobs are skipped (their `if:` sees an empty output)
   # AND `ci-success` still asserts on them — so the PR goes red, never green.
+  #
+  # Per-area gating: the classifier also emits `api`, `web`, `portal`, `addins`,
+  # `m365` and `rust`, and the heavy jobs that exercise exactly one area carry
+  # `&& needs.changes.outputs.<area> == 'true'` (the three smoke jobs boot the
+  # whole stack, so they take api OR web OR portal). The rules fail OPEN: a
+  # shared input (packages/**, root manifests/lockfile, ci.yml, .github/scripts,
+  # docker, scripts/**, ee/**) or any code path matching no area sets EVERY
+  # area, and an area whose tests read another area's files is set when those
+  # change (test-api carries repo-wide contract suites, so web/portal/viewer
+  # and every app's Dockerfile/package.json also set `api`). `ci-success`
+  # asserts each gated job with the AGENT_CHANGED three-branch pattern: area
+  # `true` → success, `false` → skipped, anything else → red. lint, typecheck,
+  # security-audit and the agent/mobile/viewer jobs are never area-gated.
+  # Contract: .github/scripts/ci-area-gating.test.mjs.
   changes:
     name: Detect Code Changes
     runs-on: ubuntu-latest
