@@ -864,6 +864,7 @@ export * from './vulnerabilityManagementReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalChromeAccent';
 export * from './portalService';
 
 // ============================================

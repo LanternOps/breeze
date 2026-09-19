@@ -69,6 +69,7 @@ vi.mock('../services', () => {
       partnerId: identity.partnerId,
       scope: identity.scope,
       mfa: identity.mfa,
+      mfa_src: identity.mfaSrc,
       aep: epochs.authEpoch,
       mep: epochs.mfaEpoch,
       mdid: identity.mobileDeviceId,
@@ -440,6 +441,7 @@ import {
   bindIssuedUserSession,
   cancelAuthIssuance,
   completeAdditionalMfaFactorEnrollment,
+  completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
   createTokenPair,
   finishAuthIssuance,
@@ -821,6 +823,11 @@ describe('passkey MFA auth routes', () => {
         '11111111-1111-4111-8111-111111111111',
         expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
       );
+      // The passkey this call installs is what assures the replacement
+      // session, so the enrollment identity is factor-sourced (spec D6) — the
+      // real primitive rejects any other source.
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     it('register/verify returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
@@ -1033,7 +1040,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
@@ -1235,7 +1242,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(await res.json()).toMatchObject({
@@ -2026,7 +2033,7 @@ describe('passkey MFA auth routes', () => {
           orgId: 'org-5',
           partnerId: 'partner-2',
           scope: 'organization',
-          token: { sid: 'session-123', mfa: true, aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
+          token: { sid: 'session-123', mfa: true, mfa_src: 'factor', aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
         });
         return next();
       }) as never);
@@ -2053,6 +2060,8 @@ describe('passkey MFA auth routes', () => {
         partnerId: 'partner-2',
         scope: 'organization',
         mfa: true,
+        // Carried verbatim from the caller's signed token, never recomputed.
+        mfaSrc: 'factor',
         mobileDeviceId: 'signed-device-1',
       });
       expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -2104,6 +2113,10 @@ describe('passkey MFA auth routes', () => {
       expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
       const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
       expect(input).toMatchObject({ userId: 'user-123', revokeReason: 'passkey-delete' });
+      // This caller's token predates the claim, so the re-mint carries none —
+      // absent stays absent, it is never recomputed into a source.
+      expect(input.identity).toMatchObject({ mfa: true });
+      expect(input.identity.mfaSrc).toBeUndefined();
       expect(input.recoveryCodes).toBeUndefined();
       expect(input.recoveryCodeHashes).toBeUndefined();
     });

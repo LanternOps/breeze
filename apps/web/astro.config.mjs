@@ -3,6 +3,23 @@ import react from '@astrojs/react';
 import tailwindcss from '@tailwindcss/vite';
 import node from '@astrojs/node';
 import sentry from '@sentry/astro';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+
+// monaco-editor >=0.56's package.json `exports` map only publishes
+// `"./*.js"` / `"./*"` -> `esm/vs/*.js` — it no longer exposes the AMD
+// `min/vs/**` assets (including CSS) via any subpath specifier, so a plain
+// `import 'monaco-editor/min/vs/editor/editor.main.css'` fails module
+// resolution under Vite/rolldown. Resolve the package root via the bare
+// `"monaco-editor"` specifier (allowed by `exports["."]`) and alias the old
+// CSS specifier to its on-disk path directly, bypassing the exports map.
+// See src/components/scripts/ScriptForm.tsx for why this file is imported
+// at build time (hashed <link> in <head> instead of a runtime-injected
+// <style>, for CSP reasons) and scripts/copy-monaco-assets.ts, which copies
+// the same `min/vs` directory into `public/monaco/vs` for the AMD loader.
+const require = createRequire(import.meta.url);
+const monacoRoot = path.dirname(path.dirname(path.dirname(require.resolve('monaco-editor'))));
+const monacoEditorMainCss = path.join(monacoRoot, 'min/vs/editor/editor.main.css');
 
 const sentryDsn = process.env.PUBLIC_SENTRY_DSN_WEB ?? process.env.SENTRY_DSN_WEB;
 const sentryIntegration = sentryDsn
@@ -101,7 +118,10 @@ export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
     resolve: {
-      dedupe: ['react', 'react-dom']
+      dedupe: ['react', 'react-dom'],
+      alias: {
+        'monaco-editor/min/vs/editor/editor.main.css': monacoEditorMainCss
+      }
     },
     optimizeDeps: {
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'zustand', 'zustand/middleware']

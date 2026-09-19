@@ -109,7 +109,7 @@ Port scanning does not require elevated privileges and works on all platforms.
 
 ### SNMP Discovery
 
-SNMP discovery queries each target on UDP port 161 using the configured community strings (default: `public`). It fetches three system OIDs:
+SNMP discovery queries each target on UDP port 161 (or the port set in the profile's SNMP settings) using the profile's SNMP credentials. It fetches three system OIDs:
 
 | OID | Field | Usage |
 |-----|-------|-------|
@@ -117,13 +117,26 @@ SNMP discovery queries each target on UDP port 161 using the configured communit
 | `1.3.6.1.2.1.1.2.0` | sysObjectID | Device model and type classification |
 | `1.3.6.1.2.1.1.5.0` | sysName | Hostname / device name |
 
-Both SNMPv2c and SNMPv3 (NoAuthNoPriv) are supported. To use SNMPv3, prefix the username with `v3:` in the `snmpCommunities` array:
+SNMPv1, SNMPv2c and SNMPv3 (noAuthNoPriv, authNoPriv and authPriv) are supported. The profile's `snmpCredentials` object carries the version and, for v3, the user name, authentication protocol (MD5, SHA, SHA224, SHA256, SHA384, SHA512) and privacy protocol (DES, AES, AES192, AES256) with their passphrases; passphrases are stored encrypted and masked on read. For v2c the community string goes in `snmpCommunities`:
 
 ```json
 {
-  "snmpCommunities": ["public", "private", "v3:admin-user"]
+  "snmpCommunities": [],
+  "snmpCredentials": {
+    "version": "v3",
+    "username": "ro-monitor",
+    "authProtocol": "sha",
+    "authPassphrase": "…",
+    "privacyProtocol": "aes",
+    "privacyPassphrase": "…",
+    "port": 161,
+    "timeout": 2000,
+    "retries": 1
+  }
 }
 ```
+
+The agent tries the structured credential first, then each `snmpCommunities` entry (the legacy `v3:<user>` prefix for a noAuthNoPriv v3 user is still honoured). The built-in `public` community is used **only** when the profile configures no SNMP credential at all — a profile set to v3 is never probed with v2c/`public`. When a target rejects the configured v3 credentials (unknown user, wrong digest, decryption error) the agent logs a warning with the credential summary (user name and protocols, never passphrases) and the count of rejecting targets, so "no SNMP data" can be told apart from "device does not speak SNMP".
 
 SNMP data is used by the asset classifier to determine manufacturer (Cisco, HP, Dell, Juniper, MikroTik, Synology, QNAP, Ubiquiti, Fortinet) and device type.
 
@@ -178,7 +191,8 @@ Authorization: Bearer <token>
 | `excludeIps` | string[] | No | IPs to skip during scanning |
 | `methods` | string[] | Yes | Scan methods: `arp`, `ping`, `port_scan`, `snmp` |
 | `portRanges` | any | No | Port ranges for port scan (e.g., `["22,80,443", "1000-2000"]`) |
-| `snmpCommunities` | string[] | No | SNMP community strings. Prefix `v3:` for SNMPv3 usernames |
+| `snmpCommunities` | string[] | No | SNMPv1/v2c community strings (legacy `v3:<user>` prefix = noAuthNoPriv v3 user) |
+| `snmpCredentials` | object | No | Structured SNMP settings: `version` (`v1`/`v2c`/`v3`), `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` (ms), `retries` |
 | `schedule` | object | Yes | Schedule configuration (see below) |
 | `deepScan` | boolean | No | Allow subnets larger than /16 (65,536+ hosts). Default `false` |
 | `identifyOS` | boolean | No | Attempt OS fingerprinting from SNMP and port data. Default `false` |

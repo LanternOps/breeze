@@ -3,6 +3,7 @@ import {
   MFA_ENROLLMENT_GRACE_DAYS_DEFAULT,
   MFA_ENROLLMENT_GRACE_DAYS_MAX,
   evaluateMfaEnrollmentGrace,
+  previewMfaEnrollmentGrace,
   resolveMfaGraceDays,
 } from './mfaEnrollmentGrace';
 
@@ -134,5 +135,110 @@ describe('evaluateMfaEnrollmentGrace — race-loss disposition', () => {
 
     expect(facts.expired).toBe(true);
     expect(facts.deadline?.toISOString()).toBe(deadline.toISOString());
+  });
+});
+
+/**
+ * #5690 — Admin → Users list MFA status column. `previewMfaEnrollmentGrace`
+ * must never write to the DB (it takes no executor at all) and must reproduce
+ * `evaluateMfaEnrollmentGrace`'s decision whenever a grant already exists.
+ */
+describe('previewMfaEnrollmentGrace', () => {
+  const now = new Date('2026-11-01T00:00:00Z');
+
+  it('reports enrolled (hasFactor) for an account that already holds a factor', () => {
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: true,
+      mfaEpoch: 5,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 14,
+      now,
+    });
+    expect(facts).toEqual({ hasFactor: true, deadline: null, expired: false });
+  });
+
+  it('gives no window to an account that has ever held a factor (mfa_epoch !== 1)', () => {
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 3,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 14,
+      now,
+    });
+    expect(facts).toEqual({ hasFactor: false, deadline: null, expired: false });
+  });
+
+  it('reproduces the persisted grant\'s effective deadline (min of deadline and grantedAt+graceDays)', () => {
+    const grantedAt = new Date('2026-10-01T00:00:00Z');
+    const deadline = new Date('2026-10-20T00:00:00Z'); // longer than 14 days from grantedAt
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline,
+      grantedAt,
+      graceDays: 14,
+      now,
+    });
+    // effective = min(2026-10-20, 2026-10-01 + 14d = 2026-10-15) = 2026-10-15
+    expect(facts.deadline?.toISOString()).toBe(new Date('2026-10-15T00:00:00Z').toISOString());
+    expect(facts.expired).toBe(true); // now (11-01) is past 10-15
+  });
+
+  it('reports NOT expired when the persisted deadline is in the future', () => {
+    const grantedAt = new Date('2026-10-25T00:00:00Z');
+    const deadline = new Date('2026-11-08T00:00:00Z');
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline,
+      grantedAt,
+      graceDays: 14,
+      now,
+    });
+    expect(facts.expired).toBe(false);
+    expect(facts.deadline?.toISOString()).toBe(deadline.toISOString());
+  });
+
+  it('previews a not-yet-granted window as now + graceDays, never expired', () => {
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 14,
+      now,
+    });
+    expect(facts.expired).toBe(false);
+    expect(facts.deadline?.toISOString()).toBe(new Date('2026-11-15T00:00:00Z').toISOString());
+  });
+
+  it('reports a not-yet-granted window as already expired when graceDays is 0 ("0 disables the window")', () => {
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 0,
+      now,
+    });
+    // A real grant right now would set deadline = grantedAt (no window at
+    // all) — never "pending" for a graceDays=0 partner.
+    expect(facts.expired).toBe(true);
+  });
+
+  it('never issues a DB call — the function signature takes no executor', () => {
+    // Compile-time guarantee mostly, but assert the return shape has no
+    // promise/thenable leaking through, confirming it's synchronous & pure.
+    const result = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 5,
+      now,
+    });
+    expect(result).not.toBeInstanceOf(Promise);
   });
 });

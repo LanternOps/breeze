@@ -27,7 +27,7 @@ Each agent carries its own limits — devices per run, concurrent runs, runs per
 
 ## Fleet designer
 
-A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and cannot run in shadow mode because there is nothing to shadow. For a designer, **Act** simply means "run and write reports".
+A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and has no shadow mode because there is nothing to shadow — the mode picker offers only **Off** and **On** for this kind, and a new designer starts on **On** ("run and write reports").
 
 It runs when you start a Fleet Design for an organization, or on a schedule that targets a Fleet designer agent and fires at most once a month. Its evidence bundle is pinned to the organization and covers devices, software, network, posture, health, automation and the shape of the event log.
 
@@ -35,8 +35,10 @@ Each run produces a **Fleet Design** report — the recommended device functions
 
 The designer also assesses a **function** for each device — domain controller, file server, kiosk, finance workstation and so on — shown next to the billable Device Role on the device's Info tab; see [Device function](/features/devices/#device-function). A function set by hand is never overwritten by the designer.
 
+You do not have to create the agent by hand. If the organization's partner has no Fleet designer yet — or has one that is off — the **Fleet Design** page says so and offers **Enable Fleet Designer**, which creates the partner-wide designer agent on **On** with you as its recipient (or turns the existing one on). The button appears only for a partner administrator with `ai_agents:write`; an organization-scoped user sees who to ask instead.
+
 <Aside>
-  Like every other kind, a Fleet designer produces nothing until an administrator creates one for the organization, and in this release nothing in a design is applied to the fleet automatically — the report is for a technician to act on.
+  A Fleet designer resolves through the partner-wide agent, so an organization can tighten it (turn it off for one customer) but cannot create it alone. Nothing in a design is applied to the fleet automatically until a technician approves it.
 </Aside>
 
 ## Runs

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getEmailService } from '../../email';
 import {
   PartnerLaneSendFailure,
@@ -22,8 +23,14 @@ import {
  *                        case 4 (adopt with provider_managed = false)
  *   anything else     -> stays pending
  *
- * `send` hands the message to the platform transport verbatim, so a local
- * Mailpit shows the custom From.
+ * `send` never makes an external call. When the platform transport is a local
+ * sink (SMTP, e.g. Mailpit) it hands the message to `EmailService.deliverRaw`
+ * verbatim, so a local Mailpit shows the custom From. When the platform
+ * transport is an external provider (Resend, Mailgun) — or none is configured
+ * — the fake domains this adapter manages were never registered with that
+ * real provider, so a real delivery attempt would always be rejected (e.g.
+ * Resend's "domain is not verified"); the send is suppressed and a synthetic
+ * `providerMessageId` is returned instead.
  */
 
 export const FAKE_PREEXISTING_PREFIX = 'preexisting.';
@@ -118,16 +125,32 @@ export function createFakeDomainProvider(): EmailDomainProvider {
         throw new PartnerLaneSendFailure({ kind: 'domain_unusable' });
       }
       const service = getEmailService();
-      if (!service) throw new PartnerLaneSendFailure({ kind: 'lane_unavailable' });
       const { partnerRef: _partnerRef, tags: _tags, ...raw } = m;
       void _partnerRef;
       void _tags;
-      try {
-        await service.deliverRaw(raw);
-      } catch (err) {
-        throw new PartnerLaneSendFailure({ kind: 'ambiguous', detail: err instanceof Error ? err.message : String(err) });
+
+      // The domains this adapter manages exist only in this process's fake
+      // ledger — they were never registered with a real external provider.
+      // Handing the send to an SMTP sink (e.g. local Mailpit) is fine, since
+      // that sink doesn't validate sender domains. Handing it to Resend or
+      // Mailgun (or having no email service configured at all) would always
+      // be rejected by the real provider — or would silently escape to a real
+      // inbox — so those cases are suppressed here instead of attempted.
+      if (service?.transportKind() === 'smtp') {
+        try {
+          await service.deliverRaw(raw);
+        } catch (err) {
+          throw new PartnerLaneSendFailure({ kind: 'ambiguous', detail: err instanceof Error ? err.message : String(err) });
+        }
+        return { providerMessageId: `fake:${Date.now().toString(36)}` };
       }
-      return { providerMessageId: `fake:${Date.now().toString(36)}` };
+
+      console.info('[email-domains:fake] send suppressed (platform transport is external)', {
+        to: raw.to,
+        from: raw.from,
+        purpose: m.tags.purpose
+      });
+      return { providerMessageId: `fake-${randomUUID()}` };
     }
   };
 }

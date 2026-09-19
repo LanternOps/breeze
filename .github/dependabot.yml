@@ -16,7 +16,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/New_York"
-    open-pull-requests-limit: 10
+    # 15, not 10: the root batch hit exactly 10 every Monday from
+    # 2026-08-17 through 2026-09-07, so anything sorted past the limit
+    # was starved indefinitely.
+    open-pull-requests-limit: 15
     groups:
       # Expo SDK packages must move together: a solo expo major bump
       # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.
@@ -112,6 +115,16 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # Agent SDK and API client move together (agent-sdk peers on sdk).
+      # Ungrouped they needed two of the weekly PR slots and lost every
+      # Monday from 2026-08 on — the batch saturated at the limit and
+      # both packages sat 90+ releases behind (checked 2026-09-14).
+      anthropic:
+        patterns:
+          - "@anthropic-ai/*"
+        update-types:
+          - "minor"
+          - "patch"
     labels:
       - "dependencies"
       - "npm"
@@ -174,6 +187,16 @@ updates:
         patterns:
           - "go.uber.org/zap"
           - "go.uber.org/multierr"
+        update-types:
+          - "minor"
+          - "patch"
+      # Catch-all: routine Go bumps arrive as one PR (x/text, x/net, cloud
+      # storage, pion/webrtc were four separate PRs on 2026-09-18). Named
+      # groups above claim their deps first (definition order); majors stay
+      # separate PRs because update-types excludes them.
+      go-minor-patch:
+        patterns:
+          - "*"
         update-types:
           - "minor"
           - "patch"
@@ -271,91 +294,32 @@ updates:
     reviewers:
       - "toddhebebrand"
 
-  # Docker base images for workspace Dockerfiles
-  # Node base is pinned to an LTS major (oidc-provider rejects non-LTS); allow
-  # minor/patch + digest updates only.
+  # Docker base images for every Dockerfile directory, in ONE entry so a
+  # base-image digest bump arrives as ONE PR repo-wide. On 2026-09-18 the same
+  # node digest bump landed as six separate PRs (#5827-#5832), each a full
+  # merge-queue run. Node base is pinned to an LTS major (oidc-provider rejects
+  # non-LTS); allow minor/patch + digest updates only.
+  # `directories:` (plural) is the multi-directory form; the group has no
+  # `update-types` filter on purpose: digest-only bumps are not semver updates
+  # and an update-types filter would exclude them from the group.
   - package-ecosystem: "docker"
-    directory: "/apps/api"
+    directories:
+      - "/apps/api"
+      - "/apps/web"
+      - "/apps/m365-graph-read-executor"
+      - "/apps/m365-graph-actions-executor"
+      - "/apps/m365-communications-executor"
+      - "/docker"
     schedule:
       interval: "weekly"
       day: "monday"
     ignore:
       - dependency-name: "node"
         update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "docker"
-    commit-message:
-      prefix: "chore(deps):"
-
-  - package-ecosystem: "docker"
-    directory: "/apps/web"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    ignore:
-      - dependency-name: "node"
-        update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "docker"
-    commit-message:
-      prefix: "chore(deps):"
-
-  - package-ecosystem: "docker"
-    directory: "/apps/m365-graph-read-executor"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    ignore:
-      - dependency-name: "node"
-        update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "docker"
-      - "m365"
-    commit-message:
-      prefix: "chore(deps):"
-
-  - package-ecosystem: "docker"
-    directory: "/apps/m365-graph-actions-executor"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    ignore:
-      - dependency-name: "node"
-        update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "docker"
-      - "m365"
-    commit-message:
-      prefix: "chore(deps):"
-
-  - package-ecosystem: "docker"
-    directory: "/apps/m365-communications-executor"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    ignore:
-      - dependency-name: "node"
-        update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "docker"
-      - "m365"
-    commit-message:
-      prefix: "chore(deps):"
-
-  # Docker base images for release/security build Dockerfiles
-  - package-ecosystem: "docker"
-    directory: "/docker"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    ignore:
-      - dependency-name: "node"
-        update-types: ["version-update:semver-major"]
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
       - "docker"

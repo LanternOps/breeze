@@ -37,7 +37,10 @@ const SAVED: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const fn of [domainsCreate, domainsGet, domainsVerify, domainsRemove, domainsList, emailsSend]) fn.mockReset();
   deliverRaw.mockReset().mockResolvedValue(undefined);
-  getEmailService.mockReset().mockReturnValue({ deliverRaw });
+  // transportKind: 'smtp' so the `fake` adapter's external-call guard (which
+  // only hands off to deliverRaw on a local SMTP sink) still exercises
+  // deliverRaw in this contract suite, matching the other adapters' behavior.
+  getEmailService.mockReset().mockReturnValue({ deliverRaw, transportKind: () => 'smtp' });
   resetFakeDomainProviderState();
   for (const k of KEYS) { SAVED[k] = process.env[k]; delete process.env[k]; }
   process.env.EMAIL_DOMAINS_RESEND_API_KEY = 're_full';

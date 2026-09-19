@@ -19,6 +19,32 @@ import https from 'https';
 import http from 'http';
 import type { LookupFunction } from 'net';
 import { assertOutsideHeldDbContext } from '../db';
+import {
+  canonicalIpLiteral,
+  isBlockedForEgress,
+  isIpLiteralHost,
+  isRfc1918OrUla
+} from './ipRanges';
+
+// The range table and its classifiers live in `ipRanges.ts` — one table, shared
+// with the config-time guard in `ssrfGuard.ts`. Re-exported here because
+// `isPrivateIp` / `isRfc1918OrUla` / `isAlwaysBlockedIp` are part of this
+// module's long-standing public surface and existing callers import them from
+// it; new callers may import either module.
+export {
+  canonicalIpLiteral,
+  canonicalizeIpv4Literal,
+  classifyBlockedIp,
+  isAlwaysBlockedIp,
+  isBlockedForEgress,
+  isCarrierNatAddress,
+  isIpLiteralHost,
+  isPrivateIp,
+  isRfc1918OrUla,
+  BLOCKED_IP_CATEGORY_LABEL,
+  type BlockedIpCategory,
+  type EgressAllowances
+} from './ipRanges';
 
 export class SsrfBlockedError extends Error {
   public readonly resolvedIps?: string[];
@@ -40,145 +66,6 @@ export class ResponseTooLargeError extends Error {
   }
 }
 
-// IPv4 ranges that must never be dialed from the server.
-// Ordered roughly by how commonly they appear.
-const PRIVATE_V4_MATCHERS: Array<(octets: number[]) => boolean> = [
-  (o) => o[0] === 10, // 10.0.0.0/8
-  (o) => o[0] === 127, // 127.0.0.0/8 loopback
-  (o) => o[0] === 192 && o[1] === 168, // 192.168.0.0/16
-  (o) => o[0] === 172 && o[1]! >= 16 && o[1]! <= 31, // 172.16.0.0/12
-  (o) => o[0] === 169 && o[1] === 254, // 169.254.0.0/16 link-local + cloud metadata
-  (o) => o[0] === 100 && o[1]! >= 64 && o[1]! <= 127, // 100.64.0.0/10 CGNAT
-  (o) => o[0] === 0, // 0.0.0.0/8 unspecified/this-network
-  (o) => o[0]! >= 224, // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
-  // Documentation / TEST-NET ranges — outbound to these is never legitimate.
-  (o) => o[0] === 192 && o[1] === 0 && o[2] === 0, // 192.0.0.0/24
-  (o) => o[0] === 192 && o[1] === 0 && o[2] === 2, // 192.0.2.0/24 TEST-NET-1
-  (o) => o[0] === 198 && (o[1] === 18 || o[1] === 19), // 198.18.0.0/15 benchmarking
-  (o) => o[0] === 198 && o[1] === 51 && o[2] === 100, // 198.51.100.0/24 TEST-NET-2
-  (o) => o[0] === 203 && o[1] === 0 && o[2] === 113 // 203.0.113.0/24 TEST-NET-3
-];
-
-function parseV4(ip: string): number[] | null {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  const octets = parts.map((p) => Number(p));
-  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
-  return octets;
-}
-
-function isPrivateV4(ip: string): boolean {
-  const octets = parseV4(ip);
-  if (!octets) return false;
-  return PRIVATE_V4_MATCHERS.some((m) => m(octets));
-}
-
-/**
- * If `ip` is an IPv4-mapped IPv6 literal (`::ffff:…`), return the embedded IPv4
- * address as a dotted-decimal string; otherwise return null. Handles BOTH the
- * dotted-decimal form (`::ffff:169.254.169.254`) AND the hex-pair form
- * (`::ffff:a9fe:a9fe`), case-insensitively.
- *
- * The hex-pair form is the dangerous one: `parseInt('a9fe',16)`/`parseInt('a9fe',16)`
- * decode to 169.254.169.254 (cloud metadata) yet `::ffff:a9fe:a9fe` still
- * contains a `:` after stripping the prefix, so a naive check routes it to the
- * IPv6 fc/fd path and never matches — an SSRF filter bypass.
- */
-function mappedV4(ip: string): string | null {
-  const lower = ip.toLowerCase();
-  if (!lower.startsWith('::ffff:')) return null;
-  const rest = lower.slice('::ffff:'.length);
-  // Dotted-decimal embedded form: ::ffff:a.b.c.d
-  if (rest.includes('.')) {
-    return parseV4(rest) ? rest : null;
-  }
-  // Hex-pair embedded form: ::ffff:HHHH:HHHH
-  const groups = rest.split(':');
-  if (groups.length !== 2) return null;
-  if (!groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
-  const hi = parseInt(groups[0]!, 16);
-  const lo = parseInt(groups[1]!, 16);
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-}
-
-function isPrivateV6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === '::' || lower === '::1') return true;
-  // IPv4-mapped IPv6 (::ffff:a.b.c.d AND ::ffff:HHHH:HHHH hex-pair forms)
-  const mapped = mappedV4(lower);
-  if (mapped !== null) {
-    return isPrivateV4(mapped);
-  }
-  // Unique Local Addresses (fc00::/7) — first byte 0xfc or 0xfd
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-  // Link-local (fe80::/10) — fe80 .. febf
-  if (/^fe[89ab]/.test(lower)) return true;
-  // Multicast ff00::/8
-  if (lower.startsWith('ff')) return true;
-  return false;
-}
-
-/**
- * Returns true if `ip` is a literal address in a range that must not be
- * contacted from the server. Accepts both IPv4 and IPv6 literals (including
- * IPv4-mapped IPv6 like `::ffff:10.0.0.1`).
- */
-export function isPrivateIp(ip: string): boolean {
-  if (!ip) return true;
-  // Normalize any IPv4-mapped IPv6 literal (dotted OR hex-pair) to its embedded
-  // IPv4 first, so both forms route through the IPv4 matchers.
-  const mapped = mappedV4(ip);
-  if (mapped !== null) return isPrivateV4(mapped);
-  if (ip.includes(':')) return isPrivateV6(ip);
-  return isPrivateV4(ip);
-}
-
-// RFC1918 (IPv4 private) + ULA (IPv6 fc00::/7) only. This is the strict subset
-// of `isPrivateIp` that an on-prem appliance integration may legitimately need
-// to reach (e.g. a Pi-hole / AdGuard Home box on the LAN). Deliberately
-// EXCLUDES loopback (127/8, ::1), link-local + cloud metadata (169.254/16,
-// fe80::/10), CGNAT (100.64/10), unspecified (0/8), multicast/reserved, and
-// documentation/TEST-NET ranges — those are never a legitimate appliance
-// target and remain blocked even when private networking is opted in.
-function isRfc1918V4(ip: string): boolean {
-  const octets = parseV4(ip);
-  if (!octets) return false;
-  return (
-    octets[0] === 10 || // 10.0.0.0/8
-    (octets[0] === 192 && octets[1] === 168) || // 192.168.0.0/16
-    (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) // 172.16.0.0/12
-  );
-}
-
-/**
- * True only for RFC1918 IPv4 or ULA IPv6 (fc00::/7) addresses — the ranges an
- * on-prem appliance integration may opt into reaching. Loopback, link-local,
- * metadata, CGNAT, multicast, etc. are NOT included here (see `isAlwaysBlockedIp`).
- */
-export function isRfc1918OrUla(ip: string): boolean {
-  if (!ip) return false;
-  const lower = ip.toLowerCase();
-  // Normalize any IPv4-mapped IPv6 literal (dotted OR hex-pair, case-insensitive)
-  // to its embedded IPv4, so embedded RFC1918 is recognized as RFC1918 and
-  // embedded metadata is treated as non-RFC1918 (stays always-blocked).
-  const mapped = mappedV4(lower);
-  if (mapped !== null) return isRfc1918V4(mapped);
-  if (lower.includes(':')) {
-    // ULA fc00::/7 — first byte 0xfc or 0xfd.
-    return lower.startsWith('fc') || lower.startsWith('fd');
-  }
-  return isRfc1918V4(lower);
-}
-
-/**
- * IPs that must NEVER be dialed even when `allowPrivateNetwork` is set: any
- * private/loopback/link-local/metadata/CGNAT/multicast range that is NOT a
- * plain RFC1918/ULA appliance address. Public IPs return false (allowed).
- */
-export function isAlwaysBlockedIp(ip: string): boolean {
-  return isPrivateIp(ip) ? !isRfc1918OrUla(ip) : false;
-}
-
 // Optionally override DNS lookup in tests via module-level hook.
 type LookupAllFn = (
   hostname: string,
@@ -196,11 +83,8 @@ export function __setLookupForTests(fn: LookupAllFn | null): void {
 export interface SsrfGuardOptions {
   /** See `SafeFetchInit.allowPrivateNetwork`. */
   allowPrivateNetwork?: boolean;
-}
-
-/** A hostname that is already an IP literal needs no DNS work. */
-function isIpLiteral(hostname: string): boolean {
-  return /^[\d.]+$/.test(hostname) || hostname.includes(':');
+  /** See `SafeFetchInit.allowCarrierNat`. */
+  allowCarrierNat?: boolean;
 }
 
 /** Strip the brackets Node keeps on IPv6 URL hostnames. */
@@ -226,18 +110,24 @@ export async function resolveSafeRecords(
   opts?: SsrfGuardOptions
 ): Promise<{ safe: LookupAddress[]; allIps: string[] }> {
   // With `allowPrivateNetwork`, RFC1918/ULA appliance addresses are permitted
-  // but metadata/loopback/link-local/CGNAT (etc.) are STILL blocked.
-  const block = opts?.allowPrivateNetwork ? isAlwaysBlockedIp : isPrivateIp;
+  // but metadata/loopback/link-local/CGNAT (etc.) are STILL blocked — unless the
+  // caller additionally opts into carrier-NAT (Tailscale et al.). Both opt-ins
+  // are self-host-only in practice; see `isBlockedForEgress`.
+  const block = (ip: string): boolean => isBlockedForEgress(ip, opts);
 
   let records: LookupAddress[];
-  if (isIpLiteral(hostname)) {
-    if (block(hostname)) {
+  if (isIpLiteralHost(hostname)) {
+    // Dial the canonical form, so the socket connects to the same address the
+    // classifier just judged rather than to whatever the resolver makes of an
+    // alternative spelling.
+    const literal = canonicalIpLiteral(hostname);
+    if (block(literal)) {
       throw new SsrfBlockedError(`URL points to blocked address: ${hostname}`, {
         hostname,
-        resolvedIps: [hostname]
+        resolvedIps: [literal]
       });
     }
-    records = [{ address: hostname, family: hostname.includes(':') ? 6 : 4 }];
+    records = [{ address: literal, family: literal.includes(':') ? 6 : 4 }];
   } else {
     records = await lookupImpl(hostname, { all: true });
     if (records.length === 0) {
@@ -359,6 +249,14 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * even when this is true. Leave unset for strict (hosted-SaaS) behavior.
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Additionally permit carrier-grade-NAT (100.64.0.0/10) targets — the range an
+   * overlay network such as Tailscale assigns to a device. Inert unless
+   * `allowPrivateNetwork` is also set, so it cannot widen egress on the hosted
+   * platform (where private networking is never opted in). Default off; enable
+   * per integration only where an operator has affirmatively chosen it.
+   */
+  allowCarrierNat?: boolean;
   /**
    * Require a cleartext (`http:`) target to resolve to an RFC1918/ULA address.
    *
@@ -566,7 +464,8 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   // counts as a blocked address. It rejects literal private IPs without any DNS
   // work, and throws when every resolved record is blocked.
   const { safe, allIps } = await resolveSafeRecords(hostname, {
-    allowPrivateNetwork: init.allowPrivateNetwork
+    allowPrivateNetwork: init.allowPrivateNetwork,
+    allowCarrierNat: init.allowCarrierNat
   });
   const safeRecord = safe[0]!;
 

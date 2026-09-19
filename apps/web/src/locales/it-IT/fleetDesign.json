@@ -33,11 +33,34 @@
       "maxConcurrentDesignRuns": "Un'esecuzione della progettazione flotta è già in corso per questa organizzazione.",
       "designRate": "Questa organizzazione ha raggiunto il limite di esecuzioni di progettazione flotta per ora.",
       "duplicate": "Un'esecuzione equivalente della progettazione flotta era già stata richiesta.",
-      "generic": "L'esecuzione non è stata avviata ({{reason}})."
+      "generic": "L'esecuzione non è stata avviata ({{reason}}).",
+      "noDesignerAgent": "Non esiste ancora un agente Fleet Designer per il partner di questa organizzazione."
     },
     "fileAsDocument": "Archivia come documento",
     "fileAsDocumentSuccess": "Design archiviato nella libreria documenti.",
-    "fileAsDocumentError": "Impossibile archiviare il design come documento."
+    "fileAsDocumentError": "Impossibile archiviare il design come documento.",
+    "designerSetup": {
+      "status": {
+        "missing": "Non esiste ancora un agente Fleet Designer.",
+        "off": "L'agente Fleet Designer è spento.",
+        "disabled": "L'agente Fleet Designer è disabilitato.",
+        "killSwitchOff": "Gli agenti IA sono attualmente spenti su tutta la piattaforma."
+      },
+      "enableHint": "Attivalo qui. Il designer legge soltanto la tua flotta e scrive un design; non modifica mai un dispositivo.",
+      "askPartnerAdmin": "Chiedi a un amministratore partner di attivare l'agente Fleet Designer in Impostazioni → Agenti IA.",
+      "killSwitchHint": "È un'impostazione della piattaforma; nulla in questa pagina può cambiarla.",
+      "enableButton": "Attiva Fleet Designer",
+      "enableSuccess": "Fleet Designer attivato.",
+      "enableError": "Impossibile attivare Fleet Designer.",
+      "errors": {
+        "partnerScopeRequired": "Solo un amministratore partner può attivare l'agente Fleet Designer.",
+        "partnerAdminRequired": "Solo un amministratore partner può attivare l'agente Fleet Designer.",
+        "killSwitchOff": "Gli agenti IA sono attualmente spenti su tutta la piattaforma.",
+        "agentKindExists": "Esiste già un agente designer. Aggiorna la pagina e riprova.",
+        "actPrerequisitesNotMet": "L'agente designer ha bisogno di un destinatario prima di poter essere eseguito. Aggiungine uno in Impostazioni → Agenti IA.",
+        "invalidRecipients": "Non è stato possibile impostare il tuo account come destinatario del designer. Aggiungine uno in Impostazioni → Agenti IA."
+      }
+    }
   },
   "sections": {
     "found": "Cosa è stato trovato",

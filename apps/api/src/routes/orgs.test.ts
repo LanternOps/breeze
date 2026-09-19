@@ -635,7 +635,10 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
+        });
       });
 
       it('adds the default alongside caller-supplied settings without clobbering them', async () => {
@@ -656,7 +659,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(201);
         expect(captured[0]?.settings).toEqual({
-          security: { ipAllowlist: ['10.0.0.0/8'] },
+          security: { ipAllowlist: ['10.0.0.0/8'], requireMfa: true },
           ticketing: { inbound: { unknownSenderMode: 'triage', enabled: false } }
         });
       });
@@ -675,7 +678,10 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: true } } });
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: true } },
+          security: { requireMfa: true }
+        });
       });
 
       it('still folds the legacy allowedMfaMethods alias while applying the default', async () => {
@@ -693,7 +699,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(201);
         expect(captured[0]?.settings).toEqual({
-          security: { allowedMethods: { totp: true } },
+          security: { allowedMethods: { totp: true }, requireMfa: true },
           ticketing: { inbound: { enabled: false } }
         });
       });
@@ -713,10 +719,48 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
-        expect(await res.json()).toMatchObject({
-          settings: { ticketing: { inbound: { enabled: false } } }
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
         });
+        expect(await res.json()).toMatchObject({
+          settings: { ticketing: { inbound: { enabled: false } }, security: { requireMfa: true } }
+        });
+      });
+
+      // Spec D1: a platform admin creating a partner for a customer that has
+      // opted out passes requireMfa:false explicitly and it must win.
+      it('preserves an explicit security.requireMfa=false from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { requireMfa: false } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { requireMfa: false },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      it('echoes security.requireMfa=true in the 201 body when the caller omitted it', async () => {
+        captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(await res.json()).toMatchObject({ settings: { security: { requireMfa: true } } });
       });
     });
   });

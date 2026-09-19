@@ -56,10 +56,23 @@ vi.mock('./verificationService', () => ({
   listRecoveryReadiness: (...args: unknown[]) => listRecoveryReadinessMock(...args),
   recalculateReadinessScores: (...args: unknown[]) => recalculateReadinessScoresMock(...args),
   runBackupVerification: vi.fn(),
-  toVerificationListItem: (row: { details?: Record<string, unknown> | null }) => ({
-    ...row,
-    details: row.details?.simulated === true ? { simulated: true } : null,
-  }),
+  // Mirrors the real toVerificationListItem (apps/api/src/routes/backup/
+  // verificationService.ts) — kept here rather than imported via
+  // vi.importActual because the real module transitively pulls in
+  // commandResultHandlers/auditEvents, which this suite doesn't otherwise
+  // mock. The real projection logic itself is unit-tested directly in
+  // verificationService.test.ts; this only needs to prove the ROUTE wires
+  // the projection through to the HTTP response unmodified. Keep in sync
+  // with the real implementation if that logic changes (#6146).
+  toVerificationListItem: (row: { status?: string; details?: Record<string, unknown> | null }) => {
+    const details: Record<string, unknown> = {};
+    if (row.details?.simulated === true) details.simulated = true;
+    if (row.status === 'failed' && typeof row.details?.reason === 'string') {
+      const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (reason) details.reason = reason;
+    }
+    return { ...row, details: Object.keys(details).length > 0 ? details : null };
+  },
 }));
 
 import { backupVerificationRoutes } from './verification';
@@ -194,6 +207,15 @@ describe('backup verification read site scope', () => {
           commandId: 'other-command',
         },
       },
+      {
+        id: 'verification-3',
+        status: 'failed',
+        details: {
+          reason: 'Verification timed out after 30 minutes',
+          restorePath: '/private/customer/timeout-restore',
+          commandId: 'command-timeout',
+        },
+      },
     ]);
 
     const response = await app.request('/backup/verifications');
@@ -203,10 +225,12 @@ describe('backup verification read site scope', () => {
     expect(body.data).toEqual([
       { id: 'verification-1', details: { simulated: true } },
       { id: 'verification-2', details: null },
+      { id: 'verification-3', status: 'failed', details: { reason: 'Verification timed out after 30 minutes' } },
     ]);
     expect(JSON.stringify(body)).not.toContain('restorePath');
     expect(JSON.stringify(body)).not.toContain('failedFiles');
     expect(JSON.stringify(body)).not.toContain('command-internal');
+    expect(JSON.stringify(body)).not.toContain('command-timeout');
     expect(JSON.stringify(body)).not.toContain('agent-controlled output');
   });
 });

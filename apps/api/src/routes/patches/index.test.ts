@@ -93,6 +93,7 @@ vi.mock('../../db/schema', () => ({
     osType: 'devices.osType'
   },
   devicePatches: {
+    id: 'devicePatches.id',
     deviceId: 'devicePatches.deviceId',
     orgId: 'devicePatches.orgId',
     patchId: 'devicePatches.patchId',
@@ -221,6 +222,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { db, withSystemDbAccessContext } from '../../db';
+import { devicePatches } from '../../db/schema';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -259,6 +261,16 @@ function selectWhereLimitResult(rows: unknown[]) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  };
+}
+
+function selectLeftJoinWhereResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows)
       })
     })
   };
@@ -1059,9 +1071,9 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_B, orgId: BLOCKED_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_B, orgId: BLOCKED_ORG_ID, siteId: null, observationId: 'dp-b' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -1135,8 +1147,8 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -1175,10 +1187,10 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_D, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-c' },
+        { id: DEVICE_D, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-d' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockImplementation(async (deviceId: string) => {
@@ -1240,9 +1252,9 @@ describe('patch routes', () => {
           title: 'Example Patch'
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([
-        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
-        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID }
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-c' }
       ]) as any);
 
     vi.mocked(queueCommandForExecution).mockResolvedValue({
@@ -1285,6 +1297,92 @@ describe('patch routes', () => {
         })
       })
     );
+  });
+
+  it('binds explicit rollback targets to each device\'s own installed observation (#5565)', async () => {
+    const insertValues = vi.fn().mockResolvedValue(undefined);
+    const observationWhere = vi.fn().mockResolvedValue([
+      { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: 'dp-a' },
+      // DEVICE_C exists and is accessible but has no `installed` observation of
+      // this patch — it must be skipped, not sent a rollback for a patch it
+      // never reported.
+      { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null },
+      // DEVICE_B is outside the caller's org and also lacks the patch: it must
+      // be reported as inaccessible, never as not-installed (no install-state
+      // disclosure for devices the caller cannot reach).
+      { id: DEVICE_B, orgId: BLOCKED_ORG_ID, siteId: null, observationId: null }
+    ]);
+    const observationLeftJoin = vi.fn().mockReturnValue({ where: observationWhere });
+    // The direct `where` member keeps this boundary test runnable against the
+    // vulnerable baseline, which selected devices without any observation join.
+    const observationFrom = vi.fn().mockReturnValue({
+      leftJoin: observationLeftJoin,
+      where: observationWhere
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        { id: PATCH_ID, source: 'apple', externalId: 'apple:example-patch', title: 'Example Patch' }
+      ]) as any)
+      .mockReturnValueOnce({ from: observationFrom } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-rollback-bound', status: 'sent' }
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scheduleType: 'immediate',
+        deviceIds: [DEVICE_A, DEVICE_B, DEVICE_C, DEVICE_D]
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(observationLeftJoin).toHaveBeenCalledWith(devicePatches, expect.anything());
+    const joinOn = JSON.stringify(observationLeftJoin.mock.calls[0]?.[1]);
+    expect(joinOn).toContain(PATCH_ID);
+    expect(joinOn).toContain('installed');
+
+    expect(body.deviceCount).toBe(1);
+    expect(body.queuedCommandIds).toEqual(['cmd-rollback-bound']);
+    expect(body.skipped.notInstalledDeviceIds).toEqual([DEVICE_C]);
+    expect(body.skipped.inaccessibleDeviceIds).toEqual([DEVICE_B]);
+    expect(body.skipped.missingDeviceIds).toEqual([DEVICE_D]);
+    expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_A,
+      'rollback_patches',
+      expect.objectContaining({ patchIds: [PATCH_ID] }),
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ deviceId: DEVICE_A, patchId: PATCH_ID })
+    ]);
+  });
+
+  it('returns 404 when none of the requested devices has the patch installed (#5565)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        { id: PATCH_ID, source: 'apple', externalId: 'apple:example-patch', title: 'Example Patch' }
+      ]) as any)
+      .mockReturnValueOnce(selectLeftJoinWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null }
+      ]) as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleType: 'immediate', deviceIds: [DEVICE_A] })
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.skipped.notInstalledDeviceIds).toEqual([DEVICE_A]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects scheduled rollback until scheduler support is implemented', async () => {

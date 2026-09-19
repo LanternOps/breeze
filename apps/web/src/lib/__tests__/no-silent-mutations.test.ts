@@ -335,6 +335,18 @@ const TARGET_GLOBS = [
   // ships with zero CI signal on the one page where a silently-failed
   // "Disable MFA" or "Delete passkey" is a security-posture lie.
   'src/components/settings/ProfilePage.tsx',
+  // Partner sending domains W05: the client module holds every mutation for the
+  // custom-sender-address surface (add / check / remove / identity upsert and
+  // clear / test send), each already wrapped in runAction. Guarding the file is
+  // about the NEXT mutation — a bare fetchWithAuth added beside them would
+  // silently fail on the surface that decides what address a partner's
+  // customers see mail from, and would also un-guard every caller, because
+  // isMutatingApiWrapper only clears a caller while the wrapper stays wrapped.
+  'src/lib/api/sendingDomains.ts',
+  // The tab itself has no fetchWithAuth today — it goes through the client
+  // above — and is listed so a future direct mutation cannot be added here
+  // without CI noticing. TARGET_GLOBS is a literal file list, not directory-wide.
+  'src/components/settings/PartnerSendingDomainTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -675,12 +687,14 @@ describe('no silent mutations in targeted set', () => {
     // truth W04 (#5992) adds the network asset single writer: 140 → 141.
     // Network device page truth W05 adds the probe hook: 141 → 142.
     // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
+    // Partner sending domains W05 adds lib/api/sendingDomains.ts and
+    // settings/PartnerSendingDomainTab.tsx: 143 → 145.
     // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
     // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
-    // 143 → 144.
+    // 145 → 146.
     // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
-    // and EmailTemplateEditor.tsx: 144 → 146.
-    expect(absoluteFiles.length).toBe(146);
+    // and EmailTemplateEditor.tsx: 146 → 148.
+    expect(absoluteFiles.length).toBe(148);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

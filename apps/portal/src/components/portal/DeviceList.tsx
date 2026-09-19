@@ -17,6 +17,9 @@ import {
 interface DeviceListProps {
   devices: Device[];
   error?: string | null;
+  /** Rendered as a tab panel under DevicesPage's own header: no H1 and no
+   *  Export action of its own — DevicesPage puts Export on the tab row. */
+  embedded?: boolean;
 }
 
 // Local labels for the customer's office manager, kept private rather than
@@ -151,7 +154,7 @@ function moreFacts(
  *  highlighted after landing, in milliseconds. */
 const HIGHLIGHT_DURATION_MS = 3000;
 
-export function DeviceList({ devices, error }: DeviceListProps) {
+export function DeviceList({ devices, error, embedded = false }: DeviceListProps) {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
@@ -202,22 +205,26 @@ export function DeviceList({ devices, error }: DeviceListProps) {
           : `All ${devices.length} devices online`
         : `${online} of ${devices.length} online`;
 
+  const exportAction = (
+    <a
+      href={publicApiPath('/portal/devices/export.csv')}
+      data-testid="portal-devices-export"
+      className={BTN_SECONDARY}
+    >
+      <Download className="h-4 w-4" aria-hidden="true" />
+      Export CSV
+    </a>
+  );
+
   return (
     <div>
-      <PageHeader
-        title="Devices"
-        lede="The machines your IT team looks after for you."
-        action={
-          <a
-            href={publicApiPath('/portal/devices/export.csv')}
-            data-testid="portal-devices-export"
-            className={BTN_SECONDARY}
-          >
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Export CSV
-          </a>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="Devices"
+          lede="The machines your IT team looks after for you."
+          action={exportAction}
+        />
+      )}
 
       {devices.length === 0 ? (
         <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">

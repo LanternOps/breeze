@@ -16,7 +16,7 @@ import { PartnerLaneSendFailure, ProviderDomainConflictError } from '../provider
 
 beforeEach(() => {
   deliverRaw.mockReset().mockResolvedValue(undefined);
-  getEmailService.mockReset().mockReturnValue({ deliverRaw });
+  getEmailService.mockReset().mockReturnValue({ deliverRaw, transportKind: () => 'smtp' });
   resetFakeDomainProviderState();
 });
 
@@ -110,7 +110,7 @@ describe('plain domains stay pending', () => {
 });
 
 describe('send via the platform transport', () => {
-  it('hands the message to deliverRaw verbatim, custom From included', async () => {
+  it('smtp transport: hands the message to deliverRaw verbatim, custom From included', async () => {
     const result = await send('"Acme" <support@plain.example>');
     expect(deliverRaw).toHaveBeenCalledWith(expect.objectContaining({
       from: '"Acme" <support@plain.example>', to: 'customer@example.com', subject: 's'
@@ -124,16 +124,32 @@ describe('send via the platform transport', () => {
     expect(deliverRaw.mock.calls[0]![0]).not.toHaveProperty('partnerRef');
   });
 
-  it('reports lane_unavailable when no email service is configured', async () => {
-    getEmailService.mockReturnValue(null);
-    await expect(send('support@plain.example')).rejects.toMatchObject({ error: { kind: 'lane_unavailable' } });
-  });
-
-  it('wraps a transport failure as ambiguous, carrying the detail', async () => {
+  it('wraps an smtp transport failure as ambiguous, carrying the detail', async () => {
     deliverRaw.mockRejectedValue(new Error('smtp exploded'));
     const raised = await send('support@plain.example').catch((e: unknown) => e);
     expect(raised).toBeInstanceOf(PartnerLaneSendFailure);
     expect((raised as PartnerLaneSendFailure).error).toMatchObject({ kind: 'ambiguous', detail: 'smtp exploded' });
+  });
+
+  it('resend transport: does NOT call deliverRaw, and returns a synthetic id', async () => {
+    getEmailService.mockReturnValue({ deliverRaw, transportKind: () => 'resend' });
+    const result = await send('support@plain.example');
+    expect(deliverRaw).not.toHaveBeenCalled();
+    expect(result.providerMessageId).toMatch(/^fake-/);
+  });
+
+  it('mailgun transport: does NOT call deliverRaw, and returns a synthetic id', async () => {
+    getEmailService.mockReturnValue({ deliverRaw, transportKind: () => 'mailgun' });
+    const result = await send('support@plain.example');
+    expect(deliverRaw).not.toHaveBeenCalled();
+    expect(result.providerMessageId).toMatch(/^fake-/);
+  });
+
+  it('no email service configured: does NOT call deliverRaw, and returns a synthetic id', async () => {
+    getEmailService.mockReturnValue(null);
+    const result = await send('support@plain.example');
+    expect(deliverRaw).not.toHaveBeenCalled();
+    expect(result.providerMessageId).toMatch(/^fake-/);
   });
 });
 

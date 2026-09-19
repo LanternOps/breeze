@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../services/maintenanceAuthorization', () => ({ lockMaintenanceAssurance: vi.fn(async () => true) }));
+vi.mock('../services/stepUpActorAssurance', () => ({ lockActorAssurance: vi.fn(async () => true) }));
 import { deviceRoutes } from '../routes/devices';
 import { createAuthenticatedClient, createTestDevice, createTestUser } from './helpers';
 

@@ -23,7 +23,7 @@ import {
   formatDateTime as formatUserDateTime,
   formatTime as formatUserTime,
 } from "@/lib/dateTimeFormat";
-import { escapeCsvCell } from "@/lib/csvExport";
+import { csvRow } from "@/lib/csvExport";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -982,9 +982,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
     // Neutralize spreadsheet-formula injection from agent-supplied fields
     // (hostname/cpuModel/software/patch/config values) before quoting.
-    const csv = rows
-      .map((row) => row.map((value) => escapeCsvCell(value ?? "")).join(","))
-      .join("\n");
+    const csv = rows.map(csvRow).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
 
