@@ -108,13 +108,19 @@ export function useFeatures(): Features {
 // self-service registration is open. `loaded` lets callers distinguish
 // "not yet known" from "known disabled" so they can avoid flashing the
 // registration UI before the answer arrives (#1308).
-export function useRegistrationGate(): { enabled: boolean; loaded: boolean } {
+//
+// `active` (default true), like usePackageUploadsGate's, defers the /config
+// fetch until the caller says so — PartnerRegisterPage (sweep paper cut #1)
+// passes `active: false` while it is still resolving whether an
+// already-signed-in visitor should be redirected to the dashboard instead,
+// so /config's fetchWithAuth call can't race that page's own session check.
+export function useRegistrationGate(active = true): { enabled: boolean; loaded: boolean } {
   const enabled = useFeaturesStore((s) => s.registration.enabled);
   const loaded = useFeaturesStore((s) => s.loaded);
   const load = useFeaturesStore((s) => s.load);
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active) void load();
+  }, [active, load]);
   return { enabled, loaded };
 }
 
