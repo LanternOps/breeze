@@ -609,3 +609,58 @@ func TestCleanupGuardRefusesAnIntraAnchorSymlink(t *testing.T) {
 		t.Fatal("the sibling directory's file must survive")
 	}
 }
+
+// `skippedLocked` is a CLEANUP affordance: the operator is told to close the app
+// and re-run. The ordinary File Browser permanent delete
+// (routes/systemTools/fileBrowser.ts checks only isCommandFailure) has no such
+// vocabulary, so reporting a lock as a SUCCESS there tells the user the file is
+// gone while it is still on disk. The locked-success envelope is reserved for
+// the cleanupGuard lane.
+func TestSharingViolationIsASuccessOnlyUnderCleanupGuard(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("relies on POSIX mode bits that root ignores")
+	}
+	original := sharingViolationCheck
+	sharingViolationCheck = func(err error) bool { return err != nil }
+	t.Cleanup(func() { sharingViolationCheck = original })
+
+	newLockedFile := func(t *testing.T) string {
+		t.Helper()
+		dir := filepath.Join(cleanupTempDir(t), "locked")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		file := filepath.Join(dir, "held.tmp")
+		if err := os.WriteFile(file, make([]byte, 64), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		aged := time.Now().Add(-48 * time.Hour)
+		if err := os.Chtimes(file, aged, aged); err != nil {
+			t.Fatalf("age: %v", err)
+		}
+		// A read-only parent makes the unlink fail, standing in for a Windows
+		// sharing violation once sharingViolationCheck is forced true.
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		return file
+	}
+
+	guarded := DeleteFile(map[string]any{
+		"path": newLockedFile(t), "permanent": true, "cleanupGuard": true,
+	})
+	if guarded.Status != "completed" {
+		t.Fatalf("the cleanup lane must report a lock as skippedLocked, got %q / %q", guarded.Status, guarded.Error)
+	}
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, guarded, &payload)
+	if payload.Deleted || len(payload.SkippedLocked) != 1 {
+		t.Fatalf("expected deleted:false with one skippedLocked entry, got %+v", payload)
+	}
+
+	legacy := DeleteFile(map[string]any{"path": newLockedFile(t), "permanent": true})
+	if legacy.Status != "failed" {
+		t.Fatalf("the File Browser lane must surface a failed unlink as a failure, got %q", legacy.Status)
+	}
+}

@@ -774,6 +774,11 @@ func cleanupGuardRejection(
 	return nil
 }
 
+// sharingViolationCheck is the seam over isSharingViolation, which is
+// build-tagged and always false on POSIX. Tests override it to reach both
+// branches of the lock handling from any host.
+var sharingViolationCheck = isSharingViolation
+
 // newLockedDeleteResult reports a Windows file lock as a SUCCESS carrying
 // `deleted: false` rather than as a failure, because skippedLocked only exists
 // on the success envelope (NewErrorResult carries no body). The API maps
@@ -867,7 +872,7 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 			size = sumTreeSizeAt(dirRoot, name)
 		}
 		if rmErr := dirRoot.RemoveAll(name); rmErr != nil {
-			if isSharingViolation(rmErr) {
+			if sharingViolationCheck(rmErr) {
 				skippedLocked = append(skippedLocked, childPath)
 			} else {
 				failedChildren = append(failedChildren, childPath)
@@ -1029,7 +1034,11 @@ func DeleteFile(payload map[string]any) CommandResult {
 			err = os.Remove(cleanPath)
 		}
 		if err != nil {
-			if isSharingViolation(err) {
+			// `skippedLocked` is a CLEANUP affordance ("close the app and
+			// re-run"). The ordinary File Browser delete checks only
+			// isCommandFailure, so reporting a lock as a success there would
+			// tell the user the file is gone while it is still on disk.
+			if target != nil && sharingViolationCheck(err) {
 				return newLockedDeleteResult(cleanPath, start)
 			}
 			return NewErrorResult(fmt.Errorf("failed to remove path: %w", err), time.Since(start).Milliseconds())
