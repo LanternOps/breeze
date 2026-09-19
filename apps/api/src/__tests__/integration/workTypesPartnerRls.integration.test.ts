@@ -4,6 +4,7 @@ import { describe, expect, it, beforeEach, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { sql } from 'drizzle-orm';
+import { cascadeDeletePartner } from '../../services/tenantCascade';
 
 const partnerA = randomUUID();
 const partnerB = randomUUID();
@@ -152,6 +153,64 @@ describe('work_types partner-axis RLS', () => {
         VALUES (${partnerA}, 'Same-partner default', ${wtA})
       `)),
     ).resolves.toBeDefined();
+  });
+
+  // PARTNER ERASURE (plan Task 14 Step 2). `work_types` is reached by
+  // cascadeDeletePartner's information_schema `partner_id` sweep, ordered by
+  // topologicalCascadeOrder's pg_constraint read -- there is no static list to
+  // register it in, so nothing in CI would notice if the ordering were wrong.
+  // Both new FKs into work_types are NO ACTION composites, so if time_entries
+  // or ticket_categories were swept AFTER work_types the purge would abort with
+  // 23503 and the partner would be left half-erased.
+  it('cascadeDeletePartner erases a partner whose work types are referenced by a category and a time entry', async () => {
+    const wt = randomUUID();
+    const user = randomUUID();
+    const category = randomUUID();
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO work_types (id, partner_id, name) VALUES (${wt}, ${partnerA}, 'Erasure')
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO ticket_categories (id, partner_id, name, default_work_type_id)
+      VALUES (${category}, ${partnerA}, 'Erasure category', ${wt})
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO users (id, partner_id, email, name)
+      VALUES (${user}, ${partnerA}, ${`wt-erasure-${user}@example.test`}, 'Erasure user')
+    `));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO time_entries (partner_id, user_id, started_at, work_type_id)
+      VALUES (${partnerA}, ${user}, now(), ${wt})
+    `));
+
+    // CONTROL: the referencing rows really exist, so a clean purge below is
+    // evidence about THESE FK edges and not about an empty partner.
+    const before = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM work_types WHERE partner_id = ${partnerA}) AS work_types,
+        (SELECT count(*) FROM time_entries WHERE work_type_id = ${wt}) AS entries,
+        (SELECT count(*) FROM ticket_categories WHERE default_work_type_id = ${wt}) AS categories
+    `))) as unknown as Array<{ work_types: string; entries: string; categories: string }>;
+    expect(Number(before[0]?.work_types)).toBe(1);
+    expect(Number(before[0]?.entries)).toBe(1);
+    expect(Number(before[0]?.categories)).toBe(1);
+
+    // No 23503: cascadeDeletePartner rethrows any sweep failure as a
+    // "[tenantCascade] DELETE from ..." Error, so a wrong order fails here.
+    await expect(cascadeDeletePartner(partnerA, randomUUID())).resolves.toBeDefined();
+
+    const after = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT count(*)::int AS remaining FROM work_types WHERE partner_id = ${partnerA}
+    `))) as unknown as Array<{ remaining: number }>;
+    expect(after[0]?.remaining).toBe(0);
+    const partnerRows = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT id FROM partners WHERE id = ${partnerA}
+    `))) as unknown as Array<{ id: string }>;
+    expect(partnerRows).toHaveLength(0);
+    // Partner B is untouched by A's purge.
+    const bRows = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT id FROM partners WHERE id = ${partnerB}
+    `))) as unknown as Array<{ id: string }>;
+    expect(bRows).toHaveLength(1);
   });
 
   it('UNIQUE (partner_id, lower(name)) is case-insensitive within a partner and does NOT collide across partners', async () => {
