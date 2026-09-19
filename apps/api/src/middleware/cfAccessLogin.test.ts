@@ -729,7 +729,7 @@ describe('cfAccessLoginMiddleware', () => {
         next
       );
 
-      expect(tokenState.lastPayload).toMatchObject({ mfa: true });
+      expect(tokenState.lastPayload).toMatchObject({ mfa: true, mfa_src: 'policy' });
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(false);
     });
@@ -748,6 +748,7 @@ describe('cfAccessLoginMiddleware', () => {
       );
 
       expect(tokenState.lastPayload).toMatchObject({ mfa: false });
+      expect(tokenState.lastPayload?.mfa_src).toBeUndefined();
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(true);
     });
@@ -765,7 +766,7 @@ describe('cfAccessLoginMiddleware', () => {
         next
       );
 
-      expect(tokenState.lastPayload).toMatchObject({ mfa: true });
+      expect(tokenState.lastPayload).toMatchObject({ mfa: true, mfa_src: 'idp' });
       const body = await (res as Response).json();
       expect(body.mfaEnrollmentRequired).toBe(false);
     });
