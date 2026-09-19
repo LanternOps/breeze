@@ -1,4 +1,4 @@
-import { osRootScanPath } from '@breeze/shared';
+import { normalizeScanPath, osRootScanPath } from '@breeze/shared';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { toCleanupOs } from '@breeze/shared';
@@ -12,15 +12,16 @@ import {
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceDisks, deviceFilesystemCleanupRuns } from '../../db/schema';
+import { deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   buildCleanupPreview,
   getFilesystemScanState,
+  setFilesystemScanGeneration,
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
   readCheckpointPendingDirectories,
@@ -39,6 +40,11 @@ filesystemRoutes.use('*', authMiddleware);
 
 const deviceIdParamSchema = z.object({
   id: z.string().guid(),
+});
+
+const filesystemSnapshotQuerySchema = z.object({
+  /** Which volume's latest snapshot to read. Defaults to the device's OS root. */
+  path: z.string().min(1).max(2048).optional(),
 });
 
 const scanFilesystemBodySchema = z.object({
@@ -89,24 +95,9 @@ function readSnapshotScanMode(snapshot: { rawPayload?: unknown } | null | undefi
   return typeof raw.scanMode === 'string' && raw.scanMode.length > 0 ? raw.scanMode : null;
 }
 
-async function readCurrentDiskUsedPercent(deviceId: string): Promise<number | null> {
-  const [disk] = await db
-    .select({ usedPercent: deviceDisks.usedPercent })
-    .from(deviceDisks)
-    .where(eq(deviceDisks.deviceId, deviceId))
-    .orderBy(desc(deviceDisks.usedPercent))
-    .limit(1);
-  return typeof disk?.usedPercent === 'number' ? disk.usedPercent : null;
-}
-
 function withinPercentDelta(current: number | null, baseline: number | null | undefined, maxDelta: number): boolean {
   if (current === null || baseline === null || baseline === undefined) return false;
   return Math.abs(current - baseline) <= maxDelta;
-}
-
-function getDefaultScanPathForOs(osType: unknown): string {
-  if (osType === 'windows') return 'C:\\';
-  return '/';
 }
 
 /**
@@ -130,9 +121,11 @@ filesystemRoutes.get(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
+  zValidator('query', filesystemSnapshotQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
+    const { path: requestedPath } = c.req.valid('query');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -142,14 +135,20 @@ filesystemRoutes.get(
       return failJson(c, 'Device not found', 404);
     }
 
-    const snapshot = await getLatestFilesystemSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, requestedPath ?? osRootScanPath(osType));
+
+    const snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
     if (!snapshot) {
-      return failJson(c, 'No filesystem analysis available yet', 404);
+      return c.json({ success: false, error: 'No filesystem analysis available yet', scanPath }, 404);
     }
 
     return okJson(c, {
       id: snapshot.id,
       deviceId: snapshot.deviceId,
+      // Keep the raw agent path below; scanPath is the normalised request key.
+      // W02 leaves the column nullable for old replicas during rollout.
+      scanPath: snapshot.scanPath ?? scanPath,
       capturedAt: snapshot.capturedAt,
       trigger: snapshot.trigger,
       partial: snapshot.partial,
@@ -221,10 +220,20 @@ filesystemRoutes.post(
       return failJson(c, 'Device not found', 404);
     }
 
-    const scanState = await getFilesystemScanState(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
+    const osType = (device as { osType?: unknown }).osType;
+    const scanPath = normalizeScanPath(osType, payload.path);
+
+    // Inventory identifies volume roots and supplies their own disk usage.
+    // The volumes service includes the OS root even before inventory arrives.
+    const volumes = await listFilesystemVolumes(deviceId, osType);
+    const scannedVolume = volumes.find((volume) => volume.scanPath === scanPath) ?? null;
+
+    const scanState = await getFilesystemScanState(deviceId, scanPath);
     const hotDirectories = readHotDirectories(scanState?.hotDirectories, 12);
     const checkpointDirs = readCheckpointPendingDirectories(scanState?.checkpoint, 50_000);
-    const currentUsedPercent = await readCurrentDiskUsedPercent(deviceId);
+    // Compare against this volume, never the fullest disk on the device.
+    // Null means no delta is available, so auto strategy uses a baseline.
+    const currentUsedPercent = scannedVolume?.usedPercent ?? null;
     const fullRescanDeltaPercent = 3;
 
     let scanMode: 'baseline' | 'incremental' = 'baseline';
@@ -232,7 +241,8 @@ filesystemRoutes.post(
     let targetDirectories: string[] | undefined;
 
     const strategy = payload.strategy ?? 'auto';
-    const isRootScopedScan = payload.path === getDefaultScanPathForOs((device as { osType?: unknown }).osType);
+    // Any normalised volume root can resume; subdirectories are not roots.
+    const isRootScopedScan = scannedVolume !== null;
     const autoContinue = isRootScopedScan;
     if (strategy === 'baseline') {
       scanMode = 'baseline';
@@ -264,6 +274,7 @@ filesystemRoutes.post(
     const timeoutSeconds = payload.timeoutSeconds ?? (scanMode === 'baseline' ? 300 : 120);
     const commandPayload = {
       ...payload,
+      path: scanPath,
       timeoutSeconds,
       trigger: 'on_demand',
       scanMode,
@@ -291,6 +302,10 @@ filesystemRoutes.post(
       return c.json({ success: false, error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
     }
 
+    // Claiming this command's generation prevents stale results overwriting
+    // state. This UPDATE is a no-op for a first scan with no state row yet.
+    await setFilesystemScanGeneration(deviceId, scanPath, queued.command.id);
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.filesystem.scan',
@@ -299,7 +314,8 @@ filesystemRoutes.post(
       resourceName: device.hostname,
       details: {
         commandId: queued.command.id,
-        path: payload.path,
+        path: scanPath,
+        scanPath,
         maxDepth: payload.maxDepth ?? null,
         scanMode,
         strategy,
@@ -311,6 +327,7 @@ filesystemRoutes.post(
       commandId: queued.command.id,
       status: queued.command.status,
       createdAt: queued.command.createdAt,
+      scanPath,
       scanMode,
       strategy,
     }, 202);
