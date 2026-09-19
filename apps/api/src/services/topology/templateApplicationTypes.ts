@@ -14,9 +14,11 @@ export type ApplicationActor = Pick<
   | 'orgId'
   | 'partnerId'
   | 'accessibleOrgIds'
-  | 'allowedSiteIds'
   | 'partnerOrgAccess'
 > & {
+  // Declared in the body (not the Pick) so aiToolsActorParity.contract.test.ts
+  // sees the site axis; same optional shape as AuthContext.
+  allowedSiteIds?: AuthContext['allowedSiteIds'];
   authEpoch: number;
   mfaEpoch: number;
   mfa: boolean;
