@@ -125,9 +125,11 @@ jobs:
             printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            # The PR files API needs no checkout and sees renames/deletes too.
+            # The PR files API needs no checkout and sees renames/deletes too; a
+            # rename also lists its previous path (and merge_group diffs with
+            # --no-renames), so moving a file OUT of an area still runs that area.
             # Any failure here aborts the job (set -e), which fails closed above.
-            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' \
               | bash .github/scripts/classify-pr-paths.sh \
               | tee -a "${GITHUB_OUTPUT}"
             exit 0
@@ -140,7 +142,7 @@ jobs:
             full_suite "merge_group: base/head sha missing, running the full suite."
             exit 0
           fi
-          if ! changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}"); then
+          if ! changed=$(git diff --name-only --no-renames "${BASE_SHA}...${HEAD_SHA}"); then
             full_suite "merge_group: cannot diff ${BASE_SHA}...${HEAD_SHA}, running the full suite."
             exit 0
           fi

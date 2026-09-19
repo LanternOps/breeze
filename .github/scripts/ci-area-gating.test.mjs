@@ -432,6 +432,68 @@ for (const [area, vars] of Object.entries(gatedVars)) {
     });
   }
 }
+// Review of #6315: every area's all-green entry, not just api/web/addins — a
+// portal-only entry exercises the PORTAL_CHANGED leg of STACK_CHANGED, and
+// m365/rust-only entries must pass with the smoke jobs skipped.
+for (const area of ['portal', 'm365', 'rust']) {
+  for (const isPr of ['true', 'false']) {
+    test(`CI Success (areas): ${area}-only, all green, IS_PR=${isPr}`, () => {
+      const r = runSummary(onlyAreas([area], { isPr }));
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+    });
+  }
+}
+test('CI Success (areas): portal-only merge-queue entry with smoke skipped → red (the stack changed)', () => {
+  assert.equal(runSummary({ ...onlyAreas(['portal'], { isPr: 'false' }), SMOKE_TEST_RESULT: 'skipped' }).status, 1);
+});
+
+test('classifier: a bare *.mdx outside any docs directory is docs-only', () => {
+  const out = classify(['apps/api/CHANGELOG.mdx']);
+  assert.equal(out.code, 'false');
+  assert.deepEqual(areasOf(out), expectAreas([]));
+});
+
+// A rename lists only the NEW path unless asked otherwise. Moving a file out of
+// an area must still run that area (its tests may import the old path), so
+// both listings include the old side of a rename.
+test('the PR listing includes the previous path of a renamed file', () => {
+  assert.match(classifyScript, /--jq '\.\[\] \| \.filename, \(\.previous_filename \/\/ empty\)'/u);
+});
+test('merge_group: a rename out of an area sets that area too', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'area-rename-'));
+  try {
+    const git = (...args) => {
+      const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'ci@example.com');
+    git('config', 'user.name', 'CI');
+    spawnSync('mkdir', ['-p', join(dir, 'apps/web/src'), join(dir, 'apps/excel-addin/src'), join(dir, '.github/scripts')]);
+    const body = 'export const x = 1;\n'.repeat(40);
+    writeFileSync(join(dir, 'apps/excel-addin/src/shared.ts'), body);
+    git('add', '-A'); git('commit', '-q', '-m', 'base');
+    const base = git('rev-parse', 'HEAD');
+    git('mv', 'apps/excel-addin/src/shared.ts', 'apps/web/src/shared.ts');
+    git('commit', '-q', '-m', 'move');
+    const head = git('rev-parse', 'HEAD');
+    writeFileSync(join(dir, '.github/scripts/classify-pr-paths.sh'), readFileSync(new URL('./classify-pr-paths.sh', import.meta.url)));
+    const outputFile = join(dir, 'gh-output');
+    writeFileSync(outputFile, '');
+    const r = spawnSync('bash', ['-c', classifyScript], {
+      cwd: dir, encoding: 'utf8',
+      env: { ...process.env, GITHUB_OUTPUT: outputFile, EVENT_NAME: 'merge_group', BASE_SHA: base, HEAD_SHA: head },
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const out = Object.fromEntries(readFileSync(outputFile, 'utf8').trim().split('\n').map((l) => l.split('=')));
+    assert.equal(out.web, 'true');
+    assert.equal(out.addins, 'true', 'the old side of the rename must be classified');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('lint runs this suite (it is the only thing that enforces the area contract)', () => {
   const lint = job('lint');
   assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, 'lint must stay code-only so it runs on every code PR');
