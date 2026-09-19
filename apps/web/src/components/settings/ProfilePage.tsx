@@ -981,7 +981,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     return (
       (typeof data.error === 'string' && data.error) ||
       (typeof data.message === 'string' && data.message) ||
-      t(fallbackKey, { status })
+      t(/* i18n-dynamic */ fallbackKey, { status })
     );
   };
 
