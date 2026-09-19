@@ -65,6 +65,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
+  const [payTerminal, setPayTerminal] = useState(false);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
   const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending' | 'failed'>('idle');
 
@@ -184,8 +185,10 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
       // Terminal condition (online payment unavailable / invoice not payable). Show the
       // server's reason verbatim — "Please try again" would mislead since a retry won't help.
       setPayError(result.error || 'Online payment is not available for this invoice.');
+      setPayTerminal(true);
     } else {
       setPayError(result.error || 'Could not start the payment. Please try again.');
+      setPayTerminal(false);
     }
     setPaying(false);
   };
@@ -269,7 +272,18 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         </div>
       )}
       {payError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-pay-error">{payError}</div>
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint" data-testid="invoice-pay-error">
+          <p className="font-medium">{payError}</p>
+          {/* A terminal 409 leaves a dead button; the customer still has a bill.
+              Name the next step so the page does not end on a refusal. */}
+          {payTerminal && (
+            <p className="mt-1 text-foreground/80" data-testid="invoice-pay-next-step">
+              {branding?.partnerName
+                ? `Ask ${branding.partnerName} how to pay this invoice — they can take payment another way.`
+                : 'Ask your IT team how to pay this invoice — they can take payment another way.'}
+            </p>
+          )}
+        </div>
       )}
       {downloadError && (
         <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">{downloadError}</div>

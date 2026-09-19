@@ -14,6 +14,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { m365Connections } from '../db/schema/m365';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -88,6 +89,13 @@ m365Routes.post(
   zValidator('json', connectSchema),
   async (c) => {
     const auth = c.get('auth');
+    // Org-wide governance: this connection IS the organization's whole
+    // identity tenant — there is no per-site slice of it to narrow a
+    // site-restricted caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
@@ -198,6 +206,13 @@ m365Routes.post(
 // ── Delete connection ─────────────────────────────────────────────────────────
 m365Routes.delete('/connection', requireOrgsWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  // Org-wide governance: this connection IS the organization's whole
+  // identity tenant — there is no per-site slice of it to narrow a
+  // site-restricted caller to. `organizations:write` + MFA are not enough
+  // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 

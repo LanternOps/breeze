@@ -59,6 +59,12 @@ vi.mock('../actionIntents/metrics', () => ({
 vi.mock('../actionIntents/intentApprovers', () => ({
   resolveIntentApprovers: vi.fn(async () => []),
   isAgentIntentDecideAuthorized: vi.fn(async () => true),
+  // Org-wide governance classifier (audit §1.1) — real semantics; a batch row
+  // is always a supervised AGENT intent, which never reaches this branch.
+  isOrgWideGovernanceIntent: vi.fn(
+    (toolName: string, args: Record<string, unknown> | null | undefined) =>
+      toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
+  ),
 }));
 
 vi.mock('../actionIntents/actorContext', () => ({

@@ -37,6 +37,9 @@ const dbMocks = vi.hoisted(() => {
 
 vi.mock("../db", () => ({
   db: { transaction: dbMocks.transaction, select: dbMocks.select },
+  // #6098: binarySync's writes now open their own short system-scoped
+  // context; this suite doesn't assert on DB-context nesting, just runs fn().
+  withSystemDbAccessContext: vi.fn((fn: () => Promise<unknown>) => fn()),
   // Required by urlSafety's safeFetch (#1105 tripwire) now that binarySync
   // routes its downloads through it.
   assertOutsideHeldDbContext: vi.fn(),

@@ -67,6 +67,21 @@
     "openInBrowser": "Tarayıcıda Aç",
     "policyDisabled": "Uzak masaüstü politika nedeniyle devre dışı bırakıldı",
     "policyDisabledNamed": "Uzak masaüstü \"{{name}}\" politikası tarafından devre dışı bırakıldı",
+    "revoked": {
+      "title": "Oturum iptal edildi",
+      "setUpMfa": "MFA'yı ayarla",
+      "reasons": {
+        "session_ended": "Oturum zaten sona ermişti.",
+        "user_inactive": "Hesabınız artık aktif değil.",
+        "epoch_baseline_missing": "İzinleriniz doğrulanamadı. Yeniden bağlanmayı deneyin.",
+        "permissions_changed": "Bu oturum başladıktan sonra izinleriniz değişti. Mevcut erişiminizle devam etmek için yeniden bağlanın.",
+        "membership_removed": "Artık bu kuruluşa veya cihaza erişiminiz yok.",
+        "site_scope_lost": "Bu cihaz size atanan site kapsamının dışında.",
+        "mfa_required": "Uzak masaüstü erişimi için artık çok faktörlü kimlik doğrulama gerekiyor.",
+        "hard_deadline": "Bu oturum izin verilen maksimum süreye ulaştı.",
+        "default": "Oturum bir güvenlik politikası tarafından sonlandırıldı. Yeniden bağlanmayı deneyin."
+      }
+    },
     "unavailable": {
       "default": "Masaüstü bu cihazda kullanılamıyor",
       "headless": "Bu cihazın ekranı yok — uzak masaüstü kullanılamıyor",

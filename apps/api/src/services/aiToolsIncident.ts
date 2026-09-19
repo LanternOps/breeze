@@ -16,6 +16,7 @@ import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId, verifyDeviceAccess } from './aiTools';
+import { scopeDeviceIdsToCaller } from './aiToolsSiteScope';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
@@ -27,27 +28,37 @@ type AiToolTier = 1 | 2 | 3 | 4;
 /**
  * The device ids on an incident that this caller may see.
  *
- * `null` for an unrestricted caller (no narrowing). `incidents.affected_devices`
- * is the incident's ONLY device axis — evidence and action rows carry no
- * device column — so it is what both the admission check and the response
- * filtering below key on.
+ * `null` for a caller restricted on NEITHER axis (no narrowing).
+ * `incidents.affected_devices` is the incident's ONLY device axis — evidence and
+ * action rows carry no device column — so it is what both the admission check
+ * and the response filtering below key on.
+ *
+ * BOTH axes apply (`scopeDeviceIdsToCaller` = exact-device ∩ site). Keying on
+ * `allowedDeviceIds` alone narrowed an agent run correctly and did nothing at
+ * all for a site-restricted human (audit 2026-09-17 §1.1).
  */
-function scopedAffectedDevices(auth: AuthContext, affectedDevices: unknown): string[] | null {
-  if (!auth.allowedDeviceIds) return null;
-  const allowed = new Set(auth.allowedDeviceIds);
-  const affected = Array.isArray(affectedDevices) ? affectedDevices : [];
-  return affected.filter((id): id is string => typeof id === 'string' && allowed.has(id));
+async function scopedAffectedDevices(
+  auth: AuthContext,
+  orgId: string,
+  affectedDevices: unknown,
+): Promise<string[] | null> {
+  return scopeDeviceIdsToCaller(auth, orgId, affectedDevices);
 }
 
 /**
- * Org axis + exact-device axis (#6096 #8).
+ * Org axis + exact-device axis + SITE axis (#6096 #8; site added by the
+ * 2026-09-17 audit §1.1).
  *
  * An incident is a device-attributable record: its timeline, its actions and
  * its forensic evidence are all ABOUT the affected devices. A device-bound
- * agent run must therefore reach an incident only when it touches at least one
- * device in its allowlist — an incident naming none of them (including one
- * naming no devices at all, which is not attributable to this run) fails
- * closed. Reported as not-found by callers so it doesn't leak existence.
+ * agent run — and a site-restricted technician — must therefore reach an
+ * incident only when it touches at least one device they may see. An incident
+ * naming none of them (including one naming no devices at all, which is not
+ * attributable to either) fails closed. Reported as not-found by callers so it
+ * doesn't leak existence.
+ *
+ * The scoped id list rides back on the returned row so the response filtering
+ * does not re-run the device scan.
  */
 async function findIncidentWithAccess(incidentId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(incidents.id, incidentId)];
@@ -55,9 +66,9 @@ async function findIncidentWithAccess(incidentId: string, auth: AuthContext) {
   if (orgCond) conditions.push(orgCond);
   const [incident] = await db.select().from(incidents).where(and(...conditions)).limit(1);
   if (!incident) return null;
-  const scoped = scopedAffectedDevices(auth, incident.affectedDevices);
+  const scoped = await scopedAffectedDevices(auth, incident.orgId, incident.affectedDevices);
   if (scoped !== null && scoped.length === 0) return null;
-  return incident;
+  return { ...incident, scopedDeviceIds: scoped };
 }
 
 export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
@@ -439,7 +450,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           status: incident.status,
           summary: incident.summary,
           relatedAlerts: incident.relatedAlerts,
-          affectedDevices: scopedAffectedDevices(auth, incident.affectedDevices) ?? incident.affectedDevices,
+          affectedDevices: incident.scopedDeviceIds ?? incident.affectedDevices,
           detectedAt: incident.detectedAt,
           containedAt: incident.containedAt,
           resolvedAt: incident.resolvedAt,
@@ -555,7 +566,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           resolvedAt: incident.resolvedAt,
           closedAt: incident.closedAt,
           durationMinutes,
-          affectedDevices: scopedAffectedDevices(auth, incident.affectedDevices) ?? incident.affectedDevices,
+          affectedDevices: incident.scopedDeviceIds ?? incident.affectedDevices,
           relatedAlerts: incident.relatedAlerts,
         },
         actionsSummary: {

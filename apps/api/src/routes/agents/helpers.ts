@@ -54,7 +54,11 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import {
+  resolvePatchConfigForDevice,
+  buildRoleOsFilterConditions,
+  matchesRoleOsFilter,
+} from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
@@ -1786,7 +1790,12 @@ const LEVEL_PRIORITY: Record<string, number> = {
 async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -1829,6 +1838,8 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       retentionDays: configPolicyEventLogSettings.retentionDays,
       maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
       collectCategories: configPolicyEventLogSettings.collectCategories,
@@ -1847,18 +1858,24 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return EVENT_LOG_DEFAULTS;
   return {
     retentionDays: winner.retentionDays,
@@ -2225,7 +2242,12 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
 async function resolvePolicyMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -2277,6 +2299,8 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Monito
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       settingsId: configPolicyMonitoringSettings.id,
       checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
@@ -2291,18 +2315,24 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Monito
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return null;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return null;
 
   // 7. Load watches for the winning settings row

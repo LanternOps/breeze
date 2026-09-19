@@ -95,7 +95,9 @@
     "aiRisk": "KI-Risiko",
     "deviceBackup": "Gerätesicherung",
     "sectionServiceDesk": "Service-Desk",
-    "serviceManagement": "Service-Management"
+    "serviceManagement": "Service-Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Liefervorlagen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2531,5 +2533,10 @@
     "message": "Ihre Rolle wird künftig eine Zwei-Faktor-Authentifizierung erfordern. Richten Sie sie bis {{date}} ein.",
     "cta": "2FA einrichten",
     "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "cta": "MFA erzwingen",
+    "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   }
 }

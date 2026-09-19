@@ -1,4 +1,69 @@
 import type { Redis } from 'ioredis';
+import * as dbModule from '../db';
+
+/**
+ * Calls the #1105 held-context tripwire, tolerating a PARTIAL test double of
+ * `../db`.
+ *
+ * `rateLimiter` is reached from well over a hundred call sites, and a large
+ * number of their unit suites mock `../db` with just the handful of exports
+ * that route needs. Vitest throws on reading an undeclared export from a
+ * mocked module, so a plain named import would turn this instrumentation into
+ * a mass test failure that says nothing about the code under test. The
+ * property READ is therefore guarded; the call itself is not — a strict-mode
+ * (`DB_CONTEXT_TRIPWIRE_STRICT`) throw still propagates to the caller, which
+ * is the whole point of the guard. Same tolerance `createInstrumentedQueue`
+ * applies to a partially-doubled BullMQ Queue.
+ */
+let missingGuardWarned = false;
+
+function assertOutsideHeldDbContextSafe(operation: string): void {
+  let assertFn: ((op: string) => void) | undefined;
+  try {
+    assertFn = (dbModule as { assertOutsideHeldDbContext?: (op: string) => void })
+      .assertOutsideHeldDbContext;
+  } catch {
+    // Partially-mocked `../db` in a unit test — nothing to assert against.
+    return;
+  }
+  if (typeof assertFn !== 'function') {
+    // The cast above erases the type, so a rename or removal of the export
+    // would otherwise disable the tripwire for every rateLimiter call site
+    // with no compile error and no runtime signal. Warn once per process so
+    // the breakage is at least visible in logs.
+    if (!missingGuardWarned) {
+      missingGuardWarned = true;
+      console.warn(
+        '[rate-limit] #1105 tripwire unavailable: db.assertOutsideHeldDbContext is not a function '
+        + '— held-context detection is OFF for every rateLimiter call site.',
+      );
+    }
+    return;
+  }
+  assertFn(operation);
+}
+
+/** Test-only: reset the once-per-process warn latch. */
+export function __resetMissingGuardWarnForTests(): void {
+  missingGuardWarned = false;
+}
+
+/**
+ * Low-cardinality label for the #1105 tripwire: the key's first segment only
+ * (`elevation:rate:device:<uuid>` → `elevation`).
+ *
+ * The bucket is what identifies the limiter; the id that follows it is a
+ * device/user/email and must never reach a log line or a Sentry message. The
+ * originating call site comes from the stack the tripwire captures, not from
+ * this string, so one segment is enough to read the logs by.
+ */
+function rateLimitBucketLabel(key: string): string {
+  // A key with no separator carries no bucket we can trust to be id-free, so
+  // it degrades to `unknown` rather than risking an identifier in the label.
+  const sep = key.indexOf(':');
+  if (sep <= 0) return 'unknown';
+  return key.slice(0, sep);
+}
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -47,6 +112,16 @@ export async function rateLimiter(
   cost = 1,
   options: RateLimiterOptions = {}
 ): Promise<RateLimitResult> {
+  // #6130 / #1105 — this is a Redis round-trip. Inside a held
+  // `withDbAccessContext` transaction it pins a pooled Postgres connection
+  // idle-in-transaction for the whole round-trip, which is worst exactly when
+  // Redis is slow. Deliberately OUTSIDE the try/catch below: under
+  // DB_CONTEXT_TRIPWIRE_STRICT the guard throws, and a caught throw would be
+  // downgraded to a silent fail-closed deny — the violation would never
+  // surface. Warn-only by default (prod-safe); the label is the key's bucket
+  // so call sites are readable in logs without leaking the keyed identifier.
+  assertOutsideHeldDbContextSafe(`rateLimiter(${rateLimitBucketLabel(key)})`);
+
   // If Redis is unavailable, fail closed — deny the request for security
   if (!redis) {
     console.error('[rate-limit] Redis unavailable, failing closed for key:', key);

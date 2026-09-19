@@ -4042,6 +4042,76 @@
         "features/ai-script-authoring.mdx",
         "deploy/environment.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/hardwareLifecycleReport.ts",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/portal/src/components/lifecycle/**",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/identityAccessReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/vulnerabilityManagementReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/endpointManagementReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/threatDetectionReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgAccountReadiness.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/organizations/board/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/wedgedBackends.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/networkDevice/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/snmpOidSpecs.ts",
+      "docs": [
+        "features/discovery.mdx"
+      ]
     }
   ]
 }

@@ -194,6 +194,37 @@ export const SIGNAL_DEFAULTS = {
   // this value therefore silences the signal rather than demoting it.
   'fraud.corroborated_watch.min_axes': 2,
   'fraud.corroborated_watch.per_extra_axis': 15,
+
+  // --- Partner sending domains (spec §9.2, W06) ------------------------------
+  // Four detectors over the outbound mail a partner sends from its OWN domain.
+  // None of them is age-decayed: a lookalike domain and a bounce storm are
+  // evidence about what the account is DOING, not about how old it is.
+  //
+  // `added` is deliberately INFO: a partner adding a sending domain is the
+  // feature working. The signal exists so a human reads the NAME — a lookalike
+  // of a bank or a well-known brand is the thing worth catching, and no
+  // automatic rule can judge that. At info it also cannot corroborate, so it can
+  // never contribute to a page on its own.
+  'email.sending_domain_added.window_days': 7,
+  'email.sending_domain_added.score': 25,
+  // Repeated failed verifications is what adding names you do not control looks
+  // like (spec §4.3). Watch, not alert: a partner whose DNS provider is slow
+  // produces the same shape.
+  'email.sending_domain_verify_failures.min_domains': 3,
+  'email.sending_domain_verify_failures.score': 45,
+  // Blasting past the daily partner-lane cap. Counted from the Redis day-hash
+  // recordPartnerLaneCapHit writes, which is only ever written on a GENUINE
+  // over-cap count — a Redis outage records nothing rather than accusing.
+  'email.partner_lane_cap_hit.min_hits': 2,
+  'email.partner_lane_cap_hit.score': 45,
+  // Deliverability. Capped BELOW severity.alert_score on purpose: automatic
+  // suspension (spec §9.3) already raised an ops alert for the same facts and
+  // already stopped the sending, so a second page would be pure noise. Left at
+  // watch so it can still corroborate a second, independent axis.
+  'email.sending_bounce_complaint.min_messages': 50,
+  'email.sending_bounce_complaint.bounce_rate': 0.08,
+  'email.sending_bounce_complaint.min_complaints': 3,
+  'email.sending_bounce_complaint.score': 65,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;

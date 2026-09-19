@@ -57,9 +57,16 @@ const GENERATING_COPY: Record<GeneratableReportType, string> = {
  * ("Customer portal — Security & compliance posture"); inside the customer's
  * own list the prefix is noise — they know whose portal they are in. The
  * MSP-side name is untouched, this is a render-time trim only.
+ *
+ * Managed-evidence definitions (#5784 W01) are provisioned with a second,
+ * internal-only prefix — `MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX` in
+ * `apps/api/src/services/managedEvidenceRegistry.ts` ('Service evidence — ')
+ * — and those runs reach this same list once delivered (#6101). The portal
+ * app doesn't depend on `@breeze/shared`, so this is a local mirror of that
+ * literal rather than a shared import; keep the two in sync.
  */
 export function reportDisplayName(name: string): string {
-  return name.replace(/^customer portal\s*[—–-]\s*/i, '');
+  return name.replace(/^(customer portal|service evidence)\s*[—–-]\s*/i, '');
 }
 
 /**
@@ -91,10 +98,14 @@ export function ReportRunList({
   initialRuns,
   timezone,
   error,
+  lifecycleHref = null,
 }: {
   initialRuns: PortalRunDto[];
   timezone: string;
   error?: string | null;
+  /** Where the hardware lifecycle plan lives for this org, or null when the
+   *  MSP has not turned it on. Rendered as a ruled row under the title. */
+  lifecycleHref?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
   const [busyType, setBusyType] = useState<GeneratableReportType | null>(null);
@@ -149,6 +160,22 @@ export function ReportRunList({
         title="Reports"
         lede="Generate and download a current summary of your machines."
       />
+
+      {lifecycleHref && (
+        <a
+          href={lifecycleHref}
+          data-testid="reports-lifecycle-card"
+          className="group -mx-4 -mt-2 mb-7 flex items-center justify-between gap-4 border-y border-border/70 px-4 py-4 text-sm transition-colors hover:bg-accent/40"
+        >
+          <span>
+            <span className="block font-semibold text-foreground">Hardware lifecycle</span>
+            <span className="mt-0.5 block text-muted-foreground">
+              See the replacement plan for the machines we manage for you.
+            </span>
+          </span>
+          <span aria-hidden="true" className="text-muted-foreground transition-colors group-hover:text-foreground">&rarr;</span>
+        </a>
+      )}
 
       <div className="mb-2 flex flex-wrap gap-3">
         <button

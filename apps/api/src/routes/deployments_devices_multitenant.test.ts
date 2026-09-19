@@ -509,3 +509,177 @@ describe('deployment routes', () => {
   });
 
 });
+
+// ------------------------------------------------------------------
+// Site axis on the deployment LIST and GET (review #6110)
+//
+// `GET /:id/devices` and the device retry action both carry the site axis, but
+// `GET /` and `GET /:id` filtered on orgId alone — so a site-restricted tech saw
+// every deployment in the org by name, type, target config and progress, and
+// only lost the per-device breakdown. A deployment is site-attributable through
+// its member devices; one with NO members is unattributable and denied.
+// ------------------------------------------------------------------
+describe('deployment site axis on list/get (review #6110)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks does NOT drain a pending mockReturnValueOnce queue; an
+    // earlier describe block can leave entries behind and every test here would
+    // then read someone else's chain shape.
+    vi.mocked(db.select).mockReset();
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      const restrictedSite = c.req.header('x-restrict-site');
+      if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
+      return next();
+    });
+    app = new Hono();
+    app.route('/deployments', deploymentRoutes);
+  });
+
+  /** Restricted-caller list: full scan, then one batched membership query. */
+  function mockRestrictedList(rows: unknown[], members: unknown[]) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(members) })
+        })
+      } as any);
+  }
+
+  it('hides a deployment whose members sit in another site', async () => {
+    mockRestrictedList(
+      [makeDeployment(), makeDeployment({ id: DEPLOYMENT_ID_2, name: 'Other site' })],
+      [
+        { deploymentId: DEPLOYMENT_ID_1, deviceId: DEVICE_ID, siteId: SITE_ALLOWED },
+        { deploymentId: DEPLOYMENT_ID_2, deviceId: 'd-out', siteId: 'site-other' }
+      ]
+    );
+
+    const res = await app.request('/deployments', { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((d: any) => d.id)).toEqual([DEPLOYMENT_ID_1]);
+    expect(body.total).toBe(1);
+    expect(JSON.stringify(body)).not.toContain('Other site');
+  });
+
+  it('hides a ZERO-member deployment from a restricted caller', async () => {
+    mockRestrictedList([makeDeployment()], []);
+
+    const res = await app.request('/deployments', { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+
+  it('paginates the FILTERED set — page 2 holds the next visible rows', async () => {
+    const visible = Array.from({ length: 4 }, (_, i) => makeDeployment({ id: `in-${i}`, name: `In ${i}` }));
+    const rows = visible.flatMap((row, i) => [makeDeployment({ id: `out-${i}`, name: `Out ${i}` }), row]);
+    const members = rows.map((row: any) => ({
+      deploymentId: row.id,
+      deviceId: `dev-${row.id}`,
+      siteId: String(row.id).startsWith('in-') ? SITE_ALLOWED : 'site-other'
+    }));
+    mockRestrictedList(rows, members);
+
+    const res = await app.request('/deployments?limit=2&offset=2', { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((d: any) => d.id)).toEqual(['in-2', 'in-3']);
+    expect(body.total).toBe(4);
+  });
+
+  it('leaves the unrestricted list path untouched (count + page, no membership query)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 2 }]) })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([makeDeployment(), makeDeployment({ id: DEPLOYMENT_ID_2 })])
+              })
+            })
+          })
+        })
+      } as any);
+
+    const res = await app.request('/deployments');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(2);
+    expect(body.total).toBe(2);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  /** GET /:id: deployment lookup, then (restricted only) the membership query. */
+  function mockGetById(members?: unknown[]) {
+    const chain = vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeDeployment({ status: 'running' })]) })
+      })
+    } as any);
+    if (members) {
+      chain.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(members) })
+        })
+      } as any);
+    }
+  }
+
+  it('GET /:id 404s a deployment reaching another site', async () => {
+    mockGetById([{ deploymentId: DEPLOYMENT_ID_1, deviceId: 'd-out', siteId: 'site-other' }]);
+
+    const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`, { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /:id 404s a ZERO-member deployment for a restricted caller', async () => {
+    mockGetById([]);
+
+    const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`, { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /:id still serves a deployment confined to the caller site', async () => {
+    mockGetById([{ deploymentId: DEPLOYMENT_ID_1, deviceId: DEVICE_ID, siteId: SITE_ALLOWED }]);
+
+    const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`, { headers: { 'x-restrict-site': SITE_ALLOWED } });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.id).toBe(DEPLOYMENT_ID_1);
+  });
+
+  it('GET /:id runs no membership query for an unrestricted caller', async () => {
+    mockGetById();
+
+    const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}`);
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+});

@@ -308,7 +308,10 @@ describe('identity and access review evidence on real Postgres (#5784 W06)', () 
     expect(res.rowCount).toBe(0);
     expect(s.identity?.usersTotal).toBeNull();
     expect(s.signins?.total).toBeNull();
-    expect(s.adminSignins ?? null).toBeNull();
+    // #6100: `null` means "admin detail switched off" to the PDF renderer, so a
+    // refused read with adminDetail on (the default) is an EMPTY list — unmeasured,
+    // and still not one identity row.
+    expect(s.adminSignins ?? []).toEqual([]);
     expect(s.dormant ?? null).toBeNull();
     expect(JSON.stringify(s)).not.toContain(ADMIN_UPN);
     expect(JSON.stringify(s)).not.toContain(ADMIN_IP);

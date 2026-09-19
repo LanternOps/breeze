@@ -144,7 +144,11 @@ export const deploymentResults = pgTable('deployment_results', {
 }, (table) => ({
   deploymentIdx: index('deployment_results_deployment_id_idx').on(table.deploymentId),
   deviceIdx: index('deployment_results_device_id_idx').on(table.deviceId),
-  statusIdx: index('deployment_results_status_idx').on(table.status)
+  statusIdx: index('deployment_results_status_idx').on(table.status),
+  // #5777: covers softwareDeploymentSiteScopePredicate's correlated
+  // EXISTS/NOT EXISTS over (deployment_id, device_id). See migration
+  // 2026-10-20-120000-deployment-results-deployment-device-index.sql.
+  deploymentDeviceIdx: index('deployment_results_deployment_id_device_id_idx').on(table.deploymentId, table.deviceId)
 }));
 
 export const softwareInventoryObservations = pgTable('software_inventory_observations', {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../../services/maintenanceAuthorization', () => ({ lockMaintenanceAssurance: vi.fn(async () => true) }));
+vi.mock('../../services/stepUpActorAssurance', () => ({ lockActorAssurance: vi.fn(async () => true) }));
 
 const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
   assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),

@@ -66,6 +66,8 @@ The agent holds a short lease and renews it about every 25 seconds over its exis
 - multi-factor authentication is still satisfied under the current role policy;
 - the session's hard time limit has not been reached.
 
+The MFA check evaluates the role's *actual, effective* MFA policy, not just its raw flag — a Partner Admin who hasn't enrolled an MFA factor no longer has their desktop sessions revoked when MFA isn't actually required by policy.
+
 If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
 
 If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.

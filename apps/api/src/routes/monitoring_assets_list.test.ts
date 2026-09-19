@@ -415,7 +415,7 @@ describe('monitoring routes', () => {
   // GET /assets/:id
   // ============================================
   describe('GET /monitoring/assets/:id', () => {
-    it('returns 403 for a site-restricted caller reading an out-of-scope asset', async () => {
+    it('returns an opaque 404 (matching a missing asset) for a site-restricted caller reading an out-of-scope asset (#5777)', async () => {
       // Asset lookup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -424,33 +424,20 @@ describe('monitoring routes', () => {
           }),
         }),
       } as any);
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([]),
-              }),
-            }),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 0 }]),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 0 }]),
-          }),
-        } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
       });
 
-      expect(res.status).toBe(403);
+      // Same status AND same body as the "returns 404 for nonexistent asset"
+      // test below — an out-of-ceiling asset must be indistinguishable from
+      // a missing one (existence oracle, #5777). The route now returns
+      // before any of the later network-monitor/SNMP selects run, so only
+      // the asset lookup needs wiring here.
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Asset not found');
     });
 
     it('leaves unrestricted asset detail callers unchanged', async () => {

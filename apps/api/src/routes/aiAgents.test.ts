@@ -3599,6 +3599,27 @@ describe('POST /ai-agents/graduation/promote', () => {
     );
   });
 
+  // Site ceiling (audit §1.1): this route raises the very same
+  // `manage_ai_agents:authorize_supervised_key` grant the AI tool does, and
+  // the tool's handler refuses a site-restricted raiser
+  // (`canMutateOrgWideGovernance`, services/aiToolsAiAgentGovernance.ts). The
+  // HTTP twin had only `canAccessOrg`, so the ceiling was bypassable by
+  // calling the route directly. The grant is org-wide by construction — there
+  // is no per-site slice of "this org may run this op unattended".
+  it('denies a SITE-RESTRICTED caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedSiteIds: [SITE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an exact-device-restricted caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedDeviceIds: [DEVICE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
   it('409s while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off, without raising anything', async () => {
     envMock.policyDecideEnabled.mockReturnValue(false);
 

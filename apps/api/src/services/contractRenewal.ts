@@ -76,7 +76,8 @@ async function dispatchNotice(c: RenewalCandidate, kind: 'advance' | 'renewed', 
           kind, contractName: c.name, orgName, endDate, contractUrl,
           noticeDays: kind === 'advance' ? (c.renewalNoticeDays ?? undefined) : undefined
         });
-        await emailService.sendEmail({ to: recipients.map((r) => r.email), subject: tpl.subject, html: tpl.html, text: tpl.text });
+        // To MSP staff, not the customer (spec §8.2) — platform sender.
+        await emailService.sendEmail({ to: recipients.map((r) => r.email), subject: tpl.subject, html: tpl.html, text: tpl.text, purpose: 'staff.contract_renewal' });
       }
     }
   } catch (err) {

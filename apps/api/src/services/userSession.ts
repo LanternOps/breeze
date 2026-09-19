@@ -15,6 +15,7 @@ import {
   RefreshTokenCurrentnessError,
   rotateRefreshTokenFamilyCurrentJti,
 } from './refreshTokenFamily';
+import type { MfaAssuranceSource } from './mfaAssuranceSource';
 
 const AUTHORIZED_USER_SESSION: unique symbol = Symbol('AuthorizedUserSession');
 
@@ -26,6 +27,8 @@ export type UserSessionIdentity = Readonly<{
   partnerId: string | null;
   scope: 'system' | 'partner' | 'organization';
   mfa: boolean;
+  /** How `mfa: true` was earned. Omit when `mfa` is false. See services/mfaAssuranceSource.ts. */
+  mfaSrc?: MfaAssuranceSource;
   mobileDeviceId?: string;
 }>;
 
@@ -128,6 +131,7 @@ export async function issueUserSession(
     partnerId: identity.partnerId,
     scope: identity.scope,
     mfa: identity.mfa,
+    mfa_src: identity.mfaSrc,
     aep: epochs.authEpoch,
     mep: epochs.mfaEpoch,
     mdid: identity.mobileDeviceId,

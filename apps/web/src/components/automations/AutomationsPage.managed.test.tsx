@@ -92,3 +92,16 @@ describe('AutomationsPage monitor-managed filtering (#5287)', () => {
     expect(await screen.findByText('Triage critical alerts')).toBeInTheDocument();
   });
 });
+
+describe('AutomationsPage elevated action mapping', () => {
+  it('carries stored actions from the API response to the elevated badge', async () => {
+    fetchMock.mockResolvedValue(json({ data: [{
+      ...automation,
+      actions: [{ type: 'run_script', scriptId: 'script-1', runAs: 'elevated' }],
+    }] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByTestId('automation-elevated-badge')).toHaveTextContent('Elevated');
+  });
+});

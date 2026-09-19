@@ -67,6 +67,21 @@
     "openInBrowser": "Ouvrir dans le navigateur",
     "policyDisabled": "Le bureau à distance est désactivé par la politique",
     "policyDisabledNamed": "Le bureau à distance est désactivé par la politique « {{name}} »",
+    "revoked": {
+      "title": "Session révoquée",
+      "setUpMfa": "Configurer l'AMF",
+      "reasons": {
+        "session_ended": "La session était déjà terminée.",
+        "user_inactive": "Votre compte n'est plus actif.",
+        "epoch_baseline_missing": "Vos autorisations n'ont pas pu être vérifiées. Essayez de vous reconnecter.",
+        "permissions_changed": "Vos autorisations ont changé depuis le début de cette session. Reconnectez-vous pour continuer avec votre accès actuel.",
+        "membership_removed": "Vous n'avez plus accès à cette organisation ou à cet appareil.",
+        "site_scope_lost": "Cet appareil se trouve en dehors de votre périmètre de site assigné.",
+        "mfa_required": "L'authentification multifacteur est désormais exigée pour l'accès au bureau à distance.",
+        "hard_deadline": "Cette session a atteint sa durée maximale autorisée.",
+        "default": "La session a été terminée par une politique de sécurité. Reconnectez-vous pour réessayer."
+      }
+    },
     "unavailable": {
       "default": "Le mode de bureau n’est pas disponible sur cet appareil",
       "headless": "Cet appareil n’a pas d’affichage — le bureau à distance n’est pas disponible",

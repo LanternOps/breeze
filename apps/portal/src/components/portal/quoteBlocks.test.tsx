@@ -292,3 +292,40 @@ describe('QuoteBlocks — callout block rendering', () => {
     expect(container.textContent).toBe('');
   });
 });
+
+describe('QuoteBlocks — per-table subtotal (parity with the technician preview)', () => {
+  const base = { quantity: '1', customerVisible: true, sortOrder: 0, name: 'x', description: '' };
+  const lines = [
+    { id: 's1', blockId: 'blk-sub', unitPrice: '100', lineTotal: '100', recurrence: 'one_time', ...base },
+    { id: 's2', blockId: 'blk-sub', unitPrice: '50', lineTotal: '50', recurrence: 'one_time', ...base },
+    { id: 's3', blockId: 'blk-sub', unitPrice: '20', lineTotal: '20', recurrence: 'monthly', ...base },
+  ] as unknown as import('@/lib/api').QuoteLine[];
+
+  it('renders a subtotal foot split by recurrence when the block asks for one', () => {
+    render(
+      <QuoteBlocks
+        blocks={[{ id: 'blk-sub', blockType: 'line_items', sortOrder: 0, content: { label: 'Hardware', showSubtotal: true } }]}
+        lines={lines}
+        currency="USD"
+        imageUrl={imageUrl}
+        buildUrl={buildUrl}
+      />,
+    );
+    const foot = screen.getByTestId('quote-table-subtotal-blk-sub');
+    expect(foot).toHaveTextContent('Subtotal');
+    expect(foot).toHaveTextContent('$150.00 + $20.00/mo');
+  });
+
+  it('renders no subtotal foot when the block does not ask for one', () => {
+    render(
+      <QuoteBlocks
+        blocks={[{ id: 'blk-sub', blockType: 'line_items', sortOrder: 0, content: { label: 'Hardware' } }]}
+        lines={lines}
+        currency="USD"
+        imageUrl={imageUrl}
+        buildUrl={buildUrl}
+      />,
+    );
+    expect(screen.queryByTestId('quote-table-subtotal-blk-sub')).toBeNull();
+  });
+});

@@ -46,7 +46,12 @@ function getOrgId(auth: AuthContext): string | null {
 // EXPORTED as the single implementation of alert-by-id access for AI tools:
 // aiToolsTicketing.ts kept a hand-copied twin that drifted (#6096 I6 — its
 // `alert.deviceId &&` short-circuit admitted org-wide alerts for a
-// device-bound run). One body, one contract.
+// device-bound run). One body, one contract. `services/aiTools.ts` carried a
+// third copy and now RE-EXPORTS this one (that direction already exists at
+// runtime — aiTools imports registerAlertTools from here — so the reverse
+// would close an import cycle). Identity is pinned by
+// `aiTools.findAlertWithAccess.test.ts`; do not reintroduce a local copy in
+// either module.
 export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(alerts.id, alertId)];
   const orgCond = auth.orgCondition(alerts.orgId);

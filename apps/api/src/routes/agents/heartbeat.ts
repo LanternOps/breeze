@@ -1785,7 +1785,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  // #3997 — do not ASK for a rotation the mint route will now refuse.
+  // `rotate-token` is off the tenant drain surface (agentAuth's
+  // TENANT_DRAIN_ALLOWED_ACTIONS) and the route itself fails closed on a
+  // drain, so signalling it here would have every agent in an offboarding
+  // tenant attempt a mint it cannot complete on EVERY heartbeat for the whole
+  // window (OFFBOARDING_DRAIN_WINDOW_HOURS, 72h by default), logging a rotation
+  // failure each time. Suppressing the signal changes nothing about safety —
+  // `handleTokenRotation` in agent/internal/heartbeat logs and returns, never
+  // gating the heartbeat or touching on-disk credentials — it only stops a
+  // guaranteed-useless round trip and its error noise.
+  //
+  // Only the TENANT drain is checked: `deviceUninstallDraining` returns from
+  // the minimal drain beat at the top of this handler and never reaches here,
+  // so testing it too would be unreachable code.
   const rotateToken =
+    !agent?.tenantDraining &&
     !authenticatedWithPreviousToken &&
     !pendingRotationLive &&
     (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
