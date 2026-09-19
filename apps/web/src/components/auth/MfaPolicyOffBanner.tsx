@@ -80,7 +80,10 @@ export default function MfaPolicyOffBanner() {
       }
       const data = (await response.json().catch(() => null)) as PartnerMe | null;
       if (!isCurrent()) return;
-      setPolicyOff(data?.settings?.security?.requireMfa !== true);
+      // An unreadable body is treated like the other failure paths (render
+      // nothing) rather than as "MFA is off" — the banner only claims the
+      // policy is off when the server said so.
+      setPolicyOff(data !== null && data.settings?.security?.requireMfa !== true);
     } catch {
       if (isCurrent()) setPolicyOff(false);
     }
@@ -91,15 +94,20 @@ export default function MfaPolicyOffBanner() {
       setPolicyOff(false);
       return;
     }
-    let current = true;
-    void check(() => current);
-    const onSaved = () => {
-      void check(() => current);
+    // Latest request wins: a save-triggered re-check can overlap a slower
+    // earlier GET, and the earlier (pre-save) answer must not land last and
+    // resurrect the banner. Unmount/eligibility change invalidates all.
+    let active = true;
+    let latest = 0;
+    const run = () => {
+      const seq = ++latest;
+      void check(() => active && seq === latest);
     };
-    window.addEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+    run();
+    window.addEventListener(PARTNER_SETTINGS_SAVED_EVENT, run);
     return () => {
-      current = false;
-      window.removeEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+      active = false;
+      window.removeEventListener(PARTNER_SETTINGS_SAVED_EVENT, run);
     };
   }, [eligible, check]);
 

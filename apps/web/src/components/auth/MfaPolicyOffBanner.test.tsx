@@ -161,6 +161,49 @@ describe('MfaPolicyOffBanner', () => {
     expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
   });
 
+  it('ignores a stale response that resolves after a newer re-check (latest request wins)', async () => {
+    let resolveInitial: (r: Response) => void = () => {};
+    fetchWithAuthMock
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveInitial = resolve; }))
+      .mockResolvedValueOnce(partnerResponse(true));
+    render(<MfaPolicyOffBanner />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+
+    // Save turned MFA on; the re-check resolves first.
+    act(() => {
+      window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
+    });
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+
+    // The slow initial GET (pre-save state: MFA off) lands last.
+    await act(async () => {
+      resolveInitial(partnerResponse(false));
+    });
+
+    expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when a 200 response body is not valid JSON', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('bad json'); },
+    } as unknown as Response);
+    render(<MfaPolicyOffBanner />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when the fetch throws (network error)', async () => {
+    fetchWithAuthMock.mockRejectedValueOnce(new TypeError('network down'));
+    render(<MfaPolicyOffBanner />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
   it('re-checks and hides after the partner settings page reports a save that turned MFA on', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(partnerResponse(false))
