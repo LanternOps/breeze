@@ -1,3 +1,4 @@
+import { osRootScanPath } from '@breeze/shared';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { toCleanupOs } from '@breeze/shared';
@@ -140,7 +141,7 @@ filesystemRoutes.get(
       return failJson(c, 'Device not found', 404);
     }
 
-    const snapshot = await getLatestFilesystemSnapshot(deviceId);
+    const snapshot = await getLatestFilesystemSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
     if (!snapshot) {
       return failJson(c, 'No filesystem analysis available yet', 404);
     }
@@ -188,7 +189,7 @@ filesystemRoutes.post(
       return failJson(c, 'Device not found', 404);
     }
 
-    const scanState = await getFilesystemScanState(deviceId);
+    const scanState = await getFilesystemScanState(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
     const hotDirectories = readHotDirectories(scanState?.hotDirectories, 12);
     const checkpointDirs = readCheckpointPendingDirectories(scanState?.checkpoint, 50_000);
     const currentUsedPercent = await readCurrentDiskUsedPercent(deviceId);
@@ -304,7 +305,7 @@ filesystemRoutes.post(
       return failJson(c, 'Device not found', 404);
     }
 
-    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
     if (!snapshot) {
       return failJson(c, 'No filesystem snapshot available. Run a scan first.', 404);
     }
@@ -399,7 +400,7 @@ filesystemRoutes.post(
         return failJson(c, 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.', 400);
       }
     } else {
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, osRootScanPath((device as { osType?: unknown }).osType));
       if (!snapshot) {
         return failJson(c, 'No filesystem snapshot available. Run a scan first.', 404);
       }

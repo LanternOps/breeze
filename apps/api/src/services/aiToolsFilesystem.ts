@@ -1,3 +1,4 @@
+import { osRootScanPath } from '@breeze/shared';
 /**
  * AI Filesystem Tools
  *
@@ -173,7 +174,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const scanPath = typeof input.path === 'string' && input.path.length > 0 ? input.path : defaultPath;
       const isRootScopedScan = scanPath === defaultPath;
 
-      let snapshot = await getLatestFilesystemSnapshot(deviceId);
+      let snapshot = await getLatestFilesystemSnapshot(deviceId, osRootScanPath(access.device.osType));
 
       if (refresh || !snapshot) {
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
@@ -209,7 +210,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
             error: 'Filesystem analysis returned no parseable result; no snapshot was stored. Retry the scan.',
           });
         }
-        snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', parsed);
+        snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', osRootScanPath(access.device.osType), parsed);
       }
 
       if (!snapshot) {
@@ -291,7 +292,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
       const safeRequestedBy = userRow ? auth.user.id : null;
 
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, osRootScanPath(access.device.osType));
       if (!snapshot) {
         return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
       }

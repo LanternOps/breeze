@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import {
   deviceFilesystemSnapshots,
@@ -60,10 +60,16 @@ export function parseFilesystemAnalysisStdout(stdout: string): AnyObject {
   }
 }
 
+/**
+ * @param scanPath the NORMALISED volume/path this scan covered
+ *   (`normalizeScanPath` from `@breeze/shared`). It is the second half of the
+ *   key every reader uses — a raw `c:\` here is invisible to a `C:\` read.
+ */
 export async function saveFilesystemSnapshot(
   deviceId: string,
   orgId: string,
   trigger: FilesystemSnapshotTrigger,
+  scanPath: string,
   payload: AnyObject
 ) {
   const summary = asRecord(payload.summary) ?? {};
@@ -74,6 +80,7 @@ export async function saveFilesystemSnapshot(
     .values({
       deviceId,
       orgId,
+      scanPath,
       trigger,
       partial,
       summary,
@@ -93,11 +100,14 @@ export async function saveFilesystemSnapshot(
   return snapshot ?? null;
 }
 
-export async function getLatestFilesystemSnapshot(deviceId: string) {
+export async function getLatestFilesystemSnapshot(deviceId: string, scanPath: string) {
   const [snapshot] = await db
     .select()
     .from(deviceFilesystemSnapshots)
-    .where(eq(deviceFilesystemSnapshots.deviceId, deviceId))
+    .where(and(
+      eq(deviceFilesystemSnapshots.deviceId, deviceId),
+      eq(deviceFilesystemSnapshots.scanPath, scanPath),
+    ))
     .orderBy(desc(deviceFilesystemSnapshots.capturedAt))
     .limit(1);
 
@@ -105,31 +115,40 @@ export async function getLatestFilesystemSnapshot(deviceId: string) {
 }
 
 /**
- * Slim variant for the cleanup preview/execute paths, which only need the
- * snapshot id and its cleanup candidates. Avoids transferring and deserializing
- * the full set of large jsonb columns (largest files/dirs, duplicates, the
- * duplicate rawPayload blob, etc.) that those callers never read.
+ * Slim variant for the cleanup preview/execute paths and the volumes list,
+ * which need the snapshot's identity and its cleanup candidates but none of
+ * the other large jsonb columns (largest files/dirs, duplicates, the duplicate
+ * rawPayload blob). `capturedAt`/`partial` are cheap scalars and are what the
+ * volumes list renders next to each chip.
  */
-export async function getLatestFilesystemCleanupSnapshot(deviceId: string) {
+export async function getLatestFilesystemCleanupSnapshot(deviceId: string, scanPath: string) {
   const [snapshot] = await db
     .select({
       id: deviceFilesystemSnapshots.id,
+      scanPath: deviceFilesystemSnapshots.scanPath,
       capturedAt: deviceFilesystemSnapshots.capturedAt,
+      partial: deviceFilesystemSnapshots.partial,
       cleanupCandidates: deviceFilesystemSnapshots.cleanupCandidates,
     })
     .from(deviceFilesystemSnapshots)
-    .where(eq(deviceFilesystemSnapshots.deviceId, deviceId))
+    .where(and(
+      eq(deviceFilesystemSnapshots.deviceId, deviceId),
+      eq(deviceFilesystemSnapshots.scanPath, scanPath),
+    ))
     .orderBy(desc(deviceFilesystemSnapshots.capturedAt))
     .limit(1);
 
   return snapshot ?? null;
 }
 
-export async function getFilesystemScanState(deviceId: string) {
+export async function getFilesystemScanState(deviceId: string, scanPath: string) {
   const [state] = await db
     .select()
     .from(deviceFilesystemScanState)
-    .where(eq(deviceFilesystemScanState.deviceId, deviceId))
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+    ))
     .limit(1);
 
   return state ?? null;
@@ -138,6 +157,7 @@ export async function getFilesystemScanState(deviceId: string) {
 export async function upsertFilesystemScanState(
   deviceId: string,
   orgId: string,
+  scanPath: string,
   updates: {
     lastRunMode?: string;
     lastBaselineCompletedAt?: Date | null;
@@ -145,12 +165,20 @@ export async function upsertFilesystemScanState(
     checkpoint?: unknown;
     aggregate?: unknown;
     hotDirectories?: unknown;
+    /**
+     * Deliberately absent from this type. The generation is owned by
+     * `setFilesystemScanGeneration` (producers) and
+     * `claimFilesystemScanGeneration` (the handler), both of which are plain
+     * UPDATEs. Letting it ride along on the upsert would let the handler's
+     * final write resurrect a generation it had just claimed.
+     */
   }
 ) {
   const now = new Date();
   const insertValues: typeof deviceFilesystemScanState.$inferInsert = {
     deviceId,
     orgId,
+    scanPath,
     lastRunMode: updates.lastRunMode ?? 'baseline',
     lastBaselineCompletedAt: updates.lastBaselineCompletedAt ?? null,
     lastDiskUsedPercent: updates.lastDiskUsedPercent ?? null,
@@ -176,7 +204,13 @@ export async function upsertFilesystemScanState(
     .insert(deviceFilesystemScanState)
     .values(insertValues)
     .onConflictDoUpdate({
-      target: deviceFilesystemScanState.deviceId,
+      // The (device_id, scan_path) key (2026-10-20-170000). It is a UNIQUE
+      // INDEX in W02, not a primary key (amendment 16) — Postgres infers
+      // either one from this column list, so nothing here changes when W03
+      // promotes it. A single-column target names no unique index at all once
+      // the old key is dropped, and every upsert raises 42P10, which is why
+      // this change and that migration ship in one release (spec §4).
+      target: [deviceFilesystemScanState.deviceId, deviceFilesystemScanState.scanPath],
       set: updateSet,
     })
     .returning();
@@ -423,4 +457,93 @@ export function readExecutedActions(value: unknown): StoredExecutedActions {
     budgetMs: asNumber(record.budgetMs, 0),
     actions: record.actions,
   };
+}
+
+/**
+ * Extracts the scan path a cleanup preview pinned into its stored `plan`
+ * (jsonb). Cleanup-execute takes no `path` of its own in W02, so a pinned run
+ * is the only place the volume is recorded when the row's `scan_path` column
+ * predates this wave. Returns null rather than guessing, so the caller falls
+ * back to the OS root explicitly.
+ */
+export function readPlanScanPath(plan: unknown): string | null {
+  const record = asRecord(plan);
+  return asString(record?.scanPath);
+}
+
+/**
+ * Records which `filesystem_analysis` command owns the current run for this
+ * volume (spec §13 #18). Called by every producer right after queuing: the
+ * scan route, the threshold queue, and the auto-resume continuation.
+ *
+ * A plain UPDATE, never an upsert. A first-ever scan has no scan-state row
+ * yet, and inventing one here would need an orgId the threshold path does not
+ * hold; the result handler's `absent` branch covers that case by applying the
+ * result rather than dropping it.
+ */
+export async function setFilesystemScanGeneration(
+  deviceId: string,
+  scanPath: string,
+  commandId: string
+): Promise<void> {
+  await db
+    .update(deviceFilesystemScanState)
+    .set({ scanGeneration: commandId, updatedAt: new Date() })
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+    ));
+}
+
+export type ScanGenerationClaim = 'claimed' | 'superseded' | 'already_applied' | 'absent';
+
+/**
+ * Claims the right to apply `commandId`'s result to this volume's scan state
+ * (spec §13 #18). One conditional UPDATE does both jobs:
+ *
+ *  - EXCLUSIVITY — two scans of the same volume can be in flight at once (an
+ *    auto-resume continuation plus a user-triggered rescan, or two operators).
+ *    Only the command the row currently names can claim it, so a superseded
+ *    scan can no longer overwrite a newer run's checkpoint with a stale
+ *    frontier.
+ *  - IDEMPOTENCY — the claim NULLS the generation, so a duplicate delivery of
+ *    the same command id finds nothing to claim and is dropped.
+ *
+ * `absent` (no state row) applies the result deliberately: a device whose
+ * state row has not been created yet, or was removed, must not lose a
+ * completed scan to a bookkeeping row that never existed.
+ *
+ * NOTE: this guards RESULT APPLICATION only. A scan queued between the claim
+ * and the handler's final `upsertFilesystemScanState` can still have its row
+ * overwritten by the older run's checkpoint — the pre-existing last-writer-wins
+ * window, unchanged by this wave and much narrower than the one it closes.
+ */
+export async function claimFilesystemScanGeneration(
+  deviceId: string,
+  scanPath: string,
+  commandId: string
+): Promise<ScanGenerationClaim> {
+  const claimed = await db
+    .update(deviceFilesystemScanState)
+    .set({ scanGeneration: null, updatedAt: new Date() })
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+      eq(deviceFilesystemScanState.scanGeneration, commandId),
+    ))
+    .returning({ deviceId: deviceFilesystemScanState.deviceId });
+
+  if (claimed.length > 0) return 'claimed';
+
+  const [state] = await db
+    .select({ scanGeneration: deviceFilesystemScanState.scanGeneration })
+    .from(deviceFilesystemScanState)
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+    ))
+    .limit(1);
+
+  if (!state) return 'absent';
+  return state.scanGeneration === null ? 'already_applied' : 'superseded';
 }

@@ -1,10 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../db', () => ({
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
+}));
+
+import { db } from '../db';
 import {
+  readPlanScanPath,
+  upsertFilesystemScanState,
+  setFilesystemScanGeneration,
+  claimFilesystemScanGeneration,
   buildCleanupPreview,
   mergeFilesystemAnalysisPayload,
   readPlanPreviewCandidates,
   readExecutedActions,
 } from './filesystemAnalysis';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('filesystemAnalysis service', () => {
   it('builds safe cleanup preview from snapshot candidates', () => {
@@ -130,5 +144,108 @@ describe('mergeFilesystemAnalysisPayload summary', () => {
   it('leaves the flag off when neither half set it', () => {
     const merged = mergeFilesystemAnalysisPayload({ summary: {} }, { summary: {} });
     expect((merged.summary as Record<string, unknown>).duplicateTrackingTruncated).toBe(false);
+  });
+});
+
+describe('readPlanScanPath', () => {
+  it('reads the scan path a preview pinned into its stored plan', () => {
+    expect(readPlanScanPath({ snapshotId: 's', scanPath: 'D:\\', preview: {} })).toBe('D:\\');
+  });
+
+  it('returns null for a plan with no pinned path, so the caller can fall back explicitly', () => {
+    expect(readPlanScanPath({ snapshotId: 's' })).toBeNull();
+    expect(readPlanScanPath(null)).toBeNull();
+    expect(readPlanScanPath('not an object')).toBeNull();
+    expect(readPlanScanPath({ scanPath: '' })).toBeNull();
+    expect(readPlanScanPath({ scanPath: 42 })).toBeNull();
+  });
+});
+
+describe('upsertFilesystemScanState — conflict target (spec §4 writer contract)', () => {
+  it('conflicts on (deviceId, scanPath), not on deviceId alone', async () => {
+    const onConflictDoUpdate = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ deviceId: 'device-1', scanPath: 'D:\\' }]),
+    });
+    const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    const insert = vi.fn().mockReturnValue({ values });
+    vi.mocked(db.insert).mockImplementation(insert as never);
+
+    await upsertFilesystemScanState('device-1', 'org-1', 'D:\\', { lastRunMode: 'baseline' });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'device-1',
+      orgId: 'org-1',
+      scanPath: 'D:\\',
+    }));
+    const target = onConflictDoUpdate.mock.calls[0]![0].target;
+    // An array of TWO columns. A single column here is the 42P10 regression:
+    // after the primary-key swap, `target: deviceId` names no unique index.
+    expect(Array.isArray(target)).toBe(true);
+    expect(target).toHaveLength(2);
+    expect(target.map((column: { name: string }) => column.name)).toEqual(['device_id', 'scan_path']);
+  });
+});
+
+describe('scan generation (spec §13 #18)', () => {
+  function mockUpdateReturning(rows: unknown[]) {
+    const returning = vi.fn().mockResolvedValue(rows);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+    return { set, where, returning };
+  }
+
+  function mockSelectRows(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as never);
+  }
+
+  it('setFilesystemScanGeneration updates the row and never inserts one', async () => {
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+
+    await setFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1');
+
+    // A plain UPDATE, not an upsert: a first-ever scan has no state row yet,
+    // and the handler's `absent` branch covers that case by applying the
+    // result rather than dropping it.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: 'cmd-1' }));
+  });
+
+  it('claims the generation when the command id matches, clearing it in the same statement', async () => {
+    const { set } = mockUpdateReturning([{ deviceId: 'device-1' }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('claimed');
+
+    // Nulling it IS the idempotency marker: the same command cannot claim twice.
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: null }));
+  });
+
+  it('reports superseded when a DIFFERENT generation owns the row', async () => {
+    mockUpdateReturning([]);
+    mockSelectRows([{ scanGeneration: 'cmd-2' }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('superseded');
+  });
+
+  it('reports already_applied for a duplicate delivery of the same command', async () => {
+    // The claim nulled the generation the first time round, so the second
+    // delivery finds a row with no generation and must NOT re-apply.
+    mockUpdateReturning([]);
+    mockSelectRows([{ scanGeneration: null }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('already_applied');
+  });
+
+  it('reports absent when there is no scan-state row at all', async () => {
+    mockUpdateReturning([]);
+    mockSelectRows([]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('absent');
   });
 });

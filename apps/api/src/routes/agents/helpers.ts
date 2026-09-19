@@ -1514,6 +1514,17 @@ export async function handleCisCommandResult(
 // Filesystem Analysis
 // ============================================
 
+/**
+ * W02 Task 6 transitional pin. The handler has no OS in scope yet (plan
+ * amendment 6), and before this wave every snapshot and every scan-state row
+ * was device-keyed with no path — which is exactly `'/'` for POSIX devices and
+ * `'C:\'` for Windows ones. Task 11 reads `devices.os_type` and replaces this
+ * with the normalised `command.payload.path`. Until then the POSIX root
+ * preserves today's single-stream behaviour for the majority case and Task 11
+ * lands in the same PR, so no deployment ever sees this value.
+ */
+const W02_TRANSITIONAL_SCAN_PATH = '/';
+
 export function getFilesystemThresholdScanPath(osType: unknown): string {
   if (osType === 'windows') return 'C:\\';
   return '/';
@@ -1620,7 +1631,7 @@ export async function handleFilesystemAnalysisCommandResult(
   // The scan-state read and the disk-usage read are independent; run them
   // together. The disk figure is only consumed by the scan-state upsert below.
   const [currentState, diskRows] = await Promise.all([
-    getFilesystemScanState(command.deviceId),
+    getFilesystemScanState(command.deviceId, W02_TRANSITIONAL_SCAN_PATH),
     db
       .select({ usedPercent: deviceDisks.usedPercent })
       .from(deviceDisks)
@@ -1649,7 +1660,7 @@ export async function handleFilesystemAnalysisCommandResult(
       scanMode,
     };
 
-  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, snapshotPayload);
+  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, W02_TRANSITIONAL_SCAN_PATH, snapshotPayload);
 
   const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
   const mergedHotDirectories = Array.from(
@@ -1667,7 +1678,7 @@ export async function handleFilesystemAnalysisCommandResult(
   // forced every subsequent scan back to a full baseline and defeated the
   // incremental hot-directory path.
   const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
-  await upsertFilesystemScanState(command.deviceId, orgId, {
+  await upsertFilesystemScanState(command.deviceId, orgId, W02_TRANSITIONAL_SCAN_PATH, {
     lastRunMode: scanMode,
     lastBaselineCompletedAt: baselineCompleted
       ? new Date()

@@ -1330,7 +1330,9 @@ describe('agent routes', () => {
 
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
-      const [sfDeviceId, , sfTrigger, sfPayload] =
+      // (deviceId, orgId, trigger, scanPath, payload) since W02 — scanPath is
+      // index 3, so the payload moved to index 4.
+      const [sfDeviceId, , sfTrigger, , sfPayload] =
         vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('threshold');
@@ -1373,7 +1375,9 @@ describe('agent routes', () => {
 
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
-      const [sfDeviceId, , sfTrigger, sfPayload] =
+      // (deviceId, orgId, trigger, scanPath, payload) since W02 — scanPath is
+      // index 3, so the payload moved to index 4.
+      const [sfDeviceId, , sfTrigger, , sfPayload] =
         vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('on_demand');
