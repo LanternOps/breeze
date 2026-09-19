@@ -6,6 +6,7 @@ import ContextScopeLine from '../components/layout/ContextScopeLine';
 import MigrationRequiredBanner from '../components/devices/MigrationRequiredBanner';
 import TrustProbationBanner from '../components/trust/TrustProbationBanner';
 import MfaEnrollmentGraceBanner from '../components/auth/MfaEnrollmentGraceBanner';
+import MfaPolicyOffBanner from '../components/auth/MfaPolicyOffBanner';
 import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
@@ -57,6 +58,10 @@ const accentClass = getAccentClass(currentPath);
         <ContextScopeLine client:load />
         <TrustProbationBanner client:load transition:persist />
         <MfaEnrollmentGraceBanner client:load transition:persist />
+        {/* Partner policy-managers whose partner does not require MFA (spec
+            2026-09-18 D4). Per-day dismissible; clears itself once the
+            setting is saved on. */}
+        <MfaPolicyOffBanner client:load transition:persist />
         {/* Persistent self-host agent-migration notice — mounted here so it
             shows on every authenticated page (see MigrationRequiredBanner). */}
         <MigrationRequiredBanner client:load />

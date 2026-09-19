@@ -163,7 +163,11 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr)
+	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr, SystemStateOutcome{
+		Expected:      cfg.ExpectSystemState,
+		ManifestFound: stateResult.manifestFound,
+		Applied:       stateResult.applied,
+	})
 	if valErr != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("validation error: %s", valErr.Error()))
 	} else {

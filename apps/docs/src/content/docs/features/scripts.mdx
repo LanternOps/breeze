@@ -638,7 +638,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts.
+All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts. The partner-wide **Require MFA** setting (Settings → Partner → Security) is on by default for partners created after 2026-09-18, so users without an enrolled factor are routed to enrolment at sign-in.
 
 ### Viewing approval history
 

@@ -2533,5 +2533,10 @@
     "message": "Votre rôle nécessitera l’authentification à deux facteurs. Configurez-la avant le {{date}}.",
     "cta": "Configurer la 2FA",
     "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'authentification multifacteur n'est pas obligatoire pour votre équipe. Les sessions avec mot de passe seul peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "cta": "Exiger la MFA",
+    "dismiss": "Masquer le rappel de politique MFA pour aujourd'hui"
   }
 }

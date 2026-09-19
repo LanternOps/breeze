@@ -136,6 +136,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingMappingSync: vi.fn().mockResolvedValue(true),
   enqueueAccountingInvoicePush: effects.enqueueInvoice,
 }));
 vi.mock('../../jobs/accountingReconcileWorker', () => ({

@@ -60,7 +60,7 @@ func TestIsExcludedEtcPathOrdinaryFilesNotExcluded(t *testing.T) {
 	}
 }
 
-func TestParseEnabledServicesFiltersByState(t *testing.T) {
+func TestParseSystemdEnabledUnitsFiltersByState(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"UNIT FILE                             STATE",
 		"acpid.service                         enabled",
@@ -71,16 +71,16 @@ func TestParseEnabledServicesFiltersByState(t *testing.T) {
 		"3 unit files listed.",
 	}, "\n"))
 
-	got := parseEnabledServices(data)
+	got := parseSystemdEnabledUnits(data)
 	want := []string{"acpid.service", "cron.service"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("parseEnabledServices() = %v, want %v", got, want)
+		t.Fatalf("parseSystemdEnabledUnits() = %v, want %v", got, want)
 	}
 }
 
-func TestParseEnabledServicesEmptyInput(t *testing.T) {
-	if got := parseEnabledServices([]byte("")); len(got) != 0 {
-		t.Fatalf("parseEnabledServices(empty) = %v, want empty", got)
+func TestParseSystemdEnabledUnitsEmptyInput(t *testing.T) {
+	if got := parseSystemdEnabledUnits([]byte("")); len(got) != 0 {
+		t.Fatalf("parseSystemdEnabledUnits(empty) = %v, want empty", got)
 	}
 }
 

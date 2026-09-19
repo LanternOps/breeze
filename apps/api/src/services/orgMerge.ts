@@ -37,6 +37,7 @@ import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { organizations, orgMergeEvents } from '../db/schema';
 import { createAuditLog } from './auditService';
+import { revalidateTicketAssignee } from './ticketService';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from './authLifecycle';
 import {
   buildKeepSurvivor,
@@ -1074,6 +1075,12 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
 
         const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);
 
+        // Capture before the device cascade can re-home its tickets. Eligibility
+        // must wait until the whole walk has also moved membership/site grants.
+        const assignedTickets = await dbModule.db.execute(sql`
+          SELECT id FROM tickets WHERE org_id = ${uuid(loser.id)} AND assigned_to IS NOT NULL
+        `) as unknown as Array<{ id: string }>;
+
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
         // reversed it is parents-first, with `organizations` (loser-shell,
@@ -1116,6 +1123,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
           summary[POST_PASS_FIXUPS_SUMMARY_KEY] = fixups;
         }
         const topology = await finalizeTopologyOrgMerge(loser.id, survivor.id, topologyMerge.siteIds);
+
+        for (const ticket of assignedTickets) {
+          await revalidateTicketAssignee(ticket.id, { userId: input.performedBy });
+        }
 
         const warnings = self.buildMergeWarnings({
           ...(await self.collectDuplicates([survivor.id])),

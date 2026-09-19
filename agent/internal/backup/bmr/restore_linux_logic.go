@@ -56,25 +56,31 @@ func isExcludedEtcPath(relPath string) bool {
 	return false
 }
 
-// parseEnabledServices extracts unit names from the output of
+// parseSystemdEnabledUnits extracts unit names from the output of
 // `systemctl list-unit-files --type=service` — the exact format
 // systemstate.LinuxCollector writes to services/systemd.txt
 // (agent/internal/backup/systemstate/state_linux.go) — keeping only units
 // whose STATE column reads exactly "enabled". The header row ("UNIT FILE
 // STATE ...") and the "N unit files listed." footer are ignored because
 // neither has "enabled" in its second field.
-func parseEnabledServices(data []byte) []string {
-	var services []string
+//
+// This is the one parser for that artifact: restore_linux.go's
+// restoreServices (the units to re-enable) and validate.go's
+// enabledSystemdUnitsFromStaging (the units post-restore validation
+// probes) both call it, so they can never disagree on what "enabled"
+// means. It replaced two same-purpose copies (#5412).
+func parseSystemdEnabledUnits(data []byte) []string {
+	var units []string
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		if fields[1] == "enabled" {
-			services = append(services, fields[0])
+			units = append(units, fields[0])
 		}
 	}
-	return services
+	return units
 }
 
 // crontabSpoolEntries returns the absolute path of every per-user crontab

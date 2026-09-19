@@ -151,7 +151,11 @@ vi.mock('../../services/authBrowserTransition', () => ({
 
 vi.mock('../../services/userSession', () => ({
   authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
-  issueUserSession: vi.fn(async (_identity: unknown, options: { expectedEpochs: { authEpoch: number; mfaEpoch: number } }) => {
+  issueUserSession: vi.fn(async (identity: { mfa: boolean; mfaSrc?: string }, options: { expectedEpochs: { authEpoch: number; mfaEpoch: number } }) => {
+    // Accepting an invite proves no factor: the mint is `mfa: false` and
+    // therefore carries no assurance source at all (spec D6).
+    expect(identity.mfa).toBe(false);
+    expect(identity.mfaSrc).toBeUndefined();
     expect(options.expectedEpochs).toEqual({
       authEpoch: routeState.user.authEpoch,
       mfaEpoch: routeState.user.mfaEpoch,

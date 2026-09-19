@@ -7,6 +7,7 @@ import postgres, { type Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createAccessToken } from '../../services/jwt';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import {
   createOrganization,
   createPartner,
@@ -272,10 +273,13 @@ async function createRouteFixture(): Promise<RouteFixture> {
     sourceSiteId: sourceSite.id,
     targetOrgId: targetOrg.id,
     targetSiteId: targetSite.id,
-    postMove: () => app.request(`/devices/${fixture.deviceId}/move-org`, {
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
+    postMove: async () => app.request(`/devices/${fixture.deviceId}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: targetOrg.id, siteId: targetSite.id }),
+      body: JSON.stringify(
+        await withMoveOrgStepUpGrant(token, fixture.deviceId, { orgId: targetOrg.id, siteId: targetSite.id }),
+      ),
     }),
   };
 }

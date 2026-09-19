@@ -407,6 +407,7 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
           // endpoint's step-up gate proves an existing factor and the current
           // password, not that the session itself was MFA-assured.
           mfa: auth.token?.mfa === true,
+          mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
           // SR-001: a RE-MINT takes its device binding from the previously
           // signed `mdid` claim, never the forgeable request header.
           mobileDeviceId: carryForwardBinding(auth.token ?? {}),
@@ -577,6 +578,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         // SR-001: a RE-MINT for an already-authenticated caller takes its
         // device binding from the previously signed `mdid` claim, never the
         // forgeable request header — otherwise a bound mobile session could be

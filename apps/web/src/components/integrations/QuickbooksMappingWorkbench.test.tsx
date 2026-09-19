@@ -1192,7 +1192,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [ambiguousOrgProposal] }))
       .mockResolvedValueOnce(
-        jsonResponse({ data: { ...confirmedSynced, remoteEntityId: "qb-99" } }),
+        jsonResponse({ data: { ...confirmedSynced, remoteEntityId: "qb-99", confidence: "existing_link", proposedRemoteName: "Created customer in QuickBooks" } }),
       );
 
     render(
@@ -1212,6 +1212,9 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     );
     expect(screen.getByTestId(`quickbooks-mapping-confidence-${ORG_ID}`)).toHaveTextContent(
       /linked/i,
+    );
+    expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveTextContent(
+      "Created customer in QuickBooks",
     );
   });
 });

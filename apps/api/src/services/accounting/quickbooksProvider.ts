@@ -613,9 +613,12 @@ export class QuickbooksProvider implements AccountingProvider {
       BillAddr: mapAddressToQbo(customer.billAddr),
       ShipAddr: mapAddressToQbo(customer.shipAddr),
     };
+    // CREATE retries can follow a lost response after QuickBooks committed.
+    // Reuse the entity's key (45 chars for UUIDs); sparse updates target Id.
+    const requestId = mapping ? '' : `&requestid=${encodeURIComponent(`customer-${customer.organizationId}`)}`;
     const parsed = await this.qboRequest<{ Customer?: QboRawCustomer }>(
       conn,
-      `customer?minorversion=${QBO_API_MINOR_VERSION}`,
+      `customer?minorversion=${QBO_API_MINOR_VERSION}${requestId}`,
       'QuickBooks customer upsert',
       { method: 'POST', body: JSON.stringify(payload) },
     );
@@ -657,9 +660,11 @@ export class QuickbooksProvider implements AccountingProvider {
       Active: item.active,
       IncomeAccountRef: item.incomeAccountRef ? { value: item.incomeAccountRef } : undefined,
     };
+    // Same CREATE retry protection as Customers, with a distinct entity prefix.
+    const requestId = mapping ? '' : `&requestid=${encodeURIComponent(`item-${item.catalogItemId}`)}`;
     const parsed = await this.qboRequest<{ Item?: QboRawItem }>(
       conn,
-      `item?minorversion=${QBO_API_MINOR_VERSION}`,
+      `item?minorversion=${QBO_API_MINOR_VERSION}${requestId}`,
       'QuickBooks item upsert',
       { method: 'POST', body: JSON.stringify(payload) },
     );
