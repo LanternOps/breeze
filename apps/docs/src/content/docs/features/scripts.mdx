@@ -638,7 +638,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts. The partner-wide **Require MFA** setting (Settings → Partner → Security) is on by default for partners created after 2026-09-18, so users without an enrolled factor are routed to enrolment at sign-in.
 
 ### Viewing approval history
 
