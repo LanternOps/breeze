@@ -332,6 +332,11 @@ describe('phone routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(completeInitialMfaEnrollment).toHaveBeenCalledOnce();
+      // The factor this call installs is what assures the replacement session,
+      // so its source is 'factor' (spec D6) — the enrollment primitive rejects
+      // any other source.
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     // SR2-20: adding SMS as a NEW factor on an ALREADY-PROTECTED account
@@ -631,6 +636,8 @@ describe('phone routes', () => {
       // Assurance is carried forward, never elevated: this caller's token
       // carried no `mfa` claim, so neither may the replacement.
       expect(input.identity.mfa).toBe(false);
+      // Not assured ⇒ no assurance source either.
+      expect(input.identity.mfaSrc).toBeUndefined();
       // SR-001: binding comes from the signed `mdid` claim (absent here), never
       // the request header.
       expect(input.identity.mobileDeviceId).toBeUndefined();
