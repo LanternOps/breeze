@@ -268,7 +268,7 @@ vi.mock('../../services', () => ({
 vi.mock('../../services/userSession', () => ({
   authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
   issueUserSession: vi.fn(async (identity: Record<string, unknown>, options: Record<string, unknown>) => {
-    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa, mfa_src: identity.mfaSrc };
     servicesState.lastTokenOptions = options;
     servicesState.mintCalls.push(String(identity.userId));
     transitionState.events.push('issue-guarded');
@@ -278,7 +278,7 @@ vi.mock('../../services/userSession', () => ({
     };
   }),
   issueUserSessionLegacyDuringTransition: vi.fn(async (identity: Record<string, unknown>) => {
-    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa, mfa_src: identity.mfaSrc };
     servicesState.lastTokenOptions = { refreshFam: 'fam-1' };
     servicesState.mintCalls.push(String(identity.userId));
     servicesState.bindCalls.push({ jti: 'jti-new', familyId: 'fam-1' });

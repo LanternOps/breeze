@@ -69,6 +69,7 @@ vi.mock('../services', () => {
       partnerId: identity.partnerId,
       scope: identity.scope,
       mfa: identity.mfa,
+      mfa_src: identity.mfaSrc,
       aep: epochs.authEpoch,
       mep: epochs.mfaEpoch,
       mdid: identity.mobileDeviceId,
