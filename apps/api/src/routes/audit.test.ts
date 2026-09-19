@@ -112,7 +112,7 @@ describe('audit routes', () => {
       expect(res.headers.get('content-type')).toContain('text/csv');
       expect(res.headers.get('content-disposition')).toContain('audit-logs.csv');
       const body = await res.text();
-      expect(body).toContain('id,timestamp,');
+      expect(body).toContain('"id","timestamp",');
     });
   });
 });

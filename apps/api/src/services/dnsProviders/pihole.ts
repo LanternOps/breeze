@@ -10,7 +10,8 @@ export class PiHoleProvider implements DnsProvider {
   constructor(
     private readonly apiKey: string,
     private readonly config: PiHoleProviderConfig,
-    private readonly allowPrivateNetwork = false
+    private readonly allowPrivateNetwork = false,
+    private readonly allowCarrierNat = false
   ) {}
 
   private baseUrl(): string {
@@ -28,7 +29,8 @@ export class PiHoleProvider implements DnsProvider {
     }
     url.searchParams.set('auth', this.apiKey);
     return requestJson<Record<string, unknown>>(url, {
-      allowPrivateNetwork: this.allowPrivateNetwork
+      allowPrivateNetwork: this.allowPrivateNetwork,
+      allowCarrierNat: this.allowCarrierNat
     });
   }
 

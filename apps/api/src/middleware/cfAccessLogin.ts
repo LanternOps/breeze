@@ -48,6 +48,7 @@ import {
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { installAuthBindingReplacement, requestAuthBinding } from '../routes/auth/binding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
+import { mfaSrcFor, type MfaAssuranceSource } from '../services/mfaAssuranceSource';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -306,10 +307,14 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     partnerId: context.partnerId,
   });
   const mfaEnrollmentRequired = ENABLE_2FA && !user.mfaEnabled && policy.required;
+  const idpSatisfied = ENABLE_2FA && user.mfaEnabled && trustsMfa;
   const mfaSatisfied =
     !ENABLE_2FA ||
-    (user.mfaEnabled && trustsMfa) ||
+    idpSatisfied ||
     (!user.mfaEnabled && !policy.required);
+  // 'idp' only when the trusted CF Access assertion is what satisfied an
+  // ENROLLED account; the no-factor arm is policy-admitted (spec D6).
+  const mfaSource: MfaAssuranceSource = idpSatisfied ? 'idp' : 'policy';
 
   const admission = await beginCfIssuance(c);
   if (admission instanceof Response) return admission;
@@ -327,6 +332,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: mfaSatisfied,
+      mfaSrc: mfaSrcFor(mfaSatisfied, mfaSource),
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 

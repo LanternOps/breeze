@@ -34,7 +34,7 @@ var rebuildSystemForTest rebuild.System
 func newRebuildCommand() *cobra.Command {
 	var (
 		snapshot, target, imageSize, providerConfig, identityFlag, markerFile, resultJSON, stateDir string
-		token, server                                                                               string
+		token, server, expectSystemState                                                            string
 		dryRun, force, allowPartial, noInitramfs, skipBoot                                          bool
 	)
 	cmd := &cobra.Command{
@@ -58,6 +58,10 @@ func newRebuildCommand() *cobra.Command {
 			}
 			if token == "" && snapshot == "" {
 				return fmt.Errorf("--snapshot is required with --provider-config")
+			}
+			expectState, expectStateAuto, err := parseExpectSystemStateFlag(expectSystemState)
+			if err != nil {
+				return err
 			}
 
 			tgt, err := parseTargetFlag(target, imageSize)
@@ -99,6 +103,14 @@ func newRebuildCommand() *cobra.Command {
 					return err
 				}
 				opts.Provider, opts.Identity, opts.Marker, opts.SnapshotID = tokenOpts.Provider, tokenOpts.Identity, tokenOpts.Marker, tokenOpts.SnapshotID
+				// #5412: in token mode the server's word stands. An explicit
+				// "true" may strengthen it, "false" never weakens it.
+				opts.ExpectSystemState = tokenOpts.ExpectSystemState
+				if !expectStateAuto && expectState {
+					opts.ExpectSystemState = true
+				} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
+				}
 				report = tokenReport
 			} else {
 				provider, err := providerFromConfigFile(providerConfig)
@@ -106,6 +118,19 @@ func newRebuildCommand() *cobra.Command {
 					return err
 				}
 				opts.Provider = provider
+				if expectStateAuto {
+					// No bootstrap to ask, so infer "whole-machine capture"
+					// from the snapshot itself: layout.json is only ever
+					// written by the system_image profile, and a
+					// system-state manifest is the state itself.
+					advertises, err := rebuild.SnapshotAdvertisesSystemState(ctx, provider, snapshot)
+					if err != nil {
+						return fmt.Errorf("probe snapshot for system state: %w", err)
+					}
+					opts.ExpectSystemState = advertises
+				} else {
+					opts.ExpectSystemState = expectState
+				}
 				if markerFile != "" {
 					var m rebuild.Marker
 					b, err := os.ReadFile(markerFile)
@@ -137,6 +162,7 @@ func newRebuildCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "continue when some files fail to restore")
 	cmd.Flags().BoolVar(&noInitramfs, "no-initramfs", false, "do not regenerate the initramfs")
 	cmd.Flags().BoolVar(&skipBoot, "skip-boot", false, "tests only: skip bootloader installation")
+	cmd.Flags().StringVar(&expectSystemState, "expect-system-state", "auto", "auto|true|false: require the snapshot's system state to exist and be applied (auto: yes for a system_image snapshot — bootstrap backupType, or layout.json/system-state present)")
 	_ = cmd.MarkFlagRequired("target")
 	return cmd
 }
@@ -190,6 +216,11 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 	}
 	opts.SnapshotID = snapshotID
 
+	// #5412: the bootstrap knows what kind of snapshot this is; a
+	// system_image backup (or one advertising a state manifest) must apply
+	// its OS state or the engine refuses at preflight.
+	opts.ExpectSystemState = bmr.SnapshotExpectsSystemState(bs.Snapshot)
+
 	report := func(u bmr.ProgressUpdate) {
 		if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
 			slog.Warn("recovery progress not recorded", "status", u.Status, "error", err.Error())
@@ -197,6 +228,20 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 		}
 	}
 	return opts, report, nil
+}
+
+// parseExpectSystemStateFlag decodes --expect-system-state: auto (derive
+// from the bootstrap / the snapshot), or an explicit true/false.
+func parseExpectSystemStateFlag(v string) (expect, auto bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto":
+		return false, true, nil
+	case "true", "yes", "1":
+		return true, false, nil
+	case "false", "no", "0":
+		return false, false, nil
+	}
+	return false, false, fmt.Errorf("--expect-system-state must be auto, true or false, got %q", v)
 }
 
 // runRebuildAndReport runs the engine and, when reportProgress is real

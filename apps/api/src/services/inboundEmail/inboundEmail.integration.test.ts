@@ -165,7 +165,11 @@ beforeEach(async () => {
       status: 'resolved',
       source: 'email',
       emailThreadKey: aResolvedThreadKey,
-      resolvedAt: new Date()
+      resolvedAt: new Date(),
+      // Header-path matches are requester-bound (#5551): CASE 6 exercises Jane's
+      // OWN reply reopening her ticket, so she must be its attributed requester.
+      submittedBy: janePortalUser.id,
+      submitterEmail: janeEmail
     })
     .returning({ id: tickets.id });
 

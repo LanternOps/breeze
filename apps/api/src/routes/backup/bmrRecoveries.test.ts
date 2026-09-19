@@ -401,6 +401,10 @@ describe('bare-metal recoveries routes', () => {
       expect(body.token).toMatch(/^brz_rec_[0-9a-f]{64}$/);
       expect(body.bootstrap.bootstrap.recovery).toMatchObject({ id: RECOVERY_ID, identity: 'original', deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID });
       expect(body.bootstrap.bootstrap.recovery.nonce).toMatch(/^[0-9a-f]{64}$/);
+      // The helper derives ExpectSystemState from backupType (#5412,
+      // bmr.SnapshotExpectsSystemState): the exchange bootstrap must carry
+      // it alongside systemStateManifest, exactly as authenticate does.
+      expect(body.bootstrap.bootstrap.snapshot).toMatchObject({ snapshotId: 'snap-ext-1', backupType: 'full', systemStateManifest: null });
 
       const updateCall = updateMock.mock.results
         .map((r) => r.value.set.mock.calls[0]?.[0])
