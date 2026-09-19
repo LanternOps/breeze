@@ -5,6 +5,7 @@ date: 2026-09-19
 supersedes: 2026-09-08-monitoring-automation-unification-design.md §Decisions D1 and §Non-goals "Retiring the config-policy tabs" (the deferred "W5 — retirement decisions")
 origin: "#4984 community proposal (stressedout9064, Discord 2026-08-28); owner review 2026-09-19 (screenshots of four competing surfaces); third consolidation pass after 2026-07-30 (rules → Alerts tab) and 2026-09-08 (Monitors)"
 tracking_issue: (assigned by feature-lifecycle after plan approval)
+diagrams: 2026-09-19-alerting-consolidation-diagrams.html (also published at https://claude.ai/artifact/K6k3Cm4tWJjKENBBPXdMLy)
 ---
 
 # Alerting consolidation
