@@ -5741,5 +5741,23 @@
     "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
     "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
     "saveButton": "Enregistrer"
+  },
+  "workTypes": {
+    "title": "Types de travail",
+    "description": "Identifiez le travail effectué dans les saisies de temps. Les valeurs par défaut des catégories aident les techniciens à choisir un type de travail.",
+    "newName": "Nouveau type de travail",
+    "create": "Ajouter un type de travail",
+    "archive": "Archiver",
+    "archived": "Archivé",
+    "saveError": "Impossible d’enregistrer le type de travail. Veuillez réessayer.",
+    "saveSuccess": "Type de travail enregistré.",
+    "nameTaken": "Un type de travail portant ce nom existe déjà.",
+    "rename": "Renommer",
+    "loadError": "Impossible de charger les types de travail.",
+    "empty": "Aucun type de travail pour le moment. Ajoutez votre premier type de travail ci-dessus."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Type de travail par défaut",
+    "defaultWorkTypeHelp": "Utilisé lorsque du temps est enregistré pour cette catégorie sans type de travail."
   }
 }

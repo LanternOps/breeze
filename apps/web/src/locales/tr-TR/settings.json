@@ -5741,5 +5741,23 @@
     "saveError": "Katalog varsayılanları kaydedilemedi",
     "saveSuccess": "Katalog varsayılanları kaydedildi",
     "saveButton": "Kaydet"
+  },
+  "workTypes": {
+    "title": "İş türleri",
+    "description": "Süre kayıtlarında yapılan işi belirtin. Kategori varsayılanları, teknisyenlerin iş türü seçmesine yardımcı olur.",
+    "newName": "Yeni iş türü",
+    "create": "İş türü ekle",
+    "archive": "Arşivle",
+    "archived": "Arşivlendi",
+    "saveError": "İş türü kaydedilemedi. Lütfen tekrar deneyin.",
+    "saveSuccess": "İş türü kaydedildi.",
+    "nameTaken": "Bu ada sahip bir iş türü zaten var.",
+    "rename": "Yeniden adlandır",
+    "loadError": "İş türleri yüklenemedi.",
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Varsayılan iş türü",
+    "defaultWorkTypeHelp": "Bu kategori için iş türü belirtilmeden süre kaydedildiğinde kullanılır."
   }
 }

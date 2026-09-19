@@ -5741,5 +5741,23 @@
     "saveError": "No se pudieron guardar los valores predeterminados del catálogo",
     "saveSuccess": "Valores predeterminados del catálogo guardados",
     "saveButton": "Guardar"
+  },
+  "workTypes": {
+    "title": "Tipos de trabajo",
+    "description": "Identifique el trabajo realizado en los registros de tiempo. Los valores predeterminados de las categorías ayudan a los técnicos a elegir un tipo de trabajo.",
+    "newName": "Nuevo tipo de trabajo",
+    "create": "Agregar tipo de trabajo",
+    "archive": "Archivar",
+    "archived": "Archivado",
+    "saveError": "No se pudo guardar el tipo de trabajo. Inténtelo de nuevo.",
+    "saveSuccess": "Tipo de trabajo guardado.",
+    "nameTaken": "Ya existe un tipo de trabajo con este nombre.",
+    "rename": "Cambiar nombre",
+    "loadError": "No se pudieron cargar los tipos de trabajo.",
+    "empty": "Aún no hay tipos de trabajo. Agregue el primero arriba."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Tipo de trabajo predeterminado",
+    "defaultWorkTypeHelp": "Se usa cuando se registra tiempo para esta categoría sin un tipo de trabajo."
   }
 }

@@ -5741,5 +5741,23 @@
     "saveError": "Impossibile salvare i valori predefiniti del catalogo",
     "saveSuccess": "Valori predefiniti del catalogo salvati",
     "saveButton": "Salva"
+  },
+  "workTypes": {
+    "title": "Tipi di lavoro",
+    "description": "Indica il lavoro svolto nelle registrazioni del tempo. I valori predefiniti delle categorie aiutano i tecnici a scegliere un tipo di lavoro.",
+    "newName": "Nuovo tipo di lavoro",
+    "create": "Aggiungi tipo di lavoro",
+    "archive": "Archivia",
+    "archived": "Archiviato",
+    "saveError": "Impossibile salvare il tipo di lavoro. Riprova.",
+    "saveSuccess": "Tipo di lavoro salvato.",
+    "nameTaken": "Esiste già un tipo di lavoro con questo nome.",
+    "rename": "Rinomina",
+    "loadError": "Impossibile caricare i tipi di lavoro.",
+    "empty": "Non ci sono ancora tipi di lavoro. Aggiungi il primo qui sopra."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Tipo di lavoro predefinito",
+    "defaultWorkTypeHelp": "Utilizzato quando si registra tempo per questa categoria senza specificare un tipo di lavoro."
   }
 }

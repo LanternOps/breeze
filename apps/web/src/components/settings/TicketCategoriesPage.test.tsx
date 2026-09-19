@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketCategoriesPage, { moveWithinSiblings } from './TicketCategoriesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { resetWorkTypeCache } from '../shared/WorkTypeSelect';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -53,6 +54,7 @@ const CAT_ROOT2 = {
 function mockGetCategories(cats: unknown[], partnersMe: Response = makeJsonResponse({ currencyCode: 'USD' })) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.startsWith('/billing-profiles/work-types')) return makeJsonResponse({ workTypes: [{ id: 'wt-1', name: 'Remote', isActive: true }] });
     if (url === '/ticket-categories' && !init?.method) {
       return makeJsonResponse({ data: cats });
     }
@@ -75,6 +77,7 @@ function mockGetCategories(cats: unknown[], partnersMe: Response = makeJsonRespo
 describe('TicketCategoriesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetWorkTypeCache();
   });
 
   it('renders the rate with NO currency label until the partner currency is known — never a USD guess (review F8)', async () => {
@@ -611,4 +614,55 @@ describe('multi-currency (#3776)', () => {
     expect(fetchMock.mock.calls.some(([u]) => String(u) === '/orgs/partners/me')).toBe(false);
     expect(showToast).not.toHaveBeenCalled();
   });
+});
+
+
+describe('category work types', () => {
+  it('keeps an archived category default visible instead of showing a blank selection', async () => {
+    resetWorkTypeCache();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [{ ...CAT_PARENT, defaultWorkTypeId: 'wt-old' }] });
+      if (url.endsWith('includeInactive=true')) return makeJsonResponse({ workTypes: [{ id: 'wt-old', name: 'Legacy remote', isActive: false }] });
+      if (url === '/billing-profiles/work-types') return makeJsonResponse({ workTypes: [] });
+      return makeJsonResponse({ currencyCode: 'USD' });
+    });
+    render(<TicketCategoriesPage />);
+    fireEvent.click(await screen.findByTestId('ticket-category-edit-p1'));
+    const select = screen.getByTestId('ticket-category-default-work-type');
+    await waitFor(() => expect(select).not.toBeDisabled());
+    expect(select).toHaveValue('wt-old');
+    expect(select).toHaveTextContent('Legacy remote');
+  });
+
+  beforeEach(() => { vi.clearAllMocks(); resetWorkTypeCache(); });
+  it('MOUNT: displays the management card and Default work type select, preserving legacy pricing controls', async () => {
+    mockGetCategories([CAT_PARENT]);
+    render(<TicketCategoriesPage />);
+    expect(await screen.findByTestId('work-types-card')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('ticket-category-edit-p1'));
+    expect(screen.getByTestId('ticket-category-default-work-type')).toBeInTheDocument();
+    expect(screen.getByText('Default work type')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-category-edit-billable')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-category-edit-rate')).toBeInTheDocument();
+  });
+
+  it.each([{ initial: null, value: 'wt-1', expected: 'wt-1' }, { initial: 'wt-1', value: '', expected: null }])(
+    'saves defaultWorkTypeId $expected (including explicit clearing)', async ({ initial, value, expected }) => {
+      resetWorkTypeCache();
+      mockGetCategories([{ ...CAT_PARENT, defaultWorkTypeId: initial }]);
+      render(<TicketCategoriesPage />);
+      fireEvent.click(await screen.findByTestId('ticket-category-edit-p1'));
+      const select = screen.getByTestId('ticket-category-default-work-type');
+      await waitFor(() => expect(select).not.toBeDisabled());
+      expect(select).toHaveValue(initial ?? '');
+      fireEvent.change(select, { target: { value } });
+      fireEvent.click(screen.getByTestId('ticket-category-save-p1'));
+      await waitFor(() => {
+        const patch = fetchMock.mock.calls.find(([url, init]) => url === '/ticket-categories/p1' && init?.method === 'PATCH');
+        expect(patch).toBeDefined();
+        expect(JSON.parse(String(patch![1]!.body)).defaultWorkTypeId).toBe(expected);
+      });
+    },
+  );
 });
