@@ -13,6 +13,8 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
+import { writeRouteAudit, type AuthContext as AuditAuthContext } from '../../services/auditEvents';
+import { resolveAuditOrgIdForPartner } from '../orgs';
 
 // Mounted at the api root (not under the /invoices hub) so the paths read
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
@@ -32,7 +34,27 @@ const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
 invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm, requireMfa(), requirePartnerWideBillingAdmin,
   zValidator('json', partnerBillingSettingsSchema),
   async (c) => {
-    try { return c.json({ data: await updatePartnerBillingSettings(c.req.valid('json'), invoiceActorFrom(c)) }); }
+    try {
+      const actor = invoiceActorFrom(c);
+      const body = c.req.valid('json');
+      const updated = await updatePartnerBillingSettings(body, actor);
+      // Sweep paper cut #4: this is a partner-WIDE write with no orgId of its
+      // own, so the generic route-derived audit fallback in index.ts silently
+      // skips it for most partner admins (resolveFallbackOrgId requires an
+      // org-scoped token or exactly one accessibleOrgIds entry — false for
+      // any partner with more than one org). Write the same semantic audit
+      // shape /settings/partner's PATCH uses (writeRouteAudit +
+      // resolveAuditOrgIdForPartner), so a save here is never silent.
+      const auditOrgId = await resolveAuditOrgIdForPartner(actor.partnerId);
+      writeRouteAudit(c as unknown as AuditAuthContext, {
+        orgId: auditOrgId,
+        action: 'partner.billing_settings.update',
+        resourceType: 'partner',
+        resourceId: actor.partnerId,
+        details: { changedFields: Object.keys(body) },
+      });
+      return c.json({ data: updated });
+    }
     catch (err) { return handleServiceError(c, err); }
   });
 

@@ -356,7 +356,14 @@ async function ensureOrgAccess(
   return true;
 }
 
-async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<string | null> {
+/** Exported so other partner-wide write routes (e.g. invoices/settings.ts's
+ *  PATCH /partner/billing-settings) can write the same semantic audit shape
+ *  this file uses for `partner.settings.update` — a partner-wide action has
+ *  no orgId of its own, and the request-derived fallback in index.ts silently
+ *  skips a multi-org partner (resolveFallbackOrgId requires auth.orgId or
+ *  exactly one accessibleOrgIds entry), so a semantic audit here is the only
+ *  way most partner admins get an audit_logs row at all (sweep paper cut #4). */
+export async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<string | null> {
   if (!partnerId) {
     return null;
   }
