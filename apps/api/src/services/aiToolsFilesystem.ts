@@ -183,6 +183,20 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
 
         const parsed = parseFilesystemAnalysisStdout(commandResult.stdout ?? '{}');
+        if (Object.keys(parsed).length === 0) {
+          // Defect 5: the agent RESULT lane already refuses to write a blank
+          // snapshot (routes/agents/helpers.ts). Without the same guard here, a
+          // completed scan with empty or non-JSON stdout stored `{}`, which then
+          // WON the captured_at ordering and became the "latest snapshot" every
+          // later cleanup preview read — zeroing the Disk Cleanup tab with no
+          // error anywhere.
+          console.warn(
+            `[aiToolsFilesystem] analyze_disk_usage for device ${deviceId} completed with unparseable/empty stdout (len=${commandResult.stdout?.length ?? 0}); no snapshot written`
+          );
+          return JSON.stringify({
+            error: 'Filesystem analysis returned no parseable result; no snapshot was stored. Retry the scan.',
+          });
+        }
         snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', parsed);
       }
 
