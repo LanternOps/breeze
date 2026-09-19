@@ -3267,6 +3267,11 @@ describe('auth routes', () => {
       // call that double-charges the per-user step-up rate limit and runs
       // argon2 twice for every successful enable.
       expect(verifyPassword).toHaveBeenCalledTimes(1);
+      // The factor this call installs is what assures the replacement session,
+      // so the enrollment identity is factor-sourced (spec D6) — the real
+      // primitive rejects any other source.
+      const enableInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enableInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     it('POST /auth/mfa/enable rejects policy drift without consuming enrollment authority', async () => {

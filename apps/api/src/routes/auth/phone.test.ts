@@ -663,7 +663,7 @@ describe('phone routes', () => {
           partnerId: null,
           orgId: 'org-1',
           user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-          token: { sid: 'family-1', aep: 1, mep: 1, mfa: true, mdid: 'signed-device' },
+          token: { sid: 'family-1', aep: 1, mep: 1, mfa: true, mfa_src: 'idp', mdid: 'signed-device' },
         });
         return next();
       }) as never);
@@ -682,6 +682,9 @@ describe('phone routes', () => {
       const input = vi.mocked(completeMfaFactorReplacement).mock.calls[0]?.[0] as any;
       expect(input.identity.mobileDeviceId).toBe('signed-device');
       expect(input.identity.mfa).toBe(true);
+      // The assurance SOURCE is carried forward from the signed claim just
+      // like the binding — a replacement never recomputes or upgrades it.
+      expect(input.identity.mfaSrc).toBe('idp');
     });
 
     // The write is already committed and every other session is already gone;

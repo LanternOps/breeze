@@ -441,6 +441,7 @@ import {
   bindIssuedUserSession,
   cancelAuthIssuance,
   completeAdditionalMfaFactorEnrollment,
+  completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
   createTokenPair,
   finishAuthIssuance,
@@ -822,6 +823,11 @@ describe('passkey MFA auth routes', () => {
         '11111111-1111-4111-8111-111111111111',
         expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
       );
+      // The passkey this call installs is what assures the replacement
+      // session, so the enrollment identity is factor-sourced (spec D6) — the
+      // real primitive rejects any other source.
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
     it('register/verify returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {

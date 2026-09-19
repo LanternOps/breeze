@@ -9,7 +9,11 @@
  *            `trustsMfa`, SSO `trustsIdpMfa` + amr).
  *   policy — `mfa: true` because the effective MFA policy did not require a
  *            factor (password login, registration auto-login, the
- *            no-factor/policy-not-required arms of CF Access and SSO).
+ *            no-factor/policy-not-required arm of CF Access).
+ *
+ * SSO never produces `policy`: both SSO paths make the trusted IdP assertion
+ * (`idpMfa`) a necessary precondition of `ssoMfa`, so a policy-not-required
+ * SSO session that is assured at all is assured BY the assertion — 'idp'.
  *
  * A token with NO `mfa_src` predates this claim; any consumer MUST read
  * absent as `policy` (the conservative reading). `mfa: false` tokens carry
