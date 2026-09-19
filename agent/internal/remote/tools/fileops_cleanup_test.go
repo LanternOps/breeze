@@ -334,3 +334,224 @@ func TestCleanupGuardPermanentReportsBytesFreed(t *testing.T) {
 		t.Fatalf("target survived: %v", err)
 	}
 }
+
+// Keep synthetic bin fixtures under a real cleanup anchor; the live guard
+// validates both volume confinement and the temp rule's minimum age.
+func contentsOnlyTempDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return t.TempDir()
+	}
+	return cleanupTempDir(t)
+}
+
+func ageContentsOnlyTarget(t *testing.T, path string) {
+	t.Helper()
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatalf("age contentsOnly fixture: %v", err)
+	}
+}
+
+type contentsOnlyPayload struct {
+	Path           string   `json:"path"`
+	Deleted        bool     `json:"deleted"`
+	ContentsOnly   bool     `json:"contentsOnly"`
+	BytesFreed     int64    `json:"bytesFreed"`
+	SkippedLocked  []string `json:"skippedLocked"`
+	SkippedLinks   []string `json:"skippedLinks"`
+	FailedChildren []string `json:"failedChildren"`
+}
+
+// The recycle-bin fixture from spec §11: the SID directory is emptied, the
+// directory itself survives, and desktop.ini (which Explorer needs to render
+// the bin) is preserved.
+func TestDeleteFileContentsOnlyEmptiesBinAndKeepsDesktopIni(t *testing.T) {
+	tmpDir := contentsOnlyTempDir(t)
+	sidDir := filepath.Join(tmpDir, "$Recycle.Bin", "S-1-5-21-1")
+	if err := os.MkdirAll(filepath.Join(sidDir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sidDir, "desktop.ini"), []byte("ini"), 0o644); err != nil {
+		t.Fatalf("write desktop.ini: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sidDir, "$RABCDEF.txt"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatalf("write bin entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sidDir, "nested", "deep.bin"), make([]byte, 1024), 0o644); err != nil {
+		t.Fatalf("write nested entry: %v", err)
+	}
+
+	ageContentsOnlyTarget(t, sidDir)
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path":         sidDir,
+		"permanent":    true,
+		"recursive":    true,
+		"contentsOnly": true,
+		"cleanupGuard": true,
+		"volumeRoot":   filepath.VolumeName(tmpDir) + string(filepath.Separator),
+	}), &payload)
+
+	if !payload.ContentsOnly || !payload.Deleted {
+		t.Fatalf("expected a completed contentsOnly delete, got %+v", payload)
+	}
+	if payload.BytesFreed != 3072 {
+		t.Errorf("expected bytesFreed=3072 (2048 + 1024, desktop.ini preserved), got %d", payload.BytesFreed)
+	}
+	if _, err := os.Stat(sidDir); err != nil {
+		t.Fatal("the SID directory itself must survive a contentsOnly delete")
+	}
+	if _, err := os.Stat(filepath.Join(sidDir, "desktop.ini")); err != nil {
+		t.Error("desktop.ini must be preserved")
+	}
+	if _, err := os.Stat(filepath.Join(sidDir, "$RABCDEF.txt")); !os.IsNotExist(err) {
+		t.Error("the bin entry should be gone")
+	}
+	if _, err := os.Stat(filepath.Join(sidDir, "nested")); !os.IsNotExist(err) {
+		t.Error("the nested directory should be gone")
+	}
+}
+
+// Spec §6.3: "A test plants a symlink two levels deep pointing outside the tree
+// and asserts the target survives." RemoveAll unlinks rather than follows, at
+// any depth — this pins that, because a regression here destroys user data
+// outside the cleanup scope.
+func TestDeleteFileContentsOnlyNeverFollowsLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture; the Windows equivalent is a reparse point, covered by isReparsePoint")
+	}
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "precious.txt")
+	if err := os.WriteFile(victim, []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	tmpDir := contentsOnlyTempDir(t)
+	trash := filepath.Join(tmpDir, "Trash")
+	deep := filepath.Join(trash, "one", "two")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Two levels deep, inside a subtree RemoveAll will delete.
+	if err := os.Symlink(outside, filepath.Join(deep, "escape")); err != nil {
+		t.Fatalf("symlink deep: %v", err)
+	}
+	// An immediate child link, which must be SKIPPED and reported.
+	if err := os.Symlink(outside, filepath.Join(trash, "shortcut")); err != nil {
+		t.Fatalf("symlink child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, "junk.bin"), make([]byte, 512), 0o644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+
+	ageContentsOnlyTarget(t, trash)
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path":         trash,
+		"permanent":    true,
+		"recursive":    true,
+		"contentsOnly": true,
+		"cleanupGuard": true,
+		"volumeRoot":   filepath.VolumeName(tmpDir) + string(filepath.Separator),
+	}), &payload)
+
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("the symlink TARGET outside the tree must survive: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(trash, "shortcut")); err != nil {
+		t.Error("an immediate symlink child must be skipped, not removed")
+	}
+	if len(payload.SkippedLinks) != 1 || filepath.Base(payload.SkippedLinks[0]) != "shortcut" {
+		t.Errorf("expected the skipped link to be reported, got %v", payload.SkippedLinks)
+	}
+	if _, err := os.Stat(filepath.Join(trash, "one")); !os.IsNotExist(err) {
+		t.Error("the nested subtree (including the deep symlink itself) should be gone")
+	}
+	if payload.BytesFreed != 512 {
+		t.Errorf("expected bytesFreed=512 (the symlink contributes nothing), got %d", payload.BytesFreed)
+	}
+}
+
+// §13 row 13: a contentsOnly run that could not remove every child must NOT
+// read as a clean success. The agent reports failedChildren; the API turns that
+// into `partial` (Task 8).
+func TestDeleteFileContentsOnlyReportsFailedChildren(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("relies on POSIX mode bits that root ignores")
+	}
+	tmpDir := contentsOnlyTempDir(t)
+	trash := filepath.Join(tmpDir, "Trash")
+	stuck := filepath.Join(trash, "stuck")
+	if err := os.MkdirAll(stuck, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "child"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, "junk.bin"), make([]byte, 128), 0o644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	// A directory with no write permission cannot have its child unlinked.
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+
+	ageContentsOnlyTarget(t, trash)
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path": trash, "permanent": true, "recursive": true,
+		"contentsOnly": true, "cleanupGuard": true, "volumeRoot": filepath.VolumeName(tmpDir) + string(filepath.Separator),
+	}), &payload)
+
+	if len(payload.FailedChildren) == 0 {
+		t.Fatalf("expected the unremovable child to be reported, got %+v", payload)
+	}
+	if payload.Deleted {
+		t.Error("deleted must be false when a child could not be removed")
+	}
+	if payload.BytesFreed != 128 {
+		t.Errorf("expected the removable child's bytes to still be counted, got %d", payload.BytesFreed)
+	}
+}
+
+func TestDeleteFileContentsOnlyRefusesANonDirectory(t *testing.T) {
+	tmpDir := contentsOnlyTempDir(t)
+	file := filepath.Join(tmpDir, "regular.bin")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ageContentsOnlyTarget(t, file)
+	result := DeleteFile(map[string]any{
+		"path": file, "permanent": true, "contentsOnly": true, "cleanupGuard": true, "volumeRoot": filepath.VolumeName(tmpDir) + string(filepath.Separator),
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "not a directory") {
+		t.Fatalf("expected a not-a-directory refusal, got %q / %q", result.Status, result.Error)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Error("the file must survive the refusal")
+	}
+}
+
+func TestDeleteFileContentsOnlyRequiresPermanent(t *testing.T) {
+	tmpDir := t.TempDir()
+	result := DeleteFile(map[string]any{"path": tmpDir, "contentsOnly": true})
+	if result.Status != "failed" || !strings.Contains(result.Error, "contentsOnly requires permanent") {
+		t.Fatalf("expected the flag combination to be refused, got %q / %q", result.Status, result.Error)
+	}
+}
+
+// The depth check applies to the DIRECTORY, so the bin root stays refused while
+// a SID directory one level down is reachable (spec §6.3).
+func TestDeleteFileContentsOnlyStillHonoursTheBoundary(t *testing.T) {
+	result := DeleteFile(map[string]any{
+		"path":         string(filepath.Separator) + "home",
+		"permanent":    true,
+		"recursive":    true,
+		"contentsOnly": true,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("a top-level directory must stay refused under contentsOnly, got %q", result.Status)
+	}
+}

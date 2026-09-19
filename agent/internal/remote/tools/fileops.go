@@ -738,8 +738,104 @@ func newLockedDeleteResult(cleanPath string, start time.Time) CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
-func deleteDirectoryContents(_ *cleanupTarget, _ string, _ os.FileInfo, start time.Time) CommandResult {
-	return NewErrorResult(fmt.Errorf("contentsOnly is not implemented"), time.Since(start).Milliseconds())
+// deleteDirectoryContents empties the target directory without removing it,
+// entirely through the confined root handle (spec §13 row 1).
+//
+// This exists because the only reachable Windows recycle bin is one level below
+// the volume root (C:\$Recycle.Bin is depth 1 and isRecursiveDeleteBoundary
+// refuses it), and because deleting a .Trash / Trash directory outright is the
+// wrong operation even where it is allowed: the OS owns those directory nodes.
+//
+// Link handling:
+//   - The directory is re-opened as its OWN Root, so every child lookup is
+//     confined to it and an ancestor swapped mid-operation cannot be traversed.
+//   - Immediate children are Lstat'ed through that Root. A symlink or
+//     reparse-point child is SKIPPED and reported; never removed, never
+//     traversed.
+//   - Everything else goes through Root.RemoveAll, which unlinks rather than
+//     follows at any depth AND stays inside the root.
+//   - desktop.ini is preserved: Explorer needs it to render the bin.
+//
+// A locked child is reported in skippedLocked, never forced. Any child that
+// fails for another reason lands in failedChildren, which makes the action
+// `partial` on the API side — never `completed` with positive bytes
+// (spec §13 row 13).
+func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, start time.Time) CommandResult {
+	if !info.IsDir() {
+		return NewErrorResult(
+			fmt.Errorf("%s contentsOnly target is not a directory: %s", CleanupGuardRejectedPrefix, cleanPath),
+			time.Since(start).Milliseconds(),
+		)
+	}
+
+	dirRoot, err := target.root.OpenRoot(target.rel)
+	if err != nil {
+		return NewErrorResult(
+			fmt.Errorf("%s cannot open %s inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+			time.Since(start).Milliseconds(),
+		)
+	}
+	defer func() { _ = dirRoot.Close() }()
+
+	dirFile, err := dirRoot.Open(".")
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to open directory: %w", err), time.Since(start).Milliseconds())
+	}
+	entries, readErr := dirFile.ReadDir(-1)
+	_ = dirFile.Close()
+	if readErr != nil {
+		return NewErrorResult(fmt.Errorf("failed to read directory: %w", readErr), time.Since(start).Milliseconds())
+	}
+
+	var bytesFreed int64
+	skippedLocked := make([]string, 0)
+	skippedLinks := make([]string, 0)
+	failedChildren := make([]string, 0)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.EqualFold(name, "desktop.ini") {
+			continue
+		}
+		childPath := filepath.Join(cleanPath, name)
+		childInfo, lstatErr := dirRoot.Lstat(name)
+		if lstatErr != nil {
+			if os.IsNotExist(lstatErr) {
+				continue
+			}
+			failedChildren = append(failedChildren, childPath)
+			continue
+		}
+		if childInfo.Mode()&os.ModeSymlink != 0 || isReparsePoint(childInfo) {
+			skippedLinks = append(skippedLinks, childPath)
+			continue
+		}
+
+		size := childInfo.Size()
+		if childInfo.IsDir() {
+			size = sumTreeSizeAt(dirRoot, name)
+		}
+		if rmErr := dirRoot.RemoveAll(name); rmErr != nil {
+			if isSharingViolation(rmErr) {
+				skippedLocked = append(skippedLocked, childPath)
+			} else {
+				failedChildren = append(failedChildren, childPath)
+			}
+			continue
+		}
+		bytesFreed += size
+	}
+
+	return NewSuccessResult(map[string]any{
+		"path":           cleanPath,
+		"deleted":        len(failedChildren) == 0 && len(skippedLocked) == 0,
+		"permanent":      true,
+		"contentsOnly":   true,
+		"bytesFreed":     bytesFreed,
+		"skippedLocked":  skippedLocked,
+		"skippedLinks":   skippedLinks,
+		"failedChildren": failedChildren,
+	}, time.Since(start).Milliseconds())
 }
 
 // DeleteFile deletes a file or directory. By default it moves the item to the
