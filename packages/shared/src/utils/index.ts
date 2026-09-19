@@ -42,3 +42,4 @@ export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';
 export * from './vulnerabilityManagement';
+export * from './cleanupRules';
