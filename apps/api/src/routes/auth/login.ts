@@ -43,6 +43,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs } from '../../services/authLifecycle';
+import { mfaSrcFor } from '../../services/mfaAssuranceSource';
 import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -550,6 +551,20 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       await floorPromise;
       return c.json(genericAuthError(), 401);
     }
+    // #6177: the pending MFA record lives only in Redis, and the top-of-handler
+    // Redis check can be stale by now (DB lookup + password compare sit in
+    // between, and E2E mode skips it entirely). Fail CLOSED with the same
+    // retryable 503 as the rate-limit branch — never skip MFA, never crash —
+    // and release the admitted capability rather than finishing it.
+    const pendingRedis = getRedis();
+    if (!pendingRedis) {
+      // Log so this 503 is distinguishable in monitoring from the sibling
+      // write-rejection 503 below (both report the same generic body).
+      console.error('[auth] Redis unavailable at the MFA branch — failing closed');
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      await floorPromise;
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
     const guardedCapability = capability;
     let pendingTransition: { transitionId: string; browserGeneration: number };
     try {
@@ -584,7 +599,17 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       ...pendingTransition,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
     };
-    await getRedis()!.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+    try {
+      await pendingRedis.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+    } catch (err) {
+      // A rejected write (connection drop, or OOM under the compose files'
+      // `noeviction` policy) means no pending record exists, so the tempToken
+      // would be unredeemable. Don't hand it out; answer with a retryable 503.
+      console.error('[auth] failed to write pending MFA record:', err);
+      captureException(err, c);
+      await floorPromise;
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
 
     // Task 10: the password was verified correctly — clear the per-account
     // failure counter even though MFA still has to succeed. This keeps the
@@ -650,6 +675,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     partnerId,
     scope,
     mfa: mfaSatisfied,
+    // The enrolled branch returned early above, so anyone minting here proved
+    // no factor: `mfa: true` here is policy-admitted, never factor-earned.
+    mfaSrc: mfaSrcFor(mfaSatisfied, 'policy'),
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
@@ -1085,6 +1113,10 @@ loginRoutes.post('/refresh', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: ENABLE_2FA ? payload.mfa : false,
+    // Carry the assurance SOURCE forward exactly as the binding below: a
+    // refresh re-issues what the prior signed token said, never recomputes it,
+    // and never upgrades 'policy' to 'factor'. Absent stays absent.
+    mfaSrc: ENABLE_2FA && payload.mfa ? payload.mfa_src : undefined,
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.

@@ -56,6 +56,7 @@ import {
   type TerminalLogoutTicketClaims,
 } from '../../services/terminalLogoutTicket';
 import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
+import { mfaSrcFor, type MfaAssuranceSource } from '../../services/mfaAssuranceSource';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -256,10 +257,14 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     orgId: context.orgId,
     partnerId: context.partnerId,
   });
+  const idpSatisfied = ENABLE_2FA && user.mfaEnabled && trustsMfa;
   const mfaSatisfied =
     !ENABLE_2FA ||
-    (user.mfaEnabled && trustsMfa) ||
+    idpSatisfied ||
     (!user.mfaEnabled && !policy.required);
+  // 'idp' only when the trusted CF Access assertion is what satisfied an
+  // ENROLLED account; the no-factor arm is policy-admitted (spec D6).
+  const mfaSource: MfaAssuranceSource = idpSatisfied ? 'idp' : 'policy';
 
   const identity: UserSessionIdentity = {
     userId: user.id,
@@ -269,6 +274,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: mfaSatisfied,
+    mfaSrc: mfaSrcFor(mfaSatisfied, mfaSource),
   };
   const binding = requestAuthBinding(c);
 

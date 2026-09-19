@@ -320,7 +320,10 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
       scriptId: 'script-1',
       deviceIds: ['device-a', 'device-b'],
       auth: multiOrgAuth,
+      trigger: { kind: 'sweep_finding', key: 'sweep:service_down:Spooler' },
     });
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(expect.objectContaining({ trigger: { kind: 'sweep_finding', key: 'sweep:service_down:Spooler' } }));
 
     // db.insert always returns the same mocked chain object (mockReturnValue,
     // not mockReturnValueOnce), so both the batch insert and the failed-row
@@ -334,6 +337,7 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
       scriptId: 'script-1',
       deviceId: 'device-b',
       orgId: 'org-b',
+      triggerKind: 'sweep_finding', triggerRefId: null, triggerKey: 'sweep:service_down:Spooler',
       status: 'failed',
       errorMessage: expect.any(String),
       completedAt: expect.any(Date),

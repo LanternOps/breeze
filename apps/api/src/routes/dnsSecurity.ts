@@ -169,7 +169,13 @@ const integrationConfigSchema = z.object({
   allowlistId: z.string().min(1).optional(),
   // Pi-hole admin API version (v6 uses the session-based REST API). Defaults to
   // v5 when unset. Ignored by non-Pi-hole providers.
-  piholeVersion: z.enum(['v5', 'v6']).optional()
+  piholeVersion: z.enum(['v5', 'v6']).optional(),
+  // Opt-in to reach a carrier-grade-NAT (100.64.0.0/10) appliance endpoint — the
+  // range an overlay network such as Tailscale assigns. Only honoured for the
+  // on-prem appliance providers (Pi-hole / AdGuard Home) on a self-hosted
+  // deployment; inert on hosted. Default absent (blocked). Enabling it is
+  // recorded by the create-integration audit event below.
+  allowCarrierNatEgress: z.boolean().optional()
 });
 
 const createIntegrationSchema = z.object({
@@ -239,6 +245,9 @@ const createIntegrationSchema = z.object({
       const result = checkSsrfSafe(data.config.apiEndpoint, {
         mode: guard.mode,
         hostnameAllowlist: guard.allowlist,
+        // Only the on-prem appliance providers run in a mode that honours this;
+        // the connect-time factory additionally requires a self-host deployment.
+        allowCarrierNat: data.config?.allowCarrierNatEgress === true,
       });
       if (!result.ok) {
         ctx.addIssue({
@@ -405,7 +414,13 @@ dnsSecurityRoutes.post(
       resourceType: 'dns_integration',
       resourceId: integration.id,
       resourceName: integration.name,
-      details: { provider: integration.provider, syncScheduled }
+      details: {
+        provider: integration.provider,
+        syncScheduled,
+        // Record the carrier-NAT egress opt-in explicitly so enabling it leaves
+        // an audit trail, not just a config blob.
+        allowCarrierNatEgress: body.config?.allowCarrierNatEgress === true
+      }
     });
 
     return c.json({

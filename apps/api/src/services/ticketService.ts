@@ -2,7 +2,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
+import { auditLogs, tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
 import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
@@ -16,6 +16,7 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
+import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -220,6 +221,65 @@ async function assertAssigneeEligible(
   if (!eligible) {
     throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
   }
+}
+
+/** Clear a retained assignment when a ticket's org or device scope changes. */
+export async function revalidateTicketAssignee(
+  ticketId: string,
+  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
+  connection: Pick<typeof db, 'select' | 'update' | 'insert'> = db,
+  currentTicket?: typeof tickets.$inferSelect
+): Promise<typeof tickets.$inferSelect> {
+  const ticket = currentTicket ?? (await connection.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1))[0];
+  if (!ticket) throw new TicketServiceError('Ticket not found', 404);
+  if (!ticket.assignedTo) return ticket;
+  const assignee = await getAssigneeForValidation(ticket.assignedTo);
+  const partnerId = await resolveTicketPartnerId(ticket);
+  if (assignee && partnerId && await isEligibleTicketRecipient({
+    userId: assignee.id,
+    partnerId: assignee.partnerId,
+    status: assignee.status ?? '',
+    email: assignee.email ?? null,
+  }, partnerId, ticket.orgId, ticket.deviceId, { bypassCache: true })) return ticket;
+
+  const [updated] = await connection.update(tickets)
+    .set({ assignedTo: null, updatedAt: new Date() })
+    .where(and(
+      eq(tickets.id, ticketId),
+      eq(tickets.assignedTo, ticket.assignedTo),
+      eq(tickets.orgId, ticket.orgId),
+      ticket.deviceId ? eq(tickets.deviceId, ticket.deviceId) : isNull(tickets.deviceId),
+    )).returning();
+  if (!updated) throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
+  const isAgent = 'kind' in actor || actor.principalKind === 'ai_agent';
+  const actorId = 'kind' in actor ? actor.agentId : actor.userId;
+  await connection.insert(ticketComments).values({
+    ticketId,
+    userId: isAgent ? null : actorId,
+    authorName: actor.name ?? null,
+    authorType: isAgent ? 'ai_agent' : 'internal',
+    originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+    commentType: 'assignment',
+    content: 'Assignee no longer eligible after ticket scope change',
+    isPublic: false,
+    oldValue: ticket.assignedTo,
+    newValue: null,
+  });
+  await connection.insert(ticketOutbox).values({
+    orgId: ticket.orgId, ticketId, eventType: 'ticket.assigned', payload: { assigneeId: null },
+  });
+  // Keep the audit in the mutation transaction: org merge holds an org row
+  // lock, so a separate audit connection's FK check would wait on this writer.
+  await connection.insert(auditLogs).values({
+    orgId: ticket.orgId,
+    actorId,
+    actorType: isAgent ? 'ai_agent' : 'user',
+    initiatedBy: isAgent ? 'ai' : 'manual',
+    action: 'ticket.assign', resourceType: 'ticket', resourceId: ticketId,
+    details: { from: ticket.assignedTo, to: null, reason: 'assignee_no_longer_eligible' },
+    result: 'success',
+  });
+  return updated;
 }
 
 /**
@@ -824,7 +884,7 @@ export interface ChangeStatusTarget {
 async function lockAndValidateResolutionDraft(
   ticketId: string,
   draftId: string
-): Promise<{ id: string; content: string }> {
+): Promise<{ id: string; content: string; runId: string | null }> {
   const [draft] = await db
     .select()
     .from(ticketDrafts)
@@ -838,7 +898,7 @@ async function lockAndValidateResolutionDraft(
   if (draft.state !== 'active') {
     throw new TicketServiceError('Draft is no longer active', 409);
   }
-  return { id: draft.id, content: draft.content };
+  return { id: draft.id, content: draft.content, runId: draft.runId ?? null };
 }
 
 /** Companion to `lockAndValidateResolutionDraft` — CAS `active -> consumed` in the
@@ -853,6 +913,35 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
   if (consumed.length === 0) {
     throw new TicketServiceError('Draft was already consumed', 409);
   }
+}
+
+/**
+ * #4177 (W04): an AI-drafted reply sent / an AI resolution note applied is
+ * billable work the technician just did. The time-entry PROPOSAL (a Tier-2,
+ * human-reviewed action intent — never a write) is minted by
+ * `services/aiAgents/ticketHelpdeskSubscriber.ts` from the `ticket_outbox`
+ * event this service already writes, so the claim rides in the outbox
+ * payload:
+ *
+ *  - it commits atomically with the send/resolve and is published only
+ *    AFTER that transaction commits (jobs/ticketOutboxPublisher.ts) — a
+ *    failed proposal can never roll back or fail the technician's action;
+ *  - this service stays clear of the action-intent import graph
+ *    (intentService → aiTools → commandQueue → routes/agentWs.ts), which
+ *    the `global`-placement workers that import ticketService must never
+ *    reach (workerEntrypointClosure.contract.test.ts);
+ *  - the subscriber re-verifies every claim against the draft row before
+ *    minting — the payload is a pointer, not a fact.
+ *
+ * A draft with no run (hand-written, or predating the run pointer) carries
+ * no claim: there is no AI-assisted work to bill.
+ */
+function aiDraftOutboxClaim(
+  draft: { id: string; runId: string | null },
+  trigger: AiDraftOutboxClaim['trigger'],
+): { aiDraft: AiDraftOutboxClaim } | Record<string, never> {
+  if (!draft.runId) return {};
+  return { aiDraft: { draftId: draft.id, runId: draft.runId, trigger } };
 }
 
 export async function changeTicketStatus(
@@ -906,7 +995,7 @@ export async function changeTicketStatus(
   // no-op-resolving it) was silently dropped: no error, no consumption, no
   // resolutionNote write. Lock + validate it HERE, unconditionally, whenever
   // the target core status is 'resolved' and the core status isn't changing.
-  let sameStatusDraft: { id: string; content: string } | null = null;
+  let sameStatusDraft: { id: string; content: string; runId: string | null } | null = null;
   if (toStatus === fromStatus && toStatus === 'resolved' && opts.aiDraftId) {
     sameStatusDraft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
   }
@@ -985,6 +1074,11 @@ export async function changeTicketStatus(
       details: { from: fromStatus, to: toStatus },
       result: 'success'
     });
+    // #4177: no time-entry proposal on this path — it deliberately emits no
+    // `ticket.status_changed` outbox event (core status is unchanged), and
+    // the proposal rides on that event. Relabeling an already-resolved
+    // ticket with a resolution draft is the documented residue; see the
+    // W04 PR's follow-ups.
     return updated[0];
   }
 
@@ -999,14 +1093,14 @@ export async function changeTicketStatus(
   // update below: a missing/wrong-kind/inactive draft must fail the whole
   // resolve, not silently resolve without it.
   let resolutionNote = opts.resolutionNote;
-  let draftToConsume: { id: string } | null = null;
+  let draftToConsume: { id: string; runId: string | null } | null = null;
   if (toStatus === 'resolved' && opts.aiDraftId) {
     const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
     // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
     // (e.g. the technician edited the prefilled AI draft before submitting)
     // wins over the draft's content — the draft is still consumed below.
     resolutionNote = opts.resolutionNote?.trim() ? opts.resolutionNote : draft.content;
-    draftToConsume = { id: draft.id };
+    draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
   const now = new Date();
@@ -1086,7 +1180,12 @@ export async function changeTicketStatus(
     actorUserId: actor.userId,
     payload: { from: fromStatus, to: toStatus }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', { from: fromStatus, to: toStatus });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+    from: fromStatus,
+    to: toStatus,
+    // #4177: the consumed AI resolution draft, for the time-entry proposal.
+    ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -1347,6 +1446,10 @@ export async function updateTicketFields(
     .returning();
   if (updated.length === 0) {
     throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  if (changed.includes('deviceId')) {
+    updated[0] = await revalidateTicketAssignee(ticketId, actor, db, updated[0]);
   }
 
   await db.insert(ticketComments).values({
@@ -1632,7 +1735,17 @@ export async function addAiTriageNote(
   }
 
   try {
-    const inserted = await db.insert(ticketComments).values({
+    // #4209 (W03): the insert is wrapped in its own `db.transaction()` — a
+    // SAVEPOINT, since this always runs inside the caller's own request/system
+    // transaction. Without it the unique-violation recovery below does NOT
+    // actually work: postgres.js marks the WHOLE surrounding transaction
+    // aborted after a failed statement, so the recovery SELECT throws 25P02
+    // ("current transaction is aborted") instead of returning the existing
+    // row. PROVEN by aiAgentTicketTriage.integration.test.ts's retry case,
+    // which red'd with exactly that error before this savepoint was added —
+    // the same discovery postProposalNote's header records, which flagged this
+    // function as sharing the unguarded shape.
+    const inserted = await db.transaction((tx) => tx.insert(ticketComments).values({
       ticketId,
       userId: null,
       portalUserId: null,
@@ -1643,9 +1756,41 @@ export async function addAiTriageNote(
       isPublic: false,
       originPrincipalKind: 'ai_agent',
       agentRunId: runId
-    }).returning({ id: ticketComments.id });
+    }).returning({ id: ticketComments.id }));
     const comment = inserted[0];
     if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
+
+    // #4209 (W03) review: the audit write is FIRST among the post-insert side
+    // effects, deliberately. Once the savepoint above commits, the comment row
+    // is durable; the three side effects below are not transactional with it.
+    // `writeTicketOutbox` is a plain insert that can throw for reasons that are
+    // NOT unique violations (FK, connection drop) — and if it ran first, that
+    // throw would skip the audit entirely, leaving a committed autonomous
+    // comment with no compliance record, while a caller retry would hit the
+    // one-note-per-run index and return the existing row as a clean success so
+    // nothing ever noticed. Ordering the audit first shrinks that window to
+    // nothing: `createAuditLogAsync` never throws (it swallows into its own
+    // retry queue + Sentry), so it cannot in turn endanger emit/outbox.
+    //
+    // `audit_logs.actor_id` is uuid NOT NULL with NO FK, so the RUN id is legal
+    // there — and it is the
+    // right identifier: it is the thing an operator can open, whose policy
+    // snapshot froze the gate that authorised this note. Deliberately NOT the
+    // all-zero system sentinel other services use: that would erase the only
+    // link back to the authorising run. Deliberately NOT the agent id either —
+    // `aiAgents.id` is attribution-only and is not a `users` row, and the run is
+    // the narrower, replayable handle (the agent id is reachable from it).
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: runId,
+      actorType: 'ai_agent',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { commentId: comment.id, agentRunId: runId, isInternal: true, isPublic: false },
+      result: 'success',
+      initiatedBy: 'ai'
+    });
 
     await emitTicketEvent({
       type: 'ticket.commented',
@@ -2031,7 +2176,12 @@ export async function sendTicketDraft(
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: true }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: true });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+    commentId: comment.id,
+    isPublic: true,
+    // #4177: the consumed AI reply draft, for the time-entry proposal.
+    ...aiDraftOutboxClaim({ id: draft.id, runId: draft.runId ?? null }, 'draft_sent'),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -2439,12 +2589,16 @@ export const DELIVERABLE_TICKET_PINNED_MESSAGE =
  */
 export async function assertTicketNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  ticketId: string
+  ticketId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
-    .where(eq(serviceDeliverableOccurrences.ticketId, ticketId))
+    .where(and(
+      eq(serviceDeliverableOccurrences.ticketId, ticketId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2462,13 +2616,17 @@ export async function assertTicketNotPinnedToDeliverable(
  */
 export async function assertDeviceTicketsNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  deviceId: string
+  deviceId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
     .innerJoin(tickets, eq(tickets.id, serviceDeliverableOccurrences.ticketId))
-    .where(eq(tickets.deviceId, deviceId))
+    .where(and(
+      eq(tickets.deviceId, deviceId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2522,10 +2680,14 @@ export async function moveTicketOrg(
     // statements below exist precisely so those fail fast and loudly if a new
     // referencing row type is ever added without its own cleanup.
     //
+    // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third composite
+    // (ticket_id, org_id) -> tickets(id, org_id) child FK, same shape and same
+    // reason as the two above it. Still BY NAME, never `ALL`.
+    //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
@@ -2569,7 +2731,7 @@ export async function moveTicketOrg(
       throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
     }
     // #5573 W02: cheap precondition, before the ticket UPDATE burns anything.
-    await assertTicketNotPinnedToDeliverable(tx, ticketId);
+    await assertTicketNotPinnedToDeliverable(tx, ticketId, ticket.orgId);
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
@@ -2716,7 +2878,7 @@ export async function moveTicketOrg(
     if (!row) {
       throw new TicketServiceError('Ticket changed while the organization move was in progress', 409);
     }
-    updated = row;
+    updated = await revalidateTicketAssignee(ticketId, actor, tx, row);
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
     // comment on this ticket travels into the target org while the run that

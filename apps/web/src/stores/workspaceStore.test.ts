@@ -53,6 +53,7 @@ function tab(over: Partial<TabState> = {}): TabState {
     contextLabel: null,
     pageContext: null,
     messages: [],
+    chatRuns: {},
     isStreaming: false,
     isLoading: false,
     error: null,

@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -577,6 +578,46 @@ const listAutomationsSchema = z.object({
 
 const triggerTypeSchema = z.enum(['schedule', 'event', 'webhook', 'manual']);
 
+// Validate submitted script actions separately from the tolerant runtime reader,
+// which must still accept legacy stored actions. Preserve the script_id alias.
+const scriptActionSchema = z.object({
+  type: z.literal('run_script'),
+  scriptId: z.string().min(1).optional(),
+  script_id: z.string().min(1).optional(),
+  parameters: scriptParametersSchema.optional(),
+  runAs: z.enum(['system', 'user', 'elevated']).nullish(),
+  whenOffline: z.enum(['queue', 'skip']).optional(),
+}).passthrough().refine((action) => action.scriptId !== undefined || action.script_id !== undefined, {
+  message: 'run_script requires scriptId',
+});
+
+const automationActionsSchema = z.array(z.union([
+  scriptActionSchema,
+  z.object({ type: z.string().min(1).refine((type) => type !== 'run_script') }).passthrough(),
+])).min(1);
+
+function introducesElevatedAction(actions: z.infer<typeof automationActionsSchema>, stored: unknown = []): boolean {
+  // Runtime normalization does not retain action IDs. Preserve elevation only
+  // for the same script at the same position, using the runtime's alias precedence.
+  const previous = Array.isArray(stored) ? stored : [];
+  return actions.some((action, index) => {
+    if (action.type !== 'run_script' || action.runAs !== 'elevated') return false;
+    const existing = previous[index];
+    return !isPlainRecord(existing)
+      || existing.type !== 'run_script'
+      || existing.runAs !== 'elevated'
+      || (asString(existing.scriptId) ?? asString(existing.script_id))
+        !== (asString(action.scriptId) ?? asString(action.script_id));
+  });
+}
+
+function elevatedActionRefused(c: Context) {
+  return c.json({
+    code: 'elevated_automation_action_refused',
+    error: 'A new run_script automation action may set runAs to "system" or "user" only. Elevation is a property of the saved script, not something an automation action may request. Existing elevated actions may be preserved at their stored positions.',
+  }, 400);
+}
+
 const createAutomationSchema = z.object({
   orgId: z.string().guid().optional(),
   // 'partner' creates a partner-wide ("all orgs") automation: orgId NULL,
@@ -590,7 +631,7 @@ const createAutomationSchema = z.object({
   triggerType: triggerTypeSchema.optional(),
   triggerConfig: z.unknown().optional(),
   conditions: z.unknown().optional(),
-  actions: z.unknown().optional(),
+  actions: automationActionsSchema.optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
   notificationTargets: z.unknown().optional(),
   notifyOnFailureChannelId: z.string().guid().optional(),
@@ -604,7 +645,7 @@ const updateAutomationSchema = z.object({
   triggerType: triggerTypeSchema.optional(),
   triggerConfig: z.unknown().optional(),
   conditions: z.unknown().optional(),
-  actions: z.unknown().optional(),
+  actions: automationActionsSchema.optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
   notificationTargets: z.unknown().optional(),
   notifyOnFailureChannelId: z.string().guid().optional(),
@@ -1162,6 +1203,10 @@ automationRoutes.post(
       return c.json({ error: 'actions are required' }, 400);
     }
 
+    if (introducesElevatedAction(data.actions)) {
+      return elevatedActionRefused(c);
+    }
+
     // ai_triage wiring is seeded per AI agent (services/aiAgents/managedAutomation.ts)
     // and resolved through automations.managed_by_agent_id. A user-authored copy would
     // be an unmanaged automation whose action has no owning agent, and — worse — would
@@ -1339,6 +1384,9 @@ async function handleUpdateAutomation(c: Context) {
     }
 
     if (data.actions !== undefined) {
+      if (introducesElevatedAction(data.actions, automation.actions)) {
+        return elevatedActionRefused(c);
+      }
       // Same rejection as the create route. Without it the create gate is
       // trivially bypassed: POST an ordinary automation, then PATCH the
       // ai_triage action onto it. The row is unmanaged, so the action has no

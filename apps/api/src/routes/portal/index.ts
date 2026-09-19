@@ -9,7 +9,7 @@ import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
 import { quoteRoutes as portalQuoteRoutes } from './quotes';
 import {
   portalAssetCheckoutEnabledMiddleware,
-  portalSelfServiceEnabledMiddleware,
+  portalDevicesEnabledMiddleware,
   createPortalFeatureGateStrict,
   createPortalFeatureGateAny
 } from './featureFlags';
@@ -39,7 +39,7 @@ portalRoutes.route('/', brandingRoutes);
 
 // Protected routes
 portalRoutes.use('/devices/*', portalAuthMiddleware);
-portalRoutes.use('/devices/*', portalSelfServiceEnabledMiddleware);
+portalRoutes.use('/devices/*', portalDevicesEnabledMiddleware);
 portalRoutes.use('/assets/*', portalAuthMiddleware);
 portalRoutes.use('/assets/*', portalAssetCheckoutEnabledMiddleware);
 portalRoutes.use('/profile/*', portalAuthMiddleware);

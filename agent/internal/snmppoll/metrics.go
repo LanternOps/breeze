@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"math/big"
+	"net"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -21,17 +24,36 @@ const ValueEncodingHex = "hex"
 
 // SNMPDevice defines the target and credentials for polling.
 type SNMPDevice struct {
-	IP             string
-	Port           uint16
-	Version        SNMPVersion
-	Auth           SNMPAuth
-	OIDs           []string
+	IP      string
+	Port    uint16
+	Version SNMPVersion
+	Auth    SNMPAuth
+	// OIDs is the legacy flat list. Kept verbatim: it is what pre-W02 servers
+	// send and what SpecsFromOIDs falls back to.
+	OIDs []string
+	// Specs is the per-OID acquisition plan (spec §7.1). When empty,
+	// CollectMetrics derives it from OIDs as plain GETs.
+	Specs []OIDSpec
+	// Limits bounds one poll. The zero value is replaced with
+	// DefaultPollLimits by CollectMetrics.
+	Limits         PollLimits
 	Timeout        time.Duration
 	Retries        int
 	MaxRepetitions uint32
 }
 
 // SNMPMetric represents a single SNMP value read.
+//
+// BaseOID and Instance split what used to be one opaque OID string. BaseOID is
+// the TEMPLATE's own spelling of the object, which is what the server matches a
+// row back to a template entry with; Instance is the index suffix, empty for a
+// scalar. Neither is `omitempty`: they are the substance of the protocol-2 row
+// shape (spec §7.2), and an empty instance is a fact about a scalar, not a
+// missing field.
+//
+// Error carries a per-OID failure code (spec §7.2 closed set). It IS
+// `omitempty` — the overwhelming majority of rows succeed, and a walked 48-port
+// switch is ~138k rows/day.
 //
 // ValueEncoding declares how Value was encoded by the agent. It is set to
 // ValueEncodingHex only for octet strings the agent had to hex-encode, and is
@@ -40,10 +62,26 @@ type SNMPDevice struct {
 // never send it).
 type SNMPMetric struct {
 	OID           string    `json:"oid"`
+	BaseOID       string    `json:"baseOid"`
+	Instance      string    `json:"instance"`
 	Name          string    `json:"name"`
 	Value         any       `json:"value"`
+	Error         string    `json:"error,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 	ValueEncoding string    `json:"valueEncoding,omitempty"`
+}
+
+// pduSource is the SNMP transport CollectMetrics needs: a multi-OID GET
+// and a streaming bounded walk.
+// *SNMPClient satisfies it.
+//
+// The seam exists for one reason: what this file does is decided entirely by
+// the PDUs a device returns, and an unsupported table OID, a 600-row FDB and a
+// mid-walk timeout are all things a real device on a test runner cannot be
+// asked to produce. No production behaviour depends on the indirection.
+type pduSource interface {
+	GetMulti(oids []string) ([]gosnmp.SnmpPDU, error)
+	WalkBounded(rootOID string, fn gosnmp.WalkFunc) error
 }
 
 // CollectMetrics fetches all configured OIDs for a device.
@@ -51,9 +89,16 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 	if device.IP == "" {
 		return nil, errors.New("device IP is required")
 	}
-	if len(device.OIDs) == 0 {
+
+	specs := device.Specs
+	if len(specs) == 0 {
+		specs = SpecsFromOIDs(device.OIDs)
+	}
+	if len(specs) == 0 {
 		return nil, errors.New("device has no OIDs configured")
 	}
+
+	limits := normalizePollLimits(device.Limits)
 
 	client, err := NewClient(device.ClientConfig())
 	if err != nil {
@@ -61,32 +106,249 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 	}
 	defer client.Close()
 
-	pdus, err := getDevicePDUs(client, device.OIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	return buildMetrics(pdus, time.Now().UTC()), nil
+	return collectWithSource(client, specs, limits, time.Now().UTC())
 }
 
-// buildMetrics maps varbinds onto SNMPMetric rows, declaring the encoding at the
-// same place the value is produced.
-func buildMetrics(pdus []gosnmp.SnmpPDU, stamp time.Time) []SNMPMetric {
+// collectWithSource is CollectMetrics with the transport and the clock supplied.
+func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp time.Time, clocks ...func() time.Time) ([]SNMPMetric, error) {
+	limits = normalizePollLimits(limits)
+	now := time.Now
+	if len(clocks) > 0 && clocks[0] != nil {
+		now = clocks[0]
+	}
+	getSpecs := make([]OIDSpec, 0, len(specs))
+	walkSpecs := make([]OIDSpec, 0, len(specs))
+	for _, spec := range specs {
+		if spec.Mode == ModeWalk {
+			walkSpecs = append(walkSpecs, spec)
+			continue
+		}
+		getSpecs = append(getSpecs, spec)
+	}
+
+	metrics := make([]SNMPMetric, 0, len(getSpecs)+len(walkSpecs))
+
+	// Start with all scalars in one GET. Each indexed status failure removes
+	// one OID, so retries are bounded by the original number of scalar specs.
+	for len(getSpecs) > 0 {
+		oids := make([]string, 0, len(getSpecs))
+		for _, spec := range getSpecs {
+			oids = append(oids, spec.OID)
+		}
+		pdus, err := src.GetMulti(oids)
+		if err != nil {
+			var statusErr *SnmpStatusError
+			if !errors.As(err, &statusErr) {
+				// Transport failures still fail the whole poll.
+				return nil, err
+			}
+			slog.Warn("SNMP GET failed", "oids", oids, "status", statusErr.Status.String(), "error", err)
+			if index := int(statusErr.Index); index > 0 && index <= len(getSpecs) {
+				metrics = append(metrics, errorMetric(getSpecs[index-1], "", ErrCodeSNMPError, stamp))
+				getSpecs = append(getSpecs[:index-1], getSpecs[index:]...)
+				continue
+			}
+			for _, spec := range getSpecs {
+				metrics = append(metrics, errorMetric(spec, "", ErrCodeSNMPError, stamp))
+			}
+		} else {
+			metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
+		}
+		break
+	}
+
+	budget := &walkBudget{
+		bytes:    totalMetricBytes(metrics),
+		rows:     len(metrics),
+		deadline: now().Add(limits.MaxDuration),
+		now:      now,
+		limits:   limits,
+	}
+
+	for _, spec := range walkSpecs {
+		if budget.exhausted() {
+			// Explicit, not omitted: a spec that never ran must not read as
+			// "never polled" in the OID table.
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
+			continue
+		}
+
+		rows, truncated, err := collectWalkSpec(src, spec, budget, stamp)
+		metrics = append(metrics, rows...)
+
+		switch {
+		case err != nil:
+			// Per-OID, not per-poll: one unimplemented or slow table must not
+			// discard the scalars and the other columns that did answer. The
+			// code set is closed, so the underlying error goes to the log.
+			code := walkErrorCode(err)
+			var statusErr *SnmpStatusError
+			if errors.As(err, &statusErr) {
+				slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "status", statusErr.Status.String(), "error", err)
+			} else {
+				slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "error", err)
+			}
+			metrics = append(metrics, errorMetric(spec, "", code, stamp))
+		case truncated:
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
+		case len(rows) == 0:
+			// An empty subtree or an exception varbind ends the page loop
+			// without value rows. Protocol error statuses instead return an
+			// error above; neither outcome should look like never-polled.
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeNoSuchObject, stamp))
+		}
+	}
+
+	return metrics, nil
+}
+
+func totalMetricBytes(metrics []SNMPMetric) int {
+	total := 0
+	for _, m := range metrics {
+		total += metricByteSize(m)
+	}
+	return total
+}
+
+// errWalkStop unwinds a walk from inside its callback once a bound is hit. It
+// never escapes collectWalkSpec.
+var errWalkStop = errors.New("snmppoll: walk bound reached")
+
+// walkBudget carries the POLL-level bounds across every walk spec in one poll.
+// Per-OID bounds live in collectWalkSpec; both are needed, because one runaway
+// table and fifty modest ones fail differently.
+type walkBudget struct {
+	rows     int
+	bytes    int
+	deadline time.Time
+	now      func() time.Time
+	limits   PollLimits
+}
+
+func (b *walkBudget) exhausted() bool {
+	return b.rows >= b.limits.MaxRowsPerPoll ||
+		b.bytes >= b.limits.MaxBytesPerPoll ||
+		!b.now().Before(b.deadline)
+}
+
+// jsonOverheadPerMetric is a flat allowance for the JSON keys, quoting and
+// RFC3339 timestamp every row carries. metricByteSize is a safety valve, not an
+// accounting ledger: it has to be cheap and to over- rather than under-estimate.
+const jsonOverheadPerMetric = 96
+
+func metricByteSize(m SNMPMetric) int {
+	size := jsonOverheadPerMetric + len(m.OID) + len(m.BaseOID) + len(m.Instance) + len(m.Name) + len(m.Error)
+	switch v := m.Value.(type) {
+	case nil:
+	case string:
+		size += len(v)
+	default:
+		size += 20 // every numeric form serialises to at most 20 bytes
+	}
+	return size
+}
+
+// errorMetric builds a value-less row carrying a per-OID failure code.
+func errorMetric(spec OIDSpec, instance, code string, stamp time.Time) SNMPMetric {
+	oid := spec.OID
+	if instance != "" {
+		oid = spec.OID + "." + instance
+	}
+	return SNMPMetric{
+		OID:       oid,
+		BaseOID:   spec.OID,
+		Instance:  instance,
+		Name:      spec.Name,
+		Value:     nil,
+		Error:     code,
+		Timestamp: stamp,
+	}
+}
+
+// collectWalkSpec walks one spec, stopping at the first bound it hits.
+func collectWalkSpec(src pduSource, spec OIDSpec, budget *walkBudget, stamp time.Time) (rows []SNMPMetric, truncated bool, err error) {
+	perOID := 0
+	specs := []OIDSpec{spec}
+
+	walkErr := src.WalkBounded(spec.OID, func(pdu gosnmp.SnmpPDU) error {
+		// Checked BEFORE the row is kept, so MaxRowsPerOID = 512 yields exactly
+		// 512 rows and the 513th trips truncation.
+		if perOID >= budget.limits.MaxRowsPerOID || budget.exhausted() {
+			truncated = true
+			return errWalkStop
+		}
+		metric := metricFromPDU(specs, pdu, stamp)
+		rows = append(rows, metric)
+		perOID++
+		budget.rows++
+		budget.bytes += metricByteSize(metric)
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, errWalkStop) {
+		return rows, truncated, walkErr
+	}
+	return rows, truncated, nil
+}
+
+// buildGetMetrics maps GET varbinds onto SNMPMetric rows, declaring the encoding
+// at the same place the value is produced and turning the three "this object is
+// not here" PDU types into explicit error rows.
+func buildGetMetrics(specs []OIDSpec, pdus []gosnmp.SnmpPDU, stamp time.Time) []SNMPMetric {
 	metrics := make([]SNMPMetric, 0, len(pdus))
 	for _, pdu := range pdus {
-		value, hexEncoded := parseValue(pdu)
-		metric := SNMPMetric{
-			OID:       pdu.Name,
-			Name:      pdu.Name,
-			Value:     value,
-			Timestamp: stamp,
-		}
-		if hexEncoded {
-			metric.ValueEncoding = ValueEncodingHex
-		}
-		metrics = append(metrics, metric)
+		metrics = append(metrics, metricFromPDU(specs, pdu, stamp))
 	}
 	return metrics
+}
+
+// metricFromPDU builds one row, resolving which spec the PDU belongs to by OID.
+func metricFromPDU(specs []OIDSpec, pdu gosnmp.SnmpPDU, stamp time.Time) SNMPMetric {
+	spec := FindSpecForOID(specs, pdu.Name)
+
+	metric := SNMPMetric{
+		OID:       pdu.Name,
+		BaseOID:   pdu.Name,
+		Instance:  "",
+		Name:      pdu.Name,
+		Timestamp: stamp,
+	}
+	if spec != nil {
+		metric.BaseOID = spec.OID
+		metric.Instance = InstanceSuffix(spec.OID, pdu.Name)
+		metric.Name = spec.Name
+	}
+
+	// A device that does not implement the object answers with one of these
+	// three PDU types and a nil value. Before W02 that became value_type
+	// 'null', indistinguishable from a real null — 145 of the ~407 built-in
+	// template OIDs sat in that state permanently (spec F3).
+	if code := pduErrorCode(pdu); code != "" {
+		metric.Error = code
+		metric.Value = nil
+		return metric
+	}
+
+	value, hexEncoded := parseValue(pdu)
+	metric.Value = value
+	if hexEncoded {
+		metric.ValueEncoding = ValueEncodingHex
+	}
+	return metric
+}
+
+// pduErrorCode maps the SNMP "no such thing" PDU types onto the closed per-OID
+// error-code set. Everything else returns "" and is treated as a value.
+func pduErrorCode(pdu gosnmp.SnmpPDU) string {
+	switch pdu.Type {
+	case gosnmp.NoSuchObject:
+		return ErrCodeNoSuchObject
+	case gosnmp.NoSuchInstance:
+		return ErrCodeNoSuchInstance
+	case gosnmp.EndOfMibView:
+		return ErrCodeEndOfMib
+	default:
+		return ""
+	}
 }
 
 // ClientConfig converts an SNMPDevice into an SNMPClientConfig.
@@ -296,6 +558,36 @@ func hexOctets(value []byte) string {
 	return hex.EncodeToString(value)
 }
 
-func getDevicePDUs(client *SNMPClient, oids []string) ([]gosnmp.SnmpPDU, error) {
-	return client.GetMulti(oids)
+func normalizePollLimits(limits PollLimits) PollLimits {
+	if limits.MaxRowsPerOID <= 0 {
+		limits.MaxRowsPerOID = DefaultPollLimits.MaxRowsPerOID
+	}
+	if limits.MaxRowsPerPoll <= 0 {
+		limits.MaxRowsPerPoll = DefaultPollLimits.MaxRowsPerPoll
+	}
+	if limits.MaxBytesPerPoll <= 0 {
+		limits.MaxBytesPerPoll = DefaultPollLimits.MaxBytesPerPoll
+	}
+	if limits.MaxDuration <= 0 {
+		limits.MaxDuration = DefaultPollLimits.MaxDuration
+	}
+	return limits
+}
+
+func walkErrorCode(err error) string {
+	var statusErr *SnmpStatusError
+	if errors.As(err, &statusErr) {
+		return ErrCodeSNMPError
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ErrCodeTimeout
+	}
+	// gosnmp v1.44 returns an untyped error after its retries are exhausted.
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if cause.Error() == "request timeout" || strings.HasPrefix(cause.Error(), "request timeout (after ") {
+			return ErrCodeTimeout
+		}
+	}
+	return ErrCodeWalkFailed
 }

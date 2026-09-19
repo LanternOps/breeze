@@ -61,6 +61,15 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+// W01 (spec §4.4): query_monitors derives `assetReachability` per monitor
+// through the batched loader. The derivation is pinned by
+// assetReachability.test.ts; this suite owns the WIRING, so the loader is
+// mocked and driven per-test (pattern from monitoring_assets_list.test.ts).
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('./assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+}));
+
 import { db } from '../db';
 import { registerMonitoringTools } from './aiToolsMonitoring';
 import type { AiTool } from './aiTools';
@@ -145,7 +154,57 @@ function rulesLookup() {
   } as any;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  reachabilityByAsset.clear();
+});
+
+// Build the aiTools registry and extract query_monitors handler.
+function buildQueryMonitors(): (input: Record<string, unknown>, auth: AuthContext) => Promise<string> {
+  const map = new Map<string, AiTool>();
+  registerMonitoringTools(map);
+  const tool = map.get('query_monitors');
+  if (!tool) throw new Error('query_monitors not registered');
+  return tool.handler as (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+}
+
+// Chain for the unrestricted query_monitors list (select().from().where().orderBy().limit()).
+function monitorListLookup(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    }),
+  } as any;
+}
+
+describe('query_monitors — assetReachability (W01, spec §4.4)', () => {
+  it('attaches the derived reachability for a monitor with a linked asset', async () => {
+    reachabilityByAsset.set(ASSET_ALLOWED, {
+      state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z',
+    });
+    vi.mocked(db.select).mockReturnValueOnce(monitorListLookup([monitorInAllowedSite]));
+
+    const out = JSON.parse(await buildQueryMonitors()({}, makeUnrestrictedAuth()));
+
+    expect(out.error).toBeUndefined();
+    expect(out.monitors).toHaveLength(1);
+    expect(out.monitors[0].assetReachability).toEqual({
+      state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z',
+    });
+  });
+
+  it('reports null assetReachability for a monitor with no linked asset', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(monitorListLookup([monitorNoAsset]));
+
+    const out = JSON.parse(await buildQueryMonitors()({}, makeUnrestrictedAuth()));
+
+    expect(out.error).toBeUndefined();
+    expect(out.monitors).toHaveLength(1);
+    expect(out.monitors[0].assetReachability).toBeNull();
+  });
+});
 
 describe('manage_monitors — site-axis enforcement', () => {
   let handle: (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;

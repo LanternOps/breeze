@@ -300,7 +300,11 @@ describe('resolveEnrollmentStepUp', () => {
       expect(withSystemDbAccessContext).toHaveBeenCalledTimes(2);
     });
 
-    it('401s a grant that fails to validate (wrong session, bumped epoch, replay)', async () => {
+    it('401s a grant that fails to validate (wrong session, bumped epoch, replay) with the distinct expired-grant code, not the opaque invalid_credentials', async () => {
+      // #4050: by this point the caller has already committed to the SSO road
+      // (offered ssoReauthGrantId), so this failure gets its own stable code +
+      // a "start over" message instead of the road-selection oracle-safe
+      // "Invalid credentials" used above.
       queuePasswordlessNoFactor();
       consumeStepUpGrant.mockResolvedValue(false);
 
@@ -308,9 +312,10 @@ describe('resolveEnrollmentStepUp', () => {
 
       expect((res as any).__status).toBe(401);
       expect((res as any).__body).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
     });
 

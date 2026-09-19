@@ -47,6 +47,9 @@ const applyTriageSuggestionSchema = z.object({
 const rejectTriageSuggestionSchema = z.object({
   note: z.string().trim().max(500).optional(),
 });
+const statsQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+});
 
 function triageSuggestionDedupeKey(suggestion: Awaited<ReturnType<typeof getTicketTriageSuggestion>>['suggestion']): string | undefined {
   if (!suggestion) return undefined;
@@ -190,16 +193,22 @@ ticketsRoutes.get(
   '/stats',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('query', statsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const query = c.req.valid('query');
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
+    }
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Organization not found or access denied' }, 403);
     }
     const scopeResult = buildScopeConditions(auth);
     if (scopeResult === SCOPE_MISSING) {
       return c.json({ error: 'Partner context required' }, 403);
     }
     const conditions: SQL[] = scopeResult;
+    if (query.orgId) conditions.push(eq(tickets.orgId, query.orgId));
     // Site-axis restriction: stats must not leak counts for out-of-site
     // device-bound tickets (deviceless tickets remain counted).
     const siteCondition = ticketSiteScopeCondition(auth);

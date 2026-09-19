@@ -579,6 +579,29 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
+  // SEC-038 W06 (#5537): a server-side End whose stop_desktop has not yet been
+  // acknowledged by the agent leaves the row terminal with
+  // terminationPhase='pending'. The viewer's answer poll must see the phase
+  // and must never be handed a stale answer it could connect with.
+  it('surfaces terminationPhase and withholds the answer while teardown is pending', async () => {
+    mockViewerSelect({
+      session: { ...failedSession, status: 'disconnected', terminationPhase: 'pending' },
+      device: DEVICE,
+      user: USER,
+    });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'disconnected', terminationPhase: 'pending', webrtcAnswer: null });
+  });
+
+  it('reports terminationPhase=none on a live session', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    mockViewerSelect({ session: { ...failedSession, status: 'active', errorMessage: null, terminationPhase: 'none' }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'active', terminationPhase: 'none', webrtcAnswer: 'v=0 stale-answer' });
+  });
+
   it('preserves the negotiated answer for an authorized active status response', async () => {
     vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
     mockViewerSelect({ session: { ...failedSession, status: 'active', errorMessage: null }, device: DEVICE, user: USER });

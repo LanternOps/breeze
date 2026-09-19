@@ -40,6 +40,7 @@ vi.mock('../db/schema', () => ({
     version: 'version',
     updatedAt: 'updatedAt',
     deletedAt: 'deletedAt',
+    origin: 'origin',
   },
 }));
 
@@ -181,6 +182,7 @@ describe('ensureSystemLibraryScripts', () => {
       runAs: def.runAs,
       version: 1,
       deletedAt: null,
+      origin: 'system',
     };
   }
 
@@ -197,6 +199,10 @@ describe('ensureSystemLibraryScripts', () => {
     expect(inserted.orgId).toBeNull();
     expect(inserted.partnerId).toBeNull();
     expect(inserted.name).toBe(SYSTEM_LIBRARY_SCRIPTS[0]!.name);
+    // #5671: the insert must not fall through to the schema default
+    // ('human') — it would contradict the origin='system' the very same
+    // transaction writes onto the version row via cutScriptVersion below.
+    expect(inserted.origin).toBe('system');
   });
 
   it('no-ops when the stored row already matches the definition', async () => {
@@ -306,6 +312,49 @@ describe('ensureSystemLibraryScripts', () => {
     expect(patch).not.toHaveProperty('acknowledgedSecurityPatterns');
     expect(patch).not.toHaveProperty('securityAcknowledgedBy');
     expect(patch).not.toHaveProperty('securityAcknowledgedAt');
+  });
+
+  it('#5948: self-heals a stale origin="human" row whose definition is otherwise unchanged, without cutting a version', async () => {
+    // Pre-#5671 rows were inserted with the schema default ('human') and the
+    // insert-side fix (#5671/PR #5946) only corrects NEW inserts. The update
+    // branch must self-heal `origin` on next sync even when nothing else in
+    // the definition changed — but must NOT cut a spurious version, since
+    // cutScriptVersion bumps `version` for what is actually a no-op definition
+    // sync (that would skip a number and break UNIQUE-backed history).
+    const stale = existingRowFor(editionMigration!);
+    stale.origin = 'human';
+    mockExisting([stale]);
+    const values = mockInsert();
+    const { set } = mockUpdate();
+
+    const result = await ensureSystemLibraryScripts();
+
+    expect(set).toHaveBeenCalledTimes(1);
+    const patch = set.mock.calls[0]![0];
+    expect(patch.origin).toBe('system');
+    // The definition body itself did not change, so the self-heal patch is
+    // origin-only — it must not touch content/category/etc.
+    expect(patch).not.toHaveProperty('content');
+    expect(values).not.toHaveBeenCalled();
+    expect(h.cuts).toEqual([]);
+    expect(result.updated).toBeGreaterThan(0);
+    expect(result.unchanged).toBe(0);
+  });
+
+  it('#5948: corrects a stale origin="human" row AND cuts a version when the definition also changed', async () => {
+    const stale = existingRowFor(editionMigration!);
+    stale.origin = 'human';
+    stale.content = '# stale content';
+    mockExisting([stale]);
+    const { set } = mockUpdate();
+
+    await ensureSystemLibraryScripts();
+
+    const patch = set.mock.calls[0]![0];
+    expect(patch.origin).toBe('system');
+    expect(patch.content).toBe(editionMigration!.content);
+    expect(h.cuts).toHaveLength(1);
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'system' });
   });
 
   it('never resurrects or edits a soft-deleted system script', async () => {

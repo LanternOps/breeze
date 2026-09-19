@@ -150,6 +150,8 @@ describe('findingsToReviewSql — the list/agent-list derivation', () => {
     const sql = compiled();
     expect(sql).toContain("->'sweepFindings'->'findings'");
     expect(sql).toContain("->'proposedActions'");
+    // AI patch agent W01 — a patch plan's items are work a human must read.
+    expect(sql).toContain("->'patchPlan'->'items'");
   });
 
   // The SQL is the LIST side of the same rule `countFindingsToReview` applies
@@ -271,5 +273,13 @@ describe('summaryExcerpt', () => {
     const excerpt = summaryExcerpt('x'.repeat(400));
     expect((excerpt as string).length).toBe(AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS);
     expect(excerpt as string).toMatch(/…$/);
+  });
+});
+
+describe('findingsToReview — patch plan items (AI patch agent W01)', () => {
+  it('counts a patch plan\'s items on the detail side, and tolerates a corrupt plan', () => {
+    expect(countFindingsToReview({ patchPlan: { items: [{}, {}, {}] }, proposedActions: [] })).toBe(3);
+    expect(countFindingsToReview({ patchPlan: { items: 'nope' } })).toBe(0);
+    expect(countFindingsToReview({ patchPlan: 5 })).toBe(0);
   });
 });

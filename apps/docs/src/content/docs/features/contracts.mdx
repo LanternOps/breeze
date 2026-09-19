@@ -178,48 +178,33 @@ The **Service** tab also keeps the organization's **key dates** — insurance re
 
 Define a service tier once and apply it to any customer. Under **Settings → Deliverable Templates**, create a **template set** — owned by **All organizations (partner-wide)** or **This organization only** — and add the deliverables it contains. From an organization's **Service** tab, **Apply template set** creates every deliverable in the set for that organization (optionally tied to a contract, with an effective-from date and an owner) and reports what it created and what it skipped because it was already present. Managing partner-wide sets requires full partner organization access.
 
+A template item's evidence source can also be set to one of the automated [evidence reports](/features/reports/#scheduled-auto-evidence) (identity & access review, vulnerability management, endpoint management review, threat detection review). Every organization the template applies to then gets a period-correct evidence artifact generated automatically for that deliverable, instead of a technician needing to run and attach a report by hand each period.
+
 <Aside type="note" title="Tickets only when Service Management is on">
   The daily sweep records every occurrence and reminder regardless, but only opens tickets when the organization's Service Management is on. If an owner or ticket category can no longer be used, the ticket is opened without it rather than stalling the sweep.
 </Aside>
 
-## Contract Templates
+## Agreements
 
-Separate from the recurring-billing contracts above, Breeze keeps a library of **contract templates** -- the legal-document text (or an uploaded PDF) you attach to a quote for the customer to review and effectively sign as part of accepting a proposal. Open **Contracts → Templates** to manage the library.
-
-A template is owned either by your whole partner (usable on any customer's quotes) or by a single organization, chosen when you create it.
-
-### Creating a Template
-
-<Steps>
-1. Go to **Contracts → Templates** and click **New template**.
-2. Name it and choose its owner: your **partner** (available to every organization) or one **organization** (available only there).
-3. Add a version -- either **author** the document as rich text directly in Breeze, or **upload a PDF** (up to 10MB). An uploaded file must be a readable, unencrypted PDF.
-4. **Publish** the version once it's ready to use on quotes.
-</Steps>
-
-### Versions
-
-Each template can have multiple versions. A new version starts as a **draft** you can keep editing; **publishing** it locks the content and assigns it a version number -- published versions are immutable, so a template already attached to a quote never changes underneath the customer. To revise a published template, add another version and publish that one; existing quotes stay pinned to whichever version they were attached with (see [Contract blocks](/features/quotes/#contract-blocks) in the quote editor).
-
-**Archive** a template to stop it from being used on new quotes. Archiving doesn't touch versions already attached to existing quotes or the executed documents generated from them.
-
-### Variables
-
-An authored template can include `{{variable}}` placeholders that Breeze fills in per quote when the block is rendered or sent. Each placeholder is either:
-
-- **Auto** -- filled automatically from the quote, with no data entry required. The built-in auto variables are the customer's name and address, your organization's (seller) name, the quote number and title, the one-time/monthly/annual/total amounts, and the effective and expiry dates.
-- **Manual** -- anything else. The technician attaching the template to a quote fills these in by hand (for example, a scope note or a specific term).
-
-Publishing a version scans its body for `{{variable}}` tokens and classifies each one automatically -- a name that matches a built-in auto variable is treated as auto, everything else as manual.
+The legal document a customer signs with a proposal -- your MSA or standard terms -- is an **agreement template**, and the copy they signed is a **signed agreement**. Both live in their own area now: see [Agreements](/features/agreements/). A signed agreement is filed against the contract the accepting quote created, and appears in the **Signed agreements** section of that contract.
 
 ## Permissions
 
-Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. The same permissions gate the contract template library and service deliverables. Attaching evidence to a deliverable additionally needs the **Documents: write** permission (`documents:write`), because evidence is filed in the organization's document library. Assign these through **Settings → Users & Roles**.
+Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. Service deliverables ride on the same contract permissions, and attaching evidence to a deliverable additionally needs the **Documents: write** permission (`documents:write`), because evidence is filed in the organization's document library.
+
+Agreement templates and signed agreements have their **own** permissions (`agreements:read` / `agreements:write`), documented on the [Agreements](/features/agreements/#permissions) page. Splitting them lets you grant one without the other: a technician who needs a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms.
+
+<Aside type="note" title="Upgrading">
+  Nothing is taken away on upgrade. Any role that already held contract write access gains **Agreements: write** and **Agreements: read**; any role that held contract read access gains **Agreements: read** — including roles you created yourself. The built-in **Partner Billing** role gets both, **Partner Billing Viewer** gets read, and **Partner Admin** is unaffected (it holds everything). Review the split under **Settings → Users & Roles** if you want to tighten it.
+</Aside>
+
+Assign these through **Settings → Users & Roles**.
 
 ## Related
 
 - [Invoices](/features/invoices/) -- where generated invoices land
 - [Product Catalog](/features/product-catalog/) -- link contract lines to catalog items
 - [Online Payments](/features/online-payments/) -- let customers pay generated invoices online
-- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach a contract template to a quote
+- [Agreements](/features/agreements/) -- the agreement template library and signed agreements
+- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach an agreement template to a quote
 - [Customer Portal → Service and Documents](/features/portal/#service) -- show deliverables, key dates and shared documents to the customer

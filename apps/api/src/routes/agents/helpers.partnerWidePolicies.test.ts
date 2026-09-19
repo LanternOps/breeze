@@ -196,7 +196,14 @@ vi.mock('../../services/cisHardening', () => ({ parseCisCollectorOutput: vi.fn()
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/cloudflareMtls', () => ({ CloudflareMtlsService: vi.fn() }));
 vi.mock('../../services/softwarePolicyService', () => ({ recordSoftwarePolicyAudit: vi.fn() }));
-vi.mock('../../services/featureConfigResolver', () => ({ resolvePatchConfigForDevice: vi.fn() }));
+vi.mock('../../services/featureConfigResolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/featureConfigResolver')>();
+  return {
+    ...actual,
+    resolvePatchConfigForDevice: vi.fn(),
+    buildRoleOsFilterConditions: vi.fn(() => []),
+  };
+});
 vi.mock('../../services/onedriveGraph', () => ({ resolveUserGroupMembershipCached: vi.fn() }));
 vi.mock('../../services/filesystemAnalysis', () => ({
   getFilesystemScanState: vi.fn(),
@@ -230,7 +237,7 @@ const ORG_ID = '00000000-0000-4000-8000-000000000002';
 const SITE_ID = '00000000-0000-4000-8000-000000000003';
 const PARTNER_ID = '00000000-0000-4000-8000-000000000004';
 
-const deviceRow = [{ orgId: ORG_ID, siteId: SITE_ID }];
+const deviceRow = [{ orgId: ORG_ID, siteId: SITE_ID, deviceRole: 'workstation', osType: 'windows' }];
 const orgWithPartner = [{ partnerId: PARTNER_ID }];
 const orgWithoutPartner = [{ partnerId: null }];
 
@@ -403,6 +410,44 @@ describe('partner-owned policies actually reach the agent payload', () => {
     expect(settings.max_events_per_cycle).toBe(10);
   });
 
+  it('event_log: an assignment with a non-matching osFilter loses to a matching one', async () => {
+    // Org-level assignment has osFilter = ['linux'] (mismatch for windows device).
+    // Partner-level assignment has osFilter = ['windows'] (matches).
+    // The org-level assignment must be filtered out despite having higher level priority.
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [
+        { ...eventLogPolicyRow('partner'), osFilter: ['windows'], collectionIntervalMinutes: 30 },
+        { ...eventLogPolicyRow('organization'), osFilter: ['linux'], collectionIntervalMinutes: 5 },
+      ],
+    ]);
+
+    const settings = await buildEventLogConfigUpdate(DEVICE_ID);
+
+    expect(settings.collection_interval_minutes).toBe(30);
+  });
+
+  it('event_log: an assignment with empty osFilter array matches none', async () => {
+    // Org-level assignment has osFilter = [] (empty array = match-none).
+    // Partner-level assignment has osFilter = null (match-all).
+    // The org-level assignment must be filtered out.
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [
+        { ...eventLogPolicyRow('partner'), osFilter: null, collectionIntervalMinutes: 30 },
+        { ...eventLogPolicyRow('organization'), osFilter: [], collectionIntervalMinutes: 5 },
+      ],
+    ]);
+
+    const settings = await buildEventLogConfigUpdate(DEVICE_ID);
+
+    expect(settings.collection_interval_minutes).toBe(30);
+  });
+
   it('pam: a partner-level policy enables UAC interception without any org row', async () => {
     dbMock._resetQueue([
       deviceRow,
@@ -424,6 +469,16 @@ describe('partner-owned policies actually reach the agent payload', () => {
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [watchRow],
+      // resolveMonitorDerivedWatches runs its OWN resolveMonitorsForDevice
+      // pass after the policy-tab lookup above (#5677's discriminated
+      // result correctly tells device-not-found apart from device-found-
+      // zero-monitors, so this scenario's device/org/group/assignment reads
+      // must be queued too, or the resolver reads past the end of the queue
+      // and mistakes that for a vanished device).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [], // no monitor assignments — resolves to zero monitor-derived watches
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -443,6 +498,15 @@ describe('partner-owned policies actually reach the agent payload', () => {
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [watchRow],
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      // This test only asserts systemEscapeMock, but leaving the queue
+      // short here would silently exercise the device_missing path instead
+      // of the intended "policy resolved, monitors resolved empty" one.
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -465,6 +529,12 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [], // no enabled watches for the winning settings row
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -480,6 +550,14 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       orgWithPartner,
       [],
       [], // no assignment/policy rows matched
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments — so the null result below
+      // is genuinely "no policy and no monitors", not a device_missing
+      // false positive from an exhausted queue.
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -499,6 +577,12 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [], // no enabled watches for the winning settings row
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);

@@ -151,7 +151,23 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			time.Since(start).Milliseconds())
 	}
 	fenceInput.CommandID = cmd.ID
-	if decision := h.desktopStartFence.admitStart(sessionID, fenceInput); !decision.Admitted {
+	decision := h.desktopStartFence.admitStart(sessionID, fenceInput)
+	if decision.NeedsSync {
+		// W05: the fence has no in-process record of this session — fresh
+		// install, a lost or corrupt state file, an evicted entry, or simply
+		// the first start since this agent started. The payload alone cannot
+		// be ordered against a terminal the endpoint may have forgotten, so
+		// ask the control plane what it currently believes and decide on that.
+		// Bounded, once per session, and fail-closed on no answer.
+		if !h.syncDesktopFence(sessionID) {
+			return tools.NewErrorResult(
+				desktopStartFenceError(desktopFenceReasonUnsynced,
+					"the control plane did not confirm this session's generation"),
+				time.Since(start).Milliseconds())
+		}
+		decision = h.desktopStartFence.admitStart(sessionID, fenceInput)
+	}
+	if !decision.Admitted {
 		log.Warn("refusing start_desktop at the desktop start fence",
 			"sessionId", sessionID,
 			"commandId", cmd.ID,
@@ -287,6 +303,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// display itself). Never gate Linux on the latched-at-boot headless flag.
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
+		// A start is admitted long before it streams: consent, helper spawn
+		// and capture setup all happen after the fence decision, and a stop
+		// arriving inside that window finds nothing to stop. Re-check the
+		// tombstone now that the session exists, and tear it down if one
+		// landed meanwhile.
+		if result.Status == "completed" && h.desktopSessionTerminalAfterStart(sessionID) {
+			return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
+		}
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt, targetSession)
 			result = withConsentGranted(result, prompt)
@@ -314,6 +338,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		h.releaseDesktopLeases(sessionID)
 		h.takeDesktopTarget(sessionID)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	// Same post-start tombstone re-check as the helper path above.
+	if h.desktopSessionTerminalAfterStart(sessionID) {
+		return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
 	}
 	if onDemand {
 		// Not reachable in production (on-demand implies a Windows service, which
@@ -457,7 +485,12 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// populated by the helper start path, so this is safe on every platform.
 	if h.sessionBroker != nil {
 		if session := h.desktopOwnerSession(sessionID); session != nil {
+			// Forward the terminal generation so the helper's own fence
+			// records the same tombstone this one just installed.
 			req := ipc.DesktopStopRequest{SessionID: sessionID}
+			if stopInput.HasGeneration {
+				req.TerminalGeneration = strconv.FormatInt(stopInput.Generation, 10)
+			}
 			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
 			if err != nil {
 				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())

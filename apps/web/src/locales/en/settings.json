@@ -211,7 +211,8 @@
       "actionPlan": "Action Plan",
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
-    }
+    },
+    "overridesOrgTab": "Fields you set here override and lock the same field on every organization's AI tab."
   },
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
@@ -547,8 +548,10 @@
       },
       "ticketing": {
         "label": "Ticketing",
-        "description": "Statuses, SLAs, exports"
+        "description": "Statuses, SLAs, categories, forms",
+        "linkCta": "Manage ticketing settings →"
       },
+      "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
       "aiBudgets": {
         "label": "AI Budgets",
         "description": "AI spending limits"
@@ -564,6 +567,10 @@
       "loginBranding": {
         "label": "Login Branding",
         "description": "Login page appearance"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Service desk & billing on/off"
       }
     },
     "saved": "Partner settings saved",
@@ -594,6 +601,107 @@
       "saved": "Modules updated",
       "saveFailed": "Failed to update modules"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Custom sender addresses",
+    "description": "Send customer-facing email from your own domain instead of the standard Breeze address.",
+    "loadFailed": "We could not load your sending domains.",
+    "staticNote": "Sending domains on this server are managed by its mail configuration; SPF and DKIM for them are set up outside Breeze.",
+    "staticNotAllowed": "Ask your Breeze administrator to allow this domain.",
+    "staticVerifyHint": "This domain becomes usable once your mail server accepts a test message sent from it.",
+    "lockedTitle": "Custom sender addresses are not available yet",
+    "lockedProbation": "Your account is still being verified. Custom sender addresses unlock once that finishes.",
+    "lockedRestricted": "Your account is restricted, so custom sender addresses are unavailable.",
+    "lockedNotAllowlisted": "Custom sender addresses are still rolling out and are not switched on for your account yet.",
+    "lockedPartnerInactive": "Your account is not active, so custom sender addresses are unavailable.",
+    "lockedProviderKeySendOnly": "The email key on this server can send mail but cannot manage domains. Ask your Breeze administrator for a key with full access.",
+    "lockedShowVerification": "Show verification status",
+    "addTitle": "Add a sending domain",
+    "addLabel": "Domain name",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addSubmit": "Add domain",
+    "addInvalid": "Enter a domain such as mail.yourcompany.com.",
+    "added": "Domain added. Preparing DNS records.",
+    "recommendTitle": "We recommend a dedicated subdomain",
+    "recommendReason1": "It keeps the sending reputation of your Breeze mail separate from the rest of your mail.",
+    "recommendReason2": "A root domain already verified with our email provider somewhere else cannot be added here — we never take a domain away from another account.",
+    "recommendReason3": "Some mail filters flag an outside sender using the recipient's own domain, even when DKIM passes. A subdomain avoids that exact-match rule, which matters most for internal teams whose customers are colleagues.",
+    "statusProvisioning": "Preparing DNS records…",
+    "statusPending": "Waiting for DNS",
+    "statusVerified": "Verified",
+    "statusAtRisk": "Needs attention",
+    "statusFailed": "Failed",
+    "statusSuspended": "Suspended",
+    "statusRemoving": "Removing…",
+    "provisioningSlow": "This is taking longer than usual. We keep retrying — you can leave this page and come back.",
+    "recordsTitle": "Publish these DNS records",
+    "recordsNote": "DNS changes can take up to 72 hours to reach us, and we keep checking. If the records are still not visible by then, the domain is marked as failed and you can try again.",
+    "recordsType": "Record type",
+    "recordsHost": "Host label",
+    "recordsFqdn": "Full name",
+    "recordsValue": "Value",
+    "recordsPriority": "Priority",
+    "recordsCopied": "Copied to the clipboard",
+    "checkNow": "Check now",
+    "checkStarted": "Checking DNS now.",
+    "atRiskBanner": "We can no longer see the {{type}} record at {{fqdn}}. Mail still goes out from this domain, but publish that record again within 72 hours or the domain fails.",
+    "failedProviderConflict": "This domain may already be registered with Breeze or with our email provider. Use a dedicated subdomain, or contact support.",
+    "failedProviderRejected": "Our email provider refused this domain.",
+    "failedQuotaExhausted": "This Breeze server has reached its domain limit with the email provider. Contact support.",
+    "failedDnsNotDetected": "We could not find the DNS records within 72 hours.",
+    "failedDnsRemoved": "The DNS records were removed.",
+    "failedUnknown": "Verification did not finish.",
+    "retry": "Try again",
+    "removeConfirm": "Remove {{domain}}? Email for it goes back to the standard Breeze sender.",
+    "removeConfirmUnmanaged": "Remove {{domain}} from Breeze? The domain stays in your email provider account — Breeze never deletes a domain it did not create.",
+    "removeStarted": "Removing the domain.",
+    "suspendedNotice": "Breeze suspended this domain. Contact support.",
+    "lastSendError": "Last delivery problem: {{error}}",
+    "identitiesTitle": "Sender addresses",
+    "identitiesDescription": "Choose the address each kind of email is sent from. Anything you leave empty keeps the standard Breeze sender.",
+    "identitiesNoDomain": "Verify a domain first, then choose sender addresses.",
+    "streamSupportName": "Customer support",
+    "streamBillingName": "Billing",
+    "streamGeneralName": "General notifications",
+    "streamSupportMail": "Ticket updates to customers, portal invitations and portal password resets.",
+    "streamBillingMail": "Quotes and invoices.",
+    "streamGeneralMail": "Scheduled report deliveries.",
+    "repliesSupport": "Ticket email sets Reply-To to {{inbound}}, so a customer's reply lands back on the ticket. Portal invitations and password resets set no Reply-To, so those replies go to the address below.",
+    "repliesSupportNoInbound": "This server has no inbound email address, so replies to ticket email go to the address below. Make it a mailbox someone reads, or an alias that forwards into Breeze.",
+    "repliesBilling": "Quotes and invoices set Reply-To to your billing email, so replies go there.",
+    "repliesGeneral": "Nothing here sets its own Reply-To, so replies go to the address below — or to the Reply-To you set.",
+    "repliesMailboxHint": "People and auto-responders sometimes answer the From address, so make each one a real mailbox or an alias.",
+    "identityDomain": "Verified domain",
+    "identityLocalPart": "Address",
+    "identityDisplayName": "Display name",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Reply-To address (optional)",
+    "identityFrom": "Sends from {{address}}",
+    "identityClear": "Use the standard sender",
+    "identitySaved": "Sender address saved.",
+    "identityCleared": "Back on the standard Breeze sender.",
+    "identityLocalPartInvalid": "Use letters, numbers, dots, dashes, plus signs and underscores, and do not start or end with punctuation.",
+    "identityLocalPartReserved": "postmaster, abuse and mailer-daemon are reserved.",
+    "identityDisplayNameInvalid": "A display name cannot contain an email address or a link.",
+    "identityReplyToInvalid": "Enter a complete email address.",
+    "testTitle": "Send a test email",
+    "testDescription": "We send one message from this domain to your own sign-in address.",
+    "testSubmit": "Send test email",
+    "testQueued": "Test email queued.",
+    "testPending": "Test email in progress…",
+    "testLastSent": "Last test sent {{when}}.",
+    "testLastFailed": "Last test failed {{when}}: {{error}}",
+    "errorDomainUnavailable": "This domain may already be registered with Breeze or with our email provider. Use a dedicated subdomain, or contact support.",
+    "errorDomainLimitReached": "You can hold at most {{max}} sending domains. Remove one first.",
+    "errorRateLimited": "Too many attempts. Wait a moment and try again.",
+    "errorNotFound": "That domain is no longer there. Refresh the page.",
+    "errorDomainNotSendable": "That domain is not verified yet, so it cannot be a sender address.",
+    "errorUnsupported": "Custom sender addresses are not switched on for this server.",
+    "errorAddFailed": "Could not add the domain.",
+    "errorCheckFailed": "Could not start a DNS check.",
+    "errorRemoveFailed": "Could not remove the domain.",
+    "errorIdentityFailed": "Could not save the sender address.",
+    "errorTestFailed": "Could not send the test email."
   },
   "loginBranding": {
     "saved": "Login branding saved",
@@ -896,7 +1004,10 @@
     },
     "customCss": {
       "title": "Custom CSS (advanced)",
-      "description": "Use custom styles to fine tune spacing, typography, or layout."
+      "description": "Use custom styles to fine tune spacing, typography, or layout.",
+      "saveError": "Failed to save custom CSS.",
+      "loadError": "Could not load your currently saved custom CSS. Editing is disabled until this loads.",
+      "saveBlockedByLoadError": "Custom CSS was not saved: the current value could not be verified. Reload the page and try again."
     },
     "preview": {
       "action": "Preview",
@@ -1130,6 +1241,10 @@
       "description": "Choose which service insights this customer can see in the portal.",
       "enableAll": "Enable all visibility",
       "toggles": {
+        "enableDevices": {
+          "label": "Devices",
+          "description": "Show the Devices page. Self-service also grants access to this page."
+        },
         "enableDashboard": {
           "label": "Dashboard",
           "description": "Show a service-health summary when customers sign in."
@@ -1162,6 +1277,20 @@
           "label": "Hardware lifecycle",
           "description": "Show the live replacement plan for your customer's machines."
         }
+      }
+    },
+    "accent": {
+      "title": "Portal accent",
+      "description": "The colour of buttons and links in your customer portal. Status colours never change.",
+      "options": {
+        "spruce": "Spruce",
+        "ink": "Ink",
+        "oxblood": "Oxblood",
+        "navy": "Navy",
+        "plum": "Plum",
+        "bronze": "Bronze",
+        "teal": "Teal",
+        "forest": "Forest"
       }
     },
     "support": {
@@ -1441,7 +1570,7 @@
     "completeReview": "Complete Review"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "AI Usage & Budget",
+    "aIUsageBudget": "AI Usage",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor AI assistant usage and configure budget limits",
     "budgetConfiguration": "Budget Configuration",
     "aIEnabled": "AI Enabled",
@@ -1491,7 +1620,19 @@
     "untitled": "Untitled",
     "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
     "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}}: AI usage goes to your own Anthropic account, not Breeze AI credits",
-    "creditsRemaining": "Breeze AI credits remaining"
+    "creditsRemaining": "Breeze AI credits remaining",
+    "defaultValue": "Default ({{value}})",
+    "viewPartnerWideBudgets": "Partner AI budgets",
+    "monitorAIAssistantUsage": "Monitor AI assistant usage",
+    "effectiveBudget": "Effective budget",
+    "effectiveBudgetHelp": "The limits in force for this organization right now, and where each one was set.",
+    "sourcePartner": "Set by partner",
+    "sourceOrganization": "Set by organization",
+    "sourceDefault": "Default",
+    "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
+    "editPartnerWideDefaults": "Edit partner-wide defaults",
+    "thresholdsOff": "Off",
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1515,14 +1656,25 @@
       "kinds": {
         "sweep": "Sweep",
         "narrative": "Weekly report",
-        "design": "Fleet design"
+        "design": "Fleet design",
+        "patch": "Patch plan"
       },
       "kindsLabel": "Checks to run",
       "kind": "Schedule type",
       "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
       "monthlyOrRarerHint": "A fleet design fires at most once a month: a literal minute, hour and day-of-month (1-28), month as * or a comma list of literal months, and * for day-of-week. For example 0 6 1 1,4,7,10 * runs quarterly on the 1st at 06:00.",
+      "dailyOrRarerHint": "A patch plan fires at most once a day: a literal minute and hour, and * or a literal list for day-of-month, month and day-of-week. For example 0 2 * * * runs every night at 02:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
+      "actMode": {
+        "label": "Act mode",
+        "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "deploymentDisabledHint": "Act mode is unavailable because BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED is off for this deployment. Contact your administrator to enable it.",
+        "disabledHint": "Arming act mode requires full partner access to all organizations.",
+        "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
+        "disableForOrg": "Disable act mode for this organization",
+        "disableForOrgHint": "This organization always inherits the partner baseline's act mode setting unless disabled here — it can never be armed independently."
+      },
       "override": "Override for this org",
       "editOverride": "Edit this org's override",
       "overrideHint": "This organization's override of the partner baseline. It always runs on the baseline's cadence.",
@@ -1541,7 +1693,8 @@
         "pending_reboots": "Pending reboots",
         "failed_backups": "Failed backups",
         "service_down": "Service down",
-        "unpatched_critical": "Unpatched critical vulnerabilities"
+        "unpatched_critical": "Unpatched critical vulnerabilities",
+        "expiring_certs": "Expiring certificates"
       },
       "toasts": {
         "saved": "Schedule saved",
@@ -1561,8 +1714,10 @@
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
         "agentKindNotTriage": "Only a triage agent can be scheduled.",
         "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
+        "agentKindNotPatch": "A patch plan schedule must target a Patch agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
-        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
+        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week.",
+        "actModeOrgCannotArm": "Act mode is armed on the partner baseline; an organization override may only disable it, never arm it."
       }
     },
     "title": "AI Agents",
@@ -1588,7 +1743,9 @@
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
       "actUnavailable": "Not available for this agent yet.",
-      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
+      "designerAct": "On",
+      "designerActConsequence": "Runs on schedule or on demand and writes a Fleet Design. Never changes a device.",
+      "shadowApprovalNotice": "Proposals land in Approvals; approving one runs it for real, not a dry run."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
@@ -1622,6 +1779,8 @@
       "never": "Never run",
       "at": "Last run {{at}}"
     },
+    "nextOccurrence": "Next run {{at}}",
+    "runNowNoOrg": "Select an organization to run a patch plan.",
     "disableDialog": {
       "title": "Disable {{name}}?",
       "message": "Future runs stop, attached schedules stop firing, and organization overrides of this agent stop applying. A run already in flight continues to its time limit.",
@@ -1653,6 +1812,7 @@
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "That agent is already live.",
+      "noPatchAgent": "No patch agent applies to this organization.",
       "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode.",
       "invalidScriptIds": "One or more scripts can't be authorized for this agent.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1670,7 +1830,8 @@
       "disable": "Disable",
       "confirmDisable": "Confirm disable",
       "reenable": "Re-enable",
-      "runs": "Runs"
+      "runs": "Runs",
+      "runNow": "Run now"
     },
     "toasts": {
       "saved": "Agent saved",
@@ -1678,7 +1839,9 @@
       "disabled": "Agent disabled",
       "disableFailed": "Could not disable the agent.",
       "reenabled": "Agent re-enabled",
-      "reenableFailed": "Could not re-enable the agent."
+      "reenableFailed": "Could not re-enable the agent.",
+      "runNowQueued": "Patch plan run queued",
+      "runNowFailed": "Could not start a patch plan run."
     },
     "issues": {
       "name": "Give the agent a name.",
@@ -1767,6 +1930,9 @@
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
+      "alertCategories": "Alert categories",
+      "alertCategoriesHint": "Only alerts whose template category is listed here wake this agent. Leave empty for any category. Patch alerts carry \"patching\".",
+      "alertCategoriesPlaceholder": "e.g. patching, monitor",
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
@@ -1854,6 +2020,20 @@
         "empty": "No findings reported.",
         "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
         "proposalCreated": "Approval requested",
+        "actSummary": "Acted unattended on {{acted}} of {{proposed}} devices — the rest are waiting for approval.",
+        "outcomes": {
+          "auto_executing": "Running unattended",
+          "executed": "Completed",
+          "failed": "Failed",
+          "declined": "Declined",
+          "expired": "Expired",
+          "unknown": "Outcome unknown"
+        },
+        "stoppedBy": {
+          "fleet_cap": "daily fleet limit reached",
+          "day_cap": "daily action limit reached",
+          "occurrence_cap": "per-sweep device cap reached"
+        },
         "columns": {
           "kind": "Check",
           "severity": "Severity",
@@ -1868,7 +2048,8 @@
           "pending_reboots": "Pending reboots",
           "failed_backups": "Failed backups",
           "service_down": "Service down",
-          "unpatched_critical": "Unpatched critical vulnerabilities"
+          "unpatched_critical": "Unpatched critical vulnerabilities",
+          "expiring_certs": "Expiring certificates"
         },
         "severities": {
           "critical": "Critical",
@@ -1879,11 +2060,90 @@
         },
         "reasons": {
           "device_not_in_evidence": "Device not in the sweep evidence",
+          "subject_not_in_evidence": "Subject not in the sweep evidence",
           "device_not_in_org": "Device not in this organization",
           "not_allowlisted": "Tool not allowed for this agent",
           "no_eligible_approvers": "No eligible approvers",
           "intent_error": "Could not create the approval",
-          "max_actions_per_run": "Action limit reached for this run"
+          "max_actions_per_run": "Action limit reached for this run",
+          "intent_invalid_provenance": "The approval could not be validated (internal error)"
+        }
+      },
+      "patch": {
+        "title": "Patch plan",
+        "empty": "The agent proposed no patch work.",
+        "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
+        "posture": "{{compliance}}% compliant · {{count}} device at risk",
+        "posture_other": "{{compliance}}% compliant · {{count}} devices at risk",
+        "patchCount": "{{count}} update",
+        "patchCount_other": "{{count}} updates",
+        "refused": "Not recorded: {{reason}}",
+        "unconfirmed": "This plan was never confirmed — the agent could not re-check its items against the evidence, so nothing below has been validated.",
+        "unconfirmedItem": "Not confirmed — this item was never re-checked.",
+        "intentCreated": "Awaiting approval — open card",
+        "suppressed": "Already proposed: {{reason}}",
+        "capReached": "Not proposed: {{reason}}",
+        "intentError": "Approval card could not be created: {{reason}}",
+        "dropped": "{{count}} update was left out of the card",
+        "dropped_other": "{{count}} updates were left out of the card",
+        "counts": "{{created}} awaiting approval · {{suppressed}} already proposed",
+        "failureClass": "Failure class: {{label}}",
+        "attempts": "{{count}} failed attempt",
+        "attempts_other": "{{count}} failed attempts",
+        "rebootWindow": "Window: {{start}} – {{end}}",
+        "redundancyGroup": "Redundancy group: {{group}}",
+        "escalation": "Needs a human — nothing will retry this automatically.",
+        "escalations": "{{count}} escalation",
+        "escalations_other": "{{count}} escalations",
+        "classes": {
+          "install": "Install",
+          "approval_advisory": "Approval advice",
+          "reboot_plan": "Reboot plan",
+          "chase": "Chase failure",
+          "escalation": "Escalation"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Device not in the patch evidence",
+          "device_not_in_org": "Device not in this organization",
+          "patch_not_in_evidence": "Update not in the patch evidence",
+          "window_not_resolved": "Maintenance window could not be resolved",
+          "job_result_not_in_evidence": "Patch job result not in the evidence",
+          "no_eligible_patches": "No update is currently eligible for this device",
+          "not_allowlisted": "The agent is not allowed to propose installs",
+          "max_actions_per_run": "Action limit reached for this run",
+          "no_eligible_approvers": "Nobody can approve this action",
+          "intent_error": "The approval could not be created",
+          "live_intent_exists": "An approval card for this update is already open",
+          "recently_rejected": "This update was rejected recently",
+          "recently_cancelled": "This update's card was cancelled recently",
+          "recently_completed": "This update was installed recently",
+          "failure_class_mismatch": "The quoted failure class does not match the evidence",
+          "class_not_retryable": "This kind of failure is never retried automatically",
+          "chase_attempts_exhausted": "The retry limit for this update was reached — escalated instead",
+          "attempt_count_mismatch": "The quoted attempt count does not match the evidence",
+          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted",
+          "reboot_policy_not_window_gated": "The device's reboot policy reboots outside maintenance windows, so a window plan would not be honoured",
+          "redundancy_unknown": "The device's redundancy group is unknown, so ordering could not be checked",
+          "redundancy_collision": "Another device in the same redundancy group is already planned for this window"
+        },
+        "ineligible": {
+          "not_outstanding": "Not outstanding on this device",
+          "superseded": "Superseded by a newer update",
+          "blocked_by_source": "Excluded by the policy's update sources",
+          "held_by_deferral": "Held by the deferral window",
+          "blocked_by_category": "Excluded by the ring's category rules",
+          "blocked_by_app_rule": "Blocked by an app rule",
+          "awaiting_manual_approval": "Awaiting manual approval",
+          "no_ring_resolved": "The device has no update ring",
+          "device_not_in_org": "Device not in this organization"
+        },
+        "failureClasses": {
+          "transient": "Transient",
+          "needs_reboot": "Needs reboot",
+          "disk_space": "Disk space",
+          "store_corrupt": "Update store corrupt",
+          "permanent": "Permanent",
+          "unknown": "Unknown"
         }
       },
       "narrative": {
@@ -1892,7 +2152,17 @@
         "truncatedNote": "The agent's context was cut short — this narrative did not see the whole week.",
         "openReport": "Open report",
         "download": "Download PDF",
-        "downloadFailed": "Could not download the PDF."
+        "downloadFailed": "Could not download the PDF.",
+        "delivery": {
+          "sent": "Emailed to {{sent}} of {{total}} recipients",
+          "refused_one": "{{count}} recipient was not emailed — report authority, a missing address, or the provider refused.",
+          "refused_other": "{{count}} recipients were not emailed — report authority, a missing address, or the provider refused.",
+          "pending_one": "{{count}} delivery has not been sent yet — it will be retried.",
+          "pending_other": "{{count}} deliveries have not been sent yet — they will be retried.",
+          "unknown_one": "{{count}} delivery could not be confirmed — the email provider gave no definite answer.",
+          "unknown_other": "{{count}} deliveries could not be confirmed — the email provider gave no definite answer.",
+          "recipientsUnresolved": "The recipient lookup failed, so nobody was emailed this narrative. The report itself was saved."
+        }
       },
       "fleetDesign": {
         "title": "Fleet Design",
@@ -1934,7 +2204,9 @@
           "startedAt": "Started",
           "finishedAt": "Finished",
           "turnCount": "Turns",
-          "summary": "Summary"
+          "summary": "Summary",
+          "computeCost": "Compute",
+          "computeEstimated": "(estimated)"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -1966,6 +2238,34 @@
             "skipped": "Verification skipped"
           },
           "viewApproval": "Review in Approvals"
+        },
+        "artifacts": {
+          "title": "Files this run produced",
+          "download": "Download",
+          "preview": "Preview",
+          "attachToTicket": "Attach as internal note",
+          "attach": "Attach {{name}} as internal note",
+          "ticketIdPlaceholder": "Ticket ID",
+          "attachedToTicket": "Attached to the ticket as an internal note",
+          "attachFailed": "Could not attach the file to that ticket",
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added",
+          "downloadExpired": "This file has expired and is no longer available to download."
+        },
+        "workspace": {
+          "title": "What ran in the workspace",
+          "region": "Region",
+          "status": "Sandbox",
+          "cpu": "CPU time",
+          "steps": "Steps",
+          "script": "Script",
+          "stdout": "Output",
+          "exitCode": "exit",
+          "timedOut": "timed out",
+          "noExitCode": "no exit code",
+          "artifactExpired": "expired"
+        },
+        "progress": {
+          "title": "Progress"
         },
         "ledger": {
           "title": "Tool executions",
@@ -2067,6 +2367,7 @@
       "emptyState": {
         "title": "No AI outcomes in this window yet",
         "description": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Widen the reporting window above, or set up an agent to get started.",
+        "descriptionWidestWindow": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Not enough data yet, even at the widest reporting window — set up an agent to get started.",
         "action": "Set up an agent"
       },
       "tileGroups": {
@@ -2172,6 +2473,31 @@
         },
         "weightRowLabel": "{{label}} (minutes credited)",
         "neverRebuilt": "Never rebuilt"
+      },
+      "measured": {
+        "heading": "Measured (correlational)",
+        "caption": "AI-touched vs untouched work of the same kind, in the same window. Not a before/after comparison, and not a causal claim — the AI generally reaches the easier items first.",
+        "alertResolution": "Alert resolution, by rule",
+        "ticketFirstResponse": "Ticket first response, by priority and category",
+        "technicianMinutes": "Recorded technician minutes",
+        "armAiTouched": "AI-touched",
+        "armUntouched": "Untouched",
+        "withinHorizonAlerts": "Resolved within 24 h",
+        "withinHorizonTickets": "First response within 4 h",
+        "cohortSize": "{n} in cohort",
+        "percentileP50": "p50 {minutes} min",
+        "percentileP90": "p90 {minutes} min",
+        "recordedMinutesValue": "{minutes} min median",
+        "loggingCoverage": "Time logged on {ai} of AI-touched tickets and {untouched} of untouched ones. A median over partly-logged tickets is not a median of the labour.",
+        "censoredNote": "Any percentile shown is right-censored: still-open items count as unfinished rather than being dropped.",
+        "loading": "Loading measured comparison…",
+        "error": "The measured comparison could not be loaded.",
+        "omitted": {
+          "insufficientData": "Not enough data: no group of comparable work has at least 20 items in each arm.",
+          "insufficientFollowup": "This window is too short to observe the outcome for enough items. Try a longer window.",
+          "insufficientAuthority": "You do not have the time-entry permission needed to see recorded technician minutes.",
+          "siteRestricted": "The measured comparison is not shown for site-restricted access, because it aggregates across a whole organization."
+        }
       }
     },
     "graduation": {
@@ -2229,7 +2555,8 @@
         "below_threshold": "Not enough verified executions yet.",
         "too_recent": "The first verified execution is still too recent.",
         "has_failures": "A failure or a recurrence was recorded in this window.",
-        "not_policy_decidable": "This operation can never be pre-authorized."
+        "not_policy_decidable": "This operation can never be pre-authorized.",
+        "below_sweep_threshold": "Needs more verified fixes where a scheduled sweep chose the target."
       },
       "confirm": {
         "title": "Request pre-authorization",
@@ -2318,6 +2645,10 @@
         "tenancy": {
           "label": "Tenancy",
           "description": "Manage organizations, sites and cross-tenant integrations."
+        },
+        "workspace": {
+          "label": "Data analysis sandbox",
+          "description": "Export fleet datasets and run analysis code in an isolated sandbox with no network and no device access. Findings come back as proposals a technician approves."
         }
       },
       "tools": {
@@ -2853,6 +3184,11 @@
       "searchPlaceholder": "Search scripts…",
       "selectedCount_one": "{{count}} script authorized",
       "selectedCount_other": "{{count}} scripts authorized"
+    },
+    "designerNote": {
+      "title": "This agent only reads and writes reports",
+      "body": "A Fleet Designer never executes anything on a device. On means it may run and deliver its designs to the recipients you choose.",
+      "ack": "I understand this agent runs unattended and delivers Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3195,7 +3531,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Manage hardware, software, and service items used across quotes, contracts, and invoices. Connect distributors (Pax8, TD SYNNEX) under Integrations → Distributors."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Manage hardware, software, and service items used across quotes, contracts, and invoices. Connect distributors (Pax8, TD SYNNEX) under Integrations → Distributors.",
+    "distributorsLink": "Manage distributor connections →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Current password is required",
@@ -3893,6 +4230,7 @@
     "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Default time entry (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",
     "categoryUpdated": "Category updated",
     "ticketing": "Ticketing",
@@ -3994,7 +4332,10 @@
     "inboundEmail": "Inbound Email",
     "cannedResponses": "Canned responses",
     "checkingAccess": "Checking your access...",
-    "timeTracking": "Time Tracking"
+    "timeTracking": "Time Tracking",
+    "email": "Email",
+    "templates": "Templates",
+    "timeCapture": "Time capture"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -4201,7 +4542,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
       "ticketing": "Ticketing",
-      "ticketingDescription": "SLA and billing overrides"
+      "ticketingDescription": "SLA and billing overrides",
+      "ai": "AI",
+      "aiDescription": "AI assistant budget, rate limits and approval mode"
     },
     "overview": {
       "title": "Organization overview",
@@ -4222,6 +4565,12 @@
       "organizationId": "Organization ID",
       "copyOrganizationId": "Copy Organization ID",
       "organizationIdHelp": "Use this ID when inviting users or configuring integrations."
+    },
+    "ai": {
+      "externalProcessing": "Allow sandboxed AI analysis",
+      "externalProcessingDescription": "Lets AI analysis runs execute code for this organization in an isolated sandbox with no network access, hosted in this organization's region. Off by default.",
+      "externalProcessingSaved": "Saved",
+      "externalProcessingSaveFailed": "Could not change this setting"
     },
     "breadcrumbs": {
       "settings": "Settings",
@@ -4956,13 +5305,21 @@
     "columns": {
       "email": "Email",
       "role": "Role",
-      "lastLogin": "Last login"
+      "lastLogin": "Last login",
+      "mfaStatus": "MFA status"
     },
     "status": {
       "active": "Active",
       "invited": "Invited",
       "suspended": "Suspended",
       "pending": "Pending"
+    },
+    "mfaStatus": {
+      "enrolled": "Enrolled",
+      "pending": "Pending",
+      "pendingByDate": "Pending — enroll by {{date}}",
+      "overdue": "Overdue",
+      "notRequired": "Not required"
     },
     "empty": "No users match your search."
   },
@@ -5022,6 +5379,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organization-owned variables are listed under each organization.",
     "title": "Variables",
     "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
     "loading": "Loading variables…",
@@ -5061,6 +5419,16 @@
     "empty": {
       "title": "No variables yet",
       "description": "Create one to stop pasting the same token into every customer's scripts."
+    },
+    "filters": {
+      "searchLabel": "Search variables",
+      "searchPlaceholder": "Search by key or description",
+      "scopeGroupLabel": "Filter by scope",
+      "scopeAll": "All scopes"
+    },
+    "noMatches": {
+      "title": "No variables match your filters",
+      "description": "Try a different search term or clear the scope filter."
     },
     "errors": {
       "load": "Could not load variables."
@@ -5355,5 +5723,23 @@
     "saveFailed": "Those settings could not be saved.",
     "loading": "Loading…",
     "loadFailed": "Script authoring settings could not be loaded."
+  },
+  "orgAiBudgetSettings": {
+    "title": "AI budget",
+    "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "selectOrganization": "Select an organization to configure its AI budget."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing Settings",
+    "description": "Statuses, SLAs, categories, intake forms, email, templates and time capture — applied across all of your organizations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Catalog defaults",
+    "description": "Used to pre-fill catalog imports and the quote editor's auto-fill — these never affect price resolution directly.",
+    "loading": "Loading catalog defaults...",
+    "loadError": "Failed to load catalog defaults.",
+    "saveError": "Failed to save catalog defaults",
+    "saveSuccess": "Catalog defaults saved",
+    "saveButton": "Save"
   }
 }

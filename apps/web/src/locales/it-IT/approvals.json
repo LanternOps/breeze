@@ -49,8 +49,12 @@
   "deciding": "Invio in corso…",
   "expiresIn": "Scade tra {{minutes}} min",
   "expiresSoon": "Scade tra meno di un minuto",
+  "expiresInHours": "Scade tra {{hours}} h",
+  "expiresInDays": "Scade tra {{days}} giorni",
   "expired": "Scaduta",
   "unknownOrganization": "Organizzazione sconosciuta",
+  "intentNoLongerPending": "Quell’approvazione non è più in sospeso.",
+  "dismiss": "Ignora",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} approvato per {{org}}",
   "pagination": {
@@ -62,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
+    "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici, quindi un'altra persona autorizzata deve decidere su questa richiesta.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
     "alreadyDecided": "Questa richiesta è già stata decisa.",
     "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
@@ -86,5 +91,25 @@
       "approvedPromoteFailed": "Approvato, ma non è stato possibile inviare la richiesta di preautorizzazione. Riprova dalle impostazioni dell’agente.",
       "policyDecideDisabled": "Approvato. Non è stato possibile richiedere la preautorizzazione perché è disattivata per questa distribuzione."
     }
-  }
+  },
+  "recent": {
+    "title": "Recenti",
+    "subtitle": "Già decise o concluse",
+    "loading": "Caricamento delle approvazioni recenti…",
+    "error": "Impossibile caricare le approvazioni recenti.",
+    "retry": "Riprova",
+    "empty": "Nulla si è concluso di recente.",
+    "status": {
+      "failed": "Non riuscita",
+      "rejected": "Rifiutata",
+      "expired": "Scaduta",
+      "cancelled": "Annullata",
+      "completed": "Completata",
+      "denied": "Negata",
+      "approved": "Approvata",
+      "reported": "Segnalata",
+      "unknown": "Sconosciuto"
+    }
+  },
+  "proposedByAgentExecuteNotice": "Approvare questo lo esegue subito — non è una simulazione, nemmeno in modalità ombra."
 }

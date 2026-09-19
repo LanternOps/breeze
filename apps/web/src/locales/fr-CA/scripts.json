@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilèges élevés",
     "relativeTime": {
       "justNow": "À l’instant",
       "minutesAgo": "Il y a {{count}} min",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Cette action est irréversible."
     },
     "library": {
+      "target": "Importer dans",
+      "allOrgs": "Toutes les organisations du partenaire",
+      "chooseOrg": "Choisir une organisation",
+      "partnerPermission": "Vous ne pouvez pas importer de scripts pour toutes les organisations. Choisissez une organisation.",
+      "importSuccess": "« {{name}} » a été importé",
       "title": "Bibliothèque de scripts système",
       "description": "Importez des scripts dans votre organisation",
       "searchPlaceholder": "Rechercher des scripts système...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} importés, {{renamed}} renommés, {{versioned}} versionnés, {{skipped}} ignorés, {{failed}} en échec",
     "scriptCount": "{{count}} scripts dans le bundle",
     "statusInvalid": "Invalide",
-    "exportLimit": "Vous pouvez exporter jusqu’à {{max}} scripts par bundle."
+    "exportLimit": "Vous pouvez exporter jusqu’à {{max}} scripts par bundle.",
+    "importDoneTitle": "Importation terminée",
+    "importDoneNothing": "Rien n’a été importé",
+    "importDoneOpen": "Ouvrir le script",
+    "resultActionImported": "Importé",
+    "resultActionRenamed": "Renommé depuis {{name}}",
+    "resultActionVersioned": "Ajouté comme nouvelle version",
+    "resultOpen": "Ouvrir"
   },
   "testRunner": {
     "title": "Exécution de test",

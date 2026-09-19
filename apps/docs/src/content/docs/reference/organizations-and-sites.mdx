@@ -138,6 +138,24 @@ When a partner is deleted via `DELETE /partners/:id`, the record is not removed 
 
 An **Organisation** represents a customer or internal team managed by a partner. Every organisation belongs to exactly one partner.
 
+### Organisations Account Board
+
+The **Organizations** page (`/organizations`) is an account board — one row per organisation, with columns for **Organization**, **Setup**, **Account data**, **Open tickets**, and **Integrations**.
+
+- **Setup** and **Account data** each show a row of readiness chips — one chip per missing item (for example a missing backup configuration, or a contract that hasn't been set up), linking straight to where you'd fix it. An organisation with nothing missing shows a single quiet **Complete** chip; if a readiness check couldn't be loaded, the chip reads **Unavailable** instead of silently showing nothing.
+- **Open tickets** shows the count for that organisation, with an SLA-breach count called out when there are breaches.
+- **Integrations** shows badges for connected integrations, with a distinct dashed style for integrations the partner has available but this organisation hasn't connected.
+
+A rollup band above the table totals accounts, trial and suspended counts, organisations with incomplete setup, organisations missing account data, open tickets (with SLA-breach count), and unlinked organisations.
+
+Two independent controls narrow the board:
+
+- **Lens** switches which columns are emphasised: **Setup**, **Account**, or **Both**.
+- **Filter** narrows the row set: **All**, **Setup incomplete**, **Account data missing**, **Open tickets**, **Trial**, **Archived**, or **Unlinked**.
+- **Sort** orders the rows: **Manual order** (drag to reorder, or use the arrow keys on a row's drag handle), **A to Z**, or **Open tickets**.
+
+The board is fully keyboard-navigable: **Arrow Up** / **Arrow Down** move between rows, and **Home** / **End** jump to the first or last row.
+
 ### Organisation Types
 
 | Type | Description |

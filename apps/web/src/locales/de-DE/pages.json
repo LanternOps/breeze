@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Drittanbieterkatalog",
     "adminTrustAct": "Partner-Vertrauensaktion",
     "adminTrustQueue": "Partner-Vertrauenswarteschlange",
+    "adminSendingDomains": "Partner-Versanddomains",
     "adminUsersDetailDevices": "Geräte des Benutzers",
     "aiAgentsImpact": "KI-Wirkung",
     "aiAgentsRunsDetail": "Lauf-Details",
@@ -126,8 +127,9 @@
     "sensitiveData": "Sensible Daten",
     "settingsAccessReviews": "Zugriffsüberprüfungen",
     "settingsAiAgents": "KI-Agenten",
-    "settingsAiUsage": "KI-Nutzung und Budget",
+    "settingsAiUsage": "KI-Nutzung",
     "settingsAiScriptAuthoring": "Skripterstellung",
+    "settingsToolSources": "Tool-Quellen",
     "settingsAlertTemplatesDetail": "Warnmeldungsvorlage",
     "settingsAlertTemplates": "Warnmeldungsvorlagen",
     "settingsApiKeys": "API-Schlüssel",
@@ -161,7 +163,12 @@
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
     "workspace": "KI-Assistent",
-    "aiAgentsFleetDesign": "Flottendesign"
+    "aiAgentsFleetDesign": "Flottendesign",
+    "agreementTemplates": "Vereinbarungsvorlagen",
+    "agreementTemplateDetail": "Vereinbarungsvorlage",
+    "agreementTemplateNew": "Neue Vereinbarungsvorlage",
+    "signedAgreements": "Unterzeichnete Vereinbarungen",
+    "settingsTicketing": "Ticketing-Einstellungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -224,6 +231,10 @@
       "deliverableTemplates": {
         "title": "Leistungsvorlagen",
         "description": "Definieren Sie eine Servicestufe einmal und wenden Sie ihre Leistungen auf jeden Kunden an."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Ticket-Checklisten-Vorlagen",
+        "description": "Wiederverwendbare Schrittlisten, die Ihre Techniker auf jedes Ticket anwenden können."
       }
     }
   },

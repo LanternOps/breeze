@@ -16,12 +16,18 @@ import {
 import { claimAndEnqueue } from './claim';
 
 /**
- * Sign-in activity is excluded from on-demand: its Graph limit is 10 requests
- * per minute for the WHOLE app across every tenant (spec §4.1), so one
- * technician pressing "Sync now" must not be able to spend the region's budget.
+ * Sign-in domains are excluded from on-demand: their Graph surfaces are
+ * app-wide throttled, not per-tenant (spec §4.1), so one technician pressing
+ * "Sync now" must not be able to spend the region's budget.
+ *
+ * `signin_events` (#5784 W05) hits /auditLogs/signIns, a DIFFERENT surface from
+ * signin_activity's /users?$select=signInActivity — it has its own token bucket
+ * rather than sharing that one — but the same on-demand reasoning applies.
  */
+const NON_ON_DEMAND_DOMAINS: ReadonlySet<M365SyncDomain> = new Set(['signin_activity', 'signin_events']);
+
 export const ON_DEMAND_SYNC_DOMAINS: readonly M365SyncDomain[] =
-  M365_SYNC_DOMAINS.filter((domain) => domain !== 'signin_activity');
+  M365_SYNC_DOMAINS.filter((domain) => !NON_ON_DEMAND_DOMAINS.has(domain));
 
 /**
  * A customer-graph-read consent (first-time or re-consent) verified and the

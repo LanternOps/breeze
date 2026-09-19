@@ -7,10 +7,12 @@ import { config } from 'dotenv';
 // DATABASE_URL_APP directly via the job env, and locally the suites fall
 // back to the shared :5433 test-stack defaults baked into each
 // *.integration.test.ts.
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     include: ['src/__tests__/**/*.integration.test.ts'],
     fileParallelism: false,
     testTimeout: 30000,

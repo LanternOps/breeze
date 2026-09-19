@@ -78,6 +78,10 @@ export default function UsersPage() {
           : t('usersPage.never'),
         mfaEnabled: Boolean(u.mfaEnabled),
         mfaProtected: Boolean(u.mfaProtected ?? u.mfaEnabled),
+        // #5690 — omitted entirely (undefined) on a legacy payload with no
+        // mfaStatus field, so UserList hides the column rather than mislabel it.
+        mfaStatus: u.mfaStatus as User['mfaStatus'],
+        mfaEnrollmentDeadline: (u.mfaEnrollmentDeadline as string | null | undefined) ?? null,
       }));
       setUsers(rows);
     } catch (err) {

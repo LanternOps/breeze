@@ -30,8 +30,12 @@
     "desktopUnavailable": "Desktop nicht verfügbar",
     "dismiss": "Schließen",
     "downloadFor": "Für {{platform}} herunterladen",
+    "ending": {
+      "description": "Die vorherige Sitzung wird auf dem Gerät noch beendet. Warten Sie einen Moment und versuchen Sie es erneut.",
+      "title": "Sitzung wird noch beendet"
+    },
     "errors": {
-      "agentUpgradeRequired": "Remote-Desktop erfordert auf diesem Gerät ein Agent-Update (Unterstützung für Sitzungs-Widerrufsleases). Der Agent aktualisiert sich automatisch – das ist in der Regel innerhalb einer Minute erledigt. Terminal und Dateiübertragung sind nicht betroffen.",
+      "agentUpgradeRequired": "Remote-Desktop erfordert auf diesem Gerät ein Agent-Update (Unterstützung für Sitzungs-Widerrufsleases und Start-Fence). Der Agent aktualisiert sich automatisch – das ist in der Regel innerhalb einer Minute erledigt. Terminal und Dateiübertragung sind nicht betroffen.",
       "connectionFailed": "Verbindung fehlgeschlagen",
       "createDesktopCode": "Desktop-Verbindungscode konnte nicht erstellt werden",
       "createDesktopSession": "Die Desktop-Sitzung konnte nicht erstellt werden",
@@ -63,6 +67,21 @@
     "openInBrowser": "Im Browser öffnen",
     "policyDisabled": "Remote-Desktop ist durch Richtlinie deaktiviert",
     "policyDisabledNamed": "Der Remotedesktop ist durch die Richtlinie „{{name}}“ deaktiviert.",
+    "revoked": {
+      "title": "Sitzung widerrufen",
+      "setUpMfa": "MFA einrichten",
+      "reasons": {
+        "session_ended": "Die Sitzung war bereits beendet.",
+        "user_inactive": "Ihr Konto ist nicht mehr aktiv.",
+        "epoch_baseline_missing": "Ihre Berechtigungen konnten nicht überprüft werden. Versuchen Sie erneut, eine Verbindung herzustellen.",
+        "permissions_changed": "Ihre Berechtigungen haben sich geändert, nachdem diese Sitzung begonnen hat. Stellen Sie die Verbindung erneut her, um mit Ihrem aktuellen Zugriff fortzufahren.",
+        "membership_removed": "Sie haben keinen Zugriff mehr auf diese Organisation oder dieses Gerät.",
+        "site_scope_lost": "Dieses Gerät liegt außerhalb Ihres zugewiesenen Standortbereichs.",
+        "mfa_required": "Für den Remote-Desktop-Zugriff ist jetzt eine Multi-Faktor-Authentifizierung erforderlich.",
+        "hard_deadline": "Diese Sitzung hat die maximal zulässige Dauer erreicht.",
+        "default": "Die Sitzung wurde durch eine Sicherheitsrichtlinie beendet. Versuchen Sie es erneut."
+      }
+    },
     "unavailable": {
       "default": "Desktop ist auf diesem Gerät nicht verfügbar",
       "headless": "Dieses Gerät verfügt über keine Anzeige – der Remote-Desktop ist nicht verfügbar",
@@ -664,7 +683,8 @@
       "connecting": "Verbinden...",
       "disconnected": "Nicht verbunden",
       "failed": "Fehlgeschlagen",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "teardownPending": "Wird beendet (Gerät bestätigt noch)"
     },
     "subtitle": "Überwachungsprotokoll für den Fernzugriff",
     "title": "Sitzungsverlauf",
@@ -700,6 +720,7 @@
       "timeline": "Zeitleiste"
     },
     "subtitle": "Fernzugriffssitzungen anzeigen und überwachen",
+    "teardownPending": "Bestätigung des Geräts ausstehend",
     "title": "Sitzungsverlauf",
     "viewDevice": "Gerät anzeigen",
     "viewRecording": "Aufzeichnung ansehen"

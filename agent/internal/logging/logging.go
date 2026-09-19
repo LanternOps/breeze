@@ -18,7 +18,30 @@ const (
 	KeyComponent   = "component"
 	KeyDurationMs  = "durationMs"
 	KeyError       = "error"
+
+	// KeyShipAlways marks a record that must reach the log shipper regardless
+	// of the configured log_shipping_level. The marker is stripped before the
+	// entry is shipped. See ShipAlways.
+	KeyShipAlways = "_shipAlways"
 )
+
+// ShipAlways returns an attribute that lifts the record above the shipper's
+// minimum level. It exists for the few periodic diagnostics that are the
+// only evidence we have for a live remote-desktop session ("Viewer WebRTC
+// stats", "Desktop WebRTC metrics"): they are Info-level, but the
+// desktop-helper ships at log_shipping_level=warn by default, so without this
+// they never reached Agent Logs (#5929). The override is session-scoped by
+// construction — only records emitted while a session is live carry it.
+//
+// It overrides log_shipping_level only, not log_level: slog checks
+// Enabled() before Handle() ever runs, so a record below the LOCAL level is
+// dropped before the marker can be seen and neither logs nor ships. The
+// desktop-helper hardcodes the local level to info, so it is unaffected; an
+// agent running direct-mode sessions with log_level=warn would still not
+// ship these lines.
+func ShipAlways() slog.Attr {
+	return slog.Bool(KeyShipAlways, true)
+}
 
 type contextKey struct{}
 
@@ -154,11 +177,15 @@ func InitShipper(cfg ShipperConfig) {
 // StopShipper gracefully stops the log shipper.
 func StopShipper() {
 	shipperMu.Lock()
-	defer shipperMu.Unlock()
+	shipper := globalShipper
+	globalShipper = nil
+	shipperMu.Unlock()
 
-	if globalShipper != nil {
-		globalShipper.Stop()
-		globalShipper = nil
+	// A flush can outlive the agent's shutdown deadline. Keep logging usable
+	// while it drains: the timeout warning also passes through shippingHandler
+	// and must not wait on the same lock as the stalled flush.
+	if shipper != nil {
+		shipper.Stop()
 	}
 }
 
@@ -218,13 +245,17 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 	shipper := globalShipper
 	shipperMu.RUnlock()
 
-	if shipper != nil && shipper.ShouldShip(record.Level) {
+	if shipper != nil && (shipper.ShouldShip(record.Level) || h.shipAlways(record)) {
 		fields := make(map[string]any)
 		for _, attr := range h.attrs {
-			addField(fields, h.groups, attr)
+			if attr.Key != KeyShipAlways {
+				addField(fields, h.groups, attr)
+			}
 		}
 		record.Attrs(func(a slog.Attr) bool {
-			addField(fields, h.groups, a)
+			if a.Key != KeyShipAlways {
+				addField(fields, h.groups, a)
+			}
 			return true
 		})
 
@@ -240,8 +271,27 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 		shipper.Enqueue(entry)
 	}
 
-	// Still write to local handler
-	return h.base.Handle(ctx, record)
+	// Still write to local handler, without the shipping marker.
+	return h.base.Handle(ctx, stripShipAlways(record))
+}
+
+// shipAlways reports whether the record, or the logger it came from, carries
+// the ShipAlways marker.
+func (h *shippingHandler) shipAlways(record slog.Record) bool {
+	for _, attr := range h.attrs {
+		if attr.Key == KeyShipAlways {
+			return true
+		}
+	}
+	found := false
+	record.Attrs(func(a slog.Attr) bool {
+		if a.Key == KeyShipAlways {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func (h *shippingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -253,10 +303,52 @@ func (h *shippingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	copy(groups, h.groups)
 
 	return &shippingHandler{
-		base:   h.base.WithAttrs(attrs),
+		base:   h.base.WithAttrs(withoutShipAlways(attrs)),
 		attrs:  merged,
 		groups: groups,
 	}
+}
+
+// withoutShipAlways drops the ShipAlways marker so it never reaches the
+// local handler's output. Returns the input slice untouched when absent.
+func withoutShipAlways(attrs []slog.Attr) []slog.Attr {
+	for i, a := range attrs {
+		if a.Key == KeyShipAlways {
+			out := make([]slog.Attr, 0, len(attrs)-1)
+			out = append(out, attrs[:i]...)
+			for _, b := range attrs[i+1:] {
+				if b.Key != KeyShipAlways {
+					out = append(out, b)
+				}
+			}
+			return out
+		}
+	}
+	return attrs
+}
+
+// stripShipAlways returns a copy of the record without the ShipAlways marker,
+// or the record itself when it carries none.
+func stripShipAlways(record slog.Record) slog.Record {
+	found := false
+	record.Attrs(func(a slog.Attr) bool {
+		if a.Key == KeyShipAlways {
+			found = true
+			return false
+		}
+		return true
+	})
+	if !found {
+		return record
+	}
+	out := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	record.Attrs(func(a slog.Attr) bool {
+		if a.Key != KeyShipAlways {
+			out.AddAttrs(a)
+		}
+		return true
+	})
+	return out
 }
 
 func (h *shippingHandler) WithGroup(name string) slog.Handler {

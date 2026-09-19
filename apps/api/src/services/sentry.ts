@@ -378,6 +378,11 @@ const ALLOWED_TAG_NAMES = new Set([
   'invoice_payment_id',
   'accounting_connection_id',
   'accounting_audit_resource_id',
+  // #6082: `accounting_entity_id` is `SyncMappedEntityInput['breezeEntityId']`
+  // (accountingSyncWorker.ts's `sync-mapping` terminal-failure path) — the same
+  // record-scoped opaque UUID precedent as `invoice_id`/`accounting_mapping_id`
+  // above, never free text, length-capped by `isBoundedTagValue`.
+  'accounting_entity_id',
   // Closed sets by construction, each written as a string literal or read off a
   // typed union at the call site; none carries a tenant, device or host id:
   // `accounting_job_type` is the `AccountingSyncJobData['type']` union

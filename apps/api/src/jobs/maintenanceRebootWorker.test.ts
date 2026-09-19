@@ -16,6 +16,11 @@ vi.mock('../services/featureConfigResolver', () => ({
   resolvePatchConfigForDevice: vi.fn(),
 }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/patchAlerts', () => ({
+  REBOOT_PENDING_ALERT_THRESHOLD_DAYS: 7,
+  emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
+  loadOldestRebootRequiredSince: vi.fn().mockResolvedValue(null),
+}));
 
 import {
   decideRebootCommand,
@@ -25,6 +30,7 @@ import {
   REBOOT_DEDUP_STATUSES,
 } from './maintenanceRebootWorker';
 import { DEFAULT_REBOOT_DELAY_MINUTES, DEFERRAL_OFF } from '../services/patchRebootHandler';
+import { emitRebootPendingAlert, loadOldestRebootRequiredSince } from '../services/patchAlerts';
 
 // #3197: the grace period is no longer a constant in this module. It resolves
 // from the device's effective patch policy — the same setting the post-patch
@@ -155,8 +161,14 @@ describe('rebootWarranted', () => {
 });
 
 describe('processRebootCandidate', () => {
-  const winDevice = { id: 'dev-1', orgId: 'org-1', osType: 'windows' as const };
-  const linuxDevice = { id: 'dev-2', orgId: 'org-1', osType: 'linux' as const };
+  const winDevice = {
+    id: 'dev-1', orgId: 'org-1', osType: 'windows' as const,
+    hostname: 'WIN-01', uptimeSeconds: 3600,
+  };
+  const linuxDevice = {
+    id: 'dev-2', orgId: 'org-1', osType: 'linux' as const,
+    hostname: 'lnx-01', uptimeSeconds: 3600,
+  };
 
   type Deps = NonNullable<Parameters<typeof processRebootCandidate>[1]>;
 
@@ -322,17 +334,103 @@ describe('processRebootCandidate', () => {
 });
 
 describe('runMaintenanceRebootSweep', () => {
+  const candidate1 = {
+    id: 'dev-1', orgId: 'org-1', osType: 'linux' as const,
+    hostname: 'HOST-1', uptimeSeconds: 10 * 86400,
+  };
+  const candidate2 = {
+    id: 'dev-2', orgId: 'org-1', osType: 'linux' as const,
+    hostname: 'HOST-2', uptimeSeconds: 10 * 86400,
+  };
+
+  function makeSweepDeps(overrides: Partial<Parameters<typeof runMaintenanceRebootSweep>[0]> = {}) {
+    return {
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1, candidate2]),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: false, reason: 'no-action' }),
+      emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
+      loadOldestRebootRequiredSince: vi.fn().mockResolvedValue(null),
+      ...overrides,
+    };
+  }
+
   it('isolates per-device errors so a throw on one device does not abort others', async () => {
-    const candidates = [
-      { id: 'dev-1', orgId: 'org-1', osType: 'linux' as const },
-      { id: 'dev-2', orgId: 'org-1', osType: 'linux' as const },
-    ];
-    const result = await runMaintenanceRebootSweep({
-      getRebootCandidates: vi.fn().mockResolvedValue(candidates),
-      processRebootCandidate: vi.fn()
-        .mockRejectedValueOnce(new Error('boom'))
-        .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
-    });
+    const result = await runMaintenanceRebootSweep(
+      makeSweepDeps({
+        processRebootCandidate: vi.fn()
+          .mockRejectedValueOnce(new Error('boom'))
+          .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
+      }),
+    );
     expect(result).toEqual({ issued: 1, checked: 2 });
+  });
+
+  it('calls the reboot-pending emitter for a non-issued candidate with the right args', async () => {
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1]),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: false, reason: 'no-action' }),
+      loadOldestRebootRequiredSince: vi.fn().mockResolvedValue(null),
+    });
+
+    await runMaintenanceRebootSweep(deps);
+
+    expect(deps.loadOldestRebootRequiredSince).toHaveBeenCalledWith('dev-1', 'org-1');
+    expect(deps.emitRebootPendingAlert).toHaveBeenCalledTimes(1);
+    expect(deps.emitRebootPendingAlert).toHaveBeenCalledWith({
+      orgId: 'org-1',
+      deviceId: 'dev-1',
+      hostname: 'HOST-1',
+      uptimeSeconds: 10 * 86400,
+      oldestRebootRequiredSince: null,
+    });
+  });
+
+  it('skips the patch-history read for a device up for less than the threshold (it cannot alert)', async () => {
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([{ ...candidate1, uptimeSeconds: 3600 }]),
+    });
+
+    await runMaintenanceRebootSweep(deps);
+
+    expect(deps.loadOldestRebootRequiredSince).not.toHaveBeenCalled();
+    expect(deps.emitRebootPendingAlert).toHaveBeenCalledWith(expect.objectContaining({ uptimeSeconds: 3600, oldestRebootRequiredSince: null }));
+  });
+
+  it('does not call the reboot-pending emitter for an issued candidate', async () => {
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1]),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: true, reason: 'issued' }),
+    });
+
+    await runMaintenanceRebootSweep(deps);
+
+    expect(deps.emitRebootPendingAlert).not.toHaveBeenCalled();
+    expect(deps.loadOldestRebootRequiredSince).not.toHaveBeenCalled();
+  });
+
+  it('an emitter throw does not stop the sweep', async () => {
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1, candidate2]),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: false, reason: 'no-action' }),
+      emitRebootPendingAlert: vi.fn().mockRejectedValue(new Error('alert boom')),
+    });
+
+    const result = await runMaintenanceRebootSweep(deps);
+
+    expect(result).toEqual({ issued: 0, checked: 2 });
+    expect(deps.emitRebootPendingAlert).toHaveBeenCalledTimes(2);
+  });
+
+  it('never dispatches a reboot off the back of the alert path — it only reads and alerts', async () => {
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1]),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: false, reason: 'no-action' }),
+    });
+
+    await runMaintenanceRebootSweep(deps);
+
+    // processRebootCandidate is the only thing allowed to issue commands, and
+    // it already reported it did not. The emitter/loader stubs above prove
+    // nothing else in the sweep did either.
+    expect(deps.processRebootCandidate).toHaveBeenCalledTimes(1);
   });
 });

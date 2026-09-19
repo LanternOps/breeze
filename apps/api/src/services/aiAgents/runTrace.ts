@@ -28,19 +28,26 @@ import { projectFleetDesign } from './fleetDesignReport';
 import { projectNarrative } from './narrativeReport';
 import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
+import { projectPatch } from './patchPlan';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
   type AiAgentMode,
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
+  type AiAgentRunSweepProposalOutcome,
   type AiAgentRunLedgerEntryDto,
+  type AiAgentRunNarrativeDeliveryDto,
   type AiAgentRunStatus,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
+  type AiAgentRunWorkspaceDto,
+  type AiAgentRunWorkspaceStepDto,
+  type AiRunArtifactDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
   type TicketTriageSkip,
+  AnalysisOutcomeDto,
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
@@ -76,6 +83,12 @@ export interface RunTraceRunInput {
    * never committed.
    */
   reportRunId: string | null;
+  /**
+   * Execution plane W04 — `ai_agent_runs.compute_cents`, the settled sandbox
+   * charge. `null`/absent for every run that never built a workspace, which
+   * the projection reads as 0.
+   */
+  computeCents?: number | null;
   /**
    * The raw `ai_agent_runs.outcome` jsonb column — typed `Record<string,
    * unknown>` at the schema layer (see aiAgents.ts) because Postgres jsonb
@@ -207,6 +220,42 @@ export interface RunTraceIntentRowInput {
   actionName: string;
   approvalScope: ActionIntentApprovalScope;
   decidedVia: string | null;
+}
+
+/**
+ * #4442 W05 — the live per-intent outcome the sweep projection joins on.
+ * `decided_via = 'policy'` + `approved` is `auto_executing`: the act-mode
+ * case, which reads very differently from a human approval.
+ */
+export function sweepProposalOutcome(
+  row: Pick<RunTraceIntentRowInput, 'status' | 'decidedVia'>,
+): AiAgentRunSweepProposalOutcome {
+  switch (row.status) {
+    case 'pending_approval':
+      return 'pending';
+    case 'approved':
+    case 'executing':
+      return row.decidedVia === 'policy' ? 'auto_executing' : 'pending';
+    case 'completed':
+      return 'executed';
+    case 'failed':
+      return 'failed';
+    case 'rejected':
+    case 'cancelled':
+      return 'declined';
+    case 'expired':
+      return 'expired';
+    default:
+      // The cases above exhaustively cover `actionIntentStatusEnum` today, so
+      // this is dead code — until someone adds a ninth status and does not
+      // come here. Reporting an unknown TERMINAL state as `pending` would tell
+      // an operator to go approve something that has already finished, so the
+      // fallback is loud rather than silent.
+      console.warn('[runTrace] unmapped action-intent status on a sweep proposal', {
+        status: row.status, decidedVia: row.decidedVia,
+      });
+      return 'pending';
+  }
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -371,6 +420,87 @@ function mapIntentRow(row: RunTraceIntentRowInput): AiAgentRunIntentSummaryDto {
   };
 }
 
+const WORKSPACE_STEP_LANGUAGES = new Set(['bash', 'python', 'node']);
+
+/**
+ * Project `ai_run_workspaces.steps` (jsonb, written by the worker) into the
+ * wire shape (execution-plane spec §5.8). Defensive on purpose: this column is
+ * `excludedOpen` open-ended content, and the run page's whole value is that a
+ * technician can TRUST what it says ran. A malformed entry is dropped, never
+ * coerced — a step rendered with `exitCode: undefined` reads as success, which
+ * is the one lie this surface must not tell.
+ */
+export function mapWorkspaceSteps(raw: unknown): AiAgentRunWorkspaceStepDto[] {
+  if (!Array.isArray(raw)) return [];
+  const steps: AiAgentRunWorkspaceStepDto[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.ordinal !== 'number') continue;
+    if (typeof e.language !== 'string' || !WORKSPACE_STEP_LANGUAGES.has(e.language)) continue;
+    if (typeof e.durationMs !== 'number') continue;
+    if (e.exitCode !== null && typeof e.exitCode !== 'number') continue;
+    steps.push({
+      ordinal: e.ordinal,
+      language: e.language as 'bash' | 'python' | 'node',
+      scriptArtifactHandle:
+        typeof e.scriptArtifactHandle === 'string' ? e.scriptArtifactHandle : null,
+      exitCode: (e.exitCode as number | null) ?? null,
+      timedOut: e.timedOut === true,
+      durationMs: e.durationMs,
+      stdoutArtifactHandle:
+        typeof e.stdoutArtifactHandle === 'string' ? e.stdoutArtifactHandle : null,
+    });
+  }
+  return steps.sort((a, b) => a.ordinal - b.ordinal);
+}
+
+/**
+ * The `ai_run_workspaces` scalars the run page projects (spec §6.2).
+ * `provider_ref` is deliberately absent — it is a vendor handle the reaper
+ * needs and nothing outside the API has any use for.
+ */
+export interface RunWorkspaceRowInput {
+  backend: string;
+  region: 'eu' | 'us';
+  status: string;
+  bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
+  createdAt: Date;
+  readyAt: Date | null;
+  destroyedAt: Date | null;
+  cpuMs: number | null;
+  wallMs: number | null;
+  memAllocatedMb: number | null;
+  stagedBytes: number;
+  artifactBytes: number;
+  stepCount: number;
+  steps: unknown;
+}
+
+function mapWorkspace(row: RunWorkspaceRowInput | null): AiAgentRunWorkspaceDto | null {
+  if (!row) return null;
+  return {
+    backend: row.backend,
+    region: row.region,
+    status: row.status,
+    bootstrapHash: row.bootstrapHash,
+    runtimeImage: row.runtimeImage ?? null,
+    createdAt: row.createdAt.toISOString(),
+    readyAt: row.readyAt?.toISOString() ?? null,
+    destroyedAt: row.destroyedAt?.toISOString() ?? null,
+    cpuMs: row.cpuMs,
+    wallMs: row.wallMs,
+    memAllocatedMb: row.memAllocatedMb,
+    // bigint columns come back as strings on some drivers; the wire type is a number.
+    stagedBytes: Number(row.stagedBytes),
+    artifactBytes: Number(row.artifactBytes),
+    stepCount: row.stepCount,
+    steps: mapWorkspaceSteps(row.steps),
+  };
+}
+
 export function buildRunTrace(
   run: RunTraceRunInput,
   // `null` when the agent row is RLS-invisible to the caller. A partner-wide
@@ -407,7 +537,23 @@ export function buildRunTrace(
   // scalars, or `null` for every run that has none. Defaults null so every
   // existing caller is unchanged.
   fleetDesignArtifact: RunTraceFleetDesignArtifactInput | null = null,
-): AiAgentRunDetailDto {
+  // #4248 W03 (Task 10) — the narrative's email delivery counts, or `null`
+  // for every run that produced no narrative artifact. Defaults null so every
+  // existing caller is unchanged.
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null = null,
+  // Execution plane W05 (spec §5.8) — the run's artifacts, newest first, and
+  // the sandbox it used. Both default to the empty answer so every existing
+  // caller (and every run outside the `analysis` profile, which is most of
+  // them) is unchanged. The DTOs are already-safe projections: `toArtifactDto`
+  // is what keeps `blobKey` inside the API.
+  artifacts: AiRunArtifactDto[] = [],
+  workspace: RunWorkspaceRowInput | null = null,
+  // `progress` is intentionally NOT a parameter here: it is read from the
+  // live Redis ring (`readRunProgress`, W03) by the route, not assembled
+  // from persisted run state like everything else this function builds.
+  // The route merges it in after calling this function (see
+  // routes/aiAgents.ts GET /runs/:runId).
+): Omit<AiAgentRunDetailDto, 'progress'> {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
     schemaVersion: AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -458,7 +604,15 @@ export function buildRunTrace(
     // findings — see `projectSweep`'s own safe-projection contract. The raw
     // `proposedAction` args on each finding are never carried; only the
     // proposal's disposition and, when one exists, its PENDING intent id.
-    sweep: projectSweep(run, outcome, deviceHostnames),
+    sweep: projectSweep(
+      run,
+      outcome,
+      deviceHostnames,
+      // #4442 W05 — built from the run's FULL intent set (the route reads by
+      // `requesting_agent_run_id`, not the pending-only `run.intentIds`), so
+      // an auto-executed or expired proposal still reports its outcome.
+      new Map(intents.map((row) => [row.id, sweepProposalOutcome(row)])),
+    ),
     // Phase 2 wave P2-3 (weekly org narrative), Task A7: null for every
     // non-narrative run and for a narrative run that produced nothing — see
     // `projectNarrative`'s own safe-projection contract. The weekly
@@ -478,5 +632,23 @@ export function buildRunTrace(
     // derived markdown is deliberately left out too, since the detail view
     // renders the structured sections itself.
     fleetDesign: projectFleetDesign(run, outcome, fleetDesignArtifact),
+    // AI patch agent W01 (#5747): null for every non-patch run and for a
+    // patch run that produced no plan — see `projectPatch`'s safe-projection
+    // contract. The raw patch/job-result id lists never reach the wire.
+    // Hostnames ride the same batched map the sweep uses.
+    patch: projectPatch(run, outcome, deviceHostnames),
+    // Execution plane W04 (#5715): null for every non-analysis run and for an
+    // analysis run that never submitted. Read DEFENSIVELY — `outcome` is
+    // jsonb, and a row from before this wave simply lacks the key.
+    analysis: (outcome?.analysis as AnalysisOutcomeDto | undefined) ?? null,
+    // Stamped by `finalizeWorkspaceForRun`. `run.computeCents` is W02's
+    // column; a run that never built a sandbox reads 0.
+    computeCents: Number(run.computeCents ?? 0) || 0,
+    computeUsageEstimated: outcome?.computeUsageEstimated === true,
+    // #4248 W03: counts only, never a recipient — see the DTO docstring.
+    narrativeDelivery,
+    // Execution plane W05 (spec §5.8).
+    artifacts,
+    workspace: mapWorkspace(workspace),
   };
 }

@@ -15,6 +15,8 @@ type AuthState = {
   accessibleOrgIds: string[] | null;
   permissions: Set<'organizations:read' | 'organizations:write'>;
   mfa: boolean;
+  /** A defined value (including []) is a SITE CEILING — services/siteCeilingAccess.ts. */
+  allowedSiteIds?: string[];
 };
 
 const { authRef, mocks } = vi.hoisted(() => ({
@@ -111,6 +113,7 @@ vi.mock('../services/m365ControlPlane/metrics', () => ({
 }));
 
 import { m365CustomerGraphReadRoutes } from './m365CustomerGraphRead';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 const requiredGrant = {
   resourceApplicationId: '00000003-0000-0000-c000-000000000000',
@@ -700,5 +703,29 @@ describe('GET /m365/connections exposes the sync block on the ENVELOPE (W05)', (
   it('passes a null tenant when there is no connection', async () => {
     await app().request(`/m365/connections?orgId=${ORG_ID}`);
     expect(mocks.summary).toHaveBeenCalledWith(ORG_ID, null);
+  });
+});
+
+/**
+ * Establishing, retesting or severing the customer Graph READ credential is
+ * still an org-wide governance act: the connection covers the org's whole
+ * Entra tenant and has no per-site slice. Same class — and same gap — as the
+ * Actions surface and the legacy /m365/connection routes.
+ */
+describe('customer-graph-read mutations — org-wide governance site ceiling', () => {
+  it.each(mutationRequests)('%s is 403 for a site-restricted caller', async (_name, request) => {
+    authRef.current = auth({ allowedSiteIds: ['site-1'] });
+    const response = await request();
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+  });
+
+  it.each(mutationRequests)('%s is 403 when the ceiling is the EMPTY site list', async (_name, request) => {
+    authRef.current = auth({ allowedSiteIds: [] });
+    expect((await request()).status).toBe(403);
+  });
+
+  it.each(mutationRequests)('%s still succeeds for an UNRESTRICTED caller', async (_name, request) => {
+    expect((await request()).status).toBe(200);
   });
 });

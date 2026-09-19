@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Checklist",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Nenhuma etapa ainda.",
+    "addPlaceholder": "Adicionar uma etapa",
+    "add": "Adicionar",
+    "internalOnly": "Interno — nunca exibido ao cliente",
+    "detailPlaceholder": "Nota opcional para esta etapa"
+  },
+  "actions": {
+    "moveUp": "Mover para cima",
+    "moveDown": "Mover para baixo",
+    "delete": "Excluir",
+    "edit": "Editar",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "retry": "Tentar novamente"
+  },
+  "source": {
+    "manual": "Manual",
+    "deliverable": "Entrega",
+    "checklist_template": "Modelo"
+  },
+  "editDoneWarning": "Editar uma etapa concluída apaga quem a concluiu e quando.",
+  "resolveConfirm": {
+    "title": "Checklist incompleto",
+    "body_one": "{{count}} de {{total}} etapa não está marcada. Resolver mesmo assim?",
+    "body_other": "{{count}} de {{total}} etapas não estão marcadas. Resolver mesmo assim?",
+    "confirm": "Resolver mesmo assim",
+    "cancel": "Voltar"
+  },
+  "errors": {
+    "loadFailed": "Falha ao carregar o checklist.",
+    "saveFailed": "Falha ao salvar a etapa do checklist.",
+    "reorderFailed": "Falha ao reordenar o checklist.",
+    "tickRequiresUser": "Marcar uma etapa exige uma sessão de usuário autenticada."
+  },
+  "templates": {
+    "title": "Modelos de checklist",
+    "subtitle": "Procedimentos reutilizáveis que seus técnicos podem aplicar a qualquer chamado.",
+    "allOrganizations": "Todas as orgs",
+    "partnerWideHint": "Aplica-se a todas as organizações que você gerencia, agora e no futuro.",
+    "thisOrganizationOnly": "Somente esta organização",
+    "scope": "Quem pode usar este modelo",
+    "name": "Nome",
+    "description": "Descrição",
+    "instructions": "Instruções internas",
+    "instructionsHint": "Interno — nunca exibido ao cliente.",
+    "isActive": "Ativo",
+    "inactiveHint": "Modelos inativos permanecem vinculados onde já são usados, mas deixam de aparecer nos seletores.",
+    "steps": "Etapas",
+    "addStep": "Adicionar uma etapa",
+    "stepLabelPlaceholder": "Rótulo da etapa",
+    "empty": "Ainda não há modelos.",
+    "create": "Novo modelo",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "delete": "Excluir",
+    "apply": "Aplicar modelo",
+    "applyCta": "Aplicar",
+    "choosePlaceholder": "Escolha um modelo",
+    "applyMode": {
+      "append": "Adicionar estas etapas ao checklist existente",
+      "replaceUnticked": "Substituir as etapas não marcadas (as etapas concluídas são mantidas)"
+    },
+    "errors": {
+      "loadFailed": "Falha ao carregar os modelos de checklist.",
+      "saveFailed": "Falha ao salvar o modelo de checklist.",
+      "applyFailed": "Falha ao aplicar o modelo de checklist."
+    }
+  }
+}

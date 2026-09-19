@@ -28,8 +28,15 @@ export function canManagePartnerWidePolicies(
   return auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerOrgAccess === 'all');
 }
 
+/**
+ * Returned by every `canManagePartnerWidePolicies` gate, so it is deliberately
+ * resource-agnostic: the gate also guards partner-wide state that is not a policy —
+ * partner login branding (`routes/partnerLoginBranding.ts`) returns it today, and more
+ * non-policy surfaces will. A route that wants resource-specific wording should return
+ * its own string rather than widening this one.
+ */
 export const PARTNER_WIDE_WRITE_DENIED_MESSAGE =
-  'Modifying a partner-wide policy requires full partner org access (orgAccess must be "all")';
+  'Managing partner-wide state requires full partner org access (orgAccess must be "all")';
 
 /** Thrown by service mutators when a partner-wide row is visible to the caller but not administrable. Routes map it to 403. */
 export class PartnerWideWriteDeniedError extends Error {
