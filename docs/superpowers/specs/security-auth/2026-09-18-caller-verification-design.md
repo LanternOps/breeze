@@ -1,7 +1,8 @@
 # Caller verification (anti-vishing) — design
 
-Status: draft v2 for review · Owner: Todd · Date: 2026-09-18 · Revised: 2026-09-19
-(folds in the Codex gpt-6-astra xhigh review, see "Review notes")
+Status: draft v3 for review · Owner: Todd · Date: 2026-09-18 · Revised: 2026-09-19
+(v2 folded in the first Codex gpt-6-astra xhigh review; v3 folds in the second
+pass on v2 — see "Review notes")
 
 ## Problem
 
@@ -74,21 +75,21 @@ Breeze has the primitives and none of the orchestration:
 | D1 | New table `caller_verifications` keyed on `contacts`. Not a contact axis on `approval_requests`. | `approval_requests` is a technician-assurance ledger (`user_id NOT NULL`, device-bound factor enum, intent CAS semantics). Different subject, different factors, no fan-out. |
 | D2 | One "challenge card" for every method: partner branding, technician name, **the exact action and target** ("reset the password for j.smith@acme.com"), a reverse code, three candidate numbers of which one matches what the technician sees, and "This is not me". The caller never reads a code back. **Number matching is request confirmation, not proof of the technician's identity and not relay-proof.** | A read-back OTP is relayable outright. Number matching removes reflex approval and forces the user to see what is being requested. It does **not** stop an attacker who is on the phone with the real technician from repeating the number to the victim on a parallel call (threat 2); the card therefore names the technician, the action and the target, and the script never claims the code "proves" anything. A branded page reached from a link the caller supplied is not an independent trust anchor either; the strong reverse check is the caller ringing the MSP back on a number they already hold, and the card says so. |
 | D3 | The workstation tier is a **new** agent command `caller_verify` on the consent-gate seam, not `notify_user`. | `notify_user` as shipped cannot render it: Windows builds a fixed two-button `MessageBoxTimeoutW` (`userhelper/notify_prompt_windows.go`), macOS caps at three buttons, Linux returns no decision, and the agent waits 10 s without forwarding a timeout (`heartbeat/handlers_user.go`). The consent gate already renders a branded Tauri window with technician and org name and a correlated timeout on all three platforms. Cost: an agent and helper release. |
-| D4 | Assurance tiers: 3 workstation **bound** (the answering OS principal is bound to the contact, D11), 2 workstation unbound or SMS/email link to an **established** destination (D12), 1 callback attestation or a link to a non-established destination. Default gate is tier ≥ 2 for both M365 actions. Email never counts toward resetting the mailbox it was sent to, judged against the subject's directory identity, not a string compare. | A technician-selected device and username is possession of *some* managed session in the org, not this contact's. Only a principal binding lifts that to tier 3. A link proves possession of the phone or mailbox of record, but only if that record predates the call and was set by a human. Verifying by email and then resetting that same mailbox is circular. |
+| D4 | Assurance tiers: 3 workstation **bound** (the answering OS principal is bound to the contact, D11) or administrative step-up (D15), 2 SMS/email link to an **established** destination (D12), 1 workstation **unbound**, callback attestation, or a link to a non-established destination. Default gate is tier ≥ 2 for both M365 actions, so an unbound workstation never satisfies it on defaults. Tier is **recomputed at release** from the current policy, binding and destination state; the value frozen on the row is informational. Email never counts toward resetting the mailbox it was sent to, judged against the subject's directory identity, not a string compare. | A technician-selected device and username is possession of *some* managed session in the org, not this contact's; that is tier 1 evidence, on a par with "I rang a number". Only a principal binding lifts it to tier 3. A link proves possession of the phone or mailbox of record, but only if that record predates the call and was set by a human. Recomputing at release means a method the partner disables, or a destination that stops being established, stops satisfying the gate without a revocation sweep. |
 | D5 | Gate lives in `actionIntents/revalidateRelease.ts`, with a UX pre-check at intent creation and defense-in-depth checks inside **all three** M365 mutation backends: `m365DirectGraph.invokeDirect`, `m365ControlPlane/writeActionService.executeM365WriteActionByOrg`, and the Delegant broker path (`aiToolsM365.call()` → `invokeDelegantTool`). | `revalidateRelease` is already the single fail-closed check both release paths run, and freshness is a release-time property. `aiToolsM365.ts` selects among three backends (`direct`, `controlPlane`, `delegant`); the first draft gated two. Any future caller that skips the intent layer still refuses. Behavioural tests prove every backend issues zero mutation calls on refusal; a source-reference contract test is not sufficient on its own. |
-| D6 | Policy is a dedicated dual-ownership table `caller_verification_policies` (`org_id` XOR `partner_id`). Resolution is **strictest-wins per field** across org row, partner row and built-in defaults. Not a config-policy feature link. | Every config-policy resolver in `services/featureConfigResolver.ts` starts from a device hierarchy. This feature is scoped to an org and a contact and often has no device. "Closest row wins whole" (v1 draft) let an org `settings:write` holder create an org row with tier 0 and defeat the partner's security policy; `canManagePartnerWidePolicies` only governs partner-owned rows. Strictest-wins makes an org row tighten-only without a new authority model. Weakening below defaults is therefore only possible on the partner row, which is already partner-gated. |
+| D6 | Policy is a dedicated dual-ownership table `caller_verification_policies` (`org_id` XOR `partner_id`). Resolution in two steps: **baseline** = partner row with built-in defaults filling only fields the partner row leaves null; **effective** = baseline tightened field-by-field by the org row (org values that would loosen are ignored and reported). Not a config-policy feature link. | Every config-policy resolver in `services/featureConfigResolver.ts` starts from a device hierarchy. This feature is scoped to an org and a contact and often has no device. "Closest row wins whole" (v1) let an org `settings:write` holder set tier 0 and defeat the partner; `canManagePartnerWidePolicies` only governs partner-owned rows. Plain strictest-wins over defaults too (v2) made the partner unable to loosen anything (`max(default 2, partner 0)` is 2). Baseline-then-tighten gives the partner full control and the org tighten-only, with no new authority model. |
 | D7 | No `ticket_id` and no `device_id` column. Snapshots `ticket_ref`, `ticket_number`, `workstation_device_ref`, `device_hostname` carry the correlation with **no FK and no `device_id`/`ticket_id` column name**. | A table carrying `device_id`, `ticket_id` and `org_id` would be the first child selected by both org-move walkers (#4657 deadlock class). Worse, `breeze_device_child_orgid_tables()` (migration `2026-10-14-100000-ai-operator-thin-slice.sql`) discovers device children **by the uuid column name `device_id`**, FK or not, and rewrites `org_id` on a device move, which would then trip the contact/org composite FK. Renaming the snapshot column keeps the table out of both walkers; the badge and timeline resolve by `ticket_ref`. |
 | D8 | "Not me" opens an `incidents` row (p2), places a **subject fence** on the contact, cancels every not-yet-dispatched action intent for the subject through a **system-scoped internal revocation** (not `cancelActionIntent`), reports already-executing intents honestly in the incident, and notifies the partner. | `alerts.device_id` is `NOT NULL`, so alerts cannot represent a device-less rejection. `cancelActionIntent` (`intentService.ts` ~L2289) requires requester-or-approver authorization, which a public challenge response does not have, and it only reaches `pending_approval`/`approved`; the release worker claims `executing` before revalidation (`intentReleaseWorker.ts` ~L904). So cancellation alone cannot stop a release already past CAS; the fence is checked again inside every Graph backend at dispatch, which is the last point before the irreversible boundary. A vishing campaign hits many orgs of one MSP, so the partner hears about it. |
 | D9 | Delivery is asynchronous: start returns 202 and the UI polls. The `device_commands` row is created **in the same transaction as the verification row**, before anything is sent; the result is consumed by **one** idempotent handler in `services/commandResultHandlers.ts`, which both the WebSocket and HTTP transports already dispatch through. | Holding a request transaction across a two-minute agent round trip pins a pooled connection (#1105). `dispatchCommandToAgent` (`agentCommandRelay.ts`) transmits; it does not create the persisted ownership row, so "send then record the id" races an early result. The agent also posts results over HTTP (`heartbeat.go` ~L6084, `routes/agents/commands.ts`), and the WS path drops a duplicate once HTTP has terminalised (`agentWs.ts` ~L2107), so a WS-only hook loses decisions. |
 | D10 | Public challenge page `/verify/:token`, patterned on Quick Support. | `routes/supportPublic.ts` already solves the same shape: token is the credential, tight `withSystemDbAccessContext`, per-IP limits, a two-tier miss budget, one atomic single-use transition. |
-| D11 | **Canonical subject** is an Entra principal `(m365_connection_id, entra_tenant_id, entra_oid)` recorded in a new table `caller_verification_subject_bindings`, written only by the M365 directory import or by an explicit technician attestation. The gate resolves subjects by binding only; there is no email-string fallback. Ambiguity (two contacts bound to one OID, or one contact to two OIDs in the same tenant) fails closed. | `contacts.email` is deliberately non-unique (`schema/contacts.ts` ~L86); `contact_external_links` accepts arbitrary imported identifiers (`services/contacts/schemas.ts` ~L79), so an `entra` link is a label, not evidence; the M365 tools resolve UPN → OID and drop the UPN before mutating (`aiToolsM365.ts` ~L258), so a UPN string compare can guard a different user than the one mutated, and misses aliases. Same table also carries the principal bindings the workstation tier needs: `os_principal` (Windows SID or `uid:<n>@<hostname>`), `os_username`, `upn_snapshot`. |
+| D11 | **Canonical subject** is an Entra principal `(entra_tenant_id, entra_oid)`, independent of any backend connection, recorded in a new table `caller_verification_subject_bindings`, written only by the **Graph-backed** directory sync or by an explicit technician attestation — never by CSV/API import. Every backend validates at dispatch that its connection's tenant (`m365_connections.tenant_id`, `delegant_m365_connections.m365_tenant_id`) equals the pinned tenant. The gate resolves subjects by binding only; there is no email-string fallback. Ambiguity fails closed. All references from `caller_verifications` to bindings, destinations and intents are **composite FKs carrying `org_id`** (and `contact_id` where the target has one). | `contacts.email` is deliberately non-unique (`schema/contacts.ts` ~L86); the importer accepts uploaded external identifiers (`services/contacts/import.ts` ~L351), so an `entra` link from a file is a label, not evidence; the M365 tools resolve UPN → OID and drop the UPN before mutating (`aiToolsM365.ts` ~L258), so a UPN compare can guard a different user than the one mutated and misses aliases. Three connection tables exist (`m365_connections` with per-profile rows, `delegant_m365_connections`), so a binding keyed on one connection cannot serve all backends; tenant+OID is the identity, the connection is the route. A connection id survives a tenant change (`routes/m365.ts` ~L166), hence the tenant check at dispatch. Plain uuid FKs would let an org-A verification reference an org-B binding under RLS on the owning row only; `contact_external_links` already uses the composite form for this reason (`schema/contacts.ts` ~L125). |
 | D12 | **Destination provenance** is its own table `caller_verification_destinations`: one row per (contact, kind, value hash) with `set_at`, `set_by_user_id`, `source` and optional `attested_at`. Every contact write path (CRUD route, import, inbound email, AI tool) records the change through one helper. "Established" is computed from this table, never from `contacts.updated_at` or the audit log. | The existing contact audit events record field *names*, roles and link metadata, not destination values (`services/contacts/audit.ts` ~L60/L96, `routes/orgContacts.ts` ~L351), so they cannot show that a phone number was unchanged for N days. AI-created contacts carry the technician's `userId` (`aiToolsOrgs.ts` ~L518), so "created by a human" is not derivable from ownership. Editing an unrelated field must not establish the phone. |
-| D13 | A verification is a **single-use grant bound to** the canonical subject, the initiating technician, and an `action_scope` (`reset_password`, `disable_user`, or `any`). Release **consumes** it with a CAS (`consumed_by_intent_id IS NULL`). Cross-technician use is off by default (`allow_cross_technician_use`). Bindings changing (OID rebinding, contact merge, device move) or a fence invalidate outstanding grants. | v1 draft selected by contact, tier, status and age only. An impersonator ringing a second technician minutes after a legitimate verification inherited it, and one approval authorised repeated resets and a disable. |
-| D14 | The Entra OID is pinned end to end: the intent's target, the grant's subject and the executor's mutation all name `(connection, oid)`; UPN is display-only after resolution. Expiry and the fence are re-evaluated at dispatch inside each backend, not only at release. | `writeActionService.executeM365WriteActionByOrg` forwards the original identifier (`writeActionService.ts` ~L159) and the executor re-resolves it (`m365-graph-actions-executor/src/microsoft/writeActions.ts` ~L56); a UPN reassignment or connection change between verification, release and execution separates the verified identity from the mutated one. |
-| D15 | `disable_user` is gated on the **requester**, not the target. The requester is the verified contact on the call; if they are not the target they must hold an authoriser role on the org (policy `disable_user_authorizer_roles`, matched against `contacts.roles`, default `['primary']` plus `is_primary`). A separate, audited **administrative disable** path exists for offboarding and containment: initiator holds `settings:write` on the org with MFA, records a reason, no caller verification, partner notified. It never applies to `reset_password`. | Requiring the target's own cooperation to disable their account blocks the two legitimate cases (offboarding, compromise containment) where the target is unavailable or hostile, and would push partners to set the tier to 0 globally. |
+| D13 | A verification is a **single-use grant bound to** the verified requester, the **authorised target** `(tenant, oid)`, the initiating technician, and an `action_scope` (`reset_password`, `disable_user`, or `any`). Consumption is **post-claim**: the release path claims `executing` as today, then one transaction runs revalidation, the fence check and the consume CAS (`consumed_by_intent_id IS NULL`), then dispatches. If revalidation refuses, the intent fails and the grant is untouched. If dispatch fails after consumption, the intent fails, the grant stays consumed, and the technician is told to re-verify. Same-intent retry is idempotent (`consumed_by_intent_id = this intent` passes). Cross-technician use is off by default. Rebinding, contact merge, device move or a fence mark outstanding grants `revoked`. | v1 selected by contact, tier, status and age only, so an impersonator ringing a second technician inherited a grant and one approval authorised repeated actions. v2 said "same transaction as the release CAS", which is impossible: both the worker (`intentReleaseWorker.ts` ~L904) and the inline path (`aiAgentSdk.ts` ~L1388 → ~L1455) claim `executing` before calling revalidation. Post-claim consumption with explicit failure semantics is honest about that ordering. |
+| D14 | The target is pinned end to end as `(entra_tenant_id, entra_oid)`: the intent stores it at creation, the grant carries it, each backend checks its connection's tenant equals it and passes the OID (never the original identifier) to Graph or the executor; UPN is display-only after resolution. Expiry, tenant, OID and the fence are re-evaluated at dispatch inside each backend, immediately before the outbound call. | `writeActionService.executeM365WriteActionByOrg` forwards the original identifier (`writeActionService.ts` ~L159) and the executor re-resolves it (`m365-graph-actions-executor/src/microsoft/writeActions.ts` ~L56); a UPN reassignment or a connection re-pointed at another tenant between verification and execution separates the verified identity from the mutated one. |
+| D15 | Every grant names two identities: the **requester** (the contact on the call, who is verified) and the **target** (the account acted upon). For `reset_password` they must be the same binding. For `disable_user` they may differ when the requester is an **org-level** contact (`site_id IS NULL`) holding a role in `disable_user_authorizer_roles` (default `{it_admin}`, matched against `contacts.roles`; `is_primary` confers nothing). The challenge card names the target, so the requester confirms *that* account. A separate **administrative disable** exists for offboarding and containment: the technician performs an interactive MFA step-up (`POST /auth/mfa/step-up`, `services/mfaStepUpGrant.ts`, new operation `caller_verification_administrative_disable` with a resource digest of org + target + reason), and presenting the grant writes a durable `caller_verifications` row with `method='administrative_stepup'`, tier 3, `action_scope='disable_user'`, the target binding, the reason and `initiated_by_user_id`. Dispatch treats that row like any other grant. Never for `reset_password`. | Requiring the target's own cooperation to disable their account blocks offboarding and compromise containment and would push partners to tier 0. v2 conflated requester and target, so a manager's grant could never satisfy a target-OID check at dispatch. v2 also relied on "fresh MFA" at release, but the release actor context synthesises `mfa: true` (`actionIntents/actorContext.ts` ~L276) and `requireMfa` is a boolean check with no freshness (`middleware/auth.ts` ~L911); the step-up grant is the existing primitive that proves a factor interactively and single-uses it, and turning it into a grant row keeps one dispatch contract. `is_primary` is the headline contact for an org **or a site** (`schema/contacts.ts` ~L59), so it must not confer org-wide authority. |
 | D16 | Feature is dark until W05: server flag `CALLER_VERIFICATION_ENABLED` (default false) hides every entry point and 404s the authenticated routes; per-method availability additionally requires the agent/helper capability (D17). | Green "Caller verified" badges without a live gate are a false sense of security. |
-| D17 | Helper advertises `callerVerify` in its `Capabilities` report; the agent refuses the command as `undeliverable(helper_outdated)` when the console session's helper lacks it. Timeout is never approval. | Older Tauri helpers **silently ignore** unknown IPC messages (`apps/helper/src-tauri/src/ipc/client.rs` ~L365); the v1 draft assumed an unknown-type error reply. |
-| D18 | Merge and erasure: `caller_verifications`, `caller_verification_subject_bindings` and `caller_verification_destinations` are `repoint` in `orgMergeRegistry` with a `custom` post-step that expires pending rows and fences fresh grants for loser-org contacts; `caller_verification_policies` is `keep-survivor`. All four in `CORE_ORG_CASCADE_DELETE_ORDER` and `CORE_TENANT_EXPORT_POLICY`. | Every cascade table needs exactly one merge classification or `orgMerge.ts` (~L1083) throws at runtime; the v1 draft registered none. |
+| D17 | Helper selection mirrors `consentUISessionForTarget` (`consent_gate.go` ~L159): resolve the target user's **console** Windows session, then pick the Tauri **assist** helper in that session with scope `consent_ui` **and** the `callerVerify` capability. No such helper → `undeliverable(helper_outdated)`; the native user-helper fallback is not used because it cannot render the card. Timeout is never approval. | Older Tauri helpers **silently ignore** unknown IPC messages (`apps/helper/src-tauri/src/ipc/client.rs` ~L365). `SessionForUser` (`broker.go` ~L929) prefers the native `user`-role helper, while Tauri authenticates as `assist` (`client.rs` ~L147), so a username-first lookup would pick the helper that can never carry the capability and report an up-to-date install as outdated. |
+| D18 | Merge and erasure: `caller_verifications` and `caller_verification_destinations` are `repoint`; `caller_verification_subject_bindings` is `custom`: before rows move, for every `(entra_tenant_id, entra_oid)` or `os_principal` present in both orgs, both bindings are `revoked_at` and `caller_verification.binding_conflict` is audited (the merge never picks a contact); then rows repoint; then a post-step marks pending verifications `expired` and unconsumed grants of loser-org contacts `revoked`. `caller_verification_policies` is `keep-survivor`. All four in `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY`, and the policy table additionally in `DUAL_AXIS_TENANT_TABLES` and `XOR_OWNERSHIP_DUAL_AXIS_TABLES`. | Every cascade table needs exactly one merge classification or `orgMerge.ts` (~L1083) throws. `repoint` and `custom` are alternatives in the registry (`orgMergeRegistry.ts` ~L22) and plain repoint is only the UPDATE (`orgMerge.ts` ~L709), so a per-org unique on principals would raise 23505 mid-merge before any post-step ran. The SELECT-branch coverage test enumerates `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (`rls-coverage.integration.test.ts` ~L1617). |
 
 Advisor quorum: v1 came from a Claude reviewer (Codex out of usage on
 2026-09-18). v2 folds in the Codex gpt-6-astra `xhigh` review of 2026-09-19
@@ -107,12 +108,15 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `id` | uuid pk | |
 | `org_id` | uuid not null | RLS `breeze_has_org_access(org_id)` |
 | `contact_id` | uuid not null | composite FK `(contact_id, org_id) → contacts(id, org_id)` **DEFERRABLE INITIALLY IMMEDIATE**, `ON DELETE CASCADE` |
-| `subject_binding_id` | uuid null | FK → `caller_verification_subject_bindings(id)` `ON DELETE SET NULL`; null for contacts with no Entra binding (grant then only satisfies `action_scope='any'` gates that allow unbound subjects, i.e. never the two M365 actions) |
+| `requester_binding_id` | uuid null | composite FK `(requester_binding_id, contact_id, org_id) → caller_verification_subject_bindings(id, contact_id, org_id)` `ON DELETE SET NULL`; the verified person's Entra binding; null when the contact has none (row then never satisfies an M365 gate) |
+| `target_binding_id` | uuid null | composite FK `(target_binding_id, org_id) → caller_verification_subject_bindings(id, org_id)` `ON DELETE SET NULL`; the account acted upon (D15); equals the requester binding for self-service; required when `action_scope <> 'any'` (CHECK) |
+| `target_entra_tenant_id`, `target_entra_oid` | varchar(64) null | snapshot of the target identity at creation so a later rebinding is detectable (grant → `revoked`) |
 | `initiated_by_user_id` | uuid not null | technician; FK `users(id)` `RESTRICT` plus `technician_label` snapshot |
 | `technician_label` | varchar(255) not null | display name frozen at creation |
 | `action_scope` | enum `caller_verification_action_scope` | `reset_password`, `disable_user`, `any` |
 | `target_label` | varchar(320) null | what the card shows ("reset the password for j.smith@…"); snapshot |
-| `method` | enum `caller_verification_method` | `workstation`, `sms`, `email`, `callback_attestation` |
+| `method` | enum `caller_verification_method` | `workstation`, `sms`, `email`, `callback_attestation`, `administrative_stepup` |
+| `reason` | text null | required for `administrative_stepup` (min 20 chars) |
 | `status` | enum `caller_verification_status` | `pending`, `verified`, `rejected_by_user`, `wrong_choice`, `expired`, `undeliverable`, `cancelled`, `revoked` |
 | `tier` | smallint not null | frozen at creation by the rules in "Tiers" |
 | `tier_reason` | varchar(64) not null | `bound_principal`, `unbound_principal`, `destination_established`, `destination_recent`, `attestation` |
@@ -120,7 +124,7 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `decoy_values` | char(2)[] not null | two other candidates, fixed so the card is stable across reloads |
 | `reverse_code` | char(4) not null | technician reads it aloud; the card shows it |
 | `challenge_token_hash` | char(64) null | sha256 of a 32-byte link token; link methods only; unique partial index |
-| `destination_id` | uuid null | FK → `caller_verification_destinations(id)` `RESTRICT`; link methods |
+| `destination_id` | uuid null | composite FK `(destination_id, contact_id, org_id) → caller_verification_destinations(id, contact_id, org_id)` `RESTRICT`; link methods |
 | `destination_redacted` | varchar(64) null | `+44 •••• ••12`, `a•••@acme.com` |
 | `workstation_device_ref` | uuid null | snapshot, **no FK, deliberately not named `device_id`** (D7) |
 | `device_hostname` | varchar(255) null | snapshot |
@@ -133,7 +137,7 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `expires_at` | timestamptz not null | workstation: `now() + workstation_timeout_seconds`; links: `+ 10 min`; attestation: `now()` |
 | `decided_at` | timestamptz null | |
 | `decided_from_ip` | inet null | link methods |
-| `consumed_by_intent_id` | uuid null | FK → `action_intents(id)` `ON DELETE SET NULL`; set by the release CAS (D13) |
+| `consumed_by_intent_id` | uuid null | composite FK `(consumed_by_intent_id, org_id) → action_intents(id, org_id)` (`action_intents_id_org_uq` exists) `ON DELETE SET NULL`; set by the consume CAS (D13) |
 | `consumed_at` | timestamptz null | |
 | `attestation_note` | text null | `callback_attestation` only |
 | `created_at` | timestamptz not null | |
@@ -150,36 +154,39 @@ Export policy: `included` for everything except `challenge_token_hash`,
 
 | Column | Notes |
 |---|---|
-| `id`, `org_id`, `contact_id` | composite FK to `contacts(id, org_id)` deferrable, cascade |
-| `m365_connection_id` uuid null | FK `m365_connections(id)` `ON DELETE CASCADE`; null for OS-only bindings |
-| `entra_tenant_id` varchar(64) null, `entra_oid` varchar(64) null | the canonical subject; unique `(org_id, entra_tenant_id, entra_oid)` |
+| `id`, `org_id`, `contact_id` | composite FK to `contacts(id, org_id)` deferrable, cascade; unique `(id, org_id)` and `(id, contact_id, org_id)` as composite-FK targets |
+| `entra_tenant_id` varchar(64) null, `entra_oid` varchar(64) null | the canonical subject; unique `(org_id, entra_tenant_id, entra_oid) WHERE revoked_at IS NULL`. **No connection FK**: the connection is the route, not the identity (D11) |
 | `upn_snapshot` varchar(320) null | display and workstation matching; refreshed by sync, never used for authorisation |
-| `os_principal` varchar(255) null | Windows SID, or `uid:<n>@<hostname>` on macOS/Linux; unique `(org_id, os_principal)` |
+| `os_principal` varchar(255) null | Windows SID, or `uid:<n>@<hostname>` on macOS/Linux; unique `(org_id, os_principal) WHERE revoked_at IS NULL` |
 | `os_username` varchar(255) null | |
 | `source` enum | `directory_sync`, `technician_attested`, `observed_login` |
 | `established_at` timestamptz not null | `directory_sync`/`technician_attested`: when written; `observed_login`: first observation |
 | `attested_by_user_id` uuid null, `attested_at` timestamptz null | |
-| `revoked_at` timestamptz null | set when sync no longer sees the OID or a technician removes it |
+| `revoked_at` timestamptz null | set when sync no longer sees the OID, a technician removes it, or a merge finds a collision |
 | `created_at`, `updated_at` | |
 
-Writers: the M365 directory import (`services/contacts/import.ts`, m365 source)
-writes `directory_sync` rows keyed by OID; the contact drawer offers "Bind to
-Entra user" (`technician_attested`, requires `ORGS_WRITE` + MFA, audited); the
-agent's session broker reports `(sid|uid, username, upn?)` on the
-`caller_verify` result and on login observation, which writes or refreshes an
-`observed_login` row **only when the UPN matches an existing directory binding
-for that contact**. An OS principal with no UPN match is never bound
+Writers: **only** the Graph-backed directory sync path of the contact import
+(the branch that received the user object from Graph, keyed by `id` and the
+connection's verified `tenant_id`) writes `directory_sync` rows; the CSV/API
+import path (`services/contacts/import.ts` ~L351 accepts uploaded external
+ids) is explicitly excluded and a unit test asserts an uploaded `entra` link
+creates no binding. The contact drawer offers "Bind to Entra user" (picker
+backed by a Graph read, `technician_attested`, requires `ORGS_WRITE` + MFA,
+audited). The agent reports `(sid|uid, username, upn?)` on the `caller_verify`
+result and on login observation, which writes or refreshes an
+`observed_login` row **only when the UPN matches an existing directory
+binding for that contact**. An OS principal with no UPN match is never bound
 automatically. Ambiguity rules: one OID → one contact per org; a second claim
 marks both `revoked_at` and audits `caller_verification.binding_conflict`.
 
 Export policy: all `included` (`upn_snapshot`, `os_principal` are identifiers,
-not secrets). Merge: `repoint` (see D18).
+not secrets). Merge: `custom` (see D18).
 
 ### `caller_verification_destinations` (D12)
 
 | Column | Notes |
 |---|---|
-| `id`, `org_id`, `contact_id` | composite FK, deferrable, cascade |
+| `id`, `org_id`, `contact_id` | composite FK, deferrable, cascade; unique `(id, contact_id, org_id)` as composite-FK target |
 | `kind` enum | `email`, `mobile` |
 | `value_hash` char(64) | sha256 of normalised address / E.164 |
 | `value_redacted` varchar(64) | |
@@ -208,7 +215,7 @@ Export policy: `value_hash` → `excludedSensitive`, rest `included`. Merge:
 | `id`, `org_id` null, `partner_id` null | `caller_verification_policies_one_owner_chk ((org_id IS NULL) <> (partner_id IS NULL))`; unique on each owner |
 | `required_tier_reset_password` smallint | default 2, 0..3; `0` disables the gate for that action — only meaningful on the partner row (D6) |
 | `required_tier_disable_user` smallint | default 2 |
-| `disable_user_authorizer_roles` text[] | default `{primary}`; roles a non-target requester must hold (D15) |
+| `disable_user_authorizer_roles` text[] | default `{it_admin}`; roles an org-level non-target requester must hold (D15); org row may only remove roles (intersection) |
 | `verification_ttl_minutes` int | default 30, 5..240 |
 | `allowed_methods` text[] | default all four |
 | `workstation_timeout_seconds` int | default 120, 30..300 |
@@ -224,14 +231,21 @@ RLS: one dual-axis `FOR ALL` policy (system OR org access OR partner access)
 plus the separate `FOR SELECT`-only partner-wide branch
 `USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id())`
 (template `2026-10-05-110000-config-policy-partner-wide-select.sql`). Registered
-in `DUAL_AXIS_TENANT_TABLES` and, until the branch is verified by the coverage
-suite, **not** in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`. Writes: partner rows
-gated on `canManagePartnerWidePolicies`; org rows on `ORGS_WRITE` + MFA
-(matches contacts). **Resolution is strictest-wins per field** (D6): tiers
-`max`, TTL and timeout `min`, `destination_min_age_days` `max`, booleans that
-tighten `OR`, `allowed_methods` intersection, attempt cap `min`, cooling-off
-`max`. The API returns the effective policy with a per-field "from" so the UI
-can show why an org field is read-only.
+in `DUAL_AXIS_TENANT_TABLES` **and** `XOR_OWNERSHIP_DUAL_AXIS_TABLES`, and
+**not** in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`. Writes: partner rows gated on
+`canManagePartnerWidePolicies`; org rows on `ORGS_WRITE` + MFA (matches
+contacts). All policy columns are nullable; null means "inherit".
+
+**Resolution (D6).** Baseline = partner row, with built-in defaults filling
+only null fields. Effective = baseline tightened by the org row per field,
+with any loosening org value ignored and reported: tiers `max`, TTL and
+workstation timeout `min`, `destination_min_age_days` `max`,
+`require_attested_destination` and `require_ticket` `OR`,
+`allow_cross_technician_use` `AND`, `allowed_methods` and
+`disable_user_authorizer_roles` intersection, attempt cap `min`, cooling-off
+`max`. The API returns the effective policy with a per-field "from"
+(`default` / `partner` / `org`) and an `ignored` list, so the UI can show why
+an org field is read-only.
 
 Export policy: `required_tier_reset_password` matches `SUSPICIOUS_NAME_PARTS`
 (`password`) → `reviewedIncluded`; rest `included`. Merge: `keep-survivor`.
@@ -250,8 +264,9 @@ stops satisfying it.
 - `CORE_ORG_CASCADE_DELETE_ORDER`: all four, alphabetical, children before
   `contacts`, `device_commands`, `m365_connections`, `action_intents`.
 - `CORE_TENANT_EXPORT_POLICY`: every column as classified above.
-- `orgMergeRegistry`: three `repoint` (with the D18 custom post-step), one
-  `keep-survivor`.
+- `orgMergeRegistry`: `caller_verifications` and destinations `repoint`,
+  bindings `custom` (collision revocation before the move, grant revocation
+  after), policies `keep-survivor`.
 - No column named `device_id` or `ticket_id` → not in any device cascade list
   and not discovered by `breeze_device_child_orgid_tables()`. A unit test
   asserts the schema has no such column on these tables.
@@ -261,11 +276,16 @@ stops satisfying it.
 | Method | Tier | Condition |
 |---|---|---|
 | workstation | 3 | the answering session's `(os_principal, upn)` matches a non-revoked binding for this contact (D11) |
-| workstation | 2 | delivered to the technician-selected `os_username` on the chosen device and answered, but no binding matches |
+| administrative_stepup | 3 | technician MFA step-up grant consumed (D15); `disable_user` only |
 | sms | 2 | current `mobile` destination row is established |
-| email | 2 | current `email` destination row is established **and** the destination is not one of the subject's mailbox addresses (see below) |
+| email | 2 | current `email` destination row is established **and** the destination is not one of the target's mailbox addresses (see below) |
+| workstation | 1 | delivered to the technician-selected `os_username` on the chosen device and answered, but no binding matches |
 | sms / email | 1 | destination not established |
 | callback_attestation | 1 | always; the technician records they called the number of record |
+
+The tier is recomputed at release (D4) from the current policy, the row's
+method, the binding state and the destination's establishment state; a method
+removed from `allowed_methods` yields tier 0.
 
 A destination is **established** when its current `caller_verification_destinations`
 row has `set_at <= now() - destination_min_age_days`, `source = 'technician'`
@@ -275,12 +295,16 @@ established until attested. This closes the "email the ticket mailbox, become
 a contact, verify yourself" path.
 
 **Same-mailbox rule.** For an M365 action, an `email` verification never
-counts if the destination equals any of the subject's `mail`,
+counts if the destination equals any of the **target's** `mail`,
 `userPrincipalName` or `proxyAddresses` (SMTP entries, case-insensitive). The
 gate fetches these from Graph for the pinned OID at release using the
-directory-read scope the sync already holds; if the read fails, the gate
-refuses `subject_mailboxes_unknown` rather than falling back to a string
-compare.
+directory-read scope the sync already holds. `proxyAddresses` is not in the
+current `m365.user.get` projection allowlist
+(`packages/shared/src/m365/readActions.ts`, `M365_READ_ACTION_FIELDS`), so W03
+adds a dedicated read action `m365.user.mailboxes` projecting exactly
+`id`, `userPrincipalName`, `mail`, `proxyAddresses`, for all three backends.
+If the read fails, the gate refuses `subject_mailboxes_unknown` rather than
+falling back to a string compare.
 
 The modal shows the computed tier per method before the technician picks, with
 the reason when it is lower than expected ("mobile updated 2 days ago",
@@ -291,10 +315,15 @@ the reason when it is lower than expected ("mobile updated 2 days ago",
 `apps/api/src/services/callerVerification/`
 
 - `service.ts` — `start`, `cancel`, `attest`, `get`, `listForContact`,
-  `freshForSubject`. `start` checks the readiness flag, site reach for the
-  contact, policy, the attempt cap (an atomic `INSERT … WHERE (SELECT count(*)
-  …) < cap` under a per-contact advisory lock), the fence, method availability
-  and capability; computes the tier; generates `match_value`, two distinct
+  `freshForSubject`, `createAdministrative`. `start` takes the requester
+  contact and, for `action_scope <> 'any'`, a target (`targetContactId`, or
+  `targetBindingId`); resolves both to bindings; enforces the D15 rule at
+  initiation (same binding for `reset_password`; for `disable_user` a
+  different target requires the requester to be an org-level contact with an
+  authoriser role); checks the readiness flag, site reach for both contacts,
+  policy, the attempt cap (an atomic `INSERT … WHERE (SELECT count(*) …) <
+  cap` under a per-contact advisory lock), the fence, method availability and
+  capability; computes the tier; generates `match_value`, two distinct
   decoys, `reverse_code`, and for links a 32-byte token whose hash is stored;
   inserts the row **and** for workstation the `device_commands` row in one
   transaction; writes `caller_verification.started` to the audit log and, when
@@ -313,46 +342,65 @@ the reason when it is lower than expected ("mobile updated 2 days ago",
   maps `delivered=false`/`no_session_for_user` → `undeliverable`,
   `helper_outdated` → `undeliverable`, timeout → `expired`, chosen ==
   `match_value` → `verified` (tier finalised 3 or 2 from the reported
-  principal), decoy → `wrong_choice`, "not me" → `rejected_by_user`. A
-  reconciliation job expires pending rows past `expires_at` whose command never
-  terminalised.
+  principal), decoy → `wrong_choice`, "not me" → `rejected_by_user`.
+  `caller_verify` is also added to the HTTP result route's handler registry
+  allowlist (`routes/agents/commands.ts` ~L747), which is separate from the WS
+  dispatch. A reconciliation job (a) expires pending rows past `expires_at`
+  whose command never terminalised and (b) re-applies the handler to pending
+  rows whose `device_commands` row is already terminal (the handler ran and
+  crashed before the CAS), so a decision is never lost between transports.
 - `deliverers/link.ts` — builds `https://<partner app url>/verify/<token>`;
   SMS via `TwilioService.sendSmsMessage`, email via the branded layout. Send
   failure → `undeliverable`.
-- `subjects.ts` — `resolveSubject({orgId, connectionId, entraOid})` → exactly
+- `subjects.ts` — `resolveSubject({orgId, entraTenantId, entraOid})` → exactly
   one non-revoked binding or a typed refusal (`subject_unmatched`,
   `subject_ambiguous`). `bindingsForContact`, `attestBinding`,
   `observeLogin`.
 - `destinations.ts` — `recordDestinationChange`, `currentDestination`,
   `isEstablished`, `attestDestination`.
-- `gate.ts` — `requireCallerVerification({ orgId, action, subject:
-  {connectionId, entraOid}, requester: {contactId?}, technicianUserId,
-  intentId })`. Order: readiness flag → effective policy tier (`0` → pass) →
-  resolve subject → fence (`contact_fenced`) → for `disable_user`, the
-  requester rule (D15) → candidate grant: newest `verified`, unconsumed,
-  `tier >= required`, `decided_at > now() - ttl`, `action_scope IN (action,
-  'any')`, `initiated_by_user_id = technicianUserId` unless
-  `allow_cross_technician_use`, and not (`method='email'` and destination in
-  the subject's mailbox set) → **consume** via CAS setting
-  `consumed_by_intent_id`. Refusals are a typed
+- `gate.ts` — `requireCallerVerification({ orgId, action, target:
+  {entraTenantId, entraOid}, backendTenantId, technicianUserId, intentId,
+  mode: 'check' | 'consume' })`. Order: readiness flag → effective policy
+  tier (`0` → pass) → `backendTenantId === target.entraTenantId` else
+  `tenant_mismatch` → resolve the target binding (`subject_unmatched`,
+  `subject_ambiguous`) → fence on the target **and** on the grant's
+  requester (`contact_fenced`) → candidate grant: newest `verified` or
+  `administrative_stepup`, unconsumed or consumed by this intent,
+  `target_binding_id` = the resolved binding and snapshot tenant/OID still
+  equal, recomputed `tier >= required`, `decided_at > now() - ttl`,
+  `action_scope IN (action, 'any')` (administrative rows only for
+  `disable_user`), `initiated_by_user_id = technicianUserId` unless
+  `allow_cross_technician_use`, D15 requester rule re-checked against the
+  requester binding's current roles and site, and not (`method='email'` and
+  destination in the target's mailbox set) → in `consume` mode, CAS
+  `consumed_by_intent_id`/`consumed_at`. Everything from the fence read to
+  the CAS is one transaction. Refusals are a typed
   `CallerVerificationRequiredError { orgId, contactId?, action, requiredTier,
   reason, latest? }` with reasons `no_fresh_verification`, `grant_consumed`,
   `subject_unmatched`, `subject_ambiguous`, `subject_mailboxes_unknown`,
-  `contact_fenced`, `requester_not_authorized`, `technician_mismatch`.
-  Consumption happens in the same transaction as the release CAS so a lost
-  release does not burn the grant; a dispatch failure after consumption is
-  reported to the technician as "verification used, action failed, re-verify".
-- `rejection.ts` — on `rejected_by_user`: insert `incidents` (p2,
-  `sourceType='caller_verification'`, `sourceRef=id`); set the **fence**
+  `tenant_mismatch`, `contact_fenced`, `requester_not_authorized`,
+  `technician_mismatch`, `target_rebound`. Failure semantics are D13's:
+  refusal leaves the grant untouched; dispatch failure after consumption
+  fails the intent and the technician sees "verification used, action failed,
+  re-verify".
+- `rejection.ts` — on `rejected_by_user`, in this order so the fence is
+  visible before anything else runs: set the **fence** first (same
+  transaction as the public CAS), then insert `incidents` (p2,
+  `sourceType='caller_verification'`, `sourceRef=id`); the fence
   (the `rejected_by_user` row is the fence state until `decided_at +
   cooling_off_hours`; an override writes `fence_override_until` on that row
   plus an audit event, so the state lives in one table); mark other
   `verified`-unconsumed rows for the contact `revoked`; call
   `revokeIntentsForSubject(subject)` — a new **system-scoped** function in
   `actionIntents` that cancels `pending_approval`/`approved` intents whose
-  pinned subject matches, with actor `system:caller_verification` and the
-  verification id in details, and returns the ids of intents already
-  `executing`, which the incident lists as "already dispatched, check Entra";
+  pinned target or requester matches, with actor `system:caller_verification`
+  and the verification id in details, and returns the ids of intents already
+  `executing`. `executing` means "past claim", not "past dispatch": such an
+  intent still meets the fence at its in-transaction gate check unless it was
+  already inside the outbound Graph call, so the incident lists them as "was
+  executing at rejection time; confirm in Entra whether the change landed",
+  and the intent's own terminal state (failed with `contact_fenced`, or
+  completed) is linked from the incident when it arrives;
   audit `caller_verification.rejected`; ticket comment; in-app and email
   notification to the org's security recipients **and** the partner's. All
   side effects are idempotent on the verification id (outbox rows keyed on it)
@@ -370,10 +418,14 @@ minute and the Quick Support two-tier miss budget
 ## Agent and helper change (workstation tier)
 
 New device command `caller_verify`, handled in `agent/internal/heartbeat/`
-beside `consent_gate.go`. It resolves the session for the explicit `username`
-through the session broker (never `PreferredSessionWithScope`), requires that
-session to be the **console** session with a user helper advertising the
-`callerVerify` capability, sends IPC `caller_verify_request` with the same
+beside `consent_gate.go`. It resolves the Windows session (or macOS/Linux
+login session) owned by the explicit `username` through the session broker
+(never `PreferredSessionWithScope`), requires it to be the **console**
+session, then selects the helper the way `consentUISessionForTarget` does:
+the Tauri **assist** helper with scope `consent_ui` **in that session** that
+also advertises `callerVerify` (D17). It never uses `SessionForUser`, which
+prefers the native `user`-role helper, and never uses the native fallback
+scope. It sends IPC `caller_verify_request` with the same
 correlation and timeout pattern as `consent_request`, and returns
 `{delivered, choice, principal: {sid|uid, username, upn?}, helperVersion}` in
 the command result's stdout JSON. `upn` comes from the session's Entra join
@@ -399,25 +451,30 @@ to a fleet until it has promoted; the methods endpoint reports it as
 ## Gate wiring
 
 1. `services/actionIntents/revalidateRelease.ts`: for tool names
-   `m365_reset_password` and `m365_disable_user`, call the gate with the
-   intent's org, pinned `(connectionId, entraOid)`, requester contact,
-   requesting technician and intent id; a refusal is a new `errorCode`
-   `caller_verification_required` in the same shape as the existing failures.
-   Both release paths already run this function.
+   `m365_reset_password` and `m365_disable_user`, call the gate in `consume`
+   mode with the intent's org, pinned `(entraTenantId, entraOid)`, the
+   backend connection's tenant, the requesting technician and the intent id.
+   This runs **after** the `executing` claim on both release paths (D13);
+   the function's own transaction holds the fence read and the consume CAS.
+   A refusal is a new `errorCode` `caller_verification_required` in the same
+   shape as the existing failures and fails the intent.
 2. `services/actionIntents/intentService.ts` `createActionIntent`: resolves
-   the target to `(connectionId, entraOid)` and stores it in the intent
-   (`targetEntraOid`, `targetConnectionId`); runs the gate in **check-only**
-   mode (no consumption) for UX, so the technician sees "Start verification"
-   before waiting on approval. Not authoritative.
-3. Defense in depth at dispatch, all three backends: `m365DirectGraph.invokeDirect`
-   cases `disable_user` and `reset_user_password`; `writeActionService.executeM365WriteActionByOrg`
+   the target to `(entraTenantId, entraOid)` through the selected backend and
+   stores it on the intent (`targetEntraTenantId`, `targetEntraOid`,
+   `targetConnectionRef`); runs the gate in `check` mode for UX, so the
+   technician sees "Start verification" before waiting on approval. Not
+   authoritative.
+3. Defense in depth at dispatch, all three backends, immediately before the
+   outbound call: `m365DirectGraph.invokeDirect` cases `disable_user` and
+   `reset_user_password`; `writeActionService.executeM365WriteActionByOrg`
    actions `m365.user.disable` and `m365.user.reset_password`, which also
    passes the pinned OID to the executor instead of the original identifier
    (executor change in `apps/m365-graph-actions-executor`); and
    `aiToolsM365.call()` before `invokeDelegantTool` for the same two tools.
-   Each verifies the grant is consumed by *this* intent, unexpired, the
-   subject is unfenced, and the OID matches the grant's binding. This layer
-   also covers any path that reaches a backend without an intent.
+   Each re-runs the gate in `check` mode requiring `consumed_by_intent_id =
+   this intent`, unexpired, target unfenced, connection tenant = pinned
+   tenant, OID = grant's target binding. This layer also refuses any path
+   that reaches a backend without an intent (no intent → no consumed grant).
 4. Contract test `callerVerificationGate.contract.test.ts` reads the four
    source files and fails if any named case no longer references the gate;
    **plus** a behavioural suite that stubs each backend's HTTP/broker client
@@ -434,12 +491,21 @@ non-retryable release failure carrying the same payload.
 
 ### Administrative disable (D15)
 
-`m365_disable_user` with `mode: 'administrative'` skips caller verification
-when the intent's requester holds `ORGS_WRITE` on the org with a fresh MFA
-claim and supplies `reason` (min 20 chars). The gate records
-`caller_verification.administrative_bypass` in the audit log with the reason,
-the incident-response UI shows it on the contact, and the partner's security
+Interactive only. The technician (holding `ORGS_WRITE` on the org) picks the
+target account and enters a reason (min 20 chars); the UI calls
+`POST /auth/mfa/step-up` for operation `caller_verification_administrative_disable`
+with resource digest `sha256(orgId | entraTenantId | entraOid | sha256(reason))`,
+the user proves an existing factor, and the resulting `stepUpGrantId` is
+presented to `POST /orgs/:orgId/caller-verifications/administrative`, which
+consumes the grant (`consumeStepUpGrant`, single-use, session- and
+epoch-bound) and writes the `administrative_stepup` verification row. The
+row is then an ordinary grant: `action_scope='disable_user'`, tier 3, bound
+to that technician and target, TTL from policy, consumed once at release.
+Audit `caller_verification.administrative_created` carries the reason; the
+incident-response UI shows it on the contact; the partner's security
 recipients are notified. The intent still goes through approval as today.
+There is no non-interactive path and nothing in the release actor context
+is trusted for this.
 
 ## API
 
@@ -452,7 +518,8 @@ re-checked for org ownership and the caller's site reach.
 
 | Route | Notes |
 |---|---|
-| `POST /orgs/:orgId/caller-verifications` | `{ contactId, method, actionScope, deviceId?, username?, ticketId?, note? }` → 202 with the row. `matchValue`, `decoyValues` and `reverseCode` are returned only to the initiating technician (creator check on every read); others see status. `ticketId` is validated (org, requester = contact) and stored as `ticket_ref`/`ticket_number`. |
+| `POST /orgs/:orgId/caller-verifications` | `{ contactId, method, actionScope, targetContactId?, deviceId?, username?, ticketId?, note? }` → 202 with the row. `targetContactId` defaults to `contactId`; a different target is only accepted for `disable_user` under the D15 rule, checked here and again at release. `matchValue`, `decoyValues` and `reverseCode` are returned only to the initiating technician (creator check on every read); others see status. `ticketId` is validated (org, requester = contact) and stored as `ticket_ref`/`ticket_number`. |
+| `POST /orgs/:orgId/caller-verifications/administrative` | `{ targetContactId, reason, stepUpGrantId }` → 201 `administrative_stepup` row (D15). `ORGS_WRITE`; the step-up grant is the freshness proof. |
 | `GET /orgs/:orgId/caller-verifications/:id` | polled every 2 s while pending. |
 | `POST /orgs/:orgId/caller-verifications/:id/cancel` | pending → cancelled; initiator or `ORGS_WRITE`. |
 | `GET /orgs/:orgId/contacts/:contactId/caller-verifications` | history, newest first, 50 max; includes `fencedUntil`, bindings and destinations with establishment state. |
@@ -530,7 +597,7 @@ consistent with the Quick Support landing page.
 - Unit: state machine transitions including `revoked` and consumption; decoy
   distinctness; token hashing; tier computation including bindings,
   establishment and the same-mailbox set; gate resolution order and every
-  refusal reason; strictest-wins policy resolution; deliverer result mapping
+  refusal reason; baseline-then-tighten policy resolution incl. ignored fields; deliverer result mapping
   for both transports and the duplicate-result case; rejection fan-out
   (incident, system revocation returning executing ids, fence, notifications,
   idempotency on retry); destination-change helper called from every writer
@@ -542,19 +609,36 @@ consistent with the Quick Support landing page.
 - Behavioural: each of the three backends issues zero mutation calls when the
   gate refuses, and exactly one when it passes; OID pinned through to the
   executor payload; UPN change between verification and release does not
-  redirect the mutation.
+  redirect the mutation; a connection re-pointed at another tenant refuses
+  `tenant_mismatch`; a Delegant-only org and an org with two `m365_connections`
+  profiles both resolve the same binding; manager-to-other-user disable
+  succeeds under the authoriser rule and a substituted target OID is denied;
+  a site-level primary contact cannot authorise a disable; the administrative
+  route rejects a step-up grant minted for another operation, another target
+  digest or another session; the release actor context's synthesised `mfa`
+  never reaches the gate; consumption after the `executing` claim: refusal
+  leaves the grant unconsumed, dispatch failure leaves it consumed and fails
+  the intent, same-intent retry passes; a CSV import carrying an `entra`
+  external id creates no binding.
 - Integration (live DB): cross-org forge → 42501 on all four tables; sibling-
   site user denied on every authenticated route; public route under system
   context; concurrent `POST /verify/:token` CAS; concurrent release of two
-  intents against one grant → exactly one consumes; org merge with a pending
-  verification, two populated policies, and fresh grants in the loser org
-  (revoked); device org-move leaves `workstation_device_ref` rows untouched
+  intents against one grant → exactly one consumes; forged
+  `requester_binding_id` / `destination_id` / `consumed_by_intent_id`
+  pointing at another org's row → 23503 even under system context, and a
+  same-org binding of a different contact → 23503; org merge with a pending
+  verification, two populated policies, fresh grants in the loser org
+  (revoked), and the same OID or `os_principal` bound in both orgs (both
+  revoked, conflict audited, merge completes); device org-move leaves
+  `workstation_device_ref` rows untouched
   and does not trip the composite FK; intent release refused without a fresh
   verification and allowed with one; "not me" during `executing` reports the
   intent as dispatched.
 - Agent: `go test -race` for `caller_verify` session targeting (explicit
   username, missing session, non-console session, helper without capability,
-  timeout is not approval, principal reported). Helper: capability advertised;
+  timeout is not approval, principal reported, **native `user` helper and
+  Tauri `assist` helper both connected in the target session → the Tauri one
+  is chosen**, native-only session → `helper_outdated`). Helper: capability advertised;
   window renders action, target, three buttons and reports the choice; an old
   helper build ignores the message and the agent times out to
   `helper_outdated`, tested with a stub helper that lacks the capability.
@@ -570,11 +654,11 @@ consistent with the Quick Support landing page.
 
 | Wave | Scope |
 |---|---|
-| W01 | All four tables, migrations, registrations (RLS, cascade, export, merge), destination-change helper wired into every contact writer with backfill, subject bindings from the directory import, policy resolver (strictest-wins) and defaults, service state machine, tier and establishment rules, gate service with consumption, `revokeIntentsForSubject`, authenticated API with site reach, callback attestation method, audit and ticket timeline. Readiness flag off. |
+| W01 | All four tables, migrations, registrations (RLS, cascade, export, merge), destination-change helper wired into every contact writer with backfill, subject bindings from the Graph-backed directory sync only, policy resolver (partner baseline, org tighten-only) and defaults, service state machine, tier and establishment rules, gate service with consumption, `revokeIntentsForSubject`, authenticated API with site reach, callback attestation method, audit and ticket timeline. Readiness flag off. |
 | W02 | Agent `caller_verify` command with principal reporting, helper capability + window, shared command-result handler, pre-created command row, workstation deliverer, device suggestions, partner-trust allowlist, commands doc. Needs an agent release. |
-| W03 | SMS and email deliverers, public JSON route, Astro challenge page, rate limits and miss budget, same-mailbox Graph read. |
-| W04 | Web: modal, entry points, ticket badge, contact drawer (bindings, destinations, fence), policy forms with provenance, AI chat refusal rendering, i18n. All behind the flag. |
-| W05 | OID pinning in intents and executor; gate wired into `revalidateRelease`, intent-creation pre-check, all three backends, administrative disable path, contract + behavioural tests; rejection fan-out (incident, revocation, fence, partner notification); every refusal adapter; docs and release notes; **flag flipped on**. Lands last so W01–W04 change no existing M365 flow and expose nothing. |
+| W03 | SMS and email deliverers, public JSON route, Astro challenge page, rate limits and miss budget, `m365.user.mailboxes` read action on all three backends for the same-mailbox rule. |
+| W04 | Web: modal (requester + target selection), entry points, ticket badge, contact drawer (bindings, destinations, fence), policy forms with provenance and ignored-field reporting, administrative disable flow with step-up, AI chat refusal rendering, i18n. All behind the flag. |
+| W05 | Tenant+OID pinning in intents and executor; gate wired into `revalidateRelease` (consume mode, post-claim), intent-creation check, all three backends at dispatch, administrative route + step-up operation, contract + behavioural tests; rejection fan-out (fence, incident, revocation, partner notification); every refusal adapter; docs and release notes; **flag flipped on**. Lands last so W01–W04 change no existing M365 flow and expose nothing. |
 
 Feature-lifecycle registration happens when the plans are written.
 
@@ -612,7 +696,7 @@ Full text: `2026-09-18-caller-verification-design.codex-review.md`.
 | 8 | Delegant backend ungated | D5 third backend + behavioural tests |
 | 9 | WS-only result hook loses decisions; send-then-record race | D9 shared handler, command row pre-created in tx |
 | 10 | RDS / old-helper assumptions wrong | D17 capability, non-console → unavailable (non-goal) |
-| 11 | Org override defeats partner policy | D6 strictest-wins per field |
+| 11 | Org override defeats partner policy | D6 (v2 strictest-wins, superseded in v3 by baseline-then-tighten) |
 | 12 | Site reach not applied | API section: site reach on every route, device/ticket ownership re-checked |
 | 13 | `device_id` rewritten on device move by column name | D7 `workstation_device_ref` |
 | 14 | Merge registry classification missing | D18 |
@@ -621,12 +705,43 @@ Full text: `2026-09-18-caller-verification-design.codex-review.md`.
 | 17 | UI ships before enforcement | D16 readiness flag, W05 flips it |
 | 18 | Permissions, allowlists, export, refusal plumbing unspecified | `ORGS_READ`/`ORGS_WRITE`+MFA, both RLS allowlists, `reviewedIncluded` for the `password` column, named refusal adapters |
 
+### Codex gpt-6-astra `xhigh`, second pass on v2, 2026-09-19 (v3) — verdict "rework", all folded
+
+Full text: `2026-09-18-caller-verification-design.codex-review-v2.md`. Nine of
+the original eighteen were "partially resolved" and nine new majors were
+raised; every one maps to a v3 change:
+
+| # | Finding | Adopted as |
+|---|---|---|
+| P1 | Unbound workstation still met the default gate at tier 2 | D4: unbound workstation is tier 1 |
+| P2 | Importer accepts uploaded ids; Graph projection lacks `proxyAddresses` | D11: only the Graph-backed sync writes bindings; W03 `m365.user.mailboxes` read action |
+| P3 | Connection id survives a tenant change | D11/D14: tenant pinned, checked at dispatch |
+| P5/N5 | Consume cannot share the release CAS transaction | D13: post-claim consumption with explicit failure semantics |
+| P7 | Fence unsynchronised with dispatch; `executing` ≠ dispatched | fence set first in the rejection tx, read inside the consume tx and again at dispatch; incident wording |
+| P9 | HTTP handler registry allowlist; crashed-handler recovery | `commands.ts` allowlist + reconciliation over terminal commands |
+| P11 | Frozen tier ignores later policy tightening | D4: tier recomputed at release |
+| P14/N9 | Per-org unique on principals breaks plain `repoint` | D18: bindings are `custom` with collision revocation before the move |
+| P16/N1 | Requester and target conflated | D13/D15: `requester_binding_id` + `target_binding_id`, card names the target |
+| P18 | `XOR_OWNERSHIP_DUAL_AXIS_TABLES` omitted | registration checklist |
+| N2 | Release context synthesises `mfa: true`; no freshness | D15: interactive MFA step-up grant → durable `administrative_stepup` row; nothing trusted from the release actor |
+| N3 | Plain uuid FKs allow cross-org references | composite FKs carrying `org_id` (+ `contact_id`) on all three references |
+| N4 | One connection FK cannot serve three backends | D11: identity is tenant+OID, no connection FK |
+| N6 | Strictest-wins over defaults blocked partner loosening | D6: partner baseline, then org tighten-only, operators per field |
+| N7 | `is_primary` is org **or site** headline | D15: org-level contacts with explicit roles only; default `it_admin` |
+| N8 | `SessionForUser` prefers the native helper | D17: mirror `consentUISessionForTarget`, Tauri assist helper in the target's console session |
+
 ## Open questions for Todd
 
 None blocking. Defaults chosen: gate tier 2, TTL 30 minutes, establishment
 window 7 days, backfilled destinations unestablished until attested, 3
 attempts per hour, 24 hour fence, ticket not required, single technician use,
-authoriser role `primary`. All are policy knobs. One product call worth a
-glance: the backfill rule means every existing contact starts at tier 1 for
-SMS/email until a technician attests the number, which is the safe default but
-adds a one-time attestation chore per partner.
+authoriser role `it_admin` (a `contacts.roles` value; partners edit the list).
+All are policy knobs. Two product calls worth a glance:
+
+1. The backfill rule means every existing contact starts at tier 1 for
+   SMS/email until a technician attests the number, which is the safe default
+   but adds a one-time attestation chore per partner.
+2. An unbound workstation prompt is tier 1, so for a contact with no Entra
+   binding (no M365 sync for that org) the only tier-2 routes are an
+   attested SMS/email destination. That is deliberate: without a binding the
+   product cannot say whose screen the prompt landed on.
