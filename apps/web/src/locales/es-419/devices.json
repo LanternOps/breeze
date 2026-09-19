@@ -753,6 +753,9 @@
     "noMoreActivity": "No hay más actividad"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "No se encontró el comando de análisis",
+    "scanCommandNotQueued": "El comando de análisis no se puso en cola",
+    "scanStillRunning": "El análisis del sistema de archivos sigue en curso. Haga clic en Actualizar en unos momentos.",
     "failedToFetchFilesystemStatus": "No se pudo recuperar el estado del sistema de archivos",
     "failedToFetchCommandHistory": "No se pudo recuperar el historial de comandos",
     "failedToLoadFilesystemStatus": "No se pudo cargar el estado del sistema de archivos",

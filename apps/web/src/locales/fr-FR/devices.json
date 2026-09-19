@@ -753,6 +753,9 @@
     "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "La commande d’analyse est introuvable",
+    "scanCommandNotQueued": "La commande d’analyse n’a pas été mise en file d’attente",
+    "scanStillRunning": "Le balayage du système de fichiers est toujours en cours. Cliquez sur Actualiser dans quelques instants.",
     "failedToFetchFilesystemStatus": "Impossible de récupérer l’état du système de fichiers",
     "failedToFetchCommandHistory": "Impossible de récupérer l’historique des commandes",
     "failedToLoadFilesystemStatus": "Impossible de charger l’état du système de fichiers",

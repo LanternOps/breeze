@@ -753,6 +753,9 @@
     "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "Tarama komutu bulunamadı",
+    "scanCommandNotQueued": "Tarama komutu sıraya alınmadı",
+    "scanStillRunning": "Dosya sistemi taraması hâlâ çalışıyor. Birkaç dakika sonra Yenile’ye tıklayın.",
     "failedToFetchFilesystemStatus": "Dosya sistemi durumu getirilemedi",
     "failedToFetchCommandHistory": "Komut geçmişi getirilemedi",
     "failedToLoadFilesystemStatus": "Dosya sistemi durumu yüklenemedi",

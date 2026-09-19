@@ -753,6 +753,9 @@
     "noMoreActivity": "Não há mais atividade"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "Comando de varredura não encontrado",
+    "scanCommandNotQueued": "O comando de varredura não foi enfileirado",
+    "scanStillRunning": "A varredura do sistema de arquivos ainda está em execução. Clique em Atualizar em instantes.",
     "failedToFetchFilesystemStatus": "Falha ao buscar o status do sistema de arquivos",
     "failedToFetchCommandHistory": "Falha ao buscar o histórico de comandos",
     "failedToLoadFilesystemStatus": "Falha ao carregar o status do sistema de arquivos",

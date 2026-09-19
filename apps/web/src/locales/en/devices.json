@@ -753,6 +753,9 @@
     "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "Scan command was not found",
+    "scanCommandNotQueued": "Scan command was not queued",
+    "scanStillRunning": "Filesystem scan is still running. Click Refresh in a few moments.",
     "failedToFetchFilesystemStatus": "Failed to fetch filesystem status",
     "failedToFetchCommandHistory": "Failed to fetch command history",
     "failedToLoadFilesystemStatus": "Failed to load filesystem status",

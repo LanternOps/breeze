@@ -33,6 +33,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
+  'src/components/devices/DeviceFilesystemTab.tsx',
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
@@ -700,7 +702,8 @@ describe('no silent mutations in targeted set', () => {
     // Bare-metal W05a adds backup/VMRestoreWizard.tsx (rebuild engine): 146 → 147.
     // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
     // and EmailTemplateEditor.tsx: 147 → 149.
-    expect(absoluteFiles.length).toBe(149);
+    // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
+    expect(absoluteFiles.length).toBe(150);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

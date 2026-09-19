@@ -753,6 +753,9 @@
     "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
+    "scanCommandNotFound": "Comando di scansione non trovato",
+    "scanCommandNotQueued": "Comando di scansione non accodato",
+    "scanStillRunning": "La scansione del filesystem è ancora in corso. Fai clic su Aggiorna tra qualche istante.",
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",
     "failedToFetchCommandHistory": "Impossibile recuperare la cronologia dei comandi",
     "failedToLoadFilesystemStatus": "Impossibile caricare lo stato del filesystem",
