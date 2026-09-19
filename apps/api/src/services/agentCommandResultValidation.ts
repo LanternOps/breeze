@@ -42,7 +42,9 @@ const warningListSchema = z.union([
 
 export const restoreStructuredResultSchema = z.object({
   snapshotId: z.string().min(1).max(255).optional(),
-  status: z.enum(['completed', 'failed', 'partial', 'degraded']).optional(),
+  // 'refused' is the bare_metal_rebuild engine's preflight verdict (W05a); the
+  // helper reports it as a successful command and the server maps it.
+  status: z.enum(['completed', 'failed', 'partial', 'degraded', 'refused']).optional(),
   filesRestored: z.number().int().nonnegative().optional(),
   // v4 .int() caps at 2^53; cumulative byte totals can exceed it — keep v3
   // semantics (integer, any magnitude) so a large backup isn't recorded failed.
