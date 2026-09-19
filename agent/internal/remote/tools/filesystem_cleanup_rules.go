@@ -335,7 +335,7 @@ func concreteAnchor(goos, path string, n int) (string, bool) {
 	if goos == "windows" {
 		path = strings.ReplaceAll(path, "\\", "/")
 		if len(path) < 3 || path[1] != ':' || path[2] != '/' ||
-			!((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')) {
+			(path[0] < 'a' || path[0] > 'z') && (path[0] < 'A' || path[0] > 'Z') {
 			return "", false
 		}
 		separator = "\\"
@@ -378,10 +378,6 @@ func isCleanupDeniedRootFor(goos, path string) bool {
 		}
 	}
 	return false
-}
-
-func isCleanupDeniedRoot(path string) bool {
-	return isCleanupDeniedRootFor(runtime.GOOS, path)
 }
 
 // classifyCleanupPathFor is the single place `Safe` is decided (spec §6.1:
