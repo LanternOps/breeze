@@ -68,27 +68,34 @@ function priceRowsWritten(): Array<{ currencyCode: string; unitPrice: string }> 
 describe('createCatalogItem price map (buildPriceMap)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  it('explicit prices only → one row per currency, mirror = partner-currency row', async () => {
+  it('explicit prices only → one row per currency', async () => {
     queueCreate('USD');
     await svc.createCatalogItem({ ...baseCreate, prices: [{ currencyCode: 'EUR', unitPrice: 10 }, { currencyCode: 'USD', unitPrice: 12 }] }, actor);
     expect(priceRowsWritten()).toEqual([
       expect.objectContaining({ itemId: 'i1', partnerId: 'p1', currencyCode: 'EUR', unitPrice: '10.00' }),
       expect.objectContaining({ itemId: 'i1', partnerId: 'p1', currencyCode: 'USD', unitPrice: '12.00' }),
     ]);
-    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ unitPrice: '12.00', costCurrency: 'USD' });
+    // The catalog_items row itself carries NO price since #3812 dropped the
+    // deprecated unit_price mirror — only cost_currency.
+    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ costCurrency: 'USD' });
+    expect(mock.values.mock.calls[0]?.[0]).not.toHaveProperty('unitPrice');
   });
 
   it('legacy unitPrice lands in the partner currency', async () => {
     queueCreate('GBP');
     await svc.createCatalogItem({ ...baseCreate, unitPrice: 99.5 }, actor);
     expect(priceRowsWritten()).toEqual([expect.objectContaining({ currencyCode: 'GBP', unitPrice: '99.50' })]);
-    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ unitPrice: '99.50', costCurrency: 'GBP' });
+    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ costCurrency: 'GBP' });
+    expect(mock.values.mock.calls[0]?.[0]).not.toHaveProperty('unitPrice');
   });
 
-  it('no price in the partner currency → mirror falls back to 0.00', async () => {
+  it('a price in a NON-partner currency writes only that row (no partner-currency placeholder)', async () => {
     queueCreate('USD');
     await svc.createCatalogItem({ ...baseCreate, prices: [{ currencyCode: 'EUR', unitPrice: 10 }] }, actor);
-    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ unitPrice: '0.00' });
+    // Before #3812 this wrote a 0.00 partner-currency mirror onto catalog_items.
+    // Now the item is simply priced in EUR only; USD is a NO_PRICE_FOR_CURRENCY gap.
+    expect(priceRowsWritten()).toEqual([expect.objectContaining({ currencyCode: 'EUR', unitPrice: '10.00' })]);
+    expect(mock.values.mock.calls[0]?.[0]).not.toHaveProperty('unitPrice');
   });
 
   it('cost+markup derives into costCurrency only when no explicit price exists there', async () => {
@@ -111,7 +118,7 @@ describe('createCatalogItem price map (buildPriceMap)', () => {
       expect.objectContaining({ currencyCode: 'USD', unitPrice: '120.00' }),
       expect.objectContaining({ currencyCode: 'CAD', unitPrice: '110.00' }),
     ]));
-    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ unitPrice: '120.00', costCurrency: 'CAD' });
+    expect(mock.values.mock.calls[0]?.[0]).toMatchObject({ costCurrency: 'CAD' });
   });
 
   it('nothing at all → PRICE_REQUIRED (400) before any insert', async () => {
@@ -153,7 +160,7 @@ describe('createCatalogItem price map (buildPriceMap)', () => {
 describe('resolvePrice', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  const item = { id: 'i1', partnerId: 'p1', name: 'Widget', costBasis: '5.00', costCurrency: 'USD', taxable: true, taxCategory: null, unitPrice: '999.00' };
+  const item = { id: 'i1', partnerId: 'p1', name: 'Widget', costBasis: '5.00', costCurrency: 'USD', taxable: true, taxCategory: null };
 
   it('queries item → override → price book and returns the book row', async () => {
     queueResult([item]);
@@ -200,26 +207,23 @@ describe('resolvePrice', () => {
 describe('setItemPrice / removeItemPrice lock order', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  it('setItemPrice locks catalog_items FOR UPDATE before the price upsert, mirrors the partner currency last', async () => {
+  it('setItemPrice locks catalog_items FOR UPDATE before the price upsert and writes NO catalog_items row', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]); // lock
-    queueResult([{ currencyCode: 'USD' }]); // partner currency
     queueResult([{ id: 'pr1', itemId: 'i1', currencyCode: 'USD', unitPrice: '8.00' }]); // upsert returning
-    queueResult([]); // mirror update
     const row = await svc.setItemPrice('i1', 'USD', { unitPrice: 8 }, actor);
     expect(row).toMatchObject({ unitPrice: '8.00' });
     expect(mock.transaction).toHaveBeenCalledTimes(1);
     const lockOrder = mock.for.mock.invocationCallOrder[0]!;
     const upsertOrder = mock.onConflictDoUpdate.mock.invocationCallOrder[0]!;
-    const mirrorOrder = mock.update.mock.invocationCallOrder[0]!;
     expect(lockOrder).toBeLessThan(upsertOrder);
-    expect(upsertOrder).toBeLessThan(mirrorOrder);
-    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '8.00' }));
+    // #3812: the deprecated catalog_items.unit_price mirror is gone, so the
+    // partner currency no longer triggers a second UPDATE on catalog_items.
+    expect(mock.update).not.toHaveBeenCalled();
     expect(emitCatalogEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'catalog.item.price_changed', catalogItemId: 'i1' }));
   });
 
-  it('setItemPrice in a non-partner currency does not touch the mirror', async () => {
+  it('setItemPrice in a non-partner currency also writes no catalog_items row', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ currencyCode: 'USD' }]);
     queueResult([{ id: 'pr1', itemId: 'i1', currencyCode: 'EUR', unitPrice: '8.00' }]);
     await svc.setItemPrice('i1', 'EUR', { unitPrice: 8 }, actor);
     expect(mock.update).not.toHaveBeenCalled();
@@ -227,7 +231,6 @@ describe('setItemPrice / removeItemPrice lock order', () => {
 
   it('setItemPrice refuses an unrepresentable amount (JPY 10.5) after the lock, before the upsert', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ currencyCode: 'USD' }]);
     await expect(svc.setItemPrice('i1', 'JPY', { unitPrice: 10.5 }, actor))
       .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
     expect(mock.insert).not.toHaveBeenCalled();
@@ -239,18 +242,16 @@ describe('setItemPrice / removeItemPrice lock order', () => {
       .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
   });
 
-  it('removeItemPrice locks first, deletes, and zeroes the mirror only for the partner currency', async () => {
+  it('removeItemPrice locks first, deletes, and writes no catalog_items row in any currency', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ currencyCode: 'USD' }]);
     queueResult([]); // delete
-    queueResult([]); // mirror
     await svc.removeItemPrice('i1', 'USD', actor);
     expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.delete.mock.invocationCallOrder[0]!);
-    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '0.00' }));
+    // #3812: dropping the partner-currency row used to zero the unit_price mirror.
+    expect(mock.update).not.toHaveBeenCalled();
 
     vi.clearAllMocks(); results.length = 0;
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ currencyCode: 'USD' }]);
     queueResult([]);
     await svc.removeItemPrice('i1', 'EUR', actor);
     expect(mock.update).not.toHaveBeenCalled();
@@ -338,7 +339,7 @@ describe('updateCatalogItem price drivers', () => {
     const row = await svc.updateCatalogItem('i1', { name: 'Renamed', costBasis: 50 }, actor);
     expect(row).toMatchObject({ name: 'Renamed' });
     expect(mock.onConflictDoUpdate).not.toHaveBeenCalled(); // no price-book write
-    expect(mock.update).toHaveBeenCalledTimes(1); // item patch only, no mirror
+    expect(mock.update).toHaveBeenCalledTimes(1); // the item patch, and nothing else
   });
 
   it('a changed cost re-derives cost × markup into the cost-currency row', async () => {
@@ -346,7 +347,6 @@ describe('updateCatalogItem price drivers', () => {
     queueResult([{ currencyCode: 'USD' }]); // partner currency
     queueResult([{ ...existing, costBasis: '60.00' }]); // update returning
     queueResult([{ id: 'pr1', currencyCode: 'USD', unitPrice: '72.00' }]); // price upsert returning
-    queueResult([{ ...existing, costBasis: '60.00', unitPrice: '72.00' }]); // mirror
     await svc.updateCatalogItem('i1', { costBasis: 60 }, actor);
     expect(mock.onConflictDoUpdate).toHaveBeenCalledTimes(1);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '72.00' }));
@@ -359,7 +359,7 @@ describe('updateCatalogItem price drivers', () => {
 
     vi.clearAllMocks(); results.length = 0;
     queueResult([existing]); queueResult([{ currencyCode: 'USD' }]); queueResult([existing]);
-    queueResult([{ id: 'pr1' }]); queueResult([existing]);
+    queueResult([{ id: 'pr1' }]);
     await svc.updateCatalogItem('i1', { markupPercent: 30 }, actor);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '65.00' }));
   });
@@ -368,7 +368,7 @@ describe('updateCatalogItem price drivers', () => {
 describe('applyImportedPricingBySku (#3775 review #9 — importer duplicate-SKU recovery)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  it('locks the owned item by SKU FOR UPDATE, upserts the requested sell-currency row + cost, mirrors last, returns item + full price book', async () => {
+  it('locks the owned item by SKU FOR UPDATE, upserts the requested sell-currency row + cost, returns item + full price book', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '10.00', costCurrency: 'USD' }]); // lock by sku
     queueResult([{ currencyCode: 'USD' }]); // partner currency
     queueResult([{ currencyCode: 'USD' }]); // existing price-book codes (no EUR row yet)
@@ -381,26 +381,28 @@ describe('applyImportedPricingBySku (#3775 review #9 — importer duplicate-SKU 
     expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ itemId: 'i1', partnerId: 'p1', currencyCode: 'EUR', unitPrice: '22.00' }));
     expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ costBasis: '18.50', costCurrency: 'EUR' }));
-    // Non-partner currency → the deprecated unit_price mirror is untouched.
+    // #3812: no catalog_items write ever carries a price — the cost patch is the
+    // only UPDATE on the item row.
     expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ unitPrice: expect.anything() }));
+    expect(mock.update).toHaveBeenCalledTimes(1);
     expect(res).toMatchObject({ id: 'i1', costBasis: '18.50', costCurrency: 'EUR' });
     expect(res.prices).toEqual([{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
     expect(res.pricingApplied).toEqual({ added: ['EUR'], preserved: [] });
     expect(emitCatalogEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'catalog.item.price_changed', catalogItemId: 'i1' }));
   });
 
-  it('legacy unitPrice lands in the partner currency and rewrites the mirror LAST', async () => {
+  it('legacy unitPrice lands in the partner-currency price-book row and writes no catalog_items row', async () => {
     queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: null, costCurrency: 'USD' }]);
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([]); // existing price-book codes — none, so the USD row is ADDED
     queueResult([{ id: 'pr-usd', itemId: 'i1', currencyCode: 'USD', unitPrice: '22.00' }]); // upsert
-    queueResult([{ id: 'i1', partnerId: 'p1', unitPrice: '22.00' }]); // mirror update
     queueResult([{ currencyCode: 'USD', unitPrice: '22.00' }]);
     const res = await svc.applyImportedPricingBySku('CFQ7', { unitPrice: 22 }, actor);
-    expect(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!).toBeLessThan(mock.update.mock.invocationCallOrder[0]!);
-    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '22.00' }));
-    // No cost supplied → the stored cost is left alone (no cost update statement).
-    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ costBasis: expect.anything() }));
+    expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '22.00' }));
+    // #3812: the partner currency used to trigger a unit_price mirror UPDATE on
+    // catalog_items. With no cost supplied there is now no catalog_items write at all.
+    expect(mock.update).not.toHaveBeenCalled();
+    expect(mock.set).not.toHaveBeenCalled();
     expect(res.prices).toEqual([{ currencyCode: 'USD', unitPrice: '22.00' }]);
   });
 
@@ -425,7 +427,7 @@ describe('applyImportedPricingBySku (#3775 review #9 — importer duplicate-SKU 
     queueResult([{ currencyCode: 'EUR', unitPrice: '99.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
     const res = await svc.applyImportedPricingBySku('CFQ7', { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
 
-    // No price write at all — not the upsert, not the mirror.
+    // No price write at all.
     expect(mock.onConflictDoUpdate).not.toHaveBeenCalled();
     expect(mock.values).not.toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
     // The operator's 99.00 survives; the feed cost (real feed truth) is applied.
@@ -445,8 +447,8 @@ describe('applyImportedPricingBySku (#3775 review #9 — importer duplicate-SKU 
 
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR', unitPrice: '22.00' }));
     expect(mock.values).not.toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD' }));
-    // The partner-currency row was PRESERVED, so the deprecated mirror is not rewritten either.
-    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ unitPrice: expect.anything() }));
+    // The partner-currency row was PRESERVED; no catalog_items row is written at all.
+    expect(mock.update).not.toHaveBeenCalled();
     expect(res.pricingApplied).toEqual({ added: ['EUR'], preserved: ['USD'] });
   });
 

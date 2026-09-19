@@ -123,7 +123,7 @@ describe('credential-boundary executor apk policy', () => {
     // Includes the actions executor (#4272, dup #4264): it holds Graph
     // *mutation* credentials — the highest blast radius of the three — and
     // previously had no Dockerfile-content policy applied to it at all.
-    const script = execFileSync('cat', [SCRIPT], { encoding: 'utf8' });
+    const script = readFileSync(SCRIPT, 'utf8');
     expect(script).toMatch(/require_audited_openssl_upgrade "\$EXECUTOR_DOCKERFILE"/);
     expect(script).toMatch(/require_audited_openssl_upgrade "\$ACTIONS_EXECUTOR_DOCKERFILE"/);
     expect(script).toMatch(/require_audited_openssl_upgrade "\$COMMS_EXECUTOR_DOCKERFILE"/);

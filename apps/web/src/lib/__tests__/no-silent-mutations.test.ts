@@ -138,6 +138,7 @@ const TARGET_GLOBS = [
   'src/components/clientAi/SessionsTab.tsx',
   'src/components/clientAi/TemplatesTab.tsx',
   'src/components/settings/CatalogItemsTab.tsx',
+  'src/components/settings/CatalogDefaultsCard.tsx',
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
@@ -146,7 +147,7 @@ const TARGET_GLOBS = [
   // the books stay short an invoice, so this file is in the guarded set from
   // its first commit rather than after the first regression.
   'src/components/billing/AccountingSyncCard.tsx',
-  'src/components/billing/PartnerBillingSettings.tsx',
+  'src/components/billing/PartnerBillingSettingsPage.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
   'src/components/contracts/ContractDetail.tsx',
@@ -322,6 +323,28 @@ const TARGET_GLOBS = [
   // failed detach was silent and a successful one gave no feedback.
   'src/components/monitoring/MonitorEditor.tsx',
   'src/components/monitoring/DeployMonitorDialog.tsx',
+  // #4050 (deferred from #4018 / PR #4041): the account-security surface — MFA
+  // enable/disable, recovery-code rotation, passkey register/rename/delete, SSO
+  // re-auth, password and avatar changes. Every mutation here already reports
+  // its outcome, but through section-scoped inline banners rather than
+  // runAction, so each existing call site carries a reasoned
+  // `runaction-exempt:` marker. The point of guarding the file is the NEXT
+  // mutation: without an entry here, a bare fetchWithAuth added beside them
+  // ships with zero CI signal on the one page where a silently-failed
+  // "Disable MFA" or "Delete passkey" is a security-posture lie.
+  'src/components/settings/ProfilePage.tsx',
+  // Partner sending domains W05: the client module holds every mutation for the
+  // custom-sender-address surface (add / check / remove / identity upsert and
+  // clear / test send), each already wrapped in runAction. Guarding the file is
+  // about the NEXT mutation — a bare fetchWithAuth added beside them would
+  // silently fail on the surface that decides what address a partner's
+  // customers see mail from, and would also un-guard every caller, because
+  // isMutatingApiWrapper only clears a caller while the wrapper stays wrapped.
+  'src/lib/api/sendingDomains.ts',
+  // The tab itself has no fetchWithAuth today — it goes through the client
+  // above — and is listed so a future direct mutation cannot be added here
+  // without CI noticing. TARGET_GLOBS is a literal file list, not directory-wide.
+  'src/components/settings/PartnerSendingDomainTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -661,7 +684,13 @@ describe('no silent mutations in targeted set', () => {
     // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
     // truth W04 (#5992) adds the network asset single writer: 140 → 141.
     // Network device page truth W05 adds the probe hook: 141 → 142.
-    expect(absoluteFiles.length).toBe(142);
+    // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
+    // Partner sending domains W05 adds lib/api/sendingDomains.ts and
+    // settings/PartnerSendingDomainTab.tsx: 143 → 145.
+    // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
+    // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
+    // 145 → 146.
+    expect(absoluteFiles.length).toBe(146);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -123,8 +123,11 @@ export type ToolExecutionContext = {
   /**
    * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
    * releases an agent-originated intent whose action creates a row OWNED by
-   * a real user (`USER_OWNED_RELEASE_ACTIONS` — today `manage_tickets:
-   * log_time_entry`, whose `time_entries.user_id` is a users FK). The worker
+   * a real user (`USER_OWNED_RELEASE_ACTIONS` — `manage_tickets:
+   * log_time_entry`, whose `time_entries.user_id` is a users FK, plus the
+   * three `services/aiToolsFleet.ts` writers added by #6200:
+   * `manage_deployments:create`, `manage_patches:install` and
+   * `manage_patches:rollback`). The worker
    * swaps the rebuilt agent auth for the APPROVER's own AuthContext
    * (`action_intents.decided_by_user_id`) and names them here, so the
    * handler can (a) assert the auth it received really is that approver

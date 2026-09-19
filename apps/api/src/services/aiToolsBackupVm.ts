@@ -124,7 +124,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -253,7 +253,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'

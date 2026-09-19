@@ -61,7 +61,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       setScript({
         name: scriptData.name,
         description: scriptData.description || '',
-        category: scriptData.category,
+        // Loose-file imports predating the 'Custom' default have no category.
+        category: scriptData.category || 'Custom',
         language: scriptData.language,
         osTypes: scriptData.osTypes,
         content: scriptData.content || '',

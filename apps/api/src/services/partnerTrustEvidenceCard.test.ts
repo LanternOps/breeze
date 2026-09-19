@@ -46,6 +46,7 @@ import {
   buildEvidenceCard,
   consumeTrustActionToken,
   mintTrustActionToken,
+  renderEvidenceCardSummary,
   verifyTrustActionToken,
 } from './partnerTrustEvidenceCard';
 
@@ -103,6 +104,12 @@ describe('buildEvidenceCard', () => {
       [{ name: 'Alice Operator', email: 'alice@example.test' }],
       [{ hostname: 'server-1', enrollmentIpClass: 'business', isVirtual: true, enrollmentIp: '203.0.113.5' }],
       [{ count: 6 }],
+      // W06: the sending-domain read joins the same Promise.all, third, so it
+      // takes the queue slot immediately after the denials count.
+      [
+        { domain: 'mail.acme.test', status: 'verified', verifiedAt: new Date('2026-09-01T00:00:00Z') },
+        { domain: 'billing.acme.test', status: 'pending', verifiedAt: null },
+      ],
       [{ id: '33333333-3333-4333-8333-333333333333', billingCardFingerprint: 'fp_same' }],
       [{ partnerId: '33333333-3333-4333-8333-333333333333', email: 'other@example.test' }],
     ];
@@ -133,5 +140,25 @@ describe('buildEvidenceCard', () => {
     mocks.resolveMx.mockResolvedValue([]);
     const card = await buildEvidenceCard(PARTNER_ID);
     expect(card.emailDomain.hasMx).toBe(false);
+  });
+
+  it("lists the partner's sending domains with status and verification time", async () => {
+    const card = await buildEvidenceCard(PARTNER_ID);
+    expect(card.sendingDomains).toEqual([
+      { domain: 'mail.acme.test', status: 'verified', verifiedAt: '2026-09-01T00:00:00.000Z' },
+      { domain: 'billing.acme.test', status: 'pending', verifiedAt: null },
+    ]);
+  });
+
+  it('renders the sending domains into the ops-alert text', async () => {
+    const card = await buildEvidenceCard(PARTNER_ID);
+    expect(renderEvidenceCardSummary(card)).toContain('mail.acme.test (verified)');
+  });
+
+  it('says "none" rather than omitting the line when the partner has no sending domain', async () => {
+    mocks.queryResults[4] = [];
+    const card = await buildEvidenceCard(PARTNER_ID);
+    expect(card.sendingDomains).toEqual([]);
+    expect(renderEvidenceCardSummary(card)).toContain('Sending domains: none');
   });
 });

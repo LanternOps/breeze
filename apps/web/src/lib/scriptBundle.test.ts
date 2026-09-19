@@ -9,6 +9,7 @@ describe('looseFileToEntry', () => {
   it('infers language and osTypes from the extension and name from the filename', () => {
     expect(looseFileToEntry('Clear-Spooler.ps1', 'Restart-Service Spooler')).toEqual({
       name: 'Clear-Spooler',
+      category: 'Custom',
       osTypes: ['windows'],
       language: 'powershell',
       content: 'Restart-Service Spooler'

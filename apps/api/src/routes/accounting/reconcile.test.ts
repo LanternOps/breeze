@@ -55,6 +55,7 @@ vi.mock('../../services/accounting/accountingInvoicePush', () => ({
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingMappingSync: vi.fn().mockResolvedValue(true),
   enqueueAccountingInvoicePush: vi.fn(),
 }));
 

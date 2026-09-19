@@ -31,7 +31,16 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
-import { devices, organizationUsers, remoteSessions, users } from '../../db/schema';
+import {
+  devices,
+  organizations,
+  partners,
+  organizationUsers,
+  remoteSessions,
+  roles,
+  userPasskeys,
+  users,
+} from '../../db/schema';
 import {
   REVOCATION_LEASE_HARD_CAP_MS,
   REVOCATION_LEASE_TTL_MS,
@@ -42,6 +51,7 @@ import {
 } from '../../services/remoteRevocationLease';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createOrganization,
   createPartner,
   createRole,
@@ -275,6 +285,161 @@ describe('revocation lease against live Postgres', () => {
     expect(await renewRevocationLease(f.session.id)).toEqual({
       status: 'revoked',
       reason: 'user_inactive',
+    });
+  });
+
+  // #6107 — the lease must reach the same MFA verdict login does.
+  describe('MFA through the effective policy (#6107)', () => {
+    const savedKillSwitch = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+    afterEach(() => {
+      if (savedKillSwitch === undefined) delete process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+      else process.env.MFA_FORCE_FOR_PARTNER_ADMIN = savedKillSwitch;
+    });
+
+    // Policy edits (force_mfa flips) bump permissions_epoch by trigger. These
+    // cases are about the MFA branch, so re-capture the baseline afterwards —
+    // otherwise every one of them would revoke as `permissions_changed`.
+    async function resnapshot(f: Awaited<ReturnType<typeof buildFixture>>) {
+      const db = getTestDb();
+      const [live] = await db
+        .select({ permissionsEpoch: users.permissionsEpoch })
+        .from(users)
+        .where(eq(users.id, f.user.id))
+        .limit(1);
+      await db
+        .update(remoteSessions)
+        .set({ permissionsEpochSnapshot: Number(live!.permissionsEpoch) })
+        .where(eq(remoteSessions.id, f.session.id));
+    }
+
+    async function requireMfaForOrg(orgId: string) {
+      await getTestDb()
+        .update(organizations)
+        .set({ settings: { security: { requireMfa: true } } })
+        .where(eq(organizations.id, orgId));
+    }
+
+    async function addPasskey(userId: string, disabled: boolean) {
+      await getTestDb().insert(userPasskeys).values({
+        userId,
+        credentialId: `cred-${userId}-${Math.random().toString(36).slice(2, 10)}`,
+        publicKey: 'test-public-key',
+        deviceType: 'singleDevice',
+        disabledAt: disabled ? new Date() : null,
+      });
+    }
+
+    it('kill switch off: a factorless holder of a force_mfa role keeps renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildFixture();
+      await getTestDb().update(roles).set({ forceMfa: true }).where(eq(roles.id, f.role.id));
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result.status).toBe('renewed');
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+
+    it('kill switch on: the open enrolment grace window keeps the session renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'true';
+      const f = await buildFixture();
+      await getTestDb().update(roles).set({ forceMfa: true }).where(eq(roles.id, f.role.id));
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result.status).toBe('renewed');
+    });
+
+    it('revokes a factorless user when org settings require MFA, even with the kill switch off', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    // The Partner Admin axis the kill switch is named for: a partner-scoped
+    // user (users.org_id NULL) whose PARTNER role forces MFA. Re-points the
+    // fixture's session at a partner member; the policy then runs its
+    // partner_users -> roles join and reads partners.settings for real.
+    async function buildPartnerAdminFixture() {
+      const db = getTestDb();
+      const f = await buildFixture();
+      const partnerRole = await createRole({
+        scope: 'partner',
+        partnerId: f.partner.id,
+        name: `Partner Admin ${f.session.id}`,
+      });
+      await db.update(roles).set({ forceMfa: true }).where(eq(roles.id, partnerRole.id));
+      const admin = await createUser({
+        partnerId: f.partner.id,
+        orgId: null,
+        email: `lease-padmin-${f.session.id}@example.com`,
+      });
+      await assignUserToPartner(admin.id, f.partner.id, partnerRole.id, 'all');
+      await db
+        .update(remoteSessions)
+        .set({ userId: admin.id })
+        .where(eq(remoteSessions.id, f.session.id));
+      const partnerFixture = { ...f, user: admin };
+      await resnapshot(partnerFixture);
+      return partnerFixture;
+    }
+
+    it('kill switch off: a factorless Partner Admin (force_mfa partner role) keeps renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.orgId).toBeNull();
+      expect(row!.partnerMembership?.orgAccess).toBe('all');
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result.status).toBe('renewed');
+    });
+
+    it('revokes a factorless Partner Admin when PARTNER settings require MFA', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+      await getTestDb()
+        .update(partners)
+        .set({ settings: { security: { requireMfa: true } } })
+        .where(eq(partners.id, f.partner.id));
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    it('does not count a DISABLED passkey as MFA protection', async () => {
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await addPasskey(f.user.id, true);
+      await resnapshot(f);
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.mfaProtected).toBe(false);
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    it('counts a usable passkey as MFA protection', async () => {
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await addPasskey(f.user.id, true);
+      await addPasskey(f.user.id, false);
+      await resnapshot(f);
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.mfaProtected).toBe(true);
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result.status).toBe('renewed');
     });
   });
 

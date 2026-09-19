@@ -72,6 +72,10 @@ function buildApp(opts?: {
   // default `?? CURRENT_AGENT_TOKEN_HASH` fallback would otherwise always
   // supply a truthy hash and mask that branch.
   omitAuthTokenHash?: boolean;
+  /** #3997 — the tenant is offboarding (`getAgentTenantState() === 'draining'`). */
+  tenantDraining?: boolean;
+  /** #3986 — this device is inside its remove-uninstall drain window. */
+  deviceUninstallDraining?: boolean;
 }): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
@@ -85,6 +89,8 @@ function buildApp(opts?: {
       authTokenHash: opts?.omitAuthTokenHash
         ? undefined
         : (opts?.authTokenHash ?? CURRENT_AGENT_TOKEN_HASH),
+      tenantDraining: opts?.tenantDraining ?? false,
+      deviceUninstallDraining: opts?.deviceUninstallDraining ?? false,
     });
     c.set('agentTokenRotationRequired', opts?.rotationRequired ?? false);
     c.set('agentPendingTokenPresented', opts?.pendingTokenPresented ?? false);
@@ -604,5 +610,108 @@ describe('agent token rotation confirm route', () => {
       alreadyCurrent: true,
     });
     expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+// #3997 — Layer 2 of the credential-mint drain guard. agentAuthMiddleware
+// already refuses `rotate-token` for both drain kinds, but that is a path
+// allowlist; this asserts the handler refuses on its own, so a future widening
+// of the allowlist cannot silently reopen the mint. Nothing revokes a minted
+// credential: the offboarding abort paths cancel uninstalls without severing
+// credentials, device restore touches no token hash, and no sweeper expires a
+// staged hash.
+describe('agent token rotation route - drain guard (#3997)', () => {
+  const PENDING_HASH = 'pending-agent-token-hash';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-31T18:45:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refuses the MINT while the tenant is draining, and writes nothing', async () => {
+    const response = await buildApp({ tenantDraining: true }).request(
+      '/agents/agent-123/rotate-token',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Credential rotation is unavailable while this tenant or device is draining',
+      code: 'tenant_or_device_draining',
+    });
+    // The guard must precede every DB touch — no read, and above all no UPDATE
+    // that would stage a pending hash or demote the legitimate current token.
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the MINT while the device is uninstall-draining, and writes nothing', async () => {
+    const response = await buildApp({ deviceUninstallDraining: true }).request(
+      '/agents/agent-123/rotate-token',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'tenant_or_device_draining',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the MINT when BOTH drains apply', async () => {
+    const response = await buildApp({
+      tenantDraining: true,
+      deviceUninstallDraining: true,
+    }).request('/agents/agent-123/rotate-token', { method: 'POST' });
+
+    expect(response.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('does NOT gate the CONFIRM half — a rotation staged before the drain still completes', async () => {
+    // #2774's "don't strand a mid-stage rotation" concern lives entirely on the
+    // confirm half. This is the positive control: without it, an over-broad
+    // guard that also locked a mid-rotation agent out of its own promotion
+    // would still pass all three refusals above.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([
+            {
+              id: 'device-1',
+              hostname: 'host-1',
+              agentTokenHash: 'old-token-hash',
+              watchdogTokenHash: 'old-watchdog-token-hash',
+              helperTokenHash: 'old-helper-token-hash',
+              pendingTokenHash: PENDING_HASH,
+              pendingWatchdogTokenHash: 'pending-watchdog-token-hash',
+              pendingHelperTokenHash: 'pending-helper-token-hash',
+              pendingTokenExpiresAt: new Date('2026-03-31T19:45:00.000Z'),
+            },
+          ]),
+        })),
+      })),
+    } as any);
+    const where = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]),
+    }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where })) } as any);
+
+    const response = await buildApp({
+      authTokenHash: PENDING_HASH,
+      tenantDraining: true,
+      deviceUninstallDraining: true,
+    }).request('/agents/agent-123/rotate-token/confirm', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      confirmed: true,
+      confirmedAt: '2026-03-31T18:45:00.000Z',
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERMISSION_GRANTS } from '@breeze/shared';
-import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
+import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES, DEV_SEED_DEFAULT_PARTNER_SETTINGS } from './seed';
 
 describe('resolveBootstrapAdminConfig', () => {
   it('keeps the development convenience admin when no explicit bootstrap env is set', () => {
@@ -579,5 +579,20 @@ describe('agreements RBAC (W02)', () => {
     const perms = byName('Org Admin')!.permissions;
     expect(perms).not.toContain('agreements:read');
     expect(perms).not.toContain('agreements:write');
+  });
+});
+
+// Spec D2: docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md
+// New partners default to security.requireMfa=true. The seeded dev/e2e partner
+// must OPT OUT: seeded admins log in without a factor, and a forced-enrolment
+// wall on every fresh stack is the 2026-09-08 R1 lockout replayed locally.
+// This test exists so a future "cleanup" to plain applyNewPartnerDefaultSettings()
+// fails here instead of locking every developer out.
+describe('dev seed Default Partner settings', () => {
+  it('keeps requireMfa=false while still carrying the other new-partner defaults', () => {
+    expect(DEV_SEED_DEFAULT_PARTNER_SETTINGS).toEqual({
+      ticketing: { inbound: { enabled: false } },
+      security: { requireMfa: false },
+    });
   });
 });

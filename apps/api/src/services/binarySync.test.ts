@@ -14,6 +14,28 @@ const dbMocks = vi.hoisted(() => {
   // reaches db.select — see the "ensureCurrentVersionRegistered companion
   // check" describe block below for the tests that configure it).
   const select = vi.fn();
+
+  // #6098 — models the real AsyncLocalStorage nesting semantics enough for a
+  // unit test to prove a call happened "inside" vs. "outside" a DB access
+  // context, without a real Postgres connection. `contextDepth` tracks how
+  // many context-opening calls are currently on the stack; `heldDuring` records
+  // every label passed to `assertOutsideHeldDbContext` while depth > 0 — the
+  // exact shape of a #1105 violation (a network call reached while a
+  // transaction the caller opened is still open).
+  let contextDepth = 0;
+  const heldDuring: string[] = [];
+  const withSystemDbAccessContext = vi.fn(async (fn: () => Promise<unknown>) => {
+    contextDepth++;
+    try {
+      return await fn();
+    } finally {
+      contextDepth--;
+    }
+  });
+  const assertOutsideHeldDbContext = vi.fn((label: string) => {
+    if (contextDepth > 0) heldDuring.push(label);
+  });
+
   return {
     updateWhere,
     updateSet,
@@ -23,6 +45,10 @@ const dbMocks = vi.hoisted(() => {
     txInsert,
     tx,
     select,
+    withSystemDbAccessContext,
+    assertOutsideHeldDbContext,
+    heldDuring,
+    getContextDepth: () => contextDepth,
     transaction: vi.fn(async (fn: (tx: any) => Promise<void>) => fn(tx)),
   };
 });
@@ -32,9 +58,10 @@ vi.mock("../db", () => ({
     transaction: dbMocks.transaction,
     select: dbMocks.select,
   },
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext,
   // urlSafety's safeFetch calls this (#1105 tripwire); the real `../db` is
   // mocked away, so the named export has to exist or the import fails.
-  assertOutsideHeldDbContext: vi.fn(),
+  assertOutsideHeldDbContext: dbMocks.assertOutsideHeldDbContext,
 }));
 
 // binarySync's outbound calls now go through the SSRF-guarded
@@ -51,9 +78,15 @@ vi.mock("./urlSafety", async (importOriginal) => ({
   // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
   // `timeoutMs` survive the bridge instead of being silently dropped, and a
   // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  // #6098: the real safeFetch calls assertOutsideHeldDbContext('safeFetch')
+  // before any network work (see urlSafety.tripwire.test.ts) — mirror that
+  // contract here so a test can detect a fetch that happened while the mocked
+  // `withSystemDbAccessContext` context was still open.
   safeFetchFollowingRedirects: vi.fn(
-    (url: string, init?: import("./urlSafety").SafeFetchInit) =>
-      globalThis.fetch(url, init as RequestInit),
+    (url: string, init?: import("./urlSafety").SafeFetchInit) => {
+      dbMocks.assertOutsideHeldDbContext("safeFetch");
+      return globalThis.fetch(url, init as RequestInit);
+    },
   ),
 }));
 
@@ -232,6 +265,7 @@ describe("binarySync", () => {
     delete process.env.BINARY_GITHUB_REPOSITORY;
     delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
+    dbMocks.heldDuring.length = 0;
     // Clear the per-(component/assetName) refused-manifest-asset capture
     // dedup so a prior test's Sentry assertion doesn't suppress this one's.
     __resetRefusedManifestAssetWarnCache();
@@ -670,6 +704,78 @@ describe("binarySync", () => {
         }),
       }),
     );
+  });
+
+  // #6098 — boot wraps `syncBinaries()` (which calls `syncFromGitHub`) in a
+  // single ambient `withSystemDbAccessContext`, so the GitHub fetch phase runs
+  // with a pooled connection pinned idle-in-transaction (verified: 2.7s hold,
+  // safeFetch's #1105 tripwire fired x10). The fix is for the DB WRITES to open
+  // their own short system-scoped contexts instead of relying on an ambient one
+  // — so the caller no longer needs to (and must not) wrap the whole call.
+  // This suite calls `syncFromGitHub` with NO ambient context at all (the
+  // shape the fixed boot call site produces) and asserts the writes still
+  // happen (under an explicit system context) and the fetch is never reached
+  // while any context this module opened is still held.
+  it("writes go through their own system-scoped DB context, and the GitHub fetch never runs while one is held (#6098)", async () => {
+    const assetName = "breeze-agent-linux-amd64";
+    const asset = Buffer.from("trusted linux agent");
+    const signed = makeSignedReleaseManifest(assetName, asset);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "release notes",
+              assets: [
+                {
+                  name: assetName,
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${assetName}`,
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url:
+                    "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                  size: signed.manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url:
+                    "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                  size: signed.signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      }),
+    );
+
+    // No ambient withSystemDbAccessContext wrap around this call — matching
+    // the fixed boot call site, which no longer wraps `syncBinaries()`.
+    const result = await syncFromGitHub();
+    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"], failed: [] });
+
+    // The write still happened...
+    expect(dbMocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ version: "1.2.3", component: "agent" }),
+    );
+    // ...because upsertVersion opened its OWN system-scoped context around it,
+    // not because it inherited one from the (now absent) caller wrap.
+    expect(dbMocks.withSystemDbAccessContext).toHaveBeenCalled();
+    // And the fetch itself never ran while that (or any) context this module
+    // opened was still held — the #1105 class this issue reports.
+    expect(dbMocks.heldDuring).toEqual([]);
+    expect(dbMocks.getContextDepth()).toBe(0);
   });
 
   it("populates releaseManifest, manifestSignature, signingKeyId in local-binary mode (closes: #625)", async () => {

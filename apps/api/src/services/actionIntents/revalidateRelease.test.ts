@@ -63,6 +63,8 @@ import { validateAuthorizationKeys } from './policyDecidable';
 import { policyDecideEnabled } from '../../config/env';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
+import { buildAuthContextForIntent } from './actorContext';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -675,5 +677,85 @@ describe('revalidateApprovedIntentForRelease external tool branch (tool catalog 
     if (result.ok) expect(result.tenantTool).toBeUndefined();
     expect(loadTenantToolBindingState).not.toHaveBeenCalled();
     expect(getToolTier).toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease org-wide governance site ceiling', () => {
+  const args = { userPrincipalName: 'victim@contoso.test' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const governanceIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'm365_disable_user',
+    arguments: args,
+    argumentDigest: digest,
+    ...overrides,
+  });
+
+  /**
+   * Defence in depth behind the raise gate in intentService.ts: the ceiling is
+   * re-derived LIVE here (actorContext rebuilds allowedSiteIds from the DB),
+   * so a requester who was unrestricted when they raised the intent and has
+   * since been confined to a site does not get the approved identity-tenant
+   * mutation released on their behalf.
+   */
+  it('refuses release when the requester has SINCE become site-restricted', async () => {
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedSiteIds: ['site-1'],
+    } as never);
+
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent(),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'site_ceiling',
+      details: { reason: SITE_CEILING_WRITE_DENIED_MESSAGE },
+    });
+    // The refusal stands on its own — it does not depend on RBAC also failing.
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('refuses release when the rebuilt context carries an exact-DEVICE ceiling', async () => {
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedDeviceIds: ['device-1'],
+    } as never);
+
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent({ actionName: 'google_suspend_user' }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: false, errorCode: 'site_ceiling' });
+  });
+
+  it('releases the same intent for a still-UNRESTRICTED requester', async () => {
+    // Control: the default actorContext mock carries no ceiling at all.
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent(),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('does not gate a NON-governance tool for a site-restricted requester', async () => {
+    // Control on the other axis: a site ceiling is normal for device work and
+    // must not become a blanket release refusal.
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedSiteIds: ['site-1'],
+    } as never);
+    const plainArgs = { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' };
+    const plainDigest = computeArgumentDigest(canonicalizeArguments(plainArgs));
+
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ actionName: 'manage_services', arguments: plainArgs, argumentDigest: plainDigest }),
+      { boundArgumentDigest: plainDigest },
+    );
+    expect(result).toMatchObject({ ok: true });
   });
 });

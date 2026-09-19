@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { lookup as dnsLookup } from 'dns/promises';
-import { isIP } from 'net';
 import { db, withSystemDbAccessContext } from '../../db';
 import { isAgentTenantActive } from '../../services/tenantStatus';
 import { devices, organizations, deviceMtlsCertificates } from '../../db/schema';
@@ -28,6 +27,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
+import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../../services/ipRanges';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import {
   getAgentMtlsBindingMode,
@@ -143,13 +143,19 @@ async function validateLogForwardingTarget(rawUrl: string | undefined): Promise<
   if (!hostname) {
     return ['Elasticsearch URL hostname is required'];
   }
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  // Shared with every other URL validator (`ipRanges.classifyNonRoutableHostname`)
+  // so the list of loopback aliases cannot drift between them. `.internal` is
+  // deliberately NOT refused: a self-host operator may name a cluster in a
+  // corporate `.internal` zone, and the address checks below still apply to it.
+  const hostnameKind = classifyNonRoutableHostname(hostname);
+  if (hostnameKind === 'loopback' || hostnameKind === 'mdns-local' || hostnameKind === 'metadata') {
     return ['Elasticsearch URL cannot target localhost or local network hostnames'];
   }
 
-  const ipVersion = isIP(hostname);
-  if (ipVersion !== 0) {
-    return isPrivateIp(hostname)
+  // `isIpLiteralHost` also recognises the `inet_aton` short/octal/hex spellings
+  // of an IPv4 address, which a `net.isIP` gate would route to the DNS branch.
+  if (isIpLiteralHost(hostname)) {
+    return isPrivateIp(canonicalIpLiteral(hostname))
       ? ['Elasticsearch URL cannot target private, loopback, link-local, or reserved addresses']
       : [];
   }

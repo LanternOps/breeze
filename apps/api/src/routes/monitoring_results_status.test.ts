@@ -371,6 +371,28 @@ describe('monitoring routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('returns an opaque 404 (matching a missing device) for a site-restricted caller outside the device\'s site (#5777)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID, siteId: SITE_DENIED }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/results/${DEVICE_ID}/summary`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      // Same status AND body as the "returns 404 for nonexistent device" test
+      // above — an out-of-ceiling device must be indistinguishable from a
+      // missing one (existence oracle, #5777).
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found');
+    });
   });
 
   // ============================================
@@ -520,6 +542,28 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('returns an opaque 404 (matching a missing device) for a site-restricted caller outside the device\'s site (#5777)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID, siteId: SITE_DENIED }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      // Same status AND body as the "returns 404 for nonexistent device" test
+      // above — an out-of-ceiling device must be indistinguishable from a
+      // missing one (existence oracle, #5777).
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found');
     });
   });
 

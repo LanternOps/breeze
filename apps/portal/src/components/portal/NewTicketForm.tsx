@@ -143,7 +143,7 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
   const showGrid = forms.length > 0 && !selectedForm && !showLegacy;
 
   return (
-    <div className="mx-auto max-w-2xl">
+    <div className="max-w-2xl">
       <div className="mb-6">
         <a
           href={withBase('/tickets')}

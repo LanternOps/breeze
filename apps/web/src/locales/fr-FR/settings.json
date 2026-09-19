@@ -548,8 +548,10 @@
       },
       "ticketing": {
         "label": "Ticketterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, SLA, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de tickets →"
       },
+      "sendingDomains": { "label": "Adresses d'expédition", "description": "Envoyez vos e-mails depuis votre propre domaine" },
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
@@ -565,6 +567,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Service desk et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -595,6 +601,107 @@
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Adresses d'expéditeur personnalisées",
+    "description": "Envoyez les e-mails destinés aux clients depuis votre propre domaine plutôt que depuis l'adresse Breeze standard.",
+    "loadFailed": "Impossible de charger vos domaines d'expédition.",
+    "staticNote": "Les domaines d'expédition de ce serveur dépendent de sa configuration de messagerie ; SPF et DKIM pour ces domaines se règlent en dehors de Breeze.",
+    "staticNotAllowed": "Demandez à votre administrateur Breeze d'autoriser ce domaine.",
+    "staticVerifyHint": "Ce domaine devient utilisable dès que votre serveur de messagerie accepte un message de test envoyé depuis celui-ci.",
+    "lockedTitle": "Les adresses d'expéditeur personnalisées ne sont pas encore disponibles",
+    "lockedProbation": "Votre compte est encore en cours de vérification. Les adresses d'expéditeur personnalisées seront débloquées à la fin.",
+    "lockedRestricted": "Votre compte est restreint, les adresses d'expéditeur personnalisées ne sont donc pas disponibles.",
+    "lockedNotAllowlisted": "Les adresses d'expéditeur personnalisées sont déployées progressivement et ne sont pas encore activées sur votre compte.",
+    "lockedPartnerInactive": "Votre compte n'est pas actif, les adresses d'expéditeur personnalisées ne sont donc pas disponibles.",
+    "lockedProviderKeySendOnly": "La clé de messagerie de ce serveur peut envoyer des messages mais pas gérer des domaines. Demandez à votre administrateur Breeze une clé avec un accès complet.",
+    "lockedShowVerification": "Afficher l'état de la vérification",
+    "addTitle": "Ajouter un domaine d'expédition",
+    "addLabel": "Nom de domaine",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addInvalid": "Saisissez un domaine tel que mail.yourcompany.com.",
+    "addSubmit": "Ajouter le domaine",
+    "added": "Domaine ajouté. Préparation des enregistrements DNS.",
+    "recommendTitle": "Nous conseillons un sous-domaine dédié",
+    "recommendReason1": "Il garde la réputation d'envoi de vos e-mails Breeze séparée du reste de votre messagerie.",
+    "recommendReason2": "Un domaine racine déjà vérifié ailleurs chez notre fournisseur d'e-mail ne peut pas être ajouté ici : nous ne retirons jamais un domaine à un autre compte.",
+    "recommendReason3": "Certains filtres signalent un expéditeur externe qui utilise le domaine du destinataire, même quand DKIM passe. Un sous-domaine évite cette règle de correspondance exacte, ce qui compte surtout pour les équipes internes dont les clients sont des collègues.",
+    "statusProvisioning": "Préparation des enregistrements DNS…",
+    "statusPending": "En attente du DNS",
+    "statusVerified": "Vérifié",
+    "statusAtRisk": "À surveiller",
+    "statusFailed": "Échec",
+    "statusSuspended": "Suspendu",
+    "statusRemoving": "Suppression…",
+    "provisioningSlow": "C'est plus long que d'habitude. Nous continuons d'essayer : vous pouvez quitter cette page et revenir plus tard.",
+    "recordsTitle": "Publiez ces enregistrements DNS",
+    "recordsNote": "Les modifications DNS peuvent mettre jusqu'à 72 heures à nous parvenir, et nous continuons de vérifier. Si les enregistrements restent invisibles passé ce délai, le domaine est marqué en échec et vous pouvez réessayer.",
+    "recordsType": "Type d'enregistrement",
+    "recordsHost": "Libellé d'hôte",
+    "recordsFqdn": "Nom complet",
+    "recordsValue": "Valeur",
+    "recordsPriority": "Priorité",
+    "recordsCopied": "Copié dans le presse-papiers",
+    "checkNow": "Vérifier maintenant",
+    "checkStarted": "Vérification du DNS en cours.",
+    "atRiskBanner": "Nous ne voyons plus l'enregistrement {{type}} sur {{fqdn}}. Les e-mails partent toujours de ce domaine, mais republiez cet enregistrement sous 72 heures, sinon le domaine tombe en échec.",
+    "failedProviderConflict": "Ce domaine est peut-être déjà enregistré chez Breeze ou chez notre fournisseur d'e-mail. Utilisez un sous-domaine dédié ou contactez le support.",
+    "failedProviderRejected": "Notre fournisseur d'e-mail a refusé ce domaine.",
+    "failedQuotaExhausted": "Ce serveur Breeze a atteint sa limite de domaines chez le fournisseur d'e-mail. Contactez le support.",
+    "failedDnsNotDetected": "Nous n'avons pas trouvé les enregistrements DNS en 72 heures.",
+    "failedDnsRemoved": "Les enregistrements DNS ont été supprimés.",
+    "failedUnknown": "La vérification n'a pas abouti.",
+    "retry": "Réessayer",
+    "removeConfirm": "Supprimer {{domain}} ? Ses e-mails repassent sur l'expéditeur Breeze standard.",
+    "removeConfirmUnmanaged": "Retirer {{domain}} de Breeze ? Le domaine reste dans le compte de votre fournisseur d'e-mail : Breeze ne supprime jamais un domaine qu'il n'a pas créé.",
+    "removeStarted": "Suppression du domaine en cours.",
+    "suspendedNotice": "Breeze a suspendu ce domaine. Contactez le support.",
+    "lastSendError": "Dernier problème de remise : {{error}}",
+    "identitiesTitle": "Adresses d'expéditeur",
+    "identitiesDescription": "Choisissez l'adresse d'où part chaque type d'e-mail. Ce que vous laissez vide reste sur l'expéditeur Breeze standard.",
+    "identitiesNoDomain": "Vérifiez d'abord un domaine, puis choisissez les adresses d'expéditeur.",
+    "streamSupportName": "Assistance client",
+    "streamBillingName": "Facturation",
+    "streamGeneralName": "Notifications générales",
+    "streamSupportMail": "Mises à jour de tickets aux clients, invitations au portail et réinitialisations de mot de passe du portail.",
+    "streamBillingMail": "Devis et factures.",
+    "streamGeneralMail": "Envois de rapports planifiés.",
+    "repliesSupport": "Les e-mails de tickets définissent Reply-To sur {{inbound}}, donc la réponse d'un client revient sur le ticket. Les invitations au portail et les réinitialisations de mot de passe ne définissent pas de Reply-To : ces réponses partent vers l'adresse ci-dessous.",
+    "repliesSupportNoInbound": "Ce serveur n'a pas d'adresse de réception, donc les réponses aux e-mails de tickets vont à l'adresse ci-dessous. Choisissez une boîte que quelqu'un lit, ou un alias qui réachemine vers Breeze.",
+    "repliesBilling": "Les devis et les factures définissent Reply-To sur votre e-mail de facturation, les réponses y arrivent donc.",
+    "repliesGeneral": "Rien ici ne définit son propre Reply-To : les réponses vont à l'adresse ci-dessous, ou au Reply-To que vous indiquez.",
+    "repliesMailboxHint": "Les gens et les réponses automatiques répondent parfois à l'adresse d'expéditeur : faites de chacune une vraie boîte ou un alias.",
+    "identityDomain": "Domaine vérifié",
+    "identityLocalPart": "Adresse",
+    "identityDisplayName": "Nom affiché",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Adresse Reply-To (facultatif)",
+    "identityFrom": "Envoie depuis {{address}}",
+    "identityClear": "Utiliser l'expéditeur standard",
+    "identitySaved": "Adresse d'expéditeur enregistrée.",
+    "identityCleared": "Retour à l'expéditeur Breeze standard.",
+    "identityLocalPartInvalid": "Utilisez des lettres, des chiffres, des points, des tirets, des plus et des tirets bas, sans commencer ni finir par un signe de ponctuation.",
+    "identityLocalPartReserved": "postmaster, abuse et mailer-daemon sont réservés.",
+    "identityDisplayNameInvalid": "Un nom affiché ne peut pas contenir une adresse e-mail ni un lien.",
+    "identityReplyToInvalid": "Saisissez une adresse e-mail complète.",
+    "testTitle": "Envoyer un e-mail de test",
+    "testDescription": "Nous envoyons un message depuis ce domaine vers votre propre adresse de connexion.",
+    "testSubmit": "Envoyer l'e-mail de test",
+    "testQueued": "E-mail de test mis en file.",
+    "testPending": "E-mail de test en cours…",
+    "testLastSent": "Dernier test envoyé le {{when}}.",
+    "testLastFailed": "Dernier test en échec le {{when}} : {{error}}",
+    "errorDomainUnavailable": "Ce domaine est peut-être déjà enregistré chez Breeze ou chez notre fournisseur d'e-mail. Utilisez un sous-domaine dédié ou contactez le support.",
+    "errorDomainLimitReached": "Vous pouvez détenir au maximum {{max}} domaines d'expédition. Supprimez-en un d'abord.",
+    "errorRateLimited": "Trop de tentatives. Patientez un instant et réessayez.",
+    "errorNotFound": "Ce domaine n'existe plus. Actualisez la page.",
+    "errorDomainNotSendable": "Ce domaine n'est pas encore vérifié, il ne peut donc pas servir d'adresse d'expéditeur.",
+    "errorUnsupported": "Les adresses d'expéditeur personnalisées ne sont pas activées sur ce serveur.",
+    "errorAddFailed": "Impossible d'ajouter le domaine.",
+    "errorCheckFailed": "Impossible de lancer la vérification DNS.",
+    "errorRemoveFailed": "Impossible de supprimer le domaine.",
+    "errorIdentityFailed": "Impossible d'enregistrer l'adresse d'expéditeur.",
+    "errorTestFailed": "Impossible d'envoyer l'e-mail de test."
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -1172,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Accent du portail",
+      "description": "La couleur des boutons et des liens dans le portail de vos clients. Les couleurs de statut ne changent jamais.",
+      "options": {
+        "spruce": "Sapin",
+        "ink": "Encre",
+        "oxblood": "Bordeaux",
+        "navy": "Marine",
+        "plum": "Prune",
+        "bronze": "Bronze antique",
+        "teal": "Sarcelle",
+        "forest": "Forêt"
+      }
+    },
     "support": {
       "title": "Contact support",
       "description": "Montré aux clients dans le portail.",
@@ -1548,6 +1669,7 @@
       "actMode": {
         "label": "Mode d'action",
         "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "deploymentDisabledHint": "Le mode action est indisponible car BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED est désactivé pour ce déploiement. Contactez votre administrateur pour l’activer.",
         "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
         "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
         "disableForOrg": "Désactiver le mode d'action pour cette organisation",
@@ -1621,7 +1743,9 @@
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
-      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
+      "designerAct": "Activé",
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations ; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -2119,11 +2243,13 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un ticket",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du ticket",
-          "attachedToTicket": "Joint au ticket",
-          "attachFailed": "Impossible de joindre le fichier à ce ticket"
+          "attachedToTicket": "Joint au ticket comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce ticket",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au ticket",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",
@@ -3058,6 +3184,11 @@
       "searchPlaceholder": "Rechercher des scripts…",
       "selectedCount_one": "{{count}} script autorisé",
       "selectedCount_other": "{{count}} scripts autorisés"
+    },
+    "designerNote": {
+      "title": "Cet agent ne fait que lire et rédiger des rapports",
+      "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
+      "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3400,7 +3531,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs.",
+    "distributorsLink": "Gérer les connexions aux distributeurs →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -4147,7 +4279,10 @@
     "inboundEmail": "Email entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "E-mail",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -5122,7 +5257,15 @@
     "columns": {
       "email": "E-mail",
       "role": "Rôle",
-      "lastLogin": "Dernière connexion"
+      "lastLogin": "Dernière connexion",
+      "mfaStatus": "Statut MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrit",
+      "pending": "En attente",
+      "pendingByDate": "En attente — à inscrire avant le {{date}}",
+      "overdue": "En retard",
+      "notRequired": "Non requise"
     },
     "status": {
       "active": "Actif",
@@ -5585,5 +5728,18 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de tickets",
+    "description": "Statuts, SLA, catégories, formulaires d'admission, e-mail, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les imports du catalogue et le remplissage automatique de l'éditeur de devis — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
   }
 }

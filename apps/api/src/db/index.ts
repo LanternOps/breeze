@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 // Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env' });
-config(); // Also try cwd
+config({ path: '../../.env', quiet: true });
+config({ quiet: true }); // Also try cwd
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';
@@ -13,6 +13,12 @@ import {
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
+import {
+  formatUnsafeRequestDatabaseRoleMessage,
+  REQUEST_DATABASE_ROLE_REMEDIATION,
+  unsafeRequestDatabaseRoleCapabilities,
+  type RequestDatabaseRole,
+} from './requestDatabaseRoleSafety';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import {
   getDbAccessContextPrologueTimeoutMs,
@@ -62,15 +68,7 @@ const client = postgres(requestDatabaseConfig.url, {
   connection: { application_name: 'breeze-api' },
 });
 
-export interface RequestDatabaseRole {
-  currentUser: string;
-  isSuperuser: boolean;
-  bypassesRls: boolean;
-}
-
-const REQUEST_DATABASE_ROLE_REMEDIATION =
-  'Set DATABASE_URL_APP to a NOSUPERUSER NOBYPASSRLS role, or configure ' +
-  'BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD so Breeze can derive the breeze_app URL.';
+export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
 
 /**
  * Reads the effective role from the exact module-scope postgres.js client that
@@ -107,16 +105,10 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
 
 export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRole> {
   const role = await getRequestDatabaseRole();
-  const unsafeCapabilities: string[] = [];
-  if (role.isSuperuser) unsafeCapabilities.push('SUPERUSER');
-  if (role.bypassesRls) unsafeCapabilities.push('BYPASSRLS');
+  const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length > 0) {
-    throw new Error(
-      `[database] Unsafe effective request database role "${role.currentUser}": ` +
-        `${unsafeCapabilities.join(' and ')}. Request handlers require a ` +
-        `NOSUPERUSER NOBYPASSRLS role. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
-    );
+    throw new Error(formatUnsafeRequestDatabaseRoleMessage(role, unsafeCapabilities));
   }
 
   return role;

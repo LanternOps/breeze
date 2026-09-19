@@ -169,6 +169,28 @@ describe('listRemoteIncomeAccounts', () => {
 });
 
 describe('upsertCustomer', () => {
+  it('reuses a bounded requestid when a Customer create is retried after a lost response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ Customer: { Id: '12', SyncToken: '0' } }), { status: 200 }));
+    const input = { organizationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD' };
+    await expect(quickbooksProvider.upsertCustomer(conn(), input, null)).rejects.toThrow('response lost');
+    await quickbooksProvider.upsertCustomer(conn(), input, null);
+    const ids = fetchMock.mock.calls.map(([url]) => new URL(String(url)).searchParams.get('requestid'));
+    expect(ids).toEqual(['customer-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'customer-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']);
+    expect(ids[0]!.length).toBeLessThanOrEqual(50);
+  });
+
+  it('returns customer addresses from a sparse update for importing into Breeze', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Customer: { Id: '12', SyncToken: '8', BillAddr: { Line1: '1 Bill St' }, ShipAddr: { City: 'Dallas' } },
+    }), { status: 200 }));
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: '7' });
+    expect(ref).toMatchObject({ billAddr: { line1: '1 Bill St' }, shipAddr: { city: 'Dallas' } });
+  });
+
   it('creates a Customer without sparse-update fields', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       Customer: { Id: '12', SyncToken: '0' },
@@ -220,6 +242,7 @@ describe('upsertCustomer', () => {
       billingEmail: null, taxId: null, currencyCode: 'USD',
     }, { remoteEntityId: '12', remoteSyncToken: '7' });
 
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain('requestid');
     expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body))).toEqual({
       sparse: true, Id: '12', SyncToken: '7', DisplayName: 'Acme LLC',
     });
@@ -245,6 +268,25 @@ describe('upsertItem', () => {
       Type: 'Service', UnitPrice: 125.5, Taxable: true, Active: true,
       IncomeAccountRef: { value: '79' },
     });
+  });
+
+
+  it('reuses a bounded requestid when an Item create is retried after a lost response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ Item: { Id: '9', SyncToken: '0' } }), { status: 200 }));
+    const payload = { ...input, catalogItemId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' };
+    await expect(quickbooksProvider.upsertItem(conn(), payload, null)).rejects.toThrow('response lost');
+    await quickbooksProvider.upsertItem(conn(), payload, null);
+    const ids = fetchMock.mock.calls.map(([url]) => new URL(String(url)).searchParams.get('requestid'));
+    expect(ids).toEqual(['item-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'item-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']);
+    expect(ids[0]!.length).toBeLessThanOrEqual(50);
+  });
+
+  it('omits the create requestid for a sparse Item update', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ Item: { Id: '9', SyncToken: '1' } }), { status: 200 }));
+    await quickbooksProvider.upsertItem(conn(), input, { remoteEntityId: '9', remoteSyncToken: '0' });
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain('requestid');
   });
 
   it('refuses an update that is missing the current SyncToken', async () => {

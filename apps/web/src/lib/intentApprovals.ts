@@ -93,12 +93,26 @@ export function isNotSoleApprover(err: unknown): boolean {
   return errorToken(err) === 'not_sole_approver';
 }
 
+/**
+ * Review finding #2: the decide-side twin of the raiser's org-wide-governance
+ * gate (`decideApprovalRequest.ts`'s `canMutateOrgWideGovernance` check) — a
+ * 403 answered when the decider holds `approvals:decide` but is
+ * site/exact-device restricted, and the intent grants org-wide authority
+ * (today: `manage_ai_agents:authorize_supervised_key`). Terminal, exactly like
+ * `not_sole_approver`: no retry by this viewer can ever clear it, only
+ * another, unrestricted approver deciding the card.
+ */
+export function isSiteCeiling(err: unknown): boolean {
+  return errorToken(err) === 'site_ceiling';
+}
+
 /** Bare machine tokens the decide route emits in `error` (no `code`), mapped to
  *  translated copy. Without this the user is shown the literal token. Keys are
  *  spelled out as literals so the i18n key-usage scanner can see them. */
 export function decideErrorCopy(token: string): string | undefined {
   if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
+  if (token === 'site_ceiling') return i18n.t('ai:aiApprovalDialog.siteCeiling');
   // W03 (#5612): the decide route's 422 refusals of a submitted
   // acknowledgedPatterns set — the server re-derives (submitted ∩
   // strict_hits) and refuses either when the viewer may not acknowledge at

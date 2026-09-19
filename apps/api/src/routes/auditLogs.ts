@@ -506,7 +506,7 @@ function toCsv(rows: DbRow[], options: { columns?: AuditExportColumn[]; includeD
     return csvRow(headers.map((header) => record[header]));
   });
 
-  return [headers.join(','), ...csvRows].join('\n');
+  return [csvRow(headers), ...csvRows].join('\n');
 }
 
 function summarizeUsers(rows: DbRow[]) {

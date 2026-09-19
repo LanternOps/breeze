@@ -203,10 +203,17 @@ describe('ticket_email_links claim', () => {
       .values({ partnerId: fx.partnerId, domain, provider: 'mailgun', verificationStatus: 'verified' });
 
     const janeEmail = `jane-${suffix}@known.test`;
-    await admin().insert(portalUsers).values({ orgId: fx.orgId, email: janeEmail, name: 'Jane Known' });
+    const [jane] = await admin()
+      .insert(portalUsers)
+      .values({ orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
+      .returning({ id: portalUsers.id });
 
     const threadKey = `<thread-${suffix}@known.test>`;
-    const ticketId = await seedTicket('open', { emailThreadKey: threadKey });
+    // Header-path matches are now requester-bound (#5551): a match with no
+    // attributable requester (no submittedBy/requesterContactId/submitterEmail)
+    // no longer auto-accepts an arbitrary portal user in the same org. Jane is
+    // this ticket's actual requester, so this stays the "known reply" happy path.
+    const ticketId = await seedTicket('open', { emailThreadKey: threadKey, submittedBy: jane!.id });
 
     const replyMessageId = `<reply-${suffix}@customer.test>`;
     const email: NormalizedInboundEmail = {

@@ -142,7 +142,7 @@ describe('GET /client-ai/admin/usage.csv', () => {
     expect(res.headers.get('Content-Disposition')).toContain('client-ai-usage-2026-05-to-2026-06.csv');
     const text = await res.text();
     const lines = text.split('\n');
-    expect(lines[0]).toBe('month,org_name,user_email,messages,sessions,input_tokens,output_tokens,cost_cents');
+    expect(lines[0]).toBe('"month","org_name","user_email","messages","sessions","input_tokens","output_tokens","cost_cents"');
     expect(lines[1]).toContain('"2026-05"');
     expect(lines[1]).toContain('"finance.user@contoso.com"');
     expect(lines).toHaveLength(3);

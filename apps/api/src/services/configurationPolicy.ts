@@ -38,6 +38,7 @@ import {
 } from '../db/schema';
 import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
   isCompatibleParent,
@@ -1023,6 +1024,13 @@ async function decomposeInlineSettings(
         targets = { ...rawTargets, excludes: parsed.data };
       }
 
+      // #6001: `paths` and `targets.paths` are BOTH written for a file-mode
+      // custom selection (the Backup tab sends the same array in both fields),
+      // and dispatch treats `targets` as authoritative, falling back to `paths`
+      // only when `targets` carries none (jobs/backupWorker.ts,
+      // prepareBackupDispatchTargets). Keep writing both. Writing ONLY `paths`
+      // works but depends entirely on that fallback; writing only `targets`
+      // breaks the read-back in this file's own getter, which prefers `paths`.
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
@@ -2154,10 +2162,20 @@ export async function authorizeAssignmentTarget(
   level: ConfigAssignmentLevel,
   targetId: string
 ): Promise<AssignmentTargetValidation> {
+  // Exact-device axis (#6096 #6). INDEPENDENT of the site axis: a device-bound
+  // agent run pins `allowedDeviceIds` alongside its site, and a device-LESS
+  // analysis run pins `allowedDeviceIds` with NO `allowedSiteIds` — which the
+  // old `!auth.allowedSiteIds` early return read as unrestricted.
+  const allowedDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  const siteRestricted = !!(auth.allowedSiteIds && auth.canAccessSite);
   // Unrestricted caller (partner/system scope, or org user with no site
   // restriction) — org/partner ownership is already enforced elsewhere.
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return { valid: true };
-  const canAccessSite = auth.canAccessSite;
+  if (!siteRestricted && !allowedDevices) return { valid: true };
+  const canAccessSite = siteRestricted ? auth.canAccessSite! : () => true;
+  const deviceScopeError = {
+    valid: false as const,
+    error: 'Your access is restricted to specific devices — this assignment target reaches devices outside it.',
+  };
 
   switch (level) {
     case 'partner':
@@ -2168,6 +2186,9 @@ export async function authorizeAssignmentTarget(
       };
 
     case 'site':
+      // A site assignment fans out to every device at the site, which a
+      // device-restricted caller by definition does not cover.
+      if (allowedDevices) return deviceScopeError;
       return canAccessSite(targetId)
         ? { valid: true }
         : { valid: false, error: 'Target site is outside your site access' };
@@ -2180,12 +2201,28 @@ export async function authorizeAssignmentTarget(
         .limit(1);
       // Unknown group, or a group with no single site (org-wide), is denied for a
       // site-restricted caller (fail closed).
-      return group && canAccessSite(group.siteId)
-        ? { valid: true }
-        : { valid: false, error: 'Target device group is outside your site access' };
+      if (!group || !canAccessSite(group.siteId)) {
+        return { valid: false, error: 'Target device group is outside your site access' };
+      }
+      if (allowedDevices) {
+        // The group is the assignment target, but the devices BENEATH it are
+        // what the policy actually reaches — every member must be in scope.
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, targetId));
+        // An EMPTY group makes `some` vacuously false (#6096 I8) — that is not
+        // "every member is in scope", it is "the target's reach is unknown and
+        // unbounded": membership is reconciled asynchronously (dynamic groups)
+        // and the assignment survives the next device joining. Fail closed.
+        if (members.length === 0
+          || members.some((member) => !allowedDevices.has(member.deviceId))) return deviceScopeError;
+      }
+      return { valid: true };
     }
 
     case 'device': {
+      if (allowedDevices && !allowedDevices.has(targetId)) return deviceScopeError;
       const [device] = await db
         .select({ siteId: devices.siteId })
         .from(devices)
@@ -2398,8 +2435,7 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       // Apply the optional role/os device-type filter (#1724). A NULL filter
       // matches all; a set filter gates the assignment to matching devices.
-      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
+      ...buildRoleOsFilterConditions(device),
     ))
       .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 

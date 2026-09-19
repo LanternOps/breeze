@@ -158,6 +158,13 @@ export const SENTRY_EVENT_CODES = [
   'inbound_email_sender_auth_unverified',
   /** Inbound mail lost the message-id claim race and duplicated a ticket. */
   'inbound_email_claim_race_lost',
+  /**
+   * The email-domain provider reported a domain state this build does not know.
+   * It is treated as `pending` (which cannot send), so mail is safe — but an
+   * unmapped state means a real provider status is invisible to partners until
+   * the mapping is added.
+   */
+  'sending_domain_provider_state_unknown',
   /** No usable platform LLM key is configured on this deployment. */
   'llm_platform_key_missing',
   /** The LLM egress audit queue shed rows — the audit trail has gaps (#3922). */

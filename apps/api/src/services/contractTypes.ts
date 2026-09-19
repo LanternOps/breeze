@@ -19,6 +19,20 @@ export interface ContractActor {
    * ACTIVE-contract currency restamp (#3778).
    */
   permissions?: ReadonlySet<string>;
+  /**
+   * Site-axis allowlist (sub-org restriction), mirroring `AuthContext.allowedSiteIds`
+   * and the `allowedSiteIds` already carried by `InvoiceActor` / `QuoteActor`.
+   * `undefined` = unrestricted (partner/system scope, or an org user with no site
+   * restriction) — behaves exactly as before this field existed.
+   *
+   * `contracts` has NO site column, so the site-attributable unit is the LINE
+   * (`contract_lines.site_id`). See `contractLineSiteDenied` in contractService.ts
+   * for the full rule: a null line site is org-level and DENIED to a restricted
+   * actor (byte-for-byte the invoice/quote null-site rule), reads are filtered to
+   * reachable lines, and every whole-document operation requires EVERY line to be
+   * reachable.
+   */
+  allowedSiteIds?: string[];
 }
 
 /** True only when the actor carries verified evidence of `<resource>:<action>`. */
@@ -34,6 +48,10 @@ export interface Period {
 
 export type ContractServiceErrorCode =
   | 'ORG_DENIED'
+  // Site-axis (sub-org) denial, mirroring InvoiceServiceError/QuoteServiceError
+  // 'SITE_DENIED'. Raised when a site-restricted actor reaches a contract line
+  // (or a whole contract) outside its `allowedSiteIds`.
+  | 'SITE_DENIED'
   // #3778 (finding 1): the organization is gone at the locking read that opens
   // every creation transaction. Distinct from CONTRACT_NOT_FOUND — the contract
   // was never created because its ORG does not exist / is invisible.

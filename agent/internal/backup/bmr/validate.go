@@ -51,8 +51,13 @@ var windowsCriticalServices = []string{
 // is applySystemState's error (if any) from reading that staged list — see
 // applyServiceValidation's doc comment for why this must fail validation
 // outright rather than being treated the same as "no services staged".
-func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, error) {
+// state is the system-state phase's outcome; an expected-but-unapplied
+// state fails the verdict with a named check (#5412).
+func Validate(serviceUnits []string, serviceUnitsErr error, state SystemStateOutcome) (*ValidationResult, error) {
 	result := &ValidationResult{Passed: true}
+
+	// System state expected by the bootstrap must actually have landed.
+	applySystemStateValidation(result, state)
 
 	// Check network connectivity.
 	result.NetworkUp = checkNetwork()
@@ -76,9 +81,30 @@ func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, 
 		"networkUp", result.NetworkUp,
 		"criticalFiles", result.CriticalFiles,
 		"servicesRunning", result.ServicesRunning,
+		"systemStateApplied", result.SystemStateApplied,
 		"failures", len(result.Failures),
 	)
 	return result, nil
+}
+
+// applySystemStateValidation records the system-state outcome into result
+// and fails the verdict when state was expected but not applied. Split out
+// (like applyServiceValidation) so it is unit-testable without Validate's
+// real network dial and OS file probes. A manifest that was found but not
+// applied without being expected does not fail here: RunRecoveryContext's
+// status derivation already keeps such a run off "completed" (see
+// stateBlocksCompletion), and validation stays about what the bootstrap
+// promised.
+func applySystemStateValidation(result *ValidationResult, state SystemStateOutcome) {
+	result.SystemStateApplied = state.Applied
+	if state.Expected && !state.Applied {
+		result.Passed = false
+		if state.ManifestFound {
+			result.Failures = append(result.Failures, "system state not applied: manifest was found but its artifacts were not applied")
+		} else {
+			result.Failures = append(result.Failures, "system state not applied: snapshot advertises system state but no manifest was found")
+		}
+	}
 }
 
 // checkNetwork tests basic network connectivity by trying to resolve
@@ -249,30 +275,4 @@ func enabledSystemdUnitsFromStaging(stagingDir string) ([]string, error) {
 		return nil, fmt.Errorf("read staged services list: %w", err)
 	}
 	return parseSystemdEnabledUnits(data), nil
-}
-
-// parseSystemdEnabledUnits extracts unit names from the output of
-// `systemctl list-unit-files --type=service`, keeping only units whose
-// STATE column reads exactly "enabled".
-//
-// KNOWN DUPLICATION (intentional, see the plan doc's Wave 2 file list and
-// Wave 5's reconciliation note): a sibling wave's restore_linux_logic.go
-// independently adds a same-purpose `parseEnabledServices` helper to drive
-// the actual service-restore step. This package cannot import or reuse that
-// helper here without editing restore_linux.go, which is out of scope for
-// this change (owned by that wave). The two parsers must be kept in sync on
-// the parsing rule (STATE column == "enabled") until a follow-up
-// consolidates them into one shared helper.
-func parseSystemdEnabledUnits(data []byte) []string {
-	var units []string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		if fields[1] == "enabled" {
-			units = append(units, fields[0])
-		}
-	}
-	return units
 }

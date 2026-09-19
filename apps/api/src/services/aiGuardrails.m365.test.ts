@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// NOTE (2026-09-17 ROLE audit §2.6): these tools used to require `m365:read` /
+// `m365:execute`, neither of which exists in the canonical permission catalog
+// (packages/shared/src/constants/permissions.ts) — only an `*:*` grant ever
+// satisfied them. The whole M365 surface is owned by organizations:read /
+// organizations:write at its routes (m365.ts:29-30,
+// m365CustomerGraphRead.ts:47-51, m365CustomerGraphActions.ts:44-48), which is
+// what the sibling m365_query_* tools already used.
+//
 // checkToolPermission resolves the caller's permissions via getUserPermissions
 // (DB-backed) and tests them with hasPermission. Both are mocked here so the
 // RBAC mapping for the M365 tools can be exercised without a DB.
@@ -29,7 +37,7 @@ describe('m365 RBAC', () => {
     vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'helpdesk' } as any);
   });
 
-  it('blocks reset_password for a user lacking m365.execute', async () => {
+  it('blocks reset_password for a user lacking organizations:write', async () => {
     vi.mocked(hasPermission).mockReturnValue(false);
     const err = await checkToolPermission(
       'm365_reset_password',
@@ -37,11 +45,11 @@ describe('m365 RBAC', () => {
       auth,
     );
     expect(err).toBeTruthy();
-    expect(err).toContain('requires m365.execute');
-    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'execute');
+    expect(err).toContain('requires organizations.write');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'organizations', 'write');
   });
 
-  it('blocks disable_user for a user lacking m365.execute', async () => {
+  it('blocks disable_user for a user lacking organizations:write', async () => {
     vi.mocked(hasPermission).mockReturnValue(false);
     const err = await checkToolPermission(
       'm365_disable_user',
@@ -49,10 +57,10 @@ describe('m365 RBAC', () => {
       auth,
     );
     expect(err).toBeTruthy();
-    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'organizations', 'write');
   });
 
-  it('allows lookup_user for a user with m365.read', async () => {
+  it('allows lookup_user for a user with organizations:read', async () => {
     vi.mocked(hasPermission).mockReturnValue(true);
     const err = await checkToolPermission(
       'm365_lookup_user',
@@ -60,17 +68,17 @@ describe('m365 RBAC', () => {
       auth,
     );
     expect(err).toBeFalsy();
-    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'organizations', 'read');
   });
 
-  it('allows recent_signins and list_group_memberships with m365.read', async () => {
+  it('allows recent_signins and list_group_memberships with organizations:read', async () => {
     vi.mocked(hasPermission).mockReturnValue(true);
     expect(await checkToolPermission('m365_recent_signins', { userIdentifier: 'x' }, auth)).toBeFalsy();
     expect(await checkToolPermission('m365_list_group_memberships', { userIdentifier: 'x' }, auth)).toBeFalsy();
-    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'organizations', 'read');
   });
 
-  it('allows reset_password when m365.execute is granted', async () => {
+  it('allows reset_password when organizations:write is granted', async () => {
     vi.mocked(hasPermission).mockReturnValue(true);
     const err = await checkToolPermission(
       'm365_reset_password',
@@ -78,7 +86,7 @@ describe('m365 RBAC', () => {
       auth,
     );
     expect(err).toBeFalsy();
-    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'organizations', 'write');
   });
 });
 

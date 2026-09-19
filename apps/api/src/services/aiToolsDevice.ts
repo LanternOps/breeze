@@ -29,6 +29,11 @@ import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
+  sanitizeUntrustedText,
+  wrapUntrustedData,
+  UNTRUSTED_FIELD_MAX_LENGTH,
+} from './aiInputSanitizer';
+import {
   getActiveDeviceContext,
   getAllDeviceContext,
   createDeviceContext,
@@ -279,6 +284,13 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return 'No context found for this device. This is a fresh start with no previous memory.';
       }
 
+      // Device memory is free text and is replayed straight into model context.
+      // Sanitize every untrusted field, then render the whole set inside a
+      // delimited untrusted-data block so it reads as data, not instructions.
+      // Collect sanitizer detections across every entry so a neutralized
+      // instruction/fence/truncation is recorded rather than silently dropped
+      // (mirrors the page-context path in aiAgent.ts / aiAgentSdk.ts).
+      const memoryFlags: string[] = [];
       const formatted = results.map(r => {
         const status = r.resolvedAt
           ? 'RESOLVED'
@@ -286,9 +298,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           ? 'EXPIRED'
           : 'ACTIVE';
 
-        let output = `[${status}] ${r.contextType.toUpperCase()}: ${r.summary}`;
+        let output = `[${status}] ${sanitizeUntrustedText(r.contextType, 40, memoryFlags).toUpperCase()}: ${sanitizeUntrustedText(r.summary, UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         if (r.details) {
-          output += `\nDetails: ${JSON.stringify(r.details, null, 2)}`;
+          output += `\nDetails: ${sanitizeUntrustedText(JSON.stringify(r.details, null, 2), UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         }
         output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
         if (r.resolvedAt) {
@@ -297,7 +309,18 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return output;
       });
 
-      return `Found ${results.length} context entries:\n\n${formatted.join('\n\n---\n\n')}`;
+      const block = wrapUntrustedData('device_memory', formatted.join('\n\n---\n\n'), memoryFlags);
+      if (memoryFlags.length > 0) {
+        console.warn(
+          '[AI] Device-memory sanitization flags:',
+          memoryFlags,
+          'device:',
+          deviceId,
+          'entries:',
+          results.length
+        );
+      }
+      return `Found ${results.length} context entries:\n\n${block}`;
     },
   });
 
@@ -455,6 +478,12 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           }
           conditions.push(inArray(devices.id, allowed));
         }
+        // Exact-device axis, independent of the site axis: a device-LESS
+        // analysis run has `allowedDeviceIds` and no `allowedSiteIds`, so the
+        // branch above no-ops for it and the whole org's tag vocabulary leaks.
+        // Same narrowing `query_devices` above already applies (#6086).
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
         const search = input.search as string | undefined;
         const whereClause = conditions.length > 0 ? and(...conditions) : sql`true`;

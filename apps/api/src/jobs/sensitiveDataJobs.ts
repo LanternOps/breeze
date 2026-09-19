@@ -4,6 +4,7 @@ import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { deviceCommands, devices, organizations, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
+import { requestLikeFromSnapshot, writeAuditEvent } from '../services/auditEvents';
 import { isCronDue } from '../services/cronDue';
 import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection } from '../services/redis';
@@ -322,6 +323,33 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
     }).where(eq(sensitiveDataScans.id, scan.id));
     return { dispatched: false, commandId: null };
   }
+  const refuseOrgChanged = async () => {
+    console.error('[SensitiveDataJobs] Refusing scan dispatch: device_org_changed', {
+      scanId: scan.id, deviceId: scan.deviceId, expectedOrgId: scan.orgId,
+    });
+    await db.update(sensitiveDataScans).set({
+      status: 'failed',
+      completedAt: new Date(),
+      summary: {
+        ...summary,
+        dispatch: { deniedAt: new Date().toISOString(), error: 'device_org_changed' },
+      },
+    }).where(eq(sensitiveDataScans.id, scan.id));
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: scan.orgId,
+      action: 'sensitive_data.scan.dispatch_denied',
+      resourceType: 'sensitive_data_scan',
+      resourceId: scan.id,
+      actorType: 'system',
+      result: 'failure',
+      errorMessage: 'device_org_changed',
+      details: { deviceId: scan.deviceId, reason: 'device_org_changed' },
+    });
+    return { dispatched: false, commandId: null };
+  };
+  if (!isScheduledScan && scan.deviceOrgId !== scan.orgId) {
+    return refuseOrgChanged();
+  }
   if (isScheduledScan) {
     // Bind the final policy, creator and target snapshots through command
     // creation. Permission/membership triggers serialize on the user row.
@@ -459,11 +487,21 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
     commandPayload,
     {
       userId: scan.requestedBy ?? undefined,
+      expectedOrgId: scan.orgId,
       preferHeartbeat: false
     }
   );
 
   if (!queued.command) {
+    // The queue deliberately masks its ownership refusal as a missing device.
+    // Re-read only for internal failure attribution; never expose the new org.
+    if (queued.error === 'Device not found') {
+      const [currentDevice] = await db.select({ orgId: devices.orgId }).from(devices)
+        .where(eq(devices.id, scan.deviceId)).limit(1);
+      if (currentDevice && currentDevice.orgId !== scan.orgId) {
+        return refuseOrgChanged();
+      }
+    }
     await db
       .update(sensitiveDataScans)
       .set({

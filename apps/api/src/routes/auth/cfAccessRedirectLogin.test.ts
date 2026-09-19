@@ -268,7 +268,7 @@ vi.mock('../../services', () => ({
 vi.mock('../../services/userSession', () => ({
   authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
   issueUserSession: vi.fn(async (identity: Record<string, unknown>, options: Record<string, unknown>) => {
-    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa, mfa_src: identity.mfaSrc };
     servicesState.lastTokenOptions = options;
     servicesState.mintCalls.push(String(identity.userId));
     transitionState.events.push('issue-guarded');
@@ -278,7 +278,7 @@ vi.mock('../../services/userSession', () => ({
     };
   }),
   issueUserSessionLegacyDuringTransition: vi.fn(async (identity: Record<string, unknown>) => {
-    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa, mfa_src: identity.mfaSrc };
     servicesState.lastTokenOptions = { refreshFam: 'fam-1' };
     servicesState.mintCalls.push(String(identity.userId));
     servicesState.bindCalls.push({ jti: 'jti-new', familyId: 'fam-1' });
@@ -813,7 +813,7 @@ describe('GET /cf-access-login', () => {
       const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
       expect(res.status).toBe(302);
-      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true });
+      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true, mfa_src: 'policy' });
     });
 
     it('CF_ACCESS_TRUSTS_MFA does NOT satisfy a required policy for an unenrolled user (fail closed)', async () => {
@@ -827,6 +827,7 @@ describe('GET /cf-access-login', () => {
 
       expect(res.status).toBe(302);
       expect(servicesState.lastTokenPayload).toMatchObject({ mfa: false });
+      expect(servicesState.lastTokenPayload?.mfa_src).toBeUndefined();
     });
 
     it('CF_ACCESS_TRUSTS_MFA still satisfies a required policy for an ENROLLED user', async () => {
@@ -844,7 +845,7 @@ describe('GET /cf-access-login', () => {
       const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
       expect(res.status).toBe(302);
-      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true });
+      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true, mfa_src: 'idp' });
     });
   });
 

@@ -87,7 +87,8 @@ export async function createInvoicePayLink(
   // this invoice, minting another session would re-open the very window the
   // intent exists to close — and the new session would not be covered by the
   // in-flight revocation. Refuse until the sweep has settled the old ones.
-  await withSystemDbAccessContext(() => assertNoPendingRevocation(inv.id));
+  // Elects its own system scope — never wrap it in a bare context here (#5611).
+  await assertNoPendingRevocation(inv.id);
 
   // Deposit-first: charge the deposit remaining while unmet, else the full
   // balance. computeChargeNow clamps to balance and handles every state (no
@@ -135,6 +136,11 @@ export async function createInvoicePayLink(
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
+    // CARD-ONLY IS A REVOCATION CONTRACT (#5611): `expireOneSession` in
+    // services/stripeSessionRevocation.ts maps a `complete` + `unpaid` session to
+    // `revoked` on the strength of this pin — card sessions never settle
+    // asynchronously. Adding a delayed method here (bank debit / transfer)
+    // requires changing that mapping first. Mirror: routes/portal/invoices.ts.
     payment_method_types: ['card'],
     // SEC-150 defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
