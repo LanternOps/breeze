@@ -138,4 +138,17 @@ describe('DeviceFilesystemTab', () => {
     expect(keyWarnings).toEqual([]);
     errorSpy.mockRestore();
   });
+  it('shows a product heading, not an internal ticket id', async () => {
+    routeFetch((url) => {
+      if (url.includes('/filesystem')) return jsonResponse({ data: SNAPSHOT });
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
+    // "BE-1" is the internal tracking id of the original epic. It shipped to
+    // customers in the tab heading and in the empty state.
+    const heading = await screen.findByTestId('filesystem-heading');
+    expect(heading.textContent).toBe('Disk Cleanup');
+    expect(document.body.textContent).not.toContain('BE-1');
+  });
 });

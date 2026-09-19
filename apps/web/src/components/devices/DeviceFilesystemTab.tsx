@@ -583,8 +583,8 @@ export default function DeviceFilesystemTab({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-lg font-semibold">
-              {t("deviceFilesystemTab.be1DiskCleanupIntelligence")}
+            <h3 className="text-lg font-semibold" data-testid="filesystem-heading">
+              {t("deviceFilesystemTab.title")}
             </h3>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -897,7 +897,7 @@ export default function DeviceFilesystemTab({
                       >
                         <span className="truncate">{item.path}</span>
                         <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">
-                          {item.estimated ? t("deviceFilesystemTab.text") : ""}
+                          {item.estimated ? ">= " : ""}
                           {formatBytes(item.sizeBytes)}
                         </span>
                       </div>
