@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, authenticated local IPC, Tauri/Rust/Tokio, React/TypeScript, Hono, Drizzle/PostgreSQL, Redis/BullMQ, Vitest, Go race tests and Rust tests.
 
-**Spec:** `docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design.md` (v5). Covers W02; D2–D4, D9, D11's observed-login seam, D16–D17; “Agent and helper change”, workstation delivery/result/reconciliation in “Service layer”, device suggestions in “API”, agent/helper tests, and the review-note fixes for native-helper preference, transport duplication and late `not_me`. The naming authority is `docs/superpowers/plans/security-auth/2026-09-19-caller-verification.md`.
+**Spec:** `docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design.md` (v5). Covers W02; D2–D4, D9, D11's independent observed-login path, D13's device-move revocation, D16–D17; “Agent and helper change”, workstation delivery/result/reconciliation in “Service layer”, device suggestions in “API”, agent/helper tests, and the review-note fixes for native-helper preference, transport duplication and late `not_me`. The naming authority is `docs/superpowers/plans/security-auth/2026-09-19-caller-verification.md`.
 
 ## Global Constraints
 
@@ -31,41 +31,46 @@
 
 ## File structure
 
-| Path | Responsibility |
-|---|---|
-| `agent/internal/ipc/message.go` | Caller request/response types and `CallerVerify` capability |
-| `agent/internal/sessionbroker/session.go` | Expected response type binding |
-| `agent/internal/sessionbroker/caller_verify.go`, `agent/internal/sessionbroker/caller_verify_test.go`, `agent/internal/sessionbroker/caller_verify_windows.go`, `agent/internal/sessionbroker/caller_verify_unix.go` | OS-login-to-console-assist selection using existing detector fakes |
-| `agent/internal/sessionbroker/detector_windows.go` | Domain-qualified OS username |
-| `agent/internal/heartbeat/caller_verify.go`, `agent/internal/heartbeat/caller_verify_test.go` | Command handler and result mapping |
-| `agent/internal/heartbeat/caller_principal_windows.go`, `agent/internal/heartbeat/caller_principal_unix.go` | OS principal and best-effort UPN |
-| `agent/internal/heartbeat/heartbeat.go` | Live helper readiness telemetry |
-| `apps/helper/src-tauri/src/ipc/caller_verify.rs` | Pending requests, response bridge, deadlines, windows, Rust tests |
-| `apps/helper/src-tauri/src/ipc/client.rs`, `apps/helper/src-tauri/src/ipc/mod.rs`, `apps/helper/src-tauri/src/lib.rs` | Capability frame, IPC loop, managed state and Tauri commands |
-| `apps/helper/src/windows/CallerVerifyWindow.tsx`, `apps/helper/src/windows/CallerVerifyWindow.test.tsx`, `apps/helper/src/windows/callerVerifyMessages.ts` | Card, behavior tests, eight locales |
-| `apps/helper/src/main.tsx` | Hash-routed caller window hydration |
-| `apps/helper/src-tauri/capabilities/default.json`, `apps/helper/src-tauri/tauri.conf.json` | Window permissions and HTTPS logo images |
-| `apps/api/src/services/callerVerification/workstationCapabilities.ts`, `apps/api/src/services/callerVerification/workstationCapabilities.test.ts` | Fresh, org/device/user-keyed readiness cache |
-| `apps/api/src/routes/agents/schemas.ts`, `apps/api/src/routes/agents/heartbeat.ts` | Parse and replace capability telemetry |
-| `apps/api/src/routes/helper/index.ts` | Authenticated partner branding on existing config response |
-| `apps/api/src/services/callerVerification/workstationProtocol.ts`, `apps/api/src/services/callerVerification/workstationProtocol.test.ts` | Frozen command/result codec |
-| `apps/api/src/services/callerVerification/deliverers/workstation.ts`, `apps/api/src/services/callerVerification/deliverers/workstation.test.ts` | Same-transaction preparation and after-commit dispatch |
-| `apps/api/src/services/callerVerification/service.ts` | W01 workstation branch, method availability, outbox dispatch hook |
-| `apps/api/src/services/commandResultHandlers.ts`, `apps/api/src/services/commandResultHandlers.callerVerify.test.ts` | Single decision handler for both transports |
-| `apps/api/src/services/callerVerification/workstationResult.ts`, `apps/api/src/services/callerVerification/workstationResult.test.ts` | Parsing, ownership, principal conversion, durable rejection receipt |
-| `apps/api/src/routes/agents/commands.ts`, `apps/api/src/routes/agentWs.ts` | HTTP registry and authenticated late-rejection ingress |
-| `apps/api/src/jobs/callerVerificationReconciliation.ts`, `apps/api/src/jobs/callerVerificationReconciliation.test.ts` | Expiry, terminal-result repair, late-rejection repair |
-| `apps/api/src/services/workerRegistry.ts`, `apps/api/src/jobs/workerReadinessManifest.ts` | Worker lifecycle and readiness registration |
-| `apps/api/src/services/callerVerification/deviceSuggestions.ts`, `apps/api/src/services/callerVerification/deviceSuggestions.test.ts` | Org/site-scoped hints and per-device readiness |
-| `apps/api/src/routes/callerVerification.ts`, `apps/api/src/routes/callerVerificationWorkstation.ts`, `apps/api/src/routes/callerVerificationWorkstation.test.ts` | W01 route integration and authenticated suggestions handler/tests |
-| `apps/api/src/routes/orgContacts.ts` | Export the existing site-reach helper |
-| `apps/api/src/services/partnerTrust.ts`, `apps/api/src/services/commandTypes.ts`, `apps/api/src/services/commandOfflinePolicy.ts` | Known gated command inventory and live-only offline policy |
-| `apps/docs/src/content/docs/agents/commands.mdx` | Wire contract and rollout limitations |
-| `apps/api/src/services/callerVerification/workstation.integration.test.ts` | Live-DB transaction, ownership, duplicate and recovery tests |
-| `apps/api/vitest.integration.config.ts`, `apps/api/vitest.config.ts` | Discover live suite and exclude it from unit runs |
-| `apps/api/src/services/callerVerification/ports.ts` | W01 preparation/delivery/availability adapters |
-| `apps/api/src/services/callerVerification/helperBranding.ts`, `apps/api/src/services/callerVerification/helperBranding.test.ts`, `apps/helper/src/windows/callerVerifyBranding.ts` | Authenticated branding and URL filtering |
-| `apps/api/src/services/callerVerification/workstationReceipt.test.ts`, `apps/api/src/services/callerVerification/workstation.contract.test.ts` | Durable rejection receipt and registration contracts |
+| Path | Responsibility | Tasks |
+|---|---|---|
+| `agent/internal/ipc/message.go` | Caller request/response types and `CallerVerify` capability | 1 |
+| `agent/internal/sessionbroker/session.go` | Expected response type binding | 1 |
+| `agent/internal/sessionbroker/caller_verify.go`, `agent/internal/sessionbroker/caller_verify_test.go`, `agent/internal/sessionbroker/caller_verify_windows.go`, `agent/internal/sessionbroker/caller_verify_unix.go` | OS-login-to-console-assist selection using existing detector fakes | 2 |
+| `agent/internal/sessionbroker/detector_windows.go` | Domain-qualified OS username | 2 |
+| `agent/internal/heartbeat/caller_verify.go`, `agent/internal/heartbeat/caller_verify_test.go` | Command handler and result mapping | 3 |
+| `agent/internal/heartbeat/caller_principal_windows.go`, `agent/internal/heartbeat/caller_principal_unix.go` | OS principal and best-effort UPN | 3 |
+| `agent/internal/heartbeat/heartbeat.go` | Live helper readiness telemetry | 4, 16 |
+| `apps/helper/src-tauri/src/ipc/caller_verify.rs` | Pending requests, response bridge, deadlines, windows, Rust tests | 5 |
+| `apps/helper/src-tauri/src/ipc/client.rs`, `apps/helper/src-tauri/src/ipc/mod.rs`, `apps/helper/src-tauri/src/lib.rs` | Capability frame, IPC loop, managed state and Tauri commands | 5 |
+| `apps/helper/src/windows/CallerVerifyWindow.tsx`, `apps/helper/src/windows/CallerVerifyWindow.test.tsx`, `apps/helper/src/windows/callerVerifyMessages.ts` | Card, behavior tests, eight locales | 6 |
+| `apps/helper/src/main.tsx` | Hash-routed caller window hydration | 6 |
+| `apps/helper/src-tauri/capabilities/default.json`, `apps/helper/src-tauri/tauri.conf.json` | Window permissions and HTTPS logo images | 5, 6 |
+| `apps/api/src/services/callerVerification/workstationCapabilities.ts`, `apps/api/src/services/callerVerification/workstationCapabilities.test.ts` | Fresh, org/device/user-keyed readiness cache | 4 |
+| `apps/api/src/routes/agents/schemas.ts`, `apps/api/src/routes/agents/heartbeat.ts` | Parse and replace capability telemetry | 4, 16 |
+| `apps/api/src/routes/helper/index.ts` | Authenticated partner branding on existing config response | 7 |
+| `apps/api/src/services/callerVerification/workstationProtocol.ts`, `apps/api/src/services/callerVerification/workstationProtocol.test.ts` | Frozen command/result codec | 8 |
+| `apps/api/src/services/callerVerification/deliverers/workstation.ts`, `apps/api/src/services/callerVerification/deliverers/workstation.test.ts` | Same-transaction preparation and after-commit dispatch | 9 |
+| `apps/api/src/services/callerVerification/service.ts` | W01 workstation branch, method availability, outbox dispatch hook | 9, 10, 13, 17 |
+| `apps/api/src/services/commandResultHandlers.ts`, `apps/api/src/services/commandResultHandlers.callerVerify.test.ts` | Single decision handler for both transports | 10 |
+| `apps/api/src/services/callerVerification/workstationResult.ts`, `apps/api/src/services/callerVerification/workstationResult.test.ts` | Parsing, ownership, principal conversion, durable rejection receipt | 10, 11 |
+| `apps/api/src/routes/agents/commands.ts`, `apps/api/src/routes/agentWs.ts` | HTTP registry and authenticated late-rejection ingress | 11 |
+| `apps/api/src/jobs/callerVerificationReconciliation.ts`, `apps/api/src/jobs/callerVerificationReconciliation.test.ts` | Expiry, terminal-result repair, late-rejection repair | 12 |
+| `apps/api/src/services/workerRegistry.ts`, `apps/api/src/jobs/workerReadinessManifest.ts` | Worker lifecycle and readiness registration | 12 |
+| `apps/api/src/services/callerVerification/deviceSuggestions.ts`, `apps/api/src/services/callerVerification/deviceSuggestions.test.ts` | Org/site-scoped hints and per-device readiness | 13 |
+| `apps/api/src/routes/callerVerification.ts`, `apps/api/src/routes/callerVerificationWorkstation.ts`, `apps/api/src/routes/callerVerificationWorkstation.test.ts` | W01 route integration and authenticated suggestions handler/tests | 14 |
+| `apps/api/src/routes/orgContacts.ts` | Export the existing site-reach helper | 14 |
+| `apps/api/src/services/partnerTrust.ts`, `apps/api/src/services/commandTypes.ts`, `apps/api/src/services/commandOfflinePolicy.ts` | Known gated command inventory and live-only offline policy | 8 |
+| `apps/docs/src/content/docs/agents/commands.mdx` | Wire contract and rollout limitations | 15 |
+| `apps/api/src/services/callerVerification/workstation.integration.test.ts` | Live-DB transaction, ownership, duplicate and recovery tests | 15 |
+| `apps/api/vitest.integration.config.ts`, `apps/api/vitest.config.ts` | Discover live suite and exclude it from unit runs | 15–17 |
+| `apps/api/src/services/callerVerification/ports.ts` | W01 preparation/delivery/availability adapters | 9 |
+| `apps/api/src/services/callerVerification/helperBranding.ts`, `apps/api/src/services/callerVerification/helperBranding.test.ts`, `apps/helper/src/windows/callerVerifyBranding.ts` | Authenticated branding and URL filtering | 7 |
+| `apps/api/src/services/callerVerification/workstationReceipt.test.ts`, `apps/api/src/services/callerVerification/workstation.contract.test.ts` | Durable rejection receipt and registration contracts | 11, 18 |
+| `agent/internal/collectors/sessions.go`, `agent/internal/collectors/sessions_test.go`, `agent/internal/collectors/session_principal_windows.go`, `agent/internal/collectors/session_principal_unix.go` | W01 session principal wire contract; OS identity collection and retry tests | 16 |
+| `apps/api/src/routes/agents/sessions.ts`, `apps/api/src/routes/agents/sessions.test.ts`, `apps/api/src/services/callerVerification/loginObservation.ts`, `apps/api/src/services/callerVerification/subjects.ts` | W01 consumer and binding uniqueness; authenticated ingestion and device locking | 16 |
+| `apps/api/src/routes/agents/sessions.callerVerification.integration.test.ts` | Independent login, snapshot, retry, unmatched/ambiguous/cross-org evidence | 16 |
+| `apps/api/src/services/callerVerification/deviceMove.ts` (W01-owned), `apps/api/src/routes/devices/moveOrg.ts`, `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts` | Reuse W01 move hook; serialize starts/results and prove old grants unusable | 17 |
+| `apps/web/src/lib/api/callerVerification.workstation.test.ts` | Real W02 route response through W04 client, after W04 Task 1 exists | 14, 18 |
 
 ### Task 1: Freeze the Go IPC request and response contract
 
@@ -1185,7 +1190,7 @@ git commit -m "feat(caller-verification): persist workstation commands before ou
 
 ### Task 10: Apply both transports through one idempotent decision handler
 
-**Files:** Create `apps/api/src/services/callerVerification/workstationResult.ts`, `apps/api/src/services/callerVerification/workstationResult.test.ts`; modify `apps/api/src/services/commandResultHandlers.ts:842`; create `apps/api/src/services/commandResultHandlers.callerVerify.test.ts`. Modify W01 `apps/api/src/services/callerVerification/service.ts` at `applyDecision` (W01 plan Task 12) to preserve the ambient result transaction; `apps/api/src/services/callerVerification/subjects.ts` owns `observeLogin` (absent on this base).
+**Files:** Create `apps/api/src/services/callerVerification/workstationResult.ts`, `apps/api/src/services/callerVerification/workstationResult.test.ts`; modify `apps/api/src/services/commandResultHandlers.ts:842`; create `apps/api/src/services/commandResultHandlers.callerVerify.test.ts`. Modify W01 `apps/api/src/services/callerVerification/service.ts` at `applyDecision` (W01 plan Task 13) to preserve the ambient result transaction; `apps/api/src/services/callerVerification/subjects.ts` owns `observeLogin` (absent on this base).
 
 **Interfaces:** Consumes verbatim:
 
@@ -1231,7 +1236,7 @@ it('passes transport-authorized ids unchanged',async()=>{
 - [ ] **Step 3: Implement using the command's persisted ownership, never payload verification id.**
 
 ```ts
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { callerVerifications } from '../../db/schema/callerVerification';
@@ -1256,9 +1261,10 @@ export async function handleCallerVerifyResult({commandId,resolvedDeviceId,resul
   const [owned]=await db.select({verification:callerVerifications}).from(callerVerifications)
     .innerJoin(deviceCommands,and(eq(deviceCommands.id,callerVerifications.agentCommandId),eq(deviceCommands.deviceId,resolvedDeviceId),eq(deviceCommands.type,'caller_verify'),eq(deviceCommands.targetRole,'agent')))
     .innerJoin(devices,and(eq(devices.id,resolvedDeviceId),eq(devices.orgId,callerVerifications.orgId)))
-    .where(and(eq(callerVerifications.agentCommandId,commandId),eq(callerVerifications.method,'workstation'))).limit(1);
+    .where(and(eq(callerVerifications.agentCommandId,commandId),eq(callerVerifications.method,'workstation'))).limit(1).for('share',{of:devices});
   if(!owned)return;
   const row=owned.verification;
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${row.orgId}`}))`);
   const value=readWorkstationResult(stdout,result.result);
   const decision=decisionForResult(value);
   const principal=principalForResult(value,row.deviceHostname);
@@ -1271,7 +1277,18 @@ export async function handleCallerVerifyResult({commandId,resolvedDeviceId,resul
 }
 ```
 
-Register `caller_verify: handleCallerVerifyResult` after importing it in `commandResultHandlers.ts`. Both `applyDecision` and `observeLogin` must run in the same ambient result transaction. W01's plan currently wraps `applyDecision` in `runOutsideDbContext(() => withSystemDbAccessContext(...))`; in W02 replace that wrapper with `withSystemDbAccessContext(...)` directly, retaining its label and body. This reuses an existing authorized context or opens system context when called without one; the handler's ownership lookup has already constrained the row. Do not escape the handler transaction, which would commit a verified status before observation/effects can roll back. Add `service.ts` at W01 `applyDecision` to this task's modified files and commit. W01 must make `observeLogin` idempotent and allow auto-binding only when UPN uniquely matches an existing directory binding; do not insert a new Entra identity or promote tier on a username match. `applyDecision` owns expiry-aware number CAS and rejects after expiry; `not_me` must remain legal from every non-rejected state. No W02 direct status UPDATE duplicates those rules.
+Register `caller_verify: handleCallerVerifyResult` after importing it in `commandResultHandlers.ts`. Both `applyDecision` and `observeLogin` run in the ambient result transaction. In W01 Task 13, remove only the outer `runOutsideDbContext` from `applyDecision`: its return becomes `return withSystemDbAccessContext(async()=>{` and its closing line becomes `},'callerVerification.applyDecision');`. The real `db/index.ts` implementation joins **any** ambient transaction; it does not elevate an org context to system.
+
+**Parallel W03 merge rule:** W03 Task 6 replaces that function with a `decide` closure. Retain its expiry predicates, link rejection window, IP handling and reason persistence, but replace its final system-only test and detached fallback with these exact lines (the `getCurrentDbAccessContext` import is already required by W03):
+
+```ts
+  if (getCurrentDbAccessContext()) return decide();
+  return withSystemDbAccessContext(decide, 'callerVerification.applyDecision');
+```
+
+An authorized org/partner context must never be discarded merely because it is not system-scoped. A row invisible to that context remains `not_found`; no privilege escalation fallback. Task 15's observation-failure test writes the command receipt and calls the real decision handler inside an authenticated org transaction, then proves receipt, decision and audit all roll back; repeat it after W03 lands. This is the acceptance condition for resolving the shared `service.ts` hunk.
+
+W01's `observeLogin` keeps its index signature and does not invent an Entra identity. Task 16 adds an independent login consumer and tightens its uniqueness check. `applyDecision` owns expiry-aware number CAS and rejects after expiry; `not_me` remains legal from every non-rejected state. No W02 direct status UPDATE duplicates those rules.
 
 - [ ] **Step 4: Run** `cd apps/api && npx vitest run src/services/callerVerification/workstationResult.test.ts src/services/commandResultHandlers.callerVerify.test.ts src/services/callerVerification/service.test.ts src/services/callerVerification/subjects.test.ts`. Expected: pass; W01 suites retain the same signatures.
 - [ ] **Step 5: Commit.**
@@ -1507,7 +1524,7 @@ The marker branch intentionally includes nonterminal command rows: Task 11 may r
 
 Register `{ name:'callerVerificationReconciliation', placement:'global', load:async()=>{const m=await import('../jobs/callerVerificationReconciliation');return {init:m.initializeCallerVerificationReconciliation,shutdown:m.shutdownCallerVerificationReconciliation};} }` in the worker registry; add `consumers('callerVerificationReconciliation')` to readiness manifest. The 30-second repeat is exempt from the coarse schedule registry; never use epoch-aligned `every:86400000`.
 
-- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/jobs/callerVerificationReconciliation.test.ts src/jobs/workerReadinessCoverage.test.ts src/jobs/scheduleRegistry.contract.test.ts`. Expected: pass. Also run the existing worker entrypoint closure suite named in Task 16; no runtime import of `commandResultHandlers` is permitted in this leaf worker.
+- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/jobs/callerVerificationReconciliation.test.ts src/jobs/workerReadinessCoverage.test.ts src/jobs/scheduleRegistry.contract.test.ts`. Expected: pass. Also run the existing worker entrypoint closure suite named in Task 18; no runtime import of `commandResultHandlers` is permitted in this leaf worker.
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -1593,7 +1610,7 @@ if(workstation && p.allowedMethods.includes('workstation') && (!workstation.unav
 
 Retain W01's tier calculation and `feature_disabled`/`method_disabled` priorities. `hasBinding` must never independently set tier 3: the answering principal must match the non-revoked binding. API consumers receive per-device `helper_outdated` on this new route, while the fixed methods signature aggregates readiness over visible suggestions. Start rechecks its selected device and username, even when manually selected rather than suggested.
 
-- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/services/callerVerification/deviceSuggestions.test.ts src/services/callerVerification/service.test.ts`. Expected: pass. Live sibling-site/cross-org cases are in Task 15.
+- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/services/callerVerification/deviceSuggestions.test.ts src/services/callerVerification/service.test.ts`. Expected: pass. Task 15 proves mixed ready/outdated suggestions, aggregate method readiness, selected-device refusal, and sibling-site/cross-org isolation against the real service and database.
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -1603,9 +1620,9 @@ git commit -m "feat(caller-verification): suggest reachable devices with helper 
 
 ### Task 14: Register the authenticated device-suggestions route before `/:id`
 
-**Files:** Create `apps/api/src/routes/callerVerificationWorkstation.ts`, `apps/api/src/routes/callerVerificationWorkstation.test.ts`. Modify W01 `apps/api/src/routes/callerVerification.ts` before its `${cv}/:id` registration (W01 plan Task 15). W01 already exports `canReachContactSite` from `apps/api/src/routes/orgContacts.ts:110`; consume it unchanged.
+**Files:** Create `apps/api/src/routes/callerVerificationWorkstation.ts`, `apps/api/src/routes/callerVerificationWorkstation.test.ts`, and the cross-wave `apps/web/src/lib/api/callerVerification.workstation.test.ts` after W04 Task 1. Modify W01 `apps/api/src/routes/callerVerification.ts` before its `${cv}/:id` registration (W01 plan Task 14). W01 already exports `canReachContactSite` from `apps/api/src/routes/orgContacts.ts:110`; consume it unchanged.
 
-**Interfaces:** `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=`. Produces `registerCallerDeviceSuggestionsRoutes(orgRoutes:Hono):void`, consumes route-local `authMiddleware`, `requireScope` and `requirePermission(PERMISSIONS.ORGS_READ.resource,PERMISSIONS.ORGS_READ.action)`. No mutation and no extra MFA gate on this GET.
+**Interfaces:** `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=` returns `{data: DeviceSuggestion[]}` including `available` and optional `unavailableReason`. Produces `registerCallerDeviceSuggestionsRoutes(orgRoutes:Hono):void`, consumes route-local `authMiddleware`, `requireScope` and `requirePermission(PERMISSIONS.ORGS_READ.resource,PERMISSIONS.ORGS_READ.action)`. No mutation and no extra MFA gate on this GET.
 
 - [ ] **Step 1: Write functional route tests, not pass-through authorization stubs.**
 
@@ -1629,6 +1646,15 @@ function app(){const a=new Hono();registerCallerDeviceSuggestionsRoutes(a);retur
 beforeEach(()=>{Object.assign(state,{enabled:true,loggedIn:true,read:true,org:true,site:true});suggestions.mockClear();});
 it.each([['loggedIn',401],['enabled',404],['read',403],['org',404],['site',404]] as const)('gates %s',async(key,status)=>{state[key]=false;expect((await app().request(`/orgs/${org}/caller-verifications/device-suggestions?contactId=${contact}`)).status).toBe(status);expect(suggestions).not.toHaveBeenCalled();});
 it('validates contact id and returns visible suggestions',async()=>{expect((await app().request(`/orgs/${org}/caller-verifications/device-suggestions?contactId=bad`)).status).toBe(400);expect((await app().request(`/orgs/${org}/caller-verifications/device-suggestions?contactId=${contact}`)).status).toBe(200);});
+it('returns the data envelope and preserves mixed per-device readiness',async()=>{
+  const rows=[
+    {deviceId:'44444444-4444-4444-8444-444444444444',hostname:'ready',username:'alex',hasBinding:false,available:true},
+    {deviceId:'55555555-5555-4555-8555-555555555555',hostname:'old',username:'alex',hasBinding:false,available:false,unavailableReason:'helper_outdated'},
+  ];
+  suggestions.mockResolvedValueOnce(rows);
+  const response=await app().request(`/orgs/${org}/caller-verifications/device-suggestions?contactId=${contact}`);
+  expect(response.status).toBe(200);expect(await response.json()).toEqual({data:rows});
+});
 ```
 
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/callerVerificationWorkstation.test.ts`. Expected: missing registration export.
@@ -1657,7 +1683,7 @@ export function registerCallerDeviceSuggestionsRoutes(orgRoutes:Hono):void {
       const contact=await getContact(db,contactId,orgId);
       if(!contact || !canReachContactSite(auth,contact.siteId))return c.json({error:'Not found'},404);
       const actor:CallerVerificationActor={userId:auth.user.id,partnerId:auth.partnerId ?? null,scope:auth.scope==='organization'?'organization':'partner',accessibleOrgIds:auth.accessibleOrgIds ?? null,allowedSiteIds:auth.allowedSiteIds ?? null,displayName:auth.user.name ?? auth.user.email};
-      return c.json({devices:await deviceSuggestions(actor,orgId,contactId)});
+      return c.json({data:await deviceSuggestions(actor,orgId,contactId)});
     });
 }
 ```
@@ -1665,6 +1691,42 @@ export function registerCallerDeviceSuggestionsRoutes(orgRoutes:Hono):void {
 In W01 `routes/callerVerification.ts`, add `import { registerCallerDeviceSuggestionsRoutes } from './callerVerificationWorkstation';` and `registerCallerDeviceSuggestionsRoutes(callerVerificationRoutes);` before the `${cv}/:id` GET. W01 mounts this router at `/` and its routes include `/orgs`; the new handler has its own flag/auth/scope middleware, exactly like W01's `base`. The test therefore uses the complete `/orgs/...` path. Do not add a second root mount.
 
 - [ ] **Step 4: Run** `cd apps/api && npx vitest run src/routes/callerVerificationWorkstation.test.ts src/routes/orgContacts.test.ts`. Expected: 401 unauthenticated, 403 no read permission, 404 flag off/cross-org/sibling-site, 400 malformed UUID, 200 allowed. The methods endpoint and start route must preserve their W01 flags and authorization.
+- [ ] **Step 4b: Verify the real response through W04's reader after W04 Task 1 is present.** Create `apps/web/src/lib/api/callerVerification.workstation.test.ts`. This is an explicit cross-wave acceptance test, not a substitute implementation of the client. It mounts W02's real route and calls W04's real `deviceSuggestions`; only authentication, the device query and transport are mocked. W04 owns the additive `DeviceSuggestion` type fields, disabled choices, translated reason and selected-device validation; W02 must preserve the fields on every response, including when another device is ready.
+
+```ts
+import { Hono } from 'hono';
+import { expect, it, vi } from 'vitest';
+const f=vi.hoisted(()=>({fetch:vi.fn(),suggest:vi.fn()}));
+vi.mock('@/stores/auth',()=>({fetchWithAuth:f.fetch}));
+vi.mock('@/lib/i18n',()=>({i18n:{t:(key:string)=>key}}));
+vi.mock('@/lib/runAction',()=>({ActionError:class extends Error {},runAction:vi.fn()}));
+vi.mock('../../../../api/src/db',()=>({db:{}}));
+vi.mock('../../../../api/src/services/callerVerification/gate',()=>({isCallerVerificationEnabled:()=>true}));
+vi.mock('../../../../api/src/services/callerVerification/deviceSuggestions',()=>({deviceSuggestions:f.suggest}));
+vi.mock('../../../../api/src/services/contacts/crud',()=>({getContact:async()=>({siteId:null})}));
+vi.mock('../../../../api/src/routes/orgContacts',()=>({canReachContactSite:()=>true}));
+vi.mock('../../../../api/src/middleware/auth',()=>({
+  authMiddleware:async(c:any,next:any)=>{c.set('auth',{user:{id:'33333333-3333-4333-8333-333333333333',name:'Sam'},scope:'organization',accessibleOrgIds:null,allowedSiteIds:null,canAccessOrg:()=>true});return next();},
+  requireScope:()=>async(_c:any,next:any)=>next(),
+  requirePermission:()=>async(_c:any,next:any)=>next(),
+}));
+import { registerCallerDeviceSuggestionsRoutes } from '../../../../api/src/routes/callerVerificationWorkstation';
+import { deviceSuggestions } from './callerVerification';
+it('reads the real W02 envelope without losing the unavailable device',async()=>{
+  const rows=[
+    {deviceId:'44444444-4444-4444-8444-444444444444',hostname:'ready',username:'alex',hasBinding:true,available:true},
+    {deviceId:'55555555-5555-4555-8555-555555555555',hostname:'old',username:'alex',hasBinding:false,available:false,unavailableReason:'helper_outdated'},
+  ];
+  f.suggest.mockResolvedValue(rows);
+  const app=new Hono();registerCallerDeviceSuggestionsRoutes(app);
+  f.fetch.mockImplementation((path:string)=>app.request(path));
+  await expect(deviceSuggestions('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222')).resolves.toEqual(rows);
+  expect(f.suggest).toHaveBeenCalledOnce();
+});
+```
+
+Run `cd apps/web && npx vitest run src/lib/api/callerVerification.workstation.test.ts src/lib/api/callerVerification.test.ts`. With W04 absent, record this as pending cross-wave acceptance (do not introduce a fake reader or claim it passed); run it on the combined branch before W05 activation. The API response test above runs independently in W02. Commit this test once W04's module is available with `git add apps/web/src/lib/api/callerVerification.workstation.test.ts && git commit -m "test(caller-verification): read workstation suggestions through web client"`.
+
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -1676,7 +1738,7 @@ git commit -m "feat(caller-verification): expose site-scoped workstation suggest
 
 **Files:** Create `apps/api/src/services/callerVerification/workstation.integration.test.ts`; modify `apps/api/vitest.integration.config.ts:12`, `apps/api/vitest.config.ts:15` (exclude); `apps/docs/src/content/docs/agents/commands.mdx:29`. Fixtures use verified `createPartner`, `createOrganization`, `createUser`, `createSite` from `apps/api/src/__tests__/integration/db-utils.ts`, `createContact(exec,input,actor)` from `apps/api/src/services/contacts/crud.ts:467`. No nonexistent `createDevice` fixture is assumed.
 
-**Interfaces:** Consumes W01 `start`, `get`, `applyDecision`, the real DB context and Task 9/10/11 functions. Produces behavioral proof of atomic ownership, transport duplicates, late rejection and site isolation.
+**Interfaces:** Consumes W01 `start`, `get`, `applyDecision`, the real DB context and Task 9/10/11 functions. Produces behavioral proof of atomic ownership, observation-failure rollback of decision/receipt/effect, mixed readiness with selected-device refusal, transport duplicates, late rejection and site isolation.
 
 - [ ] **Step 1: Write the co-located integration suite.** Imports are explicit; set readiness before dynamically importing the service because config may be evaluated at module load.
 
@@ -1686,7 +1748,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { devices, deviceCommands } from '../../db/schema';
+import { devices, deviceCommands, auditLogs } from '../../db/schema';
 import { callerVerifications } from '../../db/schema/callerVerification';
 import { createPartner, createOrganization, createUser, createSite } from '../../__tests__/integration/db-utils';
 import { createContact } from '../contacts/crud';
@@ -1696,6 +1758,14 @@ import { deviceSuggestions } from './deviceSuggestions';
 import { reconcileCallerVerifications } from '../../jobs/callerVerificationReconciliation';
 import type { CallerVerificationActor } from './types';
 vi.hoisted(()=>{process.env.CALLER_VERIFICATION_ENABLED='true';});
+const observationFault=vi.hoisted(()=>({fail:false}));
+vi.mock('./subjects',async importOriginal=>{
+  const actual=await importOriginal<typeof import('./subjects')>();
+  return {...actual,observeLogin:async(input:Parameters<typeof actual.observeLogin>[0])=>{
+    await actual.observeLogin(input);
+    if(observationFault.fail)throw new Error('observation failed');
+  }};
+});
 import * as service from './service';
 async function fixture(){
   const partner=await createPartner();const org=await createOrganization({partnerId:partner.id});
@@ -1722,6 +1792,35 @@ it('rolls back command and verification together, with a committing positive con
   const view=await withDbAccessContext(f.context,()=>service.start(f.actor,input));
   await withSystemDbAccessContext(async()=>{const [v]=await db.select().from(callerVerifications).where(eq(callerVerifications.id,view.id));expect(v?.agentCommandId).toBeTruthy();});
 });
+it('rolls back the decision, effect and receipt when login observation fails in an org transaction',async()=>{
+  const f=await fixture();
+  const view=await withDbAccessContext(f.context,()=>service.start(f.actor,{orgId:f.org.id,contactId:f.contact.id,method:'workstation',actionScope:'any',deviceId:f.device.id,username:'alex'}));
+  const orgContext={scope:'organization' as const,orgId:f.org.id,accessibleOrgIds:[f.org.id],accessiblePartnerIds:[],userId:f.actor.userId};
+  const [v]=await withDbAccessContext(orgContext,()=>db.select().from(callerVerifications).where(eq(callerVerifications.id,view.id)));
+  const [command]=await withDbAccessContext(orgContext,()=>db.select().from(deviceCommands).where(eq(deviceCommands.id,v!.agentCommandId!)));
+  const stdout=JSON.stringify({delivered:true,choice:v!.matchValue,principal:{uid:501,username:'alex'}});
+  const receive=()=>withDbAccessContext(orgContext,async()=>{
+    await db.update(deviceCommands).set({status:'completed',result:{status:'completed',stdout}}).where(eq(deviceCommands.id,command!.id));
+    await handleCallerVerifyResult({agentId:f.device.agentId,command:command!,commandId:command!.id,resolvedDeviceId:f.device.id,result:{status:'completed'},stdout});
+  });
+  observationFault.fail=true;
+  try { await expect(receive()).rejects.toThrow('observation failed'); }
+  finally { observationFault.fail=false; }
+  await withDbAccessContext(orgContext,async()=>{
+    const [row]=await db.select().from(callerVerifications).where(eq(callerVerifications.id,view.id));
+    const [receipt]=await db.select().from(deviceCommands).where(eq(deviceCommands.id,command!.id));
+    expect(row).toMatchObject({status:'pending',decidedAt:null,osPrincipalObserved:null});
+    expect(receipt!.status).toBe(command!.status);expect(receipt!.result).toEqual(command!.result);
+    expect(await db.select().from(auditLogs).where(and(eq(auditLogs.resourceId,view.id),eq(auditLogs.action,'caller_verification.verified')))).toHaveLength(0);
+  });
+  await receive(); // Same request succeeds once the observer recovers.
+  await withDbAccessContext(orgContext,async()=>{
+    expect((await service.get(f.actor,f.org.id,view.id)).status).toBe('verified');
+    expect(await db.select().from(auditLogs).where(and(eq(auditLogs.resourceId,view.id),eq(auditLogs.action,'caller_verification.verified')))).toHaveLength(1);
+    const [receipt]=await db.select().from(deviceCommands).where(eq(deviceCommands.id,command!.id));
+    expect(receipt!.status).toBe('completed');
+  });
+});
 it('applies duplicate approval once, then repairs a durable late rejection',async()=>{
   const f=await fixture();const view=await withDbAccessContext(f.context,()=>service.start(f.actor,{orgId:f.org.id,contactId:f.contact.id,method:'workstation',actionScope:'any',deviceId:f.device.id,username:'alex'}));
   await withSystemDbAccessContext(async()=>{
@@ -1746,6 +1845,29 @@ it.each(['expire','repair'] as const)('reconciles a pending verification: %s',as
   });
   await reconcileCallerVerifications();
   const result=await withDbAccessContext(f.context,()=>service.get(f.actor,f.org.id,view.id));expect(result.status).toBe(mode==='expire'?'expired':'verified');
+});
+it('preserves mixed device readiness and refuses the selected outdated helper',async()=>{
+  const f=await fixture();
+  const old=await withSystemDbAccessContext(async()=>{
+    const [d]=await db.insert(devices).values({orgId:f.org.id,siteId:f.site.id,agentId:randomUUID(),hostname:'old-helper',osType:'linux',osVersion:'test',architecture:'amd64',agentVersion:'test',lastUser:'alex',status:'online'}).returning();return d!;
+  },'callerVerification.mixedHelpers');
+  await recordWorkstationCapabilities(f.org.id,old.id,{callerVerify:false,usernames:[]});
+  await withDbAccessContext(f.context,async()=>{
+    const rows=await deviceSuggestions(f.actor,f.org.id,f.contact.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.find(r=>r.deviceId===f.device.id)).toMatchObject({available:true});
+    expect(rows.find(r=>r.deviceId===old.id)).toMatchObject({available:false,unavailableReason:'helper_outdated'});
+    const methods=await service.methodsForContact(f.actor,f.org.id,f.contact.id,'any');
+    expect(methods.find(m=>m.method==='workstation')?.available).toBe(true);
+  });
+  const input={orgId:f.org.id,contactId:f.contact.id,method:'workstation' as const,actionScope:'any' as const,username:'alex'};
+  await expect(withDbAccessContext(f.context,()=>service.start(f.actor,{...input,deviceId:old.id}))).rejects.toMatchObject({code:'helper_outdated'});
+  const good=await withDbAccessContext(f.context,()=>service.start(f.actor,{...input,deviceId:f.device.id}));
+  expect(good.status).toBe('pending');
+  await withDbAccessContext(f.context,async()=>{
+    expect(await db.select().from(callerVerifications).where(eq(callerVerifications.workstationDeviceRef,old.id))).toHaveLength(0);
+    expect(await db.select().from(deviceCommands).where(eq(deviceCommands.deviceId,old.id))).toHaveLength(0);
+  });
 });
 it('excludes sibling sites and other organizations',async()=>{
   const a=await fixture(),b=await fixture();
@@ -1793,7 +1915,434 @@ git add apps/api/src/services/callerVerification/workstation.integration.test.ts
 git commit -m "test(caller-verification): prove workstation atomicity and rejection recovery"
 ```
 
-### Task 16: Wave verification, release evidence and PR
+### Task 16: Observe authenticated logins through the existing session inventory
+
+**Files:** Modify `agent/internal/collectors/sessions.go`, `agent/internal/collectors/sessions_test.go`, `apps/api/src/routes/agents/schemas.ts`, `apps/api/src/routes/agents/sessions.ts`, `apps/api/src/routes/agents/sessions.test.ts`, W01 `apps/api/src/services/callerVerification/subjects.ts`. Consume/extend W01's `agent/internal/collectors/session_principal_windows.go`, `agent/internal/collectors/session_principal_unix.go`, and `apps/api/src/services/callerVerification/loginObservation.ts`; create `apps/api/src/routes/agents/sessions.callerVerification.integration.test.ts`. Add the live suite to `apps/api/vitest.integration.config.ts` includes and `apps/api/vitest.config.ts` excludes. The existing `agent/internal/heartbeat/heartbeat.go:sendSessionInventory` sends these structs unchanged and requeues drained events after failed uploads; no second reporting path is added.
+
+**Interfaces:** Add optional `principal:{sid?:string;uid?:number;username:string;upn?:string}` to session snapshots and login events. SID/UID and UPN come from the OS, never helper-supplied text. The authenticated device fixes org and hostname. Only a unique active **existing** directory binding across that org may be passed to the unchanged `observeLogin` signature. Login alone creates neither a verification nor an Entra identity. Snapshots cover agent restarts and upload retries; logout events are not evidence.
+
+- [ ] **Step 1: Write collector and real API-consumer regressions.** Append to the existing Go test file; its `fakeDetector`, JSON and string imports already exist.
+
+```go
+func TestLoginPrincipalReporting(t *testing.T) {
+    for _, tc := range []struct{name string; principal *SessionPrincipal}{
+        {"directory", &SessionPrincipal{SID:"S-1-5-21-42", Username:"alice", UPN:"alice@example.com"}},
+        {"unresolved", nil},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            now := time.Now()
+            c := &SessionCollector{
+                detector: &fakeDetector{sessions: []sessionbroker.DetectedSession{{Username:"alice", Session:"2", State:"active"}}},
+                sessions: make(map[string]UserSession),
+                principalReader: func(username, session string, uid uint32) *SessionPrincipal {
+                    if session != "2" || username != "alice" { t.Fatalf("wrong OS session: %s %s", username, session) }
+                    return tc.principal
+                },
+            }
+            c.refreshSessions(now)
+            rows, err := c.Collect()
+            if err != nil || len(rows) != 1 || rows[0].Principal != tc.principal { t.Fatalf("snapshot: %+v, %v", rows, err) }
+            c.applyEvent(sessionbroker.SessionEvent{Type:sessionbroker.SessionLogin, Username:"alice", Session:"2"}, now)
+            events := c.DrainEvents(256)
+            if len(events) != 1 || events[0].Principal != tc.principal { t.Fatalf("login: %+v", events) }
+            c.RequeueEvents(events)
+            retry := c.DrainEvents(256)
+            if len(retry) != 1 || retry[0].Principal != tc.principal { t.Fatalf("retry: %+v", retry) }
+            encoded, err := json.Marshal(retry[0]); if err != nil { t.Fatal(err) }
+            if tc.principal != nil && !strings.Contains(string(encoded), `"upn":"alice@example.com"`) { t.Fatalf("wire: %s", encoded) }
+            if tc.principal == nil && strings.Contains(string(encoded), `"principal"`) { t.Fatalf("invented principal: %s", encoded) }
+            c.applyEvent(sessionbroker.SessionEvent{Type:sessionbroker.SessionLogout, Username:"alice", Session:"2"}, now)
+            events = c.DrainEvents(256)
+            if len(events) != 1 || events[0].Principal != nil { t.Fatalf("logout evidence: %+v", events) }
+        })
+    }
+}
+```
+
+Create the live API suite below. It uses a synthetic already-authenticated agent context at the subrouter boundary, real `requireAgentRole`, real schema, real org RLS, real binding resolution and real `observeLogin`. It does not claim to retest token verification in `agentAuthMiddleware`. No mocks of the consumer or database.
+
+```ts
+import '../../__tests__/integration/setup';
+import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
+import { expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { contacts, devices, deviceSessions } from '../../db/schema';
+import { callerVerificationSubjectBindings as b, callerVerifications as v } from '../../db/schema/callerVerification';
+import { createPartner, createOrganization, createSite } from '../../__tests__/integration/db-utils';
+import { sessionsRoutes } from './sessions';
+async function seed(){
+  const partner=await createPartner(),org=await createOrganization({partnerId:partner.id}),other=await createOrganization({partnerId:partner.id});
+  const site=await createSite({orgId:org.id});
+  const device=await withSystemDbAccessContext(async()=>{
+    const [d]=await db.insert(devices).values({orgId:org.id,siteId:site.id,agentId:randomUUID(),hostname:'login-test',osType:'windows',osVersion:'test',architecture:'amd64',agentVersion:'test'}).returning();return d!;
+  },'callerVerification.login.seed');
+  const bind=async(orgId:string,upn:string)=>withSystemDbAccessContext(async()=>{
+    const [contact]=await db.insert(contacts).values({orgId,name:'Alice'}).returning();
+    const [row]=await db.insert(b).values({orgId,contactId:contact!.id,entraTenantId:randomUUID(),entraOid:randomUUID(),upnSnapshot:upn,source:'directory_sync'}).returning();return row!;
+  },'callerVerification.login.binding');
+  const app=new Hono();
+  app.use('*',async(c,next)=>{
+    c.set('agent',{deviceId:device.id,agentId:device.agentId,orgId:org.id,role:'agent'} as never);
+    return withDbAccessContext({scope:'organization',orgId:org.id,accessibleOrgIds:[org.id],accessiblePartnerIds:[]},async()=>{await next();if(c.error)throw c.error;});
+  });
+  app.route('/agents',sessionsRoutes);
+  const send=(body:unknown,pathAgentId=device.agentId)=>app.request(`/agents/${pathAgentId}/sessions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return {org,other,device,bind,send};
+}
+const principal={sid:'S-1-5-21-42',username:'alice',upn:'alice@example.com'};
+it.each(['matched','unmatched','ambiguous','cross-org'] as const)('resolves login events: %s',async mode=>{
+  const f=await seed();
+  const first=await f.bind(mode==='cross-org'?f.other.id:f.org.id,mode==='unmatched'?'other@example.com':'alice@example.com');
+  if(mode==='ambiguous')await f.bind(f.org.id,'ALICE@example.com');
+  const body={sessions:[],events:[{type:'login',username:'alice',sessionType:'console',sessionId:'2',principal}]};
+  expect((await f.send(body)).status).toBe(200);
+  expect((await f.send(body)).status).toBe(200); // Requeued login is idempotent.
+  await withSystemDbAccessContext(async()=>{
+    const rows=await db.select().from(b);expect(rows).toHaveLength(mode==='ambiguous'?2:1);
+    expect(rows.find(r=>r.id===first.id)?.osPrincipal).toBe(mode==='matched'?principal.sid:null);
+    if(mode!=='matched')expect(rows.every(r=>r.osPrincipal===null)).toBe(true);
+    expect(await db.select().from(v)).toHaveLength(0);
+  },'callerVerification.login.assert');
+});
+it('handles active snapshots without a challenge and ignores mismatched or missing identity',async()=>{
+  const f=await seed(),binding=await f.bind(f.org.id,principal.upn);
+  for(const p of [undefined,{...principal,username:'mallory'}]) {
+    expect((await f.send({sessions:[{username:'alice',sessionType:'console',principal:p}]})).status).toBe(200);
+    await withSystemDbAccessContext(async()=>{const [row]=await db.select().from(b).where(eq(b.id,binding.id));expect(row!.osPrincipal).toBeNull();},'callerVerification.login.unmatched');
+  }
+  expect((await f.send({sessions:[{username:'alice',sessionType:'console',principal}]})).status).toBe(200);
+  await withSystemDbAccessContext(async()=>{
+    const [row]=await db.select().from(b).where(eq(b.id,binding.id));expect(row!.osPrincipal).toBe(principal.sid);
+    expect(await db.select().from(deviceSessions).where(eq(deviceSessions.deviceId,f.device.id))).toHaveLength(1);
+  },'callerVerification.login.snapshot');
+});
+it('rejects another agent path and a device whose org moved since authentication',async()=>{
+  const f=await seed();await f.bind(f.other.id,principal.upn);
+  const body={sessions:[],events:[{type:'login',username:'alice',sessionType:'console',principal}]};
+  expect((await f.send(body,randomUUID())).status).toBe(403);
+  const site=await createSite({orgId:f.other.id});
+  await withSystemDbAccessContext(()=>db.update(devices).set({orgId:f.other.id,siteId:site.id}).where(eq(devices.id,f.device.id)),'callerVerification.login.move');
+  expect((await f.send(body)).status).toBe(404);
+  await withSystemDbAccessContext(async()=>{expect((await db.select().from(b)).every(r=>r.osPrincipal===null)).toBe(true);},'callerVerification.login.foreign');
+});
+```
+
+- [ ] **Step 2: Run red.** `cd agent && go test -race ./internal/collectors/...` fails on missing fields before W01's telemetry addition; with that addition present it is a regression test. With the new integration file registered, run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/agents/sessions.callerVerification.integration.test.ts`; the positive login assertions fail until the consumer exists; after W01 they may pass immediately, and the new device-ownership cases guard the W02 integration. Stop the stack with `pnpm test-stack down` from the repository root, including on failure.
+
+- [ ] **Step 3: Add OS-derived identity to the existing structs and consume it.** In `sessions.go`, add:
+
+```go
+type SessionPrincipal struct {
+    SID string `json:"sid,omitempty"`
+    UID *uint32 `json:"uid,omitempty"`
+    Username string `json:"username"`
+    UPN string `json:"upn,omitempty"`
+}
+```
+
+Add the field `Principal *SessionPrincipal` with the struct tag `json:"principal,omitempty"` to both `UserSession` and `UserSessionEvent`; reuse W01 Task 8 Step 3b's `principalReader func(string, string, uint32) *SessionPrincipal` field and method below. If rebasing onto that addition, extend it once; do not add a second principal field or consumer. Existing tests that instantiate a collector must inject a nil-returning reader when testing unrelated behavior:
+
+```go
+func (c *SessionCollector) readPrincipal(username, session string, uid uint32) *SessionPrincipal {
+    if c.principalReader != nil { return c.principalReader(username, session, uid) }
+    return principalForSession(username, session, uid)
+}
+```
+
+In `refreshSessions`, immediately before `c.mu.Lock()`, resolve identity outside the mutex:
+
+```go
+principals := make(map[string]*SessionPrincipal, len(sessions))
+for _, detected := range sessions {
+    key := sessionKey(detected.Username, inferSessionType(detected), detected.Session)
+    principals[key] = c.readPrincipal(detected.Username, detected.Session, detected.UID)
+}
+```
+
+Add `Principal: principals[key],` to its `next[key] = UserSession{...}` literal. In `applyEvent`, before `c.mu.Lock()`, add:
+
+```go
+var principal *SessionPrincipal
+if event.Type == sessionbroker.SessionLogin {
+    principal = c.readPrincipal(event.Username, event.Session, event.UID)
+}
+```
+
+Add `Principal: principal,` to the login case's `UserSession` literal and to the appended `UserSessionEvent` literal. Keep all existing fields, bounded buffering and requeue behavior. No change to `sendSessionInventory` is needed: its `sessions` and `events` payload values already serialize these structs.
+
+```go
+// agent/internal/collectors/session_principal_windows.go
+//go:build windows
+
+package collectors
+
+import (
+    "strconv"
+    "strings"
+    "golang.org/x/sys/windows"
+)
+func principalForSession(username, session string, _ uint32) *SessionPrincipal {
+    id, err := strconv.ParseUint(session, 10, 32)
+    if err != nil || id == 0 || strings.TrimSpace(username) == "" { return nil }
+    var token windows.Token
+    if windows.WTSQueryUserToken(uint32(id), &token) != nil { return nil }
+    defer token.Close()
+    user, err := token.GetTokenUser(); if err != nil { return nil }
+    account, domain, _, err := user.User.Sid.LookupAccount(""); if err != nil { return nil }
+    canonical := account; if domain != "" { canonical = domain + `\` + account }
+    if !strings.EqualFold(username, account) && !strings.EqualFold(username, canonical) { return nil }
+    p := &SessionPrincipal{SID:user.User.Sid.String(), Username:username}
+    upn, err := windows.TranslateAccountName(canonical, windows.NameSamCompatible, windows.NameUserPrincipal, 256)
+    if err == nil { p.UPN = upn }
+    return p
+}
+```
+
+```go
+// agent/internal/collectors/session_principal_unix.go
+//go:build !windows
+
+package collectors
+
+import (
+    "strings"
+)
+func principalForSession(username, _ string, uid uint32) *SessionPrincipal {
+    if strings.TrimSpace(username) == "" { return nil }
+    return &SessionPrincipal{UID:&uid, Username:username}
+}
+```
+
+The verified Windows APIs already appear in `sessionbroker/spawn_process_windows.go` and `agent/internal/onedrivehelper/onedrivehelper_windows.go`. The detector supplies the OS session; the token supplies its SID. UPN translation failure leaves UPN absent, never guesses from a contact email. Unix reports UID (including zero) but cannot auto-bind without a verified UPN provider.
+
+In API `schemas.ts`, define this immediately before `submitSessionsSchema`, then add `principal: sessionPrincipalSchema.optional(),` to **both** its session and event object schemas:
+
+```ts
+const sessionPrincipalSchema=z.object({
+  sid:z.string().regex(/^S-\d+(?:-\d+)+$/).max(184).optional(),
+  uid:z.number().int().min(0).max(4294967295).optional(),
+  username:z.string().min(1).max(255),
+  upn:z.string().min(1).max(320).optional(),
+}).strict().refine(p=>(p.sid!==undefined)!==(p.uid!==undefined),'Exactly one OS principal is required');
+```
+
+Reuse W01 Task 8 Step 3b's consumer unchanged (shown in full to make this task executable). If present after rebase, do not add a parallel implementation:
+
+```ts
+// loginObservation.ts
+import { and,eq,isNotNull,isNull,sql } from 'drizzle-orm';
+import { db,assertInTransaction } from '../../db';
+import { callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
+import { observeLogin } from './subjects';
+export type SessionPrincipal={sid?:string;uid?:number;username:string;upn?:string};
+export async function observeSessionPrincipal(orgId:string,hostname:string,username:string,p:SessionPrincipal|undefined):Promise<void>{
+ if(!p?.upn||p.username.toLowerCase()!==username.toLowerCase()||((p.sid!==undefined)===(p.uid!==undefined)))return;
+ assertInTransaction('observeSessionPrincipal');
+ await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${orgId}`}))`);
+ const rows=await db.select().from(b).where(and(eq(b.orgId,orgId),isNull(b.revokedAt),isNotNull(b.entraTenantId),isNotNull(b.entraOid),sql`lower(${b.upnSnapshot})=lower(${p.upn})`)).limit(2);
+ if(rows.length!==1)return;
+ await observeLogin({orgId,contactId:rows[0]!.contactId,osPrincipal:p.sid??`uid:${p.uid}@${hostname}`,osUsername:p.username,upn:p.upn});
+}
+```
+
+W01 Task 8 Step 3b also adds this org-wide uniqueness check to `subjects.ts:observeLogin`. Preserve it, the transaction assertion, identity lock and conflict-revocation code. In particular, do not restore the earlier contact-only lookup when integrating the challenge-success path:
+
+```ts
+ const matches=await db.select().from(b).where(and(eq(b.orgId,input.orgId),isNull(b.revokedAt),sql`${b.entraOid} IS NOT NULL AND ${b.entraTenantId} IS NOT NULL`,sql`lower(${b.upnSnapshot})=lower(${input.upn})`)).limit(2);
+ if(matches.length!==1 || matches[0]!.contactId!==input.contactId)return;
+ const target=matches[0]!;
+```
+
+In `routes/agents/sessions.ts`, import `observeSessionPrincipal` from `../../services/callerVerification/loginObservation`. Replace the existing agent cast and device lookup with this code; `agentAuthMiddleware` already supplies all these identity fields and the org transaction. Do not accept a request-body org/contact identifier:
+
+```ts
+  const agent=c.get('agent');
+  if(!agent || agent.agentId!==agentId)return c.json({error:'Device not found'},403);
+  const [device]=await db.select({id:devices.id,orgId:devices.orgId,siteId:devices.siteId,hostname:devices.hostname})
+    .from(devices).where(and(eq(devices.id,agent.deviceId),eq(devices.agentId,agentId)))
+    .limit(1).for('share');
+  if(!device)return c.json({error:'Device not found'},404);
+  if(agent.orgId!==device.orgId)return c.json({error:'Device not found'},403);
+```
+
+After the existing `await db.transaction(...)` session-row write and before event publishing, add:
+
+```ts
+  for(const session of activeSessions)await observeSessionPrincipal(device.orgId,device.hostname,session.username,session.principal);
+  for(const event of data.events ?? [])if(event.type==='login')await observeSessionPrincipal(device.orgId,device.hostname,event.username,event.principal);
+```
+
+Both writes still live inside the authenticated outer transaction, and the device share lock prevents an org move until it commits. Propagate an observation failure so the request fails and the agent retries; do not catch it as a best-effort event-publish failure. In existing `sessions.test.ts`, retain W01's `observeSessionPrincipal` mock and forwarded-login/cross-org tests. Replace `mockDeviceLookup` with:
+
+```ts
+function mockDeviceLookup() {
+  vi.mocked(db.select).mockReturnValueOnce({from:()=>({where:()=>({limit:()=>({
+    for:async()=>[{id:DEVICE_ID,orgId:'org-1',hostname:'host-1'}],
+  })})})} as never);
+}
+```
+
+Ensure the authenticated middleware below precedes `app.route('/agents', sessionsRoutes)`. Use the same complete identity in the foreign-org middleware, retaining `orgId:'org-2'` in the latter:
+
+```ts
+app.use('*',async(c,next)=>{
+  c.set('agent',{deviceId:DEVICE_ID,agentId:AGENT_ID,orgId:'org-1',role:'agent'} as never);
+  await next();
+});
+```
+
+The existing foreign-org mock remains 403; a real moved device hidden by old-org RLS is 404. Run both suites to prove normal ingestion still works.
+
+- [ ] **Step 4: Run green and register live coverage.**
+
+```bash
+(cd agent && go test -race ./internal/collectors/... ./internal/heartbeat/...)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/caller-session-collectors.test.exe ./internal/collectors)
+(cd apps/api && npx vitest run src/routes/agents/sessions.test.ts src/services/callerVerification/subjects.test.ts)
+pnpm test-stack up
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/agents/sessions.callerVerification.integration.test.ts src/services/callerVerification/workstation.integration.test.ts)
+pnpm test-stack down
+```
+
+Use finally/trap cleanup for the stack. Cross-compilation proves build compatibility; run the actual WTS token case on Windows during Task 18 platform verification.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add agent/internal/collectors/sessions.go agent/internal/collectors/sessions_test.go agent/internal/collectors/session_principal_windows.go agent/internal/collectors/session_principal_unix.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/sessions.ts apps/api/src/routes/agents/sessions.test.ts apps/api/src/services/callerVerification/subjects.ts apps/api/src/services/callerVerification/loginObservation.ts apps/api/src/routes/agents/sessions.callerVerification.integration.test.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts
+git commit -m "feat(caller-verification): observe directory-bound logins from session reports"
+```
+
+### Task 17: Revoke workstation grants in the device org-move transaction
+
+**Files:** Create `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts`; consume W01 `apps/api/src/services/callerVerification/deviceMove.ts` (Task 13 Step 3a); modify `apps/api/src/routes/devices/moveOrg.ts`, W01 `apps/api/src/services/callerVerification/service.ts:start`, and both API Vitest configs. Task 10 already locks the answering device through result processing. W01 Task 13 Step 3a now supplies the move hook; reuse its signature/body unchanged and add the W02 transport/locking proof below. No caller table joins the generic device-child walker.
+
+**Interfaces:** `revokeWorkstationGrantsForMove(tx,sourceOrgId,deviceId):Promise<void>` uses the route's **explicit** transaction, original org and `workstationDeviceRef`. It expires pending and revokes verified, unconsumed workstation grants, locks requester and target bindings in the same sorted order as the gate, and leaves consumed status/history and snapshot ownership untouched. The device row is locked before scanning grants, preventing new starts and results from escaping the scan.
+
+- [ ] **Step 1: Write the live route test.** The real JWT/permission fixture follows the existing `deviceMoveOrgCurrency.integration.test.ts`; no gate, move route, binding or authorization mock is used.
+
+```ts
+import '../../__tests__/integration/setup';
+import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
+import { expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { contacts, devices } from '../../db/schema';
+import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
+import { setupTestEnvironment, createOrganization, createSite } from '../../__tests__/integration/db-utils';
+import { createAccessToken } from '../../services/jwt';
+import { moveOrgRoutes } from './moveOrg';
+import { requireCallerVerification } from '../../services/callerVerification/gate';
+import { CallerVerificationRequiredError } from '../../services/callerVerification/errors';
+import { revokeWorkstationGrantsForMove } from '../../services/callerVerification/deviceMove';
+vi.hoisted(()=>{process.env.CALLER_VERIFICATION_ENABLED='true';});
+const sys=<T>(fn:()=>Promise<T>)=>withSystemDbAccessContext(fn,'callerVerification.move.test');
+async function fixture(){
+  const env=await setupTestEnvironment({scope:'partner'});
+  const target=await createOrganization({partnerId:env.partner.id}),targetSite=await createSite({orgId:target.id});
+  const device=await sys(async()=>{
+    const [d]=await db.insert(devices).values({orgId:env.organization.id,siteId:env.site.id,agentId:randomUUID(),hostname:'move-test',osType:'windows',osVersion:'test',architecture:'amd64',agentVersion:'test',status:'offline'}).returning();return d!;
+  });
+  let principalNumber=100;
+  const grant=async(orgId:string,deviceRef:string,consumed=false,status:'pending'|'verified'='verified')=>sys(async()=>{
+    const [contact]=await db.insert(contacts).values({orgId,name:'Alex'}).returning();
+    const [binding]=await db.insert(b).values({orgId,contactId:contact!.id,entraTenantId:randomUUID(),entraOid:randomUUID(),upnSnapshot:'alex@example.com',osPrincipal:`S-1-5-21-${++principalNumber}`,osUsername:'alex',source:'directory_sync'}).returning();
+    const [row]=await db.insert(v).values({orgId,contactId:contact!.id,requesterBindingId:binding!.id,targetBindingId:binding!.id,targetEntraTenantId:binding!.entraTenantId,targetEntraOid:binding!.entraOid,
+      initiatedByUserId:env.user.id,technicianLabel:'Tech',actionScope:'reset_password',method:'workstation',status,tier:3,tierReason:'bound_principal',osPrincipalObserved:binding!.osPrincipal,
+      workstationDeviceRef:deviceRef,deviceHostname:'move-test',osUsername:'alex',matchValue:'42',decoyValues:['11','73'],reverseCode:'1234',attemptNo:1,
+      expiresAt:new Date(Date.now()+120000),decidedAt:status==='verified'?new Date():null,consumedAt:consumed?new Date():null,consumedIntentRef:consumed?randomUUID():null}).returning();
+    return {row:row!,binding:binding!};
+  });
+  const token=await createAccessToken({sub:env.user.id,email:env.user.email,roleId:env.role.id,orgId:null,partnerId:env.partner.id,scope:'partner',mfa:true,aep:1,mep:1,sid:randomUUID()});
+  const app=new Hono();app.route('/devices',moveOrgRoutes);
+  const move=()=>app.request(`/devices/${device.id}/move-org`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({orgId:target.id,siteId:targetSite.id})});
+  return {...env,target,device,grant,move};
+}
+it('a real move revokes old-org authority and preserves consumed and unrelated history',async()=>{
+  const f=await fixture();
+  const active=await f.grant(f.organization.id,f.device.id);
+  const pending=await f.grant(f.organization.id,f.device.id,false,'pending');
+  const consumed=await f.grant(f.organization.id,f.device.id,true);
+  const otherDevice=await f.grant(f.organization.id,randomUUID());
+  const otherOrg=await f.grant(f.target.id,f.device.id);
+  const input={orgId:f.organization.id,action:'reset_password' as const,target:{entraTenantId:active.binding.entraTenantId!,entraOid:active.binding.entraOid!},backendTenantId:active.binding.entraTenantId!,technicianUserId:f.user.id,intentId:randomUUID(),mode:'check' as const};
+  await expect(requireCallerVerification(input)).resolves.toEqual({verificationId:active.row.id,tier:3});
+  const response=await f.move();expect(response.status,JSON.stringify(await response.json())).toBe(200);
+  await expect(requireCallerVerification({...input,mode:'consume'})).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+  await sys(async()=>{
+    const [device]=await db.select().from(devices).where(eq(devices.id,f.device.id));expect(device!.orgId).toBe(f.target.id);
+    const rows=await db.select().from(v),get=(id:string)=>rows.find(r=>r.id===id)!;
+    expect(get(active.row.id)).toMatchObject({orgId:f.organization.id,workstationDeviceRef:f.device.id,status:'revoked',consumedAt:null,consumedIntentRef:null});
+    expect(get(pending.row.id).status).toBe('expired');
+    expect(get(consumed.row.id)).toMatchObject({status:'verified',orgId:f.organization.id,consumedAt:consumed.row.consumedAt,consumedIntentRef:consumed.row.consumedIntentRef});
+    expect(get(otherDevice.row.id).status).toBe('verified');expect(get(otherOrg.row.id).status).toBe('verified');
+  });
+});
+it('rolls back revocation with a failed move transaction',async()=>{
+  const f=await fixture(),g=await f.grant(f.organization.id,f.device.id);
+  await expect(sys(()=>db.transaction(async tx=>{
+    await tx.select({id:devices.id}).from(devices).where(eq(devices.id,f.device.id)).limit(1).for('update');
+    await revokeWorkstationGrantsForMove(tx,f.organization.id,f.device.id);
+    const [changed]=await tx.select().from(v).where(eq(v.id,g.row.id));expect(changed!.status).toBe('revoked');
+    await tx.update(devices).set({hostname:'rolled-back'}).where(eq(devices.id,f.device.id));
+    throw new Error('move failed');
+  }))).rejects.toThrow('move failed');
+  await sys(async()=>{
+    const [row]=await db.select().from(v).where(eq(v.id,g.row.id));expect(row!.status).toBe('verified');
+    const [device]=await db.select().from(devices).where(eq(devices.id,f.device.id));expect(device!.hostname).toBe('move-test');
+  });
+});
+```
+
+- [ ] **Step 2: Run red.** Register `src/routes/devices/moveOrg.callerVerification.integration.test.ts` in integration includes and unit excludes. Run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/devices/moveOrg.callerVerification.integration.test.ts`. Expected before W01's hook: the old grant still authorizes. With that hook already present, the live regression may pass immediately; retain it and complete the lock placement below. Always run `pnpm test-stack down` from root afterward.
+
+- [ ] **Step 3: Implement and wire the locked revocation.**
+
+W01 Task 13 Step 3a owns `deviceMove.ts` and its predicate/lock test. Do not recreate it with another signature. In `moveOrg.ts`, retain its `revokeWorkstationGrantsForMove` import and move its **single** lock-and-hook block to immediately after the `lockedSource`/`lockedTarget` existence checks and before `assertPamDeviceOrgMoveAllowed`:
+
+```ts
+const [callerMoveDevice]=await tx.select({orgId:devices.orgId}).from(devices)
+  .where(eq(devices.id,deviceId)).limit(1).for('update');
+if(callerMoveDevice?.orgId!==sourceOrgId)throw new Error('Device organization changed during move');
+await revokeWorkstationGrantsForMove(tx,sourceOrgId,deviceId);
+```
+
+This preserves the route's existing ordered org locks as the first locking operation. Any later PAM/currency/cascade failure rolls the revocation back with the move. Do not call a detached system context or use ambient `db` inside the hook: the route owns a nested transaction/savepoint and its explicit `tx` is the rollback boundary.
+
+In W01 `service.ts:start`, replace its device lookup (before `lockContact`/`withSubjectLocks`) with:
+
+```ts
+ if(input.deviceId){
+  [device]=await db.select().from(devices).where(and(eq(devices.id,input.deviceId),eq(devices.orgId,orgId))).limit(1).for('share');
+  if(!device||actor.allowedSiteIds!==null&&(!device.siteId||!actor.allowedSiteIds.includes(device.siteId)))throw new Invalid('not_found','Device not found');
+ }
+```
+
+Keep that share lock through verification/command creation. Task 10 takes the same device share lock before decision/binding locks, and Task 16 takes it before observing logins. The move takes the incompatible device update lock **before** scanning grants or taking subject locks. Therefore a start/result either commits before the scan and is revoked, or waits and fails old-org ownership after the move. Do not move this lock into `prepareWorkstationVerification`, which is called after binding locks and would invert the order. The gate only needs the existing subject locks: consumption that wins before the move remains historical; a later consumer sees revoked. W01 remains responsible for org merges and W05 for final dispatch checks.
+
+- [ ] **Step 4: Run green.**
+
+```bash
+(cd apps/api && npx tsc --noEmit)
+(cd apps/api && npx vitest run src/routes/devices/moveOrg.coverage.test.ts src/services/callerVerification/service.test.ts src/services/callerVerification/workstationResult.test.ts)
+pnpm test-stack up
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/devices/moveOrg.callerVerification.integration.test.ts src/services/callerVerification/workstation.integration.test.ts src/__tests__/integration/deviceMoveOrgCurrency.integration.test.ts)
+pnpm test-stack down
+```
+
+Use finally/trap cleanup. The first live test has a successful gate control before movement, so blanket denial cannot satisfy it; it then drives the real authenticated move and refuses consumption of the former grant. The second proves atomic rollback on the explicit transaction.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add apps/api/src/routes/devices/moveOrg.ts apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts apps/api/src/services/callerVerification/service.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts
+git commit -m "fix(caller-verification): revoke workstation grants when devices move orgs"
+```
+
+### Task 18: Wave verification, release evidence and PR
 
 **Files:** Create `apps/api/src/services/callerVerification/workstation.contract.test.ts`. Review every file listed above; no migrations or W05 gate activation. Reference `CLAUDE.md` integration traps and `.claude/skills/agent-info/SKILL.md`, `.claude/skills/breeze-helper/SKILL.md` release guidance.
 
@@ -1821,22 +2370,24 @@ it('registers both transports and retains strict helper capability selection',()
 (cd apps/api && npx tsc --noEmit)
 (cd apps/helper && npx tsc --noEmit)
 (cd apps/api && npx vitest run src/services/callerVerification/workstationProtocol.test.ts src/services/callerVerification/workstationCapabilities.test.ts src/services/callerVerification/helperBranding.test.ts src/services/callerVerification/deliverers/workstation.test.ts src/services/callerVerification/workstationResult.test.ts src/services/callerVerification/workstationReceipt.test.ts src/services/commandResultHandlers.callerVerify.test.ts src/jobs/callerVerificationReconciliation.test.ts src/services/callerVerification/deviceSuggestions.test.ts src/routes/callerVerificationWorkstation.test.ts src/services/callerVerification/workstation.contract.test.ts)
-(cd apps/api && npx vitest run src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/heartbeat.test.ts src/routes/helper/index.test.ts src/routes/orgContacts.test.ts src/jobs/workerReadinessCoverage.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/scheduleRegistry.contract.test.ts src/routes/devices/moveOrg.coverage.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
+(cd apps/api && npx vitest run src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/heartbeat.test.ts src/routes/agents/sessions.test.ts src/services/callerVerification/loginObservation.test.ts src/services/callerVerification/deviceMove.test.ts src/routes/helper/index.test.ts src/routes/orgContacts.test.ts src/jobs/workerReadinessCoverage.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/scheduleRegistry.contract.test.ts src/routes/devices/moveOrg.coverage.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
 (cd apps/helper && npx vitest run src/windows/CallerVerifyWindow.test.tsx)
 (cd apps/helper/src-tauri && cargo test ipc::caller_verify && cargo test ipc::client)
-(cd agent && go test -race ./internal/ipc/... ./internal/sessionbroker/... ./internal/heartbeat/...)
+(cd agent && go test -race ./internal/ipc/... ./internal/sessionbroker/... ./internal/heartbeat/... ./internal/collectors/...)
 ```
+
+After W04 Task 1 is available, also run `(cd apps/web && npx vitest run src/lib/api/callerVerification.workstation.test.ts src/lib/api/callerVerification.test.ts)`. Record missing W04 as pending integration evidence, not a passing check.
 
 - [ ] **Step 4: Run live contracts and retain actual results.**
 
 ```bash
 pnpm test-stack up
-(cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/callerVerification/workstation.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts)
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/callerVerification/workstation.integration.test.ts src/routes/agents/sessions.callerVerification.integration.test.ts src/routes/devices/moveOrg.callerVerification.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts)
 (cd apps/api && npx vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts)
 pnpm test-stack down
 ```
 
-Use a shell trap or explicit finally cleanup if executing these commands through automation. Confirm file counts and zero skips. Review W01's no-`device_id`/`ticket_id` contract and all six enum names unchanged. On lab Windows, macOS and Linux, install both builds, connect native + assist helpers, target the explicit console user, submit each of three choices and `not_me`, disconnect during a prompt and allow a timeout. Record principal shape, correlation, helper version and final verification state without logging challenge secrets. Confirm old helper/no capability reports `helper_outdated`, Windows non-console sessions are unavailable, and UID-only responses stay tier 1. A platform unavailable locally is pending release evidence, never claimed tested.
+Use a shell trap or explicit finally cleanup if executing these commands through automation. Confirm file counts and zero skips. Review W01's no-`device_id`/`ticket_id` contract and all six enum names unchanged. On lab Windows, macOS and Linux, install both builds, connect native + assist helpers, target the explicit console user, submit each of three choices and `not_me`, disconnect during a prompt and allow a timeout. Record principal shape, correlation, helper version and final verification state without logging challenge secrets. Independently log in without starting a challenge and confirm the existing session upload carries OS identity, only a unique existing same-org directory binding gains the principal, and unknown/ambiguous UPNs do not. Confirm old helper/no capability reports `helper_outdated`, Windows non-console sessions are unavailable, and UID-only responses stay tier 1. A platform unavailable locally is pending release evidence, never claimed tested.
 
 - [ ] **Step 5: Commit final contract and open the wave PR after all required checks pass.** Resolve tracking numbers into `CALLER_PARENT` and `CALLER_WAVE` from GitHub feature tracking before starting implementation. The following commands use those actual values; they are not literal branch placeholders.
 
@@ -1864,13 +2415,13 @@ If W01 is not merged, base the PR on its actual branch and explicitly run the CI
 
 ## Self-review
 
-**Spec coverage:** Tasks 1–4 cover explicit OS login, console-only assist capability, correlated timeouts and principal reporting. Tasks 5–7 cover always-on-top branded, translated request confirmation and the exact safety line. Tasks 8–11 cover partner trust, transactional command creation, W01 outbox delivery, shared HTTP/WS decision processing and late rejection persistence. Task 12 implements all three recovery classes. Tasks 13–14 cover online matching, per-device availability, org and site reach. Tasks 15–16 cover commands documentation, live transaction proofs, release checks and an open PR.
+**Spec coverage:** Tasks 1–4 cover explicit OS login, console-only assist capability, correlated timeouts and principal reporting. Tasks 5–7 cover always-on-top branded, translated request confirmation and the exact safety line. Tasks 8–11 cover partner trust, transactional command creation, W01 outbox delivery, shared HTTP/WS decision processing and late rejection persistence. Task 12 implements all three recovery classes. Tasks 13–14 produce the `{data:[...]}` suggestions envelope with per-device readiness and exercise it through W04's real reader. Task 15 proves decision/receipt/effect rollback, mixed ready/outdated selection, replay and site isolation. Task 16 sends OS-verified login evidence through existing session reporting and tests unmatched, ambiguous and cross-org cases. Task 17 reuses W01's locked move revocation, proves refusal after a real authenticated move and preserves consumption history. Task 18 covers release checks and an open PR.
 
-**Cross-wave compatibility:** Public signatures, table/enum exports, migration slots, command fields, stdout shape and IPC names come from the index. W01 source modules are future dependencies; its now-available plan supplies the verified `ports.ts` and `routes/callerVerification.ts` anchors. No guessed current source-line references are presented for them. `methodsForContact` keeps its four arguments and its `MethodAvailability[]` result; device-specific detail is carried by the new suggestions response. The W01 verification-row outbox (`deliveryPublishedAt`, `publishCallerVerificationEffects`) remains the owner of after-commit scheduling.
+**Cross-wave compatibility:** Public signatures, table/enum exports, migration slots, command fields, stdout shape and IPC names come from the index. W01 source modules are future dependencies; its now-available plan supplies the verified `ports.ts` and `routes/callerVerification.ts` anchors. No guessed current source-line references are presented for them. `methodsForContact` keeps its four arguments and its `MethodAvailability[]` result; device-specific detail is carried by the new suggestions response. The W01 verification-row outbox (`deliveryPublishedAt`, `publishCallerVerificationEffects`) remains the owner of after-commit scheduling. W01 Task 8 Step 3b supplies `observeSessionPrincipal` in `loginObservation.ts` and the collector `principalReader`; Task 13 Step 3a supplies the positional move-hook signature. W02 reuses those additions once, with stronger transport ownership locking and live tests. W04 owns disabled unavailable suggestions and selected-device UI validation; W02 supplies and tests the readiness fields and enforces selection at start.
 
 **Resolved source discrepancies:** `SessionForUser` prefers native user helpers; consent selection itself has a fallback, so neither is reused as the final selector. Unix `WinSessionID` is not a loginctl session id. Session username is helper supplied; detector identity and kernel SID/UID win. Rust had no capability frame, helper had no branding/i18n, and API had no capability storage. These additions are explicit. Both terminal-result prefilters discard duplicates, requiring the narrow durable rejection receipt path, not merely a new registry entry.
 
-**Authority boundaries:** Number choices pass through W01's expiry-aware CAS. `not_me` passes from any non-rejected verification state, including revoked and consumed rows. An answering principal is observed only after a verified choice; directory-binding UPN rules remain W01's responsibility. OS-only observations never create directory subjects. Device suggestions do not authorize or bind an identity. Device moves cannot repoint caller tables; result ownership joins reject a moved device against its former org.
+**Authority boundaries:** Number choices pass through W01's expiry-aware CAS. `not_me` passes from any non-rejected verification state, including revoked and consumed rows. A challenge principal is observed only after a verified choice; independently, authenticated login events and active session snapshots use W01's unique existing-directory-binding consumer. Decision and observation share any authorized ambient transaction, including org contexts; W03's replacement must preserve that rule. OS-only observations never create directory subjects. Device suggestions do not authorize or bind an identity. Device moves cannot repoint caller tables. Shared device locks serialize start/results with W01's original-org move hook, which expires pending and revokes unused verified grants under subject locks; consumed history remains unchanged. Result ownership joins reject a moved device against its former org.
 
 **Failure and lifecycle review:** Old helpers are detected by capability, not version. Timeout never approves. Rust serializes duplicate submissions and keeps the original envelope id. A missing initial frontend event cannot lose the prompt because the window hydrates pending state. The outbox owns dispatch retry, the persisted command owns transport correlation, and reconciliation owns crash repair. The worker remains active for cleanup even when readiness is off. No request waits on the human or holds a DB transaction across relay dispatch.
 

@@ -36,13 +36,15 @@
 | Path | Responsibility |
 |---|---|
 | `apps/web/src/lib/api/callerVerification.ts` | Exact index types, route DTO supplements, all reads/mutations |
-| `apps/web/src/lib/api/callerVerification.test.ts` | Method/path/body/org and feedback tests |
+| `apps/web/src/lib/api/callerVerification.test.ts` | Task 1: W01/W02 envelopes, additive projections, policy/directory contracts and feedback |
+| `apps/web/src/lib/api/callerVerification.workstation.test.ts` | W02-owned real-route/client acceptance; run in Task 15 |
 | `apps/web/src/stores/featuresStore.ts:6,36,70` | Runtime caller-verification boolean |
 | `apps/web/src/lib/useCallerVerificationEnabled.ts` (+ `.test.tsx`) | Fail-closed readiness hook |
 | `apps/web/src/components/callerVerification/testFixtures.ts` | Typed deterministic test data |
 | `apps/web/src/components/callerVerification/ContactPicker.tsx` (+ `.test.tsx`) | Paged existing org-contact picker pattern |
-| `apps/web/src/components/callerVerification/VerifyCallerModal.tsx` (+ `.test.tsx`) | Action/requester/target, method cards, start, retry, cancel |
-| `apps/web/src/components/callerVerification/VerificationStatus.tsx` (+ `.test.tsx`) | Codes, script, statuses and incident link |
+| `apps/web/src/components/callerVerification/VerifyCallerModal.tsx` (+ `.test.tsx`) | Tasks 4/5: selected-device readiness, start/retry/cancel and explicit re-verification |
+| `apps/web/src/components/callerVerification/VerifyCallerModal.transport.test.tsx` | Task 4: combined HTTP load with mixed ready/outdated devices |
+| `apps/web/src/components/callerVerification/VerificationStatus.tsx` (+ `.test.tsx`) | Task 5: codes, script, statuses, consumed-intent failure and incident link |
 | `apps/web/src/components/callerVerification/useVerification.ts` (+ `.test.tsx`) | Non-overlapping 2 s polling and race cleanup |
 | `apps/web/src/components/callerVerification/CallerVerificationEntry.tsx` (+ `.test.tsx`) | Gated hash-driven launcher shared by page mounts |
 | `apps/web/src/components/callerVerification/TicketVerificationBadge.tsx` (+ `.test.tsx`) | Freshness, consumption, age and refresh |
@@ -50,7 +52,8 @@
 | `apps/web/src/components/tickets/TicketWorkbench.tsx:998,1481` (+ `.test.tsx`) | Header launcher/badge and feed refresh |
 | `apps/web/src/components/tickets/TicketFeed.test.tsx:42` | W01 system-comment rendering regression |
 | `apps/web/src/components/callerVerification/ContactVerificationDrawer.tsx` (+ `.test.tsx`) | History, fence override, bindings, destinations, admin flow |
-| `apps/web/src/components/settings/ContactsCard.tsx:141,614,663` (+ `.test.tsx`) | Contact row and drawer mounts |
+| `apps/web/src/components/settings/ContactsCard.tsx:141,614,663` (+ `.test.tsx`) | Task 9: contact row/drawer mounts and page-scoped bulk selection |
+| `apps/web/src/components/callerVerification/BulkDestinationAttestation.tsx` (+ `.test.tsx`) | Task 9 Steps 6–10: destination review, authorized per-item attestation and partial-failure retry |
 | `apps/web/src/components/organizations/record/orgRecordTabs.ts:82` (+ `.test.ts`) | Preserve contacts tab for nested verification hashes |
 | `apps/web/src/components/devices/DeviceDetails.tsx:344,666` | Device header launcher with workstation preselection |
 | `apps/web/src/components/devices/DeviceDetails.hashNavigation.test.tsx:9` | Device mount and hash regression |
@@ -74,13 +77,13 @@
 | `apps/web/src/lib/i18n/translationCoverage.test.ts:15` | Explicit reviewed new namespace baselines |
 | `apps/web/src/lib/i18n/callerVerification.test.ts` | New namespace and interpolation parity |
 
-**Required cross-wave additions, not existing code to pretend is present.** No caller-verification API/service implementation exists in this checkout. Sibling plans appeared during authoring: W01 Task 14 uses `{data: ...}` envelopes (including start/get/history/policy), and W05 carries the full index refusal payload inside `requiresCallerVerification`; the client below consumes those actual shapes. The legacy org-contact list remains `{data, pagination}` and is not unwrapped. W01 must expose the additive web projections below in its planned `apps/api/src/routes/callerVerification.ts`, beside the index-defined routes. The index service signatures stay verbatim. W01 also adds the field to existing `routes/config.ts:22`. W05 must extend `routes/auth/schemas.ts:148,179`, `routes/auth/mfa.ts:1209,1344` and `services/mfaStepUpGrant.ts` for the administrative operation. Do not implement these backend responsibilities in this wave or enable its UI before they are delivered.
+**HTTP acceptance contract (exercised by Task 1), not existing backend code.** No caller-verification API/service implementation exists in this checkout. Sibling plans appeared during authoring: W01 Task 14 uses `{data: ...}` envelopes (including start/get/history/policy), and W05 carries the full index refusal payload inside `requiresCallerVerification`; the client below consumes those actual shapes. The legacy org-contact list remains `{data, pagination}` and is not unwrapped. W01 must expose the additive web projections below in its planned `apps/api/src/routes/callerVerification.ts`, beside the index-defined routes. The index service signatures stay verbatim. W01 also adds the field to existing `routes/config.ts:22`. W05 must extend `routes/auth/schemas.ts:148,179`, `routes/auth/mfa.ts:1209,1344` and `services/mfaStepUpGrant.ts` for the administrative operation. Do not implement these backend responsibilities in this wave or enable its UI before they are delivered.
 
-1. Verification reads/start/cancel/attest/admin return the unchanged `VerificationView` fields plus `remainingAttempts`, `undeliverableReason`, `incidentId`, `usableUntil`, `consumedAction`. Existing `VerificationView` lacks all five, so the UI cannot honestly derive them. The first four are server projections, never values guessed from a 50-row history. W05 supplies incident IDs and the actual consumed action; `actionScope='any'` cannot tell the badge which action consumed it.
-2. History adds bindings/destinations with establishment state; policy GET/PUT add built-in `defaults` and the resolved partner `baseline` to own row/effective values. This makes an org's numeric/boolean/set bounds expressible without confusing its own tightening with the partner floor.
+1. Verification reads/start/cancel/attest/admin return the unchanged `VerificationView` fields plus `remainingAttempts`, `undeliverableReason`, `incidentId`, `usableUntil`, `consumedAction`, and, when W05 lands, `consumedIntentStatus`. Keep the index `VerificationView` unchanged; `VerificationDetails` is its additive HTTP projection. Start (202), get, cancel, attest, administrative creation (201), every history row and the ticket row use W01’s five-field projection under `{data: ...}`. W05 extends that projection with `consumedIntentStatus`; accept its absence before W05 as unknown, never as success or failure. W01 owns the HTTP projection, including the server attempt count, freshness and delivery reason; W05 retains it and supplies incident/consumption state. Resolve `consumedAction` from the consumed intent's `actionName` and `consumedIntentStatus` from its `status`, joined by `consumed_intent_ref` within the authorized org. The existing `apps/api/src/db/schema/actionIntents.ts` defines the status union below. Missing/erased/unreachable intents project null; never infer failure from consumption or return raw outbound errors. `consumedAt` remains authoritative even with a null intent projection. Task 1 tests all seven response surfaces; Tasks 5/6 consume failure without replaying an action. W05 owns the real release/outbound-failure test (failed intent, retained consumption and dispatch marker, refusal for another intent); web fixtures do not establish that backend behavior.
+2. History adds bindings/destinations with establishment state; policy GET/PUT return `{data:{row,defaults,baseline,effective}}` for both owners. `defaults` is the built-in policy; `baseline` is the resolved partner policy before org tightening (including on the partner response), never the org effective policy. This makes an org's numeric/boolean/set bounds expressible without confusing its own tightening with the partner floor.
 3. The spec mentions fence override but omits its route-table row; use `POST /orgs/:orgId/contacts/:contactId/caller-verifications/fence-override` with `{reason}`. Callback `attest` likewise needs `POST /orgs/:orgId/caller-verifications/:id/attest` with `{note}`. These call the index's existing `fenceOverride` / `attest` functions, with normal org/site/MFA checks.
-4. No M365 HTTP user-search endpoint exists. The safe existing Graph read is `executeM365ReadAction(auth: AuthContext, action: M365ReadAction, inputOrgId?: string, auditRequest?: RequestLike): Promise<M365ReadActionServiceResult>` (`apps/api/src/services/m365ControlPlane/readActionService.ts:103`). `aiToolsM365.ts:391` uses `{type:'m365.user.list',search,pageSize:25}`; projection fields are in `packages/shared/src/m365/readActions.ts:26`. W01 adds `GET /orgs/:orgId/caller-verification-directory-users?search=` with the DTO below, backed by that read and the same verified `customer-graph-read` connection's tenant. The route reports unavailable without that connection; direct Graph has exact-user lookup only (`m365DirectGraph.ts:226`), and there is no existing three-backend search to reuse. Recheck tenant after the read; do not accept a browser-entered tenant/OID. This route is flag/ORGS_READ/site gated and returns no verifier data.
-5. W02 device-suggestions must return per-device `hasBinding` and explicit username. Method availability stays the index shape. The browser may lower an estimate for an unbound selection; it must never raise a server-returned tier.
+4. No M365 HTTP user-search endpoint exists. The safe existing Graph read is `executeM365ReadAction(auth: AuthContext, action: M365ReadAction, inputOrgId?: string, auditRequest?: RequestLike): Promise<M365ReadActionServiceResult>` (`apps/api/src/services/m365ControlPlane/readActionService.ts:103`). `aiToolsM365.ts:391` uses `{type:'m365.user.list',search,pageSize:25}`; projection fields are in `packages/shared/src/m365/readActions.ts:26`. W01 adds `GET /orgs/:orgId/caller-verification-directory-users?search=` returning `{data: DirectorySearch}` with the DTO below, backed by that read and the same verified `customer-graph-read` connection's tenant. The route reports unavailable without that connection; direct Graph has exact-user lookup only (`m365DirectGraph.ts:226`), and there is no existing three-backend search to reuse. Recheck tenant after the read; do not accept a browser-entered tenant/OID. This route is flag/ORGS_READ gated and rejects site-restricted readers because Graph users have no site axis. W04 surfaces that error and offers no stale binding candidates. It returns no verifier data.
+5. W02's corrected device-suggestions route must return `{data: await deviceSuggestions(...)}` (the reviewed `{devices: ...}` producer bug is not an alternate supported envelope). Preserve `deviceId`, `hostname`, `username`, `hasBinding`, `available`, and optional `unavailableReason: 'helper_outdated'` verbatim. Task 1 feeds that HTTP envelope through the real browser client and through the modal's combined load; Task 4 rejects unavailable or missing selected devices even when aggregate workstation readiness is true. Method availability stays the index shape. The browser may lower an estimate for an unbound selection; it must never raise a server-returned tier.
 
 ---
 
@@ -96,7 +99,8 @@
 // apps/web/src/lib/api/callerVerification.test.ts
 import { beforeEach, expect, it, vi } from 'vitest';
 import { startVerification, cancelVerification, getVerification } from './callerVerification';
-import { ORG, CONTACT, row } from '@/components/callerVerification/testFixtures';
+import * as api from './callerVerification';
+import { ORG, CONTACT, row, policy, history, TARGET } from '@/components/callerVerification/testFixtures';
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), toast: vi.fn() }));
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: mocks.fetch }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: mocks.toast }));
@@ -119,6 +123,95 @@ it('reads the scoped verification with abort support', async () => {
   const signal = new AbortController().signal;
   await getVerification(ORG, row.id, signal);
   expect(mocks.fetch).toHaveBeenCalledWith(expect.stringContaining(`/caller-verifications/${row.id}?orgId=${ORG}`), expect.objectContaining({ method: 'GET', signal }));
+});
+```
+
+Append these HTTP contracts to the same test file. They use the real browser client with JSON `Response` objects, not mocked client methods. These are the corrected W01/W02 wire shapes; do not accept the defective `{devices}` or incomplete policy responses to make the tests pass.
+
+```ts
+it('unwraps W02 suggestions and retains individual readiness', async () => {
+  const devices: api.DeviceSuggestion[] = [
+    { deviceId: row.id, hostname: 'Ready', username: 'ada', hasBinding: true, available: true },
+    { deviceId: TARGET, hostname: 'Old helper', username: 'ada', hasBinding: true, available: false, unavailableReason: 'helper_outdated' },
+  ];
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data: devices })));
+  const signal = new AbortController().signal;
+  expect(await api.deviceSuggestions(ORG, CONTACT, signal)).toEqual(devices);
+  expect(mocks.fetch).toHaveBeenCalledWith(`/orgs/${ORG}/caller-verifications/device-suggestions?contactId=${CONTACT}&orgId=${ORG}`, expect.objectContaining({ signal }));
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ devices })));
+  await expect(api.deviceSuggestions(ORG, CONTACT)).rejects.toThrow('Missing API data envelope');
+});
+it.each(['start', 'get', 'cancel', 'attest', 'admin', 'history', 'ticket'] as const)('retains every HTTP projection field on %s', async surface => {
+  const projected: api.VerificationDetails = { ...row, status: 'verified', actionScope: 'any',
+    remainingAttempts: 1, usableUntil: '2026-09-19T12:30:00Z', incidentId: null,
+    consumedAt: row.createdAt, consumedAction: 'disable_user', consumedIntentStatus: 'failed',
+    undeliverableReason: null };
+  const data = surface === 'history' ? { ...history, rows: [projected] }
+    : surface === 'ticket' ? { row: projected, isFresh: false, isConsumed: true } : projected;
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data }), { status: surface === 'start' ? 202 : surface === 'admin' ? 201 : 200 }));
+  const calls = {
+    start: () => api.startVerification({ orgId: ORG, contactId: CONTACT, method: 'sms', actionScope: 'any' }),
+    get: () => api.getVerification(ORG, row.id), cancel: () => api.cancelVerification(ORG, row.id),
+    attest: () => api.attestVerification(ORG, row.id, 'Called the known number of record'),
+    admin: () => api.createAdministrative(ORG, CONTACT, 'Emergency containment authorized', TARGET),
+    history: async () => (await api.contactHistory(ORG, CONTACT)).rows[0],
+    ticket: async () => (await api.freshForTicket(ORG, TARGET)).row,
+  };
+  expect(await calls[surface]()).toEqual(projected);
+});
+it.each([
+  { ...row, status: 'wrong_choice' as const, remainingAttempts: 0 },
+  { ...row, status: 'undeliverable' as const, undeliverableReason: 'helper_outdated' as const },
+  { ...row, status: 'rejected_by_user' as const, incidentId: TARGET },
+])('preserves the server details for $status', async projected => {
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data: projected })));
+  expect(await api.getVerification(ORG, row.id)).toEqual(projected);
+});
+it.each(['partner', 'organization'] as const)('reads and saves all four policy fields for %s', async ownerScope => {
+  const owner: api.Owner = ownerScope === 'partner' ? { ownerScope } : { ownerScope, orgId: ORG };
+  const { provenance, ignored, ...defaults } = policy;
+  const baseline = { ...defaults, requiredTierResetPassword: 2, verificationTtlMinutes: 20 };
+  const draft = Object.fromEntries(Object.keys(defaults).map(key => [key, null])) as api.PolicyDraft;
+  if (ownerScope === 'partner') draft.verificationTtlMinutes = 20;
+  else draft.requiredTierResetPassword = 3;
+  const effective = { ...baseline, requiredTierResetPassword: ownerScope === 'organization' ? 3 : 2, provenance, ignored };
+  const data: api.PolicyResponse = { row: draft, defaults, baseline, effective };
+  mocks.fetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data }))));
+  expect(await api.getPolicy(owner)).toEqual(data);
+  expect(await api.putPolicy(owner, draft)).toEqual(data);
+  const expectedPath = ownerScope === 'partner' ? '/partner/caller-verification-policy' : `/orgs/${ORG}/caller-verification-policy?orgId=${ORG}`;
+  expect(mocks.fetch.mock.calls.map(([path]) => path)).toEqual([expectedPath, expectedPath]);
+  expect(JSON.parse(mocks.fetch.mock.calls[1][1].body)).toEqual(draft);
+  if (ownerScope === 'partner') expect(mocks.fetch.mock.calls[0][1]).toMatchObject({ orgIdOverride: null });
+});
+it.each([true, false])('reads the directory envelope with availability=%s', async available => {
+  const data: api.DirectorySearch = { available, users: available ? [{ entraTenantId: ORG, entraOid: CONTACT, upn: 'ada@example.test', displayName: 'Ada' }] : [], truncated: available };
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data })));
+  const signal = new AbortController().signal;
+  expect(await api.directoryUsers(ORG, 'Ada & team', signal)).toEqual(data);
+  expect(mocks.fetch).toHaveBeenCalledWith(`/orgs/${ORG}/caller-verification-directory-users?search=Ada+%26+team&orgId=${ORG}`, expect.objectContaining({ signal }));
+});
+it.each([400, 403, 404, 502])('surfaces directory HTTP %s without returning selectable identities', async status => {
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ error: 'Directory unavailable' }), { status }));
+  await expect(api.directoryUsers(ORG, 'Ada')).rejects.toMatchObject({ status });
+});
+it.each(['remainingAttempts', 'usableUntil', 'incidentId', 'consumedAction', 'undeliverableReason'] as const)('rejects a missing %s instead of fabricating grant state', async key => {
+  const incomplete: Partial<api.VerificationDetails> = { ...row }; delete incomplete[key];
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data: incomplete })));
+  await expect(api.getVerification(ORG, row.id)).rejects.toThrow('Incomplete caller verification projection');
+});
+it('accepts W01 before W05 adds consumed-intent status without inventing an outcome', async () => {
+  const { consumedIntentStatus, ...w01 } = row;
+  mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ data: w01 })));
+  const result = await api.getVerification(ORG, row.id);
+  expect(result).toEqual(w01); expect(result.consumedIntentStatus).toBeUndefined();
+});
+it('rejects the incomplete policy producer on both reads and writes', async () => {
+  mocks.fetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data: { row: null, effective: policy } }))));
+  const owner = { ownerScope: 'organization' as const, orgId: ORG };
+  await expect(api.getPolicy(owner)).rejects.toThrow('Incomplete caller verification projection');
+  await expect(api.putPolicy(owner, {} as api.PolicyDraft)).rejects.toBeInstanceOf(Error);
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
 });
 ```
 
@@ -150,12 +243,13 @@ export interface StartInput { orgId: string; contactId: string; targetContactId?
 export type VerificationDetails = VerificationView & {
   remainingAttempts: number | null; usableUntil: string | null;
   incidentId: string | null; consumedAction: CallerVerificationAction | null;
+  consumedIntentStatus?: 'pending_approval' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected' | 'expired' | 'cancelled' | null;
   undeliverableReason: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' | 'sms_failed' | 'email_failed' | null;
 };
 export interface BindingView { id: string; entraTenantId: string | null; entraOid: string | null; upnSnapshot: string | null; osPrincipal: string | null; revokedAt: string | null }
 export interface DestinationView { id: string; kind: 'email' | 'mobile'; valueRedacted: string; established: boolean; attestedAt: string | null; setAt: string; source: 'technician' | 'import' | 'inbound_email' | 'ai_tool' | 'portal_self_service' }
 export interface ContactHistory { rows: VerificationDetails[]; fencedUntil: string | null; bindings: BindingView[]; destinations: DestinationView[] }
-export interface DeviceSuggestion { deviceId: string; hostname: string; username: string; hasBinding: boolean }
+export interface DeviceSuggestion { deviceId: string; hostname: string; username: string; hasBinding: boolean; available: boolean; unavailableReason?: 'helper_outdated' }
 export interface DirectoryUser { entraTenantId: string; entraOid: string; upn: string; displayName: string }
 export interface DirectorySearch { available: boolean; users: DirectoryUser[]; truncated: boolean }
 export type PolicyValues = Omit<EffectiveCallerVerificationPolicy, 'provenance' | 'ignored'>;
@@ -177,33 +271,66 @@ async function read<T>(path: string, signal?: AbortSignal, unwrap = true): Promi
   const body: unknown = await response.json();
   return unwrap ? unwrapData<T>(body) : body as T;
 }
-export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<T> {
+export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown, validate: (value: T) => T = value => value): Promise<T> {
   return runAction<T>({
     request: () => fetchWithAuth(path, { method, ...(path.startsWith('/partner/') ? { orgIdOverride: null } : {}), ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
     errorFallback: i18n.t('callerVerification:saveFailed'),
     successMessage: i18n.t('callerVerification:saved'),
-    parseSuccess: data => unwrapData<T>(data),
+    parseSuccess: data => validate(unwrapData<T>(data)),
     friendly: code => i18n.exists(`callerVerification:reasons.${code}`)
       ? i18n.t(/* i18n-dynamic */ `callerVerification:reasons.${code}`) : undefined,
   });
 }
-export function startVerification({ orgId, ...body }: StartInput): Promise<VerificationDetails> { return mutate(orgPath(orgId, 'caller-verifications'), 'POST', body); }
-export function getVerification(orgId: string, id: string, signal?: AbortSignal): Promise<VerificationDetails> { return read(orgPath(orgId, `caller-verifications/${segment(id)}`), signal); }
-export function cancelVerification(orgId: string, id: string): Promise<VerificationDetails> { return mutate(orgPath(orgId, `caller-verifications/${segment(id)}/cancel`), 'POST'); }
-export function attestVerification(orgId: string, id: string, note: string): Promise<VerificationDetails> { return mutate(orgPath(orgId, `caller-verifications/${segment(id)}/attest`), 'POST', { note }); }
-export function contactHistory(orgId: string, contactId: string, signal?: AbortSignal): Promise<ContactHistory> { return read(orgPath(orgId, `contacts/${segment(contactId)}/caller-verifications`), signal); }
+// Reject incomplete deployments before a form or status component dereferences a projection.
+function requireFields<T extends object>(value: T, fields: readonly (keyof T)[]): T {
+  if (!value || typeof value !== 'object' || fields.some(key => !(key in value) || value[key] === undefined)) {
+    throw new Error('Incomplete caller verification projection');
+  }
+  return value;
+}
+function verificationDetails(value: VerificationDetails): VerificationDetails {
+  return requireFields(value, ['remainingAttempts', 'usableUntil', 'incidentId', 'consumedAction', 'undeliverableReason']);
+}
+function policyResponse(value: PolicyResponse): PolicyResponse {
+  requireFields(value, ['row', 'defaults', 'baseline', 'effective']);
+  if (!value.defaults || !value.baseline || !value.effective) throw new Error('Incomplete caller verification projection');
+  return value;
+}
+function historyResponse(value: ContactHistory): ContactHistory {
+  requireFields(value, ['rows', 'fencedUntil', 'bindings', 'destinations']);
+  value.rows.forEach(verificationDetails); return value;
+}
+function ticketResponse(value: TicketVerification): TicketVerification {
+  requireFields(value, ['row', 'isFresh', 'isConsumed']);
+  if (value.row) verificationDetails(value.row); return value;
+}
+function directoryResponse(value: DirectorySearch): DirectorySearch {
+  requireFields(value, ['available', 'users', 'truncated']);
+  value.users.forEach(user => requireFields(user, ['entraTenantId', 'entraOid', 'upn', 'displayName']));
+  return value;
+}
+function suggestionsResponse(value: DeviceSuggestion[]): DeviceSuggestion[] {
+  if (!Array.isArray(value)) throw new Error('Incomplete caller verification projection');
+  value.forEach(device => requireFields(device, ['deviceId', 'hostname', 'username', 'hasBinding', 'available']));
+  return value;
+}
+export function startVerification({ orgId, ...body }: StartInput): Promise<VerificationDetails> { return mutate<VerificationDetails>(orgPath(orgId, 'caller-verifications'), 'POST', body, verificationDetails); }
+export function getVerification(orgId: string, id: string, signal?: AbortSignal): Promise<VerificationDetails> { return read<VerificationDetails>(orgPath(orgId, `caller-verifications/${segment(id)}`), signal).then(verificationDetails); }
+export function cancelVerification(orgId: string, id: string): Promise<VerificationDetails> { return mutate<VerificationDetails>(orgPath(orgId, `caller-verifications/${segment(id)}/cancel`), 'POST', undefined, verificationDetails); }
+export function attestVerification(orgId: string, id: string, note: string): Promise<VerificationDetails> { return mutate<VerificationDetails>(orgPath(orgId, `caller-verifications/${segment(id)}/attest`), 'POST', { note }, verificationDetails); }
+export function contactHistory(orgId: string, contactId: string, signal?: AbortSignal): Promise<ContactHistory> { return read<ContactHistory>(orgPath(orgId, `contacts/${segment(contactId)}/caller-verifications`), signal).then(historyResponse); }
 export function methodsForContact(orgId: string, contactId: string, actionScope: CallerVerificationActionScope, signal?: AbortSignal): Promise<MethodAvailability[]> { return read(orgPath(orgId, `contacts/${segment(contactId)}/caller-verifications/methods`, { actionScope }), signal); }
-export function deviceSuggestions(orgId: string, contactId: string, signal?: AbortSignal): Promise<DeviceSuggestion[]> { return read(orgPath(orgId, 'caller-verifications/device-suggestions', { contactId }), signal); }
-export function freshForTicket(orgId: string, ticketId: string, signal?: AbortSignal): Promise<TicketVerification> { return read(orgPath(orgId, `tickets/${segment(ticketId)}/caller-verification`), signal); }
+export function deviceSuggestions(orgId: string, contactId: string, signal?: AbortSignal): Promise<DeviceSuggestion[]> { return read<DeviceSuggestion[]>(orgPath(orgId, 'caller-verifications/device-suggestions', { contactId }), signal).then(suggestionsResponse); }
+export function freshForTicket(orgId: string, ticketId: string, signal?: AbortSignal): Promise<TicketVerification> { return read<TicketVerification>(orgPath(orgId, `tickets/${segment(ticketId)}/caller-verification`), signal).then(ticketResponse); }
 export function fenceOverride(orgId: string, contactId: string, reason: string): Promise<void> { return mutate(orgPath(orgId, `contacts/${segment(contactId)}/caller-verifications/fence-override`), 'POST', { reason }); }
-export function directoryUsers(orgId: string, search: string, signal?: AbortSignal): Promise<DirectorySearch> { return read(orgPath(orgId, 'caller-verification-directory-users', { search }), signal); }
+export function directoryUsers(orgId: string, search: string, signal?: AbortSignal): Promise<DirectorySearch> { return read<DirectorySearch>(orgPath(orgId, 'caller-verification-directory-users', { search }), signal).then(directoryResponse); }
 export function bindContact(orgId: string, contactId: string, user: DirectoryUser): Promise<BindingView> { const { entraTenantId, entraOid, upn } = user; return mutate(orgPath(orgId, `contacts/${segment(contactId)}/caller-verification-bindings`), 'POST', { entraTenantId, entraOid, upn }); }
 export function unbindContact(orgId: string, contactId: string, bindingId: string): Promise<void> { return mutate(orgPath(orgId, `contacts/${segment(contactId)}/caller-verification-bindings/${segment(bindingId)}`), 'DELETE'); }
 export function attestDestination(orgId: string, contactId: string, id: string): Promise<{ id: string; attestedAt: string }> { return mutate(orgPath(orgId, `contacts/${segment(contactId)}/caller-verification-destinations/${segment(id)}/attest`), 'POST'); }
 const policyPath = (owner: Owner) => owner.ownerScope === 'partner' ? '/partner/caller-verification-policy' : orgPath(owner.orgId, 'caller-verification-policy');
-export function getPolicy(owner: Owner, signal?: AbortSignal): Promise<PolicyResponse> { return read(policyPath(owner), signal); }
-export function putPolicy(owner: Owner, draft: PolicyDraft): Promise<PolicyResponse> { return mutate(policyPath(owner), 'PUT', draft); }
-export function createAdministrative(orgId: string, targetContactId: string, reason: string, stepUpGrantId: string): Promise<VerificationDetails> { return mutate(orgPath(orgId, 'caller-verifications/administrative'), 'POST', { targetContactId, reason, stepUpGrantId }); }
+export function getPolicy(owner: Owner, signal?: AbortSignal): Promise<PolicyResponse> { return read<PolicyResponse>(policyPath(owner), signal).then(policyResponse); }
+export function putPolicy(owner: Owner, draft: PolicyDraft): Promise<PolicyResponse> { return mutate<PolicyResponse>(policyPath(owner), 'PUT', draft, policyResponse); }
+export function createAdministrative(orgId: string, targetContactId: string, reason: string, stepUpGrantId: string): Promise<VerificationDetails> { return mutate<VerificationDetails>(orgPath(orgId, 'caller-verifications/administrative'), 'POST', { targetContactId, reason, stepUpGrantId }, verificationDetails); }
 export interface ContactOption { id: string; name: string | null; email: string | null; siteId: string | null; roles: string[] }
 export function contactsPage(orgId: string, page: number, signal?: AbortSignal): Promise<{ data: ContactOption[]; pagination: { page: number; total: number; limit: number } }> {
   return read(`/orgs/organizations/${segment(orgId)}/contacts?${new URLSearchParams({ orgId, page: String(page), limit: '100' })}`, signal, false);
@@ -227,7 +354,7 @@ export const row: VerificationDetails = {
   decidedAt: null, consumedAt: null, ticketRef: null, ticketNumber: null,
   destinationRedacted: '+1 •••• 12', deviceHostname: null, osUsername: null,
   createdAt: '2026-09-19T12:00:00Z', secrets: { matchValue: '42', decoyValues: ['13', '87'], reverseCode: '7319' },
-  remainingAttempts: 2, usableUntil: null, incidentId: null, consumedAction: null, undeliverableReason: null,
+  remainingAttempts: 2, usableUntil: null, incidentId: null, consumedAction: null, consumedIntentStatus: null, undeliverableReason: null,
 };
 export const policy: EffectiveCallerVerificationPolicy = {
   requiredTierResetPassword: 2, requiredTierDisableUser: 2, disableUserAuthorizerRoles: ['admin'],
@@ -352,6 +479,14 @@ it('ships the complete namespace and preserves interpolation in all locales', ()
 | cancel | Cancel verification | Überprüfung abbrechen | Cancelar verificación | Annuler la vérification | Annuler la vérification | Annulla verifica | Cancelar verificação | Doğrulamayı iptal et |
 | start | Send verification | Überprüfung senden | Enviar verificación | Envoyer la vérification | Envoyer la vérification | Invia verifica | Enviar verificação | Doğrulama gönder |
 | retry | Start a new attempt | Neuen Versuch starten | Iniciar otro intento | Faire une nouvelle tentative | Faire une nouvelle tentative | Avvia un nuovo tentativo | Iniciar nova tentativa | Yeni deneme başlat |
+| usedActionFailed | Verification used; action failed. Re-verify before trying the action again. | Überprüfung verbraucht; Aktion fehlgeschlagen. Vor einem neuen Versuch erneut überprüfen. | Verificación utilizada; la acción falló. Vuelve a verificar antes de intentar la acción de nuevo. | Vérification utilisée; l’action a échoué. Vérifiez de nouveau avant de réessayer l’action. | Vérification utilisée ; l’action a échoué. Vérifiez de nouveau avant de réessayer l’action. | Verifica utilizzata; azione non riuscita. Ripeti la verifica prima di ritentare l’azione. | Verificação usada; a ação falhou. Verifique novamente antes de tentar a ação outra vez. | Doğrulama kullanıldı; işlem başarısız oldu. İşlemi yeniden denemeden önce tekrar doğrulayın. |
+| reverify | Re-verify caller | Anrufer erneut überprüfen | Volver a verificar a quien llama | Vérifier de nouveau l’appelant | Vérifier de nouveau l’appelant | Verifica di nuovo il chiamante | Verificar novamente quem está ligando | Arayanı yeniden doğrula |
+| bulkSelect | Select {{name}} for destination attestation | {{name}} zur Zielbestätigung auswählen | Seleccionar a {{name}} para confirmar sus destinos | Sélectionner {{name}} pour attester ses destinations | Sélectionner {{name}} pour attester ses destinations | Seleziona {{name}} per attestare i recapiti | Selecionar {{name}} para atestar destinos | Hedef beyanı için {{name}} kişisini seç |
+| bulkReview | Review selected destinations | Ausgewählte Ziele prüfen | Revisar destinos seleccionados | Examiner les destinations sélectionnées | Examiner les destinations sélectionnées | Esamina i recapiti selezionati | Revisar destinos selecionados | Seçili hedefleri incele |
+| bulkConfirm | Attest selected destinations | Ausgewählte Ziele bestätigen | Confirmar destinos seleccionados | Attester les destinations sélectionnées | Attester les destinations sélectionnées | Attesta i recapiti selezionati | Atestar destinos selecionados | Seçili hedefleri onayla |
+| bulkResult | Attested: {{succeeded}}. Failed: {{failed}}. | Bestätigt: {{succeeded}}. Fehlgeschlagen: {{failed}}. | Confirmados: {{succeeded}}. Fallidos: {{failed}}. | Attestées : {{succeeded}}. Échecs : {{failed}}. | Attestées : {{succeeded}}. Échecs : {{failed}}. | Attestati: {{succeeded}}. Non riusciti: {{failed}}. | Atestados: {{succeeded}}. Falhas: {{failed}}. | Onaylanan: {{succeeded}}. Başarısız: {{failed}}. |
+| bulkFailed | Could not attest this destination. Review it before retrying. | Dieses Ziel konnte nicht bestätigt werden. Vor einem neuen Versuch prüfen. | No se pudo confirmar este destino. Revísalo antes de reintentar. | Impossible d’attester cette destination. Examinez-la avant de réessayer. | Impossible d’attester cette destination. Examinez-la avant de réessayer. | Impossibile attestare questo recapito. Controllalo prima di riprovare. | Não foi possível atestar este destino. Revise antes de tentar novamente. | Bu hedef onaylanamadı. Yeniden denemeden önce inceleyin. |
+| bulkAttested | Destination attested | Ziel bestätigt | Destino confirmado | Destination attestée | Destination attestée | Recapito attestato | Destino atestado | Hedef onaylandı |
 | loading | Loading verification details… | Überprüfungsdetails werden geladen… | Cargando detalles de verificación… | Chargement des détails de vérification… | Chargement des détails de vérification… | Caricamento dei dettagli di verifica… | Carregando detalhes da verificação… | Doğrulama ayrıntıları yükleniyor… |
 | loadFailed | Could not load verification details. Try again. | Überprüfungsdetails konnten nicht geladen werden. Erneut versuchen. | No se pudieron cargar los detalles. Inténtalo de nuevo. | Impossible de charger les détails. Réessayez. | Impossible de charger les détails. Réessayez. | Impossibile caricare i dettagli. Riprova. | Não foi possível carregar os detalhes. Tente novamente. | Ayrıntılar yüklenemedi. Yeniden deneyin. |
 | saveFailed | Could not save this change. | Änderung konnte nicht gespeichert werden. | No se pudo guardar el cambio. | Impossible d’enregistrer cette modification. | Impossible d’enregistrer cette modification. | Impossibile salvare la modifica. | Não foi possível salvar a alteração. | Bu değişiklik kaydedilemedi. |
@@ -510,7 +645,7 @@ git commit -m "feat(web): translate caller verification in all eight locales"
 
 ### Task 4: Requester picker and action/method selection modal
 
-**Files:** Create `apps/web/src/components/callerVerification/ContactPicker.tsx`, `apps/web/src/components/callerVerification/ContactPicker.test.tsx`, `apps/web/src/components/callerVerification/VerifyCallerModal.tsx`, `apps/web/src/components/callerVerification/VerifyCallerModal.test.tsx` in that same directory. Reference `apps/web/src/components/devices/ManualAssetModal.tsx:161–195,560–595` (inline contact picker), `apps/api/src/routes/orgContacts.ts:46–54,250–275` (paged list, no search parameter).
+**Files:** Create `apps/web/src/components/callerVerification/ContactPicker.tsx`, `apps/web/src/components/callerVerification/ContactPicker.test.tsx`, `apps/web/src/components/callerVerification/VerifyCallerModal.tsx`, `apps/web/src/components/callerVerification/VerifyCallerModal.test.tsx` in that same directory; also create `apps/web/src/components/callerVerification/VerifyCallerModal.transport.test.tsx`. Reference `apps/web/src/components/devices/ManualAssetModal.tsx:161–195,560–595` (inline contact picker), `apps/api/src/routes/orgContacts.ts:46–54,250–275` (paged list, no search parameter).
 
 **Interfaces:** Consumes `contactsPage`, `methodsForContact`, `deviceSuggestions`, `getPolicy`, `startVerification`. Produces `ContactPicker({orgId,value,onChange,label}): ReactNode` and `VerifyCallerModal(props: VerifyCallerModalProps): ReactNode`. There is no reusable existing contact-picker component; create this smallest reusable addition without rewriting ManualAssetModal.
 
@@ -557,6 +692,61 @@ it('pins a different target only for disable_user and resets it when action chan
 });
 ```
 
+Add a separate file using the real Task-1 client so the three-response modal load cannot pass with a mocked-away envelope defect:
+
+```tsx
+// VerifyCallerModal.transport.test.tsx
+import '@/lib/i18n';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { VerifyCallerModal } from './VerifyCallerModal';
+import { ORG, CONTACT, TARGET, USER, row, policy } from './testFixtures';
+const mocks = vi.hoisted(() => ({ fetch: vi.fn() }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: mocks.fetch, useAuthStore: (select: (state: { user: { id: string } }) => unknown) => select({ user: { id: '44444444-4444-4444-8444-444444444444' } }) }));
+vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => true }));
+afterEach(cleanup);
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.fetch.mockImplementation(async (path: string, init: RequestInit = {}) => {
+    const url = new URL(path, 'https://breeze.example.test');
+    expect(url.searchParams.get('orgId')).toBe(ORG);
+    let body: unknown;
+    if (init.method === 'POST') body = { data: row };
+    else if (url.pathname.endsWith('/device-suggestions')) body = { data: [
+      { deviceId: TARGET, hostname: 'Old helper', username: 'ada', hasBinding: true, available: false, unavailableReason: 'helper_outdated' },
+      { deviceId: USER, hostname: 'Ready', username: 'ada', hasBinding: true, available: true },
+    ] };
+    else if (url.pathname.endsWith('/methods')) body = { data: [{ method: 'workstation', available: true, tier: 3, reason: 'bound_principal' }] };
+    else if (url.pathname.endsWith('/caller-verification-policy')) body = { data: { row: null, defaults: policy, baseline: policy, effective: policy } };
+    else if (url.pathname.endsWith('/contacts')) body = { data: [{ id: CONTACT, name: 'Ada', email: null, siteId: null, roles: [] }], pagination: { page: 1, total: 1, limit: 100 } };
+    else throw new Error(`Unexpected request: ${path}`);
+    return new Response(JSON.stringify(body), { status: init.method === 'POST' ? 202 : 200 });
+  });
+});
+it.each([TARGET, row.id])('blocks unavailable or missing preselected device %s despite aggregate readiness', async deviceId => {
+  render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} deviceId={deviceId} initialMethod="workstation" onClose={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId('cv-next')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('cv-next'));
+  expect(screen.getByTestId('cv-method-workstation')).toBeEnabled();
+  expect(screen.getByRole('option', { name: /Old helper/ })).toBeDisabled();
+  expect(screen.getByRole('option', { name: /Old helper/ })).toHaveTextContent('The desktop helper needs an update.');
+  fireEvent.change(screen.getByTestId('cv-username'), { target: { value: 'ada' } });
+  fireEvent.click(screen.getByTestId('cv-confirm-username'));
+  expect(screen.getByTestId('cv-start')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('cv-start'));
+  expect(mocks.fetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  fireEvent.change(screen.getByTestId('cv-device'), { target: { value: USER } });
+  expect(screen.getByTestId('cv-confirm-username')).not.toBeChecked();
+  fireEvent.click(screen.getByTestId('cv-confirm-username'));
+  expect(screen.getByTestId('cv-start')).toBeEnabled();
+  fireEvent.click(screen.getByTestId('cv-start'));
+  await waitFor(() => expect(mocks.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1));
+  const [, init] = mocks.fetch.mock.calls.find(([, init]) => init?.method === 'POST')!;
+  expect(JSON.parse(init.body)).toMatchObject({ contactId: CONTACT, deviceId: USER, username: 'ada' });
+});
+```
+
 `ContactPicker.test.tsx` adds a paginated-selection regression:
 
 ```tsx
@@ -577,7 +767,7 @@ it('loads a later page and returns the canonical contact id', async () => {
 });
 ```
 
-- [ ] **Step 2: Run red.** `cd apps/web && npx vitest run src/components/callerVerification/ContactPicker.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx` → absent components.
+- [ ] **Step 2: Run red.** `cd apps/web && npx vitest run src/components/callerVerification/ContactPicker.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx src/components/callerVerification/VerifyCallerModal.transport.test.tsx` → absent components.
 - [ ] **Step 3: Implement the picker and modal selection.**
 
 ```tsx
@@ -637,6 +827,8 @@ function VerificationFlow(props: VerifyCallerModalProps) {
   const [contact, setContact] = useState(props.initialContactId ?? ''); const [target, setTarget] = useState('');
   const [different, setDifferent] = useState(false); const [method, setMethod] = useState(props.initialMethod);
   const [device, setDevice] = useState(props.deviceId ?? ''); const [username, setUsername] = useState('');
+  const [usernameConfirmed, setUsernameConfirmed] = useState(false);
+  useEffect(() => { setUsernameConfirmed(false); }, [contact, device, username]);
   const [ticket, setTicket] = useState(props.ticketId ?? ''); const [note, setNote] = useState('');
   const [methods, setMethods] = useState<api.MethodAvailability[]>([]);
   const [suggestions, setSuggestions] = useState<api.DeviceSuggestion[]>([]);
@@ -646,7 +838,7 @@ function VerificationFlow(props: VerifyCallerModalProps) {
   const busy = useRef(false); const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (!contact) return;
-    const controller = new AbortController(); setLoading(true); setError(false); setMethods([]); setPolicy(null);
+    const controller = new AbortController(); setLoading(true); setError(false); setMethods([]); setSuggestions([]); setPolicy(null); setUsernameConfirmed(false);
     void Promise.all([api.methodsForContact(props.orgId, contact, action, controller.signal), api.deviceSuggestions(props.orgId, contact, controller.signal), api.getPolicy({ ownerScope: 'organization', orgId: props.orgId }, controller.signal)]).then(([m, d, p]) => {
       if (controller.signal.aborted) return;
       setMethods(m); setSuggestions(d); setPolicy(p.effective);
@@ -655,8 +847,9 @@ function VerificationFlow(props: VerifyCallerModalProps) {
     return () => controller.abort();
   }, [props.orgId, contact, action, retryLoad]);
   const selected = methods.find(m => m.method === method);
-  const canStart = !!contact && !!policy && !!selected?.available && (!policy.requireTicket || !!ticket) &&
-    (action !== 'disable_user' || !different || !!target) && (method !== 'workstation' || (!!device && !!username.trim()));
+  const selectedDevice = suggestions.find(s => s.deviceId === device);
+  const canStart = !loading && !error && !!contact && !!policy && !!selected?.available && (!policy.requireTicket || !!ticket) &&
+    (action !== 'disable_user' || !different || !!target) && (method !== 'workstation' || (selectedDevice?.available === true && !!username.trim() && usernameConfirmed));
   async function start() {
     if (busy.current || !canStart || !method) return;
     busy.current = true; setSaving(true);
@@ -685,10 +878,11 @@ function VerificationFlow(props: VerifyCallerModalProps) {
       return <div key={m.method}><button data-testid={`cv-method-${m.method}`} disabled={!m.available} aria-pressed={method === m.method} className="w-full rounded border p-4 text-left disabled:opacity-50" onClick={() => setMethod(m.method as api.StartInput['method'])}>
         {t(/* i18n-dynamic */ `methods.${m.method}`)}<span className="block">{t('tier', { tier })}</span></button>
         <p>{t(/* i18n-dynamic */ `reasons.${reason}`, { defaultValue: t('reasons.unknown') })}</p></div>;
-    })}</div>{method === 'workstation' && <><label>{t('device')}<select value={device} onChange={e => { setDevice(e.target.value); setUsername(suggestions.find(s => s.deviceId === e.target.value)?.username ?? ''); }}>
-      <option value="">{t('device')}</option>{props.deviceId && !suggestions.some(s => s.deviceId === props.deviceId) && <option value={props.deviceId}>{props.deviceId}</option>}
-      {suggestions.map(s => <option key={s.deviceId} value={s.deviceId}>{s.hostname}</option>)}
-    </select></label><label>{t('username')}<input maxLength={255} data-testid="cv-username" value={username} onChange={e => setUsername(e.target.value)} /></label></>}
+    })}</div>{method === 'workstation' && <><label>{t('device')}<select data-testid="cv-device" value={device} onChange={e => { setDevice(e.target.value); setUsername(suggestions.find(s => s.deviceId === e.target.value)?.username ?? ''); }}>
+      <option value="">{t('device')}</option>{props.deviceId && !suggestions.some(s => s.deviceId === props.deviceId) && <option value={props.deviceId} disabled>{props.deviceId} · {t('reasons.unknown')}</option>}
+      {suggestions.map(s => <option key={s.deviceId} value={s.deviceId} disabled={!s.available}>{s.hostname}{!s.available ? ` · ${t(/* i18n-dynamic */ `reasons.${s.unavailableReason ?? 'unknown'}`)}` : ''}</option>)}
+    </select></label>{selectedDevice && !selectedDevice.available && <p role="status">{t(/* i18n-dynamic */ `reasons.${selectedDevice.unavailableReason ?? 'unknown'}`)}</p>}<label>{t('username')}<input maxLength={255} data-testid="cv-username" value={username} onChange={e => setUsername(e.target.value)} /></label>
+      <label><input data-testid="cv-confirm-username" type="checkbox" checked={usernameConfirmed} onChange={e => setUsernameConfirmed(e.target.checked)} />{t('username')}</label></>}
       <button onClick={() => setStep(0)}>{t('back')}</button><button data-testid="cv-start" disabled={!canStart || saving} onClick={() => void start()}>{t('start')}</button></fieldset>}
     {loading && <p role="status">{t('loading')}</p>}{error && <p role="alert">{t('loadFailed')}<button onClick={() => setRetryLoad(n => n + 1)}>{t('retry')}</button></p>}
     <button disabled={saving} onClick={props.onClose}>{t('close')}</button>
@@ -696,14 +890,14 @@ function VerificationFlow(props: VerifyCallerModalProps) {
 }
 ```
 
-Add a “confirm username” checkbox after the username input, using the same translated label, and require it in `canStart` for workstation. Reset confirmation whenever contact/device/username changes. A pre-filled username is a suggestion, not confirmation. Task 5 owns cancellation and step-2 markup; `row`, `note`, and `setNote` are intentionally consumed there. The load-retry button retriggers all three reads after a transient failure.
+The confirmation checkbox is implemented above and required together with selected-device readiness. Confirmation resets whenever contact/device/username changes or availability reloads. A pre-filled username is a suggestion, not confirmation. Task 5 owns cancellation and step-2 markup; `row`, `note`, and `setNote` are intentionally consumed there. The load-retry button retriggers all three reads after a transient failure.
 
-- [ ] **Step 4: Run green.** `cd apps/web && npx vitest run src/components/callerVerification/ContactPicker.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx` → tier/availability and target-reset assertions pass.
+- [ ] **Step 4: Run green.** `cd apps/web && npx vitest run src/components/callerVerification/ContactPicker.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx src/components/callerVerification/VerifyCallerModal.transport.test.tsx` → tier/availability and target-reset assertions pass.
 - [ ] **Step 5: Commit.**
 
 ```bash
 ls apps/api/migrations | sort | tail -1
-git add apps/web/src/components/callerVerification/ContactPicker.tsx apps/web/src/components/callerVerification/ContactPicker.test.tsx apps/web/src/components/callerVerification/VerifyCallerModal.tsx apps/web/src/components/callerVerification/VerifyCallerModal.test.tsx
+git add apps/web/src/components/callerVerification/ContactPicker.tsx apps/web/src/components/callerVerification/ContactPicker.test.tsx apps/web/src/components/callerVerification/VerifyCallerModal.tsx apps/web/src/components/callerVerification/VerifyCallerModal.test.tsx apps/web/src/components/callerVerification/VerifyCallerModal.transport.test.tsx
 git commit -m "feat(web): select caller action target and verification method"
 ```
 
@@ -765,6 +959,43 @@ it('shows the concrete delivery failure and remaining attempts', () => {
   view.rerender(<VerificationStatus row={{ ...row, status: 'rejected_by_user', incidentId: row.id }} />);
   expect(screen.getByRole('link')).toHaveAttribute('href', `/incidents/${row.id}`);
 });
+it('distinguishes consumed failures from executing, completed and unknown outcomes', () => {
+  const consumed = { ...row, status: 'verified' as const, consumedAt: row.createdAt, consumedAction: 'reset_password' as const };
+  const view = render(<VerificationStatus row={{ ...consumed, consumedIntentStatus: 'failed' }} />);
+  expect(screen.getByTestId('cv-action-failed')).toHaveTextContent('Re-verify before trying the action again.');
+  for (const consumedIntentStatus of ['executing', 'completed', null] as const) {
+    view.rerender(<VerificationStatus row={{ ...consumed, consumedIntentStatus }} />);
+    expect(screen.queryByTestId('cv-action-failed')).toBeNull();
+    expect(screen.getByText('Used for Reset password')).toBeVisible();
+  }
+});
+```
+
+Append to `VerifyCallerModal.test.tsx`, adding `act` to its Testing Library import. This exercises polling of a consumed row into a failed intent, followed by an explicit new challenge; the browser has no outbound identity-action client to replay.
+
+```tsx
+it('offers re-verification after consumed-intent failure without automatically starting anything', async () => {
+  vi.mocked(api.getVerification).mockResolvedValue({ ...row, status: 'verified', consumedAt: row.createdAt, consumedAction: 'reset_password', consumedIntentStatus: 'failed', remainingAttempts: 1 });
+  render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} onClose={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId('cv-next')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('cv-next')); fireEvent.click(screen.getByTestId('cv-method-sms'));
+  vi.useFakeTimers();
+  try {
+    await act(async () => { fireEvent.click(screen.getByTestId('cv-start')); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByTestId('cv-action-failed')).toBeVisible();
+    expect(api.startVerification).toHaveBeenCalledTimes(1);
+    expect(api.cancelVerification).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId('cv-reverify')); });
+    expect(api.startVerification).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('cv-start')).toBeEnabled();
+    vi.mocked(api.startVerification).mockResolvedValue({ ...row, id: TARGET });
+    await act(async () => { fireEvent.click(screen.getByTestId('cv-start')); });
+    expect(api.startVerification).toHaveBeenCalledTimes(2);
+    expect(api.startVerification).toHaveBeenLastCalledWith({ orgId: ORG, contactId: CONTACT, method: 'sms', actionScope: 'reset_password' });
+    expect(screen.queryByTestId('cv-action-failed')).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
 ```
 
 - [ ] **Step 2: Run red.** `cd apps/web && npx vitest run src/components/callerVerification/useVerification.test.tsx src/components/callerVerification/VerificationStatus.test.tsx` → imports fail.
@@ -812,6 +1043,7 @@ export function VerificationStatus({ row, now = Date.now(), userId }: { row: Ver
     {row.status === 'verified' && (row.consumedAt ? <p>{t('used', { action: row.consumedAction ? t(/* i18n-dynamic */ `actions.${row.consumedAction}`) : action })}</p> : fresh && owns ?
       <p>{t('usable', { action, minutes: Math.max(1, Math.ceil((Date.parse(row.usableUntil!) - now) / 60000)) })}</p> :
       <p>{fresh ? t('anotherTechnician', { technician: row.technicianLabel }) : t('states.expired')}</p>)}
+    {row.consumedAt && row.consumedIntentStatus === 'failed' && <p role="alert" data-testid="cv-action-failed">{t('usedActionFailed')}</p>}
     {row.status === 'wrong_choice' && row.remainingAttempts !== null && <p>{t('remaining', { attempts: row.remainingAttempts })}</p>}
     {row.status === 'undeliverable' && <p>{t(/* i18n-dynamic */ `reasons.${row.undeliverableReason ?? 'unknown'}`)}</p>}
     {row.status === 'rejected_by_user' && row.incidentId && <a href={`/incidents/${encodeURIComponent(row.incidentId)}`}>{t('incident')}</a>}
@@ -827,7 +1059,7 @@ const polled = useVerification(props.orgId, row);
 const current = polled.row;
 const onChangedRef = useRef(props.onChanged);
 onChangedRef.current = props.onChanged;
-useEffect(() => { if (current) onChangedRef.current?.(current); }, [current?.id, current?.status, current?.consumedAt, current?.incidentId, current?.usableUntil]);
+useEffect(() => { if (current) onChangedRef.current?.(current); }, [current?.id, current?.status, current?.consumedAt, current?.consumedIntentStatus, current?.incidentId, current?.usableUntil]);
 async function cancel() {
   if (!current || busy.current) return;
   busy.current = true; setSaving(true);
@@ -851,11 +1083,12 @@ async function attest() {
     <label>{t('note')}<textarea maxLength={4000} value={note} onChange={e => setNote(e.target.value)} /></label>
     <button disabled={saving || note.trim().length < 20} onClick={() => void attest()}>{t('attestCallback')}</button></>}
   {current.status === 'pending' && <button disabled={saving} onClick={() => void cancel()}>{t('cancel')}</button>}
+  {current.status === 'verified' && current.consumedAt && current.consumedIntentStatus === 'failed' && <button data-testid="cv-reverify" disabled={saving || !current.remainingAttempts || polled.error} onClick={() => { setRow(null); setNote(''); setRetryLoad(n => n + 1); setStep(1); }}>{t('reverify')}</button>}
   {['wrong_choice', 'expired', 'undeliverable'].includes(current.status) && <button disabled={saving || !current.remainingAttempts || polled.error} onClick={() => { setRow(null); setStep(1); }}>{t('retry')}</button>}
 </>}
 ```
 
-Closing merely dismisses the monitor; the explicit cancel button mutates the pending challenge. Retry creates a new verification, never resubmits a number to a terminal row. Clear note and method on contact/action changes. Do not render candidate decoys to the technician.
+A consumed-failure restart clears only the browser monitor and reloads availability/policy. It does not cancel, clear, or reuse the old grant, and never retries the protected action. The server retains consumption and enforces fences, attempt caps and freshness on the new start. Closing merely dismisses the monitor; the explicit cancel button mutates the pending challenge. Retry creates a new verification, never resubmits a number to a terminal row. Clear note and method on contact/action changes. Do not render candidate decoys to the technician.
 
 - [ ] **Step 4: Run green.** `cd apps/web && npx vitest run src/components/callerVerification/useVerification.test.tsx src/components/callerVerification/VerificationStatus.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx` → pass, including this deferred-result regression:
 
@@ -908,6 +1141,17 @@ it('uses server freshness and consumed action, including any-scope grants', asyn
   vi.mocked(freshForTicket).mockResolvedValue({ row, isFresh: false, isConsumed: false });
   view.rerender(<TicketVerificationBadge orgId={ORG} ticketId={row.id} revision={2} />);
   await waitFor(() => expect(screen.getByTestId('cv-badge')).toHaveTextContent('Verification expired'));
+});
+```
+
+Append to `TicketVerificationBadge.test.tsx`:
+
+```tsx
+it('shows re-verification guidance for an any-scope grant whose consumed action failed', async () => {
+  vi.mocked(freshForTicket).mockResolvedValue({ row: { ...row, status: 'verified', actionScope: 'any', consumedAt: row.createdAt, consumedAction: 'disable_user', consumedIntentStatus: 'failed' }, isFresh: false, isConsumed: true });
+  render(<TicketVerificationBadge orgId={ORG} ticketId={row.id} />);
+  expect(await screen.findByTestId('cv-badge')).toHaveTextContent('Verification used; action failed. Re-verify before trying the action again.');
+  expect(screen.getByTestId('cv-badge')).not.toHaveTextContent('Unused');
 });
 ```
 
@@ -973,7 +1217,7 @@ function LoadedBadge({ orgId, ticketId, revision }: Props) {
   const age = t('age', { minutes: Math.max(0, Math.floor((Date.now() - Date.parse(row.decidedAt ?? row.createdAt)) / 60000)) });
   if (data.isConsumed && !row.consumedAction) return null;
   const used = data.isConsumed && row.consumedAction;
-  const text = !['verified', 'pending', 'expired'].includes(row.status) ? t(/* i18n-dynamic */ `states.${row.status}`) : used ? t('used', { action: t(/* i18n-dynamic */ `actions.${row.consumedAction}`) }) : fresh ? t('unused') : t('states.expired');
+  const text = !['verified', 'pending', 'expired'].includes(row.status) ? t(/* i18n-dynamic */ `states.${row.status}`) : used && row.consumedIntentStatus === 'failed' ? t('usedActionFailed') : used ? t('used', { action: t(/* i18n-dynamic */ `actions.${row.consumedAction}`) }) : fresh ? t('unused') : t('states.expired');
   return <span data-testid="cv-badge" className={fresh && !used ? 'text-emerald-700' : 'text-muted-foreground'}>
     {fresh || used ? `${t('states.verified')} · ${t(/* i18n-dynamic */ `methods.${row.method}`)} · ${age} · ${text}` : text}
   </span>;
@@ -1083,6 +1327,28 @@ it('attests the destination id and never labels it established optimistically', 
 });
 ```
 
+Extend the same harness with unavailable/error transitions. W01 owns Graph authorization and tenant rechecks; these tests prove W04 removes stale selectable results and does not invent a binding.
+
+```tsx
+it.each(['unavailable', 'error'] as const)('clears prior directory choices when the next search is %s', async outcome => {
+  const user = { entraTenantId: ORG, entraOid: CONTACT, upn: 'ada@example.test', displayName: 'Ada' };
+  vi.mocked(api.directoryUsers).mockResolvedValueOnce({ available: true, users: [user], truncated: false });
+  if (outcome === 'unavailable') vi.mocked(api.directoryUsers).mockResolvedValueOnce({ available: false, users: [], truncated: false });
+  else vi.mocked(api.directoryUsers).mockRejectedValueOnce(new Error('Graph unavailable'));
+  render(<ContactVerificationDrawer orgId={ORG} contactId={CONTACT} onClose={vi.fn()} />);
+  fireEvent.change(await screen.findByLabelText('Search Entra users'), { target: { value: 'Ada' } });
+  await screen.findByText('Ada · ada@example.test');
+  fireEvent.change(screen.getByLabelText('Bind to Entra user'), { target: { value: `${ORG}:${CONTACT}` } });
+  fireEvent.change(screen.getByLabelText('Search Entra users'), { target: { value: 'Grace' } });
+  expect(screen.queryByRole('button', { name: 'Bind to Entra user' })).toBeNull();
+  await waitFor(() => expect(api.directoryUsers).toHaveBeenCalledTimes(2));
+  if (outcome === 'error') expect(await screen.findByRole('alert')).toHaveTextContent('Could not load verification details. Try again.');
+  else await waitFor(() => expect(screen.getByTestId('cv-directory-unavailable')).toBeVisible());
+  expect(screen.queryByText('Ada · ada@example.test')).toBeNull();
+  expect(api.bindContact).not.toHaveBeenCalled();
+});
+```
+
 - [ ] **Step 2: Run red.** `cd apps/web && npx vitest run src/components/callerVerification/ContactVerificationDrawer.test.tsx` → component absent.
 - [ ] **Step 3: Implement all management controls.**
 
@@ -1146,7 +1412,7 @@ function LoadedDrawer({ orgId, contactId, onClose }: Props) {
           {b.revokedAt ? <span>{t('states.revoked')}</span> : write && <button disabled={saving} onClick={() => void change(() => api.unbindContact(orgId, contactId, b.id))}>{t('unbind')}</button>}</div>)}
           {write && <><label>{t('directorySearch')}<input value={query} onChange={e => setQuery(e.target.value)} /></label>
             {searchError && <p role="alert">{t('loadFailed')}</p>}
-            {search?.available === false && <p>{t('directoryUnavailable')}</p>}
+            {search?.available === false && <p data-testid="cv-directory-unavailable">{t('directoryUnavailable')}</p>}
             {search?.available && <><select aria-label={t('bind')} value={selected} onChange={e => setSelected(e.target.value)}><option value="">{t('bind')}</option>
               {search.users.map(u => <option key={`${u.entraTenantId}:${u.entraOid}`} value={`${u.entraTenantId}:${u.entraOid}`}>{u.displayName} · {u.upn}</option>)}</select>
               <button disabled={!selected || saving} onClick={() => { const user = search.users.find(u => `${u.entraTenantId}:${u.entraOid}` === selected); if (user) void change(() => api.bindContact(orgId, contactId, user)); }}>{t('bind')}</button>
@@ -1189,9 +1455,9 @@ git add apps/web/src/components/callerVerification/ContactVerificationDrawer.tsx
 git commit -m "feat(web): inspect caller history bindings destinations and fences"
 ```
 
-### Task 9: Mount contact rows and the new contact drawer
+### Task 9: Mount contact rows, the drawer and bulk destination attestation
 
-**Files:** Modify `apps/web/src/components/settings/ContactsCard.tsx:141,614,663`, `apps/web/src/components/settings/ContactsCard.test.tsx`; `apps/web/src/components/organizations/record/orgRecordTabs.ts:82–84`, `apps/web/src/components/organizations/record/orgRecordTabs.test.ts`. `apps/web/src/components/organizations/record/OrganizationRecordPage.tsx:300` already mounts ContactsCard and needs no edit.
+**Files:** Modify `apps/web/src/components/settings/ContactsCard.tsx:141,614,663`, `apps/web/src/components/settings/ContactsCard.test.tsx`; `apps/web/src/components/organizations/record/orgRecordTabs.ts:82–84`, `apps/web/src/components/organizations/record/orgRecordTabs.test.ts`. `apps/web/src/components/organizations/record/OrganizationRecordPage.tsx:300` already mounts ContactsCard and needs no edit. Create `apps/web/src/components/callerVerification/BulkDestinationAttestation.tsx` and `apps/web/src/components/callerVerification/BulkDestinationAttestation.test.tsx` in Steps 6–10.
 
 **Interfaces:** Produces hash `#contacts/<contactId>/verification` and nested `/start`; consumes `ContactVerificationDrawer` and `CallerVerificationEntry`. Existing inline editor at `ContactsCard.tsx:444` remains the edit surface; the new drawer is the verification management surface the spec assumes but the repo does not yet have.
 
@@ -1263,6 +1529,224 @@ git add apps/web/src/components/settings/ContactsCard.tsx apps/web/src/component
 git commit -m "feat(web): mount caller verification on contact rows and drawer"
 ```
 
+- [ ] **Step 6: Write failing bulk-attestation tests.** Read existing `ContactsCard.test.tsx`, `BulkContactImport.test.tsx` and `runAction.test.ts` before implementing. The standalone bulk component tests keep the real API client and `runAction` so every per-destination POST is authenticated, org-pinned and produces feedback. No bulk backend endpoint or permission bypass is introduced.
+
+```tsx
+// BulkDestinationAttestation.test.tsx
+import '@/lib/i18n';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { BulkDestinationAttestation } from './BulkDestinationAttestation';
+import { ORG, CONTACT, TARGET, row, history } from './testFixtures';
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), toast: vi.fn(), enabled: true, write: true }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: mocks.fetch }));
+vi.mock('@/components/shared/Toast', () => ({ showToast: mocks.toast }));
+vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => mocks.enabled }));
+vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ can: () => mocks.write }) }));
+const contacts = [{ id: CONTACT, name: 'Ada' }, { id: TARGET, name: 'Grace' }];
+const destination = { id: row.id, kind: 'email' as const, valueRedacted: 'a••@example.test', established: false, attestedAt: null, setAt: row.createdAt, source: 'import' as const };
+const posts = () => mocks.fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
+afterEach(cleanup);
+beforeEach(() => {
+  vi.clearAllMocks(); mocks.enabled = true; mocks.write = true;
+  mocks.fetch.mockImplementation(async (path: string, init: RequestInit = {}) => {
+    expect(new URL(path, 'https://breeze.example.test').searchParams.get('orgId')).toBe(ORG);
+    const grace = path.includes(`/contacts/${TARGET}/`);
+    if (init.method === 'POST') return new Response(JSON.stringify(grace ? { error: 'Forbidden' } : { data: { id: row.id, attestedAt: row.createdAt } }), { status: grace ? 403 : 200 });
+    return new Response(JSON.stringify({ data: { ...history, destinations: [{ ...destination, id: grace ? TARGET : row.id }] } }));
+  });
+});
+it('reports partial failure, preserves establishment and retries only the failed destination', async () => {
+  render(<BulkDestinationAttestation orgId={ORG} contacts={contacts} />);
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByTestId('cv-bulk-review'));
+  fireEvent.click(await screen.findByTestId(`cv-bulk-destination-${row.id}`));
+  fireEvent.click(screen.getByTestId(`cv-bulk-destination-${TARGET}`));
+  fireEvent.click(screen.getByTestId('cv-bulk-confirm'));
+  await waitFor(() => expect(screen.getByTestId('cv-bulk-result')).toHaveTextContent('Attested: 1. Failed: 1.'));
+  expect(posts().map(([path]) => path)).toEqual([
+    `/orgs/${ORG}/contacts/${CONTACT}/caller-verification-destinations/${row.id}/attest?orgId=${ORG}`,
+    `/orgs/${ORG}/contacts/${TARGET}/caller-verification-destinations/${TARGET}/attest?orgId=${ORG}`,
+  ]);
+  expect(screen.getByTestId(`cv-bulk-destination-${row.id}`)).toBeDisabled();
+  expect(screen.getAllByText('Destination is not yet established.')).toHaveLength(2);
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  mocks.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: TARGET, attestedAt: row.createdAt } })));
+  fireEvent.click(screen.getByTestId('cv-bulk-confirm'));
+  await waitFor(() => expect(screen.getByTestId('cv-bulk-result')).toHaveTextContent('Attested: 2. Failed: 0.'));
+  expect(posts()).toHaveLength(3);
+  expect(posts()[2][0]).toContain(`/contacts/${TARGET}/`);
+});
+it('does not attest destinations when their history could not be loaded', async () => {
+  mocks.fetch.mockResolvedValue(new Response('{}', { status: 403 }));
+  render(<BulkDestinationAttestation orgId={ORG} contacts={contacts} />);
+  fireEvent.click(screen.getByTestId('cv-bulk-review'));
+  await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+  expect(screen.getByTestId('cv-bulk-confirm')).toBeDisabled();
+  expect(posts()).toHaveLength(0);
+});
+it.each(['disabled', 'read-only'] as const)('makes no request and renders no controls when %s', mode => {
+  mocks.enabled = mode !== 'disabled'; mocks.write = mode !== 'read-only';
+  render(<BulkDestinationAttestation orgId={ORG} contacts={contacts} />);
+  expect(screen.queryByRole('button')).toBeNull(); expect(mocks.fetch).not.toHaveBeenCalled();
+});
+it('prevents duplicate submission and stops the remaining batch after unmount', async () => {
+  let finish!: (response: Response) => void;
+  const view = render(<BulkDestinationAttestation orgId={ORG} contacts={contacts} />);
+  fireEvent.click(screen.getByTestId('cv-bulk-review'));
+  fireEvent.click(await screen.findByTestId(`cv-bulk-destination-${row.id}`));
+  fireEvent.click(screen.getByTestId(`cv-bulk-destination-${TARGET}`));
+  mocks.fetch.mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+  fireEvent.click(screen.getByTestId('cv-bulk-confirm')); fireEvent.click(screen.getByTestId('cv-bulk-confirm'));
+  expect(posts()).toHaveLength(1);
+  view.unmount(); finish(new Response(JSON.stringify({ data: { id: row.id, attestedAt: row.createdAt } })));
+  await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  expect(posts()).toHaveLength(1);
+});
+```
+
+Add this stub alongside the Task-9 drawer stub in `ContactsCard.test.tsx`, and add a mount test using its real list fixture. These UI fixture IDs are pre-existing contact-list test data; endpoint tests above use valid UUIDs.
+
+```tsx
+vi.mock('../callerVerification/BulkDestinationAttestation', () => ({ BulkDestinationAttestation: (p: { contacts: { id: string }[] }) => <div data-testid="cv-bulk-stub">{p.contacts.map(c => c.id).join(',')}</div> }));
+it('passes only checked contact rows to bulk attestation', async () => {
+  mockApi(); await renderCard();
+  expect(screen.queryByTestId('cv-bulk-stub')).toBeNull();
+  fireEvent.click(screen.getByTestId(`cv-select-contact-${CONTACTS[0].id}`));
+  expect(screen.getByTestId('cv-bulk-stub')).toHaveTextContent(CONTACTS[0].id);
+  expect(screen.getByTestId('cv-bulk-stub')).not.toHaveTextContent(CONTACTS[1].id);
+  fireEvent.click(screen.getByTestId(`cv-select-contact-${CONTACTS[0].id}`));
+  expect(screen.queryByTestId('cv-bulk-stub')).toBeNull();
+});
+```
+
+- [ ] **Step 7: Run red.** `cd apps/web && npx vitest run src/components/callerVerification/BulkDestinationAttestation.test.tsx src/components/settings/ContactsCard.test.tsx` → component and selection controls absent.
+- [ ] **Step 8: Implement contact-list selection and the review/attest component.** Add the import for `BulkDestinationAttestation` to ContactsCard. Its existing state includes `contacts`, `page`, `siteFilter`, `roleFilter`, `loading`, `loadError`; use them directly:
+
+```tsx
+const [attestationContacts, setAttestationContacts] = useState<string[]>([]);
+useEffect(() => { setAttestationContacts([]); }, [orgId, page, siteFilter, roleFilter]);
+const bulkContacts = contacts.filter(c => attestationContacts.includes(c.id))
+  .map(c => ({ id: c.id, name: c.name ?? c.email ?? c.id }));
+```
+
+Inside the existing first `<td>` for each `c`, before the name, add:
+
+```tsx
+{cvEnabled && can('organizations', 'write') && <input type="checkbox"
+  data-testid={`cv-select-contact-${c.id}`}
+  aria-label={i18n.t('callerVerification:bulkSelect', { name: c.name ?? c.email ?? c.id })}
+  checked={attestationContacts.includes(c.id)} disabled={loading}
+  onChange={e => setAttestationContacts(ids => e.target.checked ? [...new Set([...ids, c.id])] : ids.filter(id => id !== c.id))} />}
+```
+
+Above the existing table mount:
+
+```tsx
+{cvEnabled && can('organizations', 'write') && !loading && !loadError && bulkContacts.length > 0 &&
+  <BulkDestinationAttestation key={`${orgId}:${bulkContacts.map(c => c.id).sort().join(':')}`} orgId={orgId} contacts={bulkContacts} />}
+```
+
+Selection is limited to the visible page, clears on org/filter/page changes, and never goes into a URL. Changing selection remounts the review so stale destination IDs cannot carry into a different batch. Each authorized history response supplies the current destination IDs; contact email/mobile text is never used to synthesize one.
+
+```tsx
+// BulkDestinationAttestation.tsx
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { usePermissions } from '@/lib/permissions';
+import { ActionError, handleActionError } from '@/lib/runAction';
+import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
+import { attestDestination, contactHistory, type DestinationView } from '@/lib/api/callerVerification';
+type Props = { orgId: string; contacts: { id: string; name: string }[] };
+type Entry = { contactId: string; name: string; destination: DestinationView; selected: boolean; outcome: 'pending' | 'attested' | 'failed' };
+export function BulkDestinationAttestation(props: Props) {
+  const enabled = useCallerVerificationEnabled(); const { can } = usePermissions();
+  return enabled && can('organizations', 'write') ? <BulkReview key={`${props.orgId}:${props.contacts.map(c => c.id).sort().join(':')}`} {...props} /> : null;
+}
+function BulkReview({ orgId, contacts }: Props) {
+  const { t } = useTranslation('callerVerification');
+  const [entries, setEntries] = useState<Entry[]>([]); const [loadFailures, setLoadFailures] = useState<string[]>([]);
+  const [reviewed, setReviewed] = useState(false); const [attempted, setAttempted] = useState(false);
+  const [saving, setSaving] = useState(false); const busy = useRef(false);
+  const lifetime = useRef(new AbortController());
+  useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, []);
+  async function review() {
+    if (busy.current) return; busy.current = true; setSaving(true); setAttempted(false);
+    const signal = lifetime.current.signal;
+    try {
+      const results = await Promise.allSettled(contacts.map(contact => contactHistory(orgId, contact.id, signal)));
+      if (signal.aborted) return;
+      const next: Entry[] = []; const failures: string[] = [];
+      results.forEach((result, index) => {
+        const contact = contacts[index];
+        if (result.status === 'rejected') { failures.push(contact.name); return; }
+        for (const destination of result.value.destinations.filter(d => !d.attestedAt)) {
+          next.push({ contactId: contact.id, name: contact.name, destination, selected: false, outcome: 'pending' });
+        }
+      });
+      setEntries(next); setLoadFailures(failures); setReviewed(true);
+    } finally { busy.current = false; if (!signal.aborted) setSaving(false); }
+  }
+  async function attestSelected() {
+    if (busy.current) return;
+    const selected = entries.filter(entry => entry.selected && entry.outcome !== 'attested');
+    if (!selected.length) return;
+    busy.current = true; setSaving(true); setAttempted(false);
+    const signal = lifetime.current.signal;
+    try {
+      for (const entry of selected) {
+        if (signal.aborted) return;
+        let outcome: Entry['outcome'] = 'attested';
+        try { await attestDestination(orgId, entry.contactId, entry.destination.id); }
+        catch (error) {
+          if (error instanceof ActionError && error.status === 401) return;
+          handleActionError(error, t('saveFailed')); outcome = 'failed';
+        }
+        if (signal.aborted) return;
+        setEntries(previous => previous.map(item => item.contactId === entry.contactId && item.destination.id === entry.destination.id
+          ? { ...item, outcome, selected: outcome === 'failed' } : item));
+      }
+      setAttempted(true);
+    } finally { busy.current = false; if (!signal.aborted) setSaving(false); }
+  }
+  return <section className="space-y-3 rounded border p-4">
+    <p>{t('attestHelp')}</p>
+    <button data-testid="cv-bulk-review" disabled={saving || !contacts.length} onClick={() => void review()}>{t('bulkReview')}</button>
+    {loadFailures.map((name, index) => <p role="alert" key={index}>{name}: {t('loadFailed')}</p>)}
+    {reviewed && entries.length === 0 && loadFailures.length === 0 && <p>{t('empty')}</p>}
+    <fieldset disabled={saving}>{entries.map(entry => <div key={`${entry.contactId}:${entry.destination.id}`}>
+      <label><input type="checkbox" data-testid={`cv-bulk-destination-${entry.destination.id}`} checked={entry.selected} disabled={entry.outcome === 'attested'}
+        onChange={e => { const selected = e.target.checked; setEntries(previous => previous.map(item => item === entry ? { ...item, selected } : item)); }} />
+        {entry.name} · {entry.destination.valueRedacted}</label>
+      <p>{entry.destination.established ? t('reasons.destination_established') : t('reasons.destination_recent')}</p>
+      {entry.outcome === 'attested' && <p>{t('bulkAttested')}</p>}
+      {entry.outcome === 'failed' && <p role="alert">{t('bulkFailed')}</p>}
+    </div>)}</fieldset>
+    {reviewed && <button data-testid="cv-bulk-confirm" disabled={saving || !entries.some(entry => entry.selected && entry.outcome !== 'attested')} onClick={() => void attestSelected()}>{t('bulkConfirm')}</button>}
+    {attempted && <p role="status" data-testid="cv-bulk-result">{t('bulkResult', { succeeded: entries.filter(entry => entry.outcome === 'attested').length, failed: entries.filter(entry => entry.outcome === 'failed').length })}</p>}
+  </section>;
+}
+```
+
+The review lists redacted destinations and requires a separate checkbox for each attestation. Per-item `attestDestination` uses Task 1's `runAction` client, preserving W01's ORGS_WRITE/MFA/site authorization. A 403/409/5xx failure is visible and stays selected for an explicit retry; success is deselected and cannot be replayed. A 401 stops the batch for auth handling. Unmount stops subsequent POSTs but cannot undo one already sent. Attestation does not optimistically set `established`: the displayed value remains the history result until a fresh review. Existing `ContactsCard.tsx` is already in `TARGET_GLOBS`; Task 15 adds the new mutation owner with no exemptions.
+
+- [ ] **Step 9: Run green.**
+
+```bash
+(cd apps/web && npx vitest run src/components/callerVerification/BulkDestinationAttestation.test.tsx src/components/settings/ContactsCard.test.tsx src/lib/api/callerVerification.test.ts src/lib/i18n/callerVerification.test.ts)
+```
+
+Expected: only selected destination IDs are posted, failures remain retryable, successes are not replayed, unavailable history produces no mutation, and dark/read-only surfaces make no requests.
+
+- [ ] **Step 10: Commit the bulk contact-list workflow.**
+
+```bash
+ls apps/api/migrations | sort | tail -1
+git add apps/web/src/components/callerVerification/BulkDestinationAttestation.tsx apps/web/src/components/callerVerification/BulkDestinationAttestation.test.tsx apps/web/src/components/settings/ContactsCard.tsx apps/web/src/components/settings/ContactsCard.test.tsx
+git commit -m "feat(web): attest selected contact destinations with partial-failure feedback"
+```
+
 ### Task 10: Mount device-header verification with explicit username confirmation
 
 **Files:** Modify `apps/web/src/components/devices/DeviceDetails.tsx:344,666–668`, `apps/web/src/components/devices/DeviceDetails.hashNavigation.test.tsx:9–29`. Modify `apps/web/src/components/callerVerification/VerifyCallerModal.test.tsx` (device preselection cases).
@@ -1273,7 +1757,7 @@ git commit -m "feat(web): mount caller verification on contact rows and drawer"
 
 ```tsx
 it('caps an unbound selected workstation at tier 1 and requires confirmation', async () => {
-  vi.mocked(api.deviceSuggestions).mockResolvedValue([{ deviceId: TARGET, hostname: 'Workstation A', username: 'ada', hasBinding: false }]);
+  vi.mocked(api.deviceSuggestions).mockResolvedValue([{ deviceId: TARGET, hostname: 'Workstation A', username: 'ada', hasBinding: false, available: true }]);
   vi.mocked(api.methodsForContact).mockResolvedValue([{ method: 'workstation', available: true, tier: 3, reason: 'bound_principal' }]);
   render(<VerifyCallerModal orgId={ORG} initialContactId={CONTACT} deviceId={TARGET} initialMethod="workstation" onClose={vi.fn()} />);
   await waitFor(() => expect(screen.getByTestId('cv-next')).toBeEnabled());
@@ -1317,17 +1801,7 @@ it('mounts workstation verification for the displayed device', async () => {
 
 The current `activeTab: Tab` declaration is at DeviceDetails.tsx:400, derived from hashTab initialized at :344. The current parser already takes the first slash segment (`:233–237`). Restore the previous hash on dismissal through the Task-7 launcher update. Do not use `last_user` as consent: the username input must be confirmed after contact selection.
 
-Minimal confirmation code inside VerificationFlow:
-
-```tsx
-const [usernameConfirmed, setUsernameConfirmed] = useState(false);
-useEffect(() => { setUsernameConfirmed(false); }, [contact, device, username]);
-// Replace the workstation branch of canStart:
-(method !== 'workstation' || (!!device && !!username.trim() && usernameConfirmed))
-// After the username input:
-<label><input data-testid="cv-confirm-username" type="checkbox" checked={usernameConfirmed}
-  onChange={e => setUsernameConfirmed(e.target.checked)} />{t('username')}</label>
-```
+Task 4 already implements username confirmation and selected-device readiness. Preserve its entire workstation `canStart` predicate, including `selectedDevice?.available === true`; device-header preselection must not bypass it.
 
 - [ ] **Step 4: Run green.** `cd apps/web && npx vitest run src/components/callerVerification/VerifyCallerModal.test.tsx src/components/devices/DeviceDetails.hashNavigation.test.tsx` → both binding cases and hash navigation pass.
 - [ ] **Step 5: Commit.**
@@ -1351,7 +1825,7 @@ import '@/lib/i18n';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { getPolicy, putPolicy } from '@/lib/api/callerVerification';
-import { CallerVerificationPolicyForm } from './CallerVerificationPolicyForm';
+import { CallerVerificationPolicyForm, inheritedDraft } from './CallerVerificationPolicyForm';
 import { ORG, policy } from './testFixtures';
 vi.mock('@/lib/api/callerVerification');
 vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => true }));
@@ -1363,13 +1837,28 @@ it('shows provenance, ignored fields and disables loosening values', async () =>
   expect(screen.getByText(/Ignored because it weakens/)).toBeVisible();
 });
 it('keeps the tier-0 warning visible after a successful save', async () => {
-  const result = { row: null, defaults: policy, baseline: { ...policy, requiredTierResetPassword: 0 }, effective: { ...policy, requiredTierResetPassword: 0 } };
+  const result = { row: { ...inheritedDraft(), requiredTierResetPassword: 0 }, defaults: policy, baseline: { ...policy, requiredTierResetPassword: 0 }, effective: { ...policy, requiredTierResetPassword: 0 } };
   vi.mocked(getPolicy).mockResolvedValue(result); vi.mocked(putPolicy).mockResolvedValue(result);
   render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
   await screen.findByText(/A tier of 0 disables/);
   fireEvent.click(screen.getByText('Save policy'));
   await waitFor(() => expect(putPolicy).toHaveBeenCalled());
   expect(screen.getByText(/A tier of 0 disables/)).toBeVisible();
+});
+it.each([
+  { scope: 'partner' as const, override: null, baseline: 30, expected: 30, max: 240 },
+  { scope: 'organization' as const, override: null, baseline: 20, expected: 20, max: 20 },
+  { scope: 'organization' as const, override: 10, baseline: 20, expected: 10, max: 20 },
+])('uses the inherited floor separately from the $scope effective value $expected', async example => {
+  const response = { row: example.override === null ? null : { ...inheritedDraft(), verificationTtlMinutes: example.override },
+    defaults: { ...policy, verificationTtlMinutes: 30 }, baseline: { ...policy, verificationTtlMinutes: example.baseline },
+    effective: { ...policy, verificationTtlMinutes: example.expected } };
+  vi.mocked(getPolicy).mockResolvedValue(response);
+  const owner = example.scope === 'partner' ? { ownerScope: example.scope } : { ownerScope: example.scope, orgId: ORG };
+  render(<CallerVerificationPolicyForm owner={owner} />);
+  expect(await screen.findByTestId('cv-policy-verificationTtlMinutes')).toHaveValue(example.expected);
+  expect(screen.getByTestId('cv-policy-verificationTtlMinutes-effective')).toHaveTextContent(String(example.expected));
+  expect(screen.getByTestId('cv-policy-verificationTtlMinutes')).toHaveAttribute('max', String(example.max));
 });
 ```
 
@@ -1765,6 +2254,7 @@ import { CallerVerificationEntry } from './CallerVerificationEntry';
 import { VerifyCallerModal } from './VerifyCallerModal';
 import { TicketVerificationBadge } from './TicketVerificationBadge';
 import { ContactVerificationDrawer } from './ContactVerificationDrawer';
+import { BulkDestinationAttestation } from './BulkDestinationAttestation';
 import { CallerVerificationPolicyForm } from './CallerVerificationPolicyForm';
 import { AdministrativeDisable } from './AdministrativeDisable';
 import { CallerVerificationRefusal } from './CallerVerificationRefusal';
@@ -1780,6 +2270,7 @@ it('hides every independently addressable surface and makes no API request', () 
     createElement(VerifyCallerModal, common),
     createElement(TicketVerificationBadge, { orgId: ORG, ticketId: row.id }),
     createElement(ContactVerificationDrawer, { ...common, contactId: CONTACT }),
+    createElement(BulkDestinationAttestation, { orgId: ORG, contacts: [{ id: CONTACT, name: 'Ada' }] }),
     createElement(CallerVerificationPolicyForm, { owner: { ownerScope: 'partner' } }),
     createElement(AdministrativeDisable, { orgId: ORG, targetContactId: CONTACT, binding: { id: row.id, entraTenantId: ORG, entraOid: CONTACT, upnSnapshot: null, osPrincipal: null, revokedAt: null }, onCreated: vi.fn() }),
     createElement(CallerVerificationRefusal, { isError: true, output: { requiresCallerVerification: { orgId: ORG, action: 'disable_user', contactId: CONTACT, requiredTier: 2, reason: 'grant_consumed' } } }),
@@ -1806,23 +2297,24 @@ for (const rel of [
   'src/lib/api/callerVerification.ts',
   'src/components/callerVerification/VerifyCallerModal.tsx',
   'src/components/callerVerification/ContactVerificationDrawer.tsx',
+  'src/components/callerVerification/BulkDestinationAttestation.tsx',
   'src/components/callerVerification/CallerVerificationPolicyForm.tsx',
   'src/components/callerVerification/AdministrativeDisable.tsx',
 ]) expect(TARGET_GLOBS).toContain(rel);
 ```
 
-- [ ] **Step 3: Implement the remaining guard registrations.** Add those five exact strings once (client already added in Task 1); increase the rebased guarded count by four, 126 → 130 on this baseline. Do not register legacy `mfaStepUp.ts` as an adopted file: its old callers retain the existing transport, while the new injected transport is lexically guarded in callerVerification.ts. Do not add any allowlist or exemption. The guard resolves imported API wrappers and detects future bare mutations in the components.
+- [ ] **Step 3: Implement the remaining guard registrations.** Add those six exact strings once (client already added in Task 1); increase the rebased guarded count by five, 126 → 131 on this baseline. Do not register legacy `mfaStepUp.ts` as an adopted file: its old callers retain the existing transport, while the new injected transport is lexically guarded in callerVerification.ts. Do not add any allowlist or exemption. The guard resolves imported API wrappers and detects future bare mutations in the components.
 - [ ] **Step 4: Run all targeted, type and contract checks from root.**
 
 ```bash
-(cd apps/web && npx vitest run src/components/callerVerification src/lib/api/callerVerification.test.ts src/lib/useCallerVerificationEnabled.test.tsx src/stores/featuresStore.test.ts src/lib/mfaStepUp.test.ts)
+(cd apps/web && npx vitest run src/components/callerVerification src/lib/api/callerVerification.test.ts src/lib/api/callerVerification.workstation.test.ts src/lib/useCallerVerificationEnabled.test.tsx src/stores/featuresStore.test.ts src/lib/mfaStepUp.test.ts)
 (cd apps/web && npx vitest run src/components/tickets/TicketWorkbench.test.tsx src/components/tickets/TicketFeed.test.tsx src/components/settings/ContactsCard.test.tsx src/components/organizations/record/orgRecordTabs.test.ts src/components/devices/DeviceDetails.hashNavigation.test.tsx src/components/settings/PartnerSettingsPage.test.tsx src/components/settings/OrgSettingsPage.test.tsx src/components/ai/AiChatMessages.test.tsx src/components/ai/AiToolCallCard.test.tsx)
 (cd apps/web && npx vitest run src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts)
 (cd apps/web && npx tsc --noEmit && npx astro check)
 (cd apps/api && npx vitest run src/routes/config.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
 ```
 
-Expected: all pass with nonzero file counts; no missing translations, module imports or Astro props. W01 route supplements and W05's administrative operation must be checked against their merged source rather than assumed from these fixtures. No W04 Go/helper code changed, so a new agent race run is not required here; W02 owns `cd agent && go test -race ./internal/heartbeat/...`.
+Expected: all pass with nonzero file counts; no missing translations, module imports or Astro props. W01 route supplements and W05's administrative operation must be checked against their merged source rather than assumed from these fixtures. The W02-owned `callerVerification.workstation.test.ts` (W02 Task 14) connects its real Hono suggestions route to this browser client; require that combined-wave test, alongside Task 4's modal HTTP-load test, before activation. W05 Task 13 owns the real post-consumption outbound-failure/reuse regression; W04's tests assert the HTTP consumer and UI only. No W04 Go/helper code changed, so a new agent race run is not required here; W02 owns `cd agent && go test -race ./internal/heartbeat/...`.
 
 - [ ] **Step 5: Run live-DB contracts; always tear down the private stack.**
 
@@ -1870,10 +2362,10 @@ Only claim successful checks in the PR body after their actual runs pass. If a r
 
 ## Self-review
 
-**Spec coverage.** D2/script and large codes → Task 5; D4 availability/tier → Tasks 4/10; D6 floor/provenance/ignored → Tasks 11/12; D11 bindings → Task 8; D12 destination establishment/attestation → Task 8; D13 single-use/technician/freshness → Tasks 5/6; D15 requester/target and interactive admin → Tasks 4/13; D16 dark mounting → Tasks 2/15. Ticket, contact row, contact drawer and device header each have explicit mount tasks (7/9/10). W01 system comments already render in TicketFeed. AI refusal → Task 14. Eight actual translations and parity → Task 3. Final verification covers targeted, contract, type and integration suites.
+**Spec coverage.** D2/script and large codes → Task 5; D4 aggregate and selected-device availability/tier → Tasks 1/4/10; D6 floor/provenance/ignored → Tasks 11/12; D11 bindings → Task 8; D12 destination establishment/individual attestation → Task 8; bulk contact-list attestation with partial failures → Task 9 Steps 6–10; D13 single-use/technician/freshness and consumed-then-failed re-verification → Tasks 1/3/5/6; D15 requester/target and interactive admin → Tasks 4/13; D16 dark mounting → Tasks 2/15. Ticket, contact row, contact drawer and device header each have explicit mount tasks (7/9/10). W01 system comments already render in TicketFeed. AI refusal → Task 14. Eight actual translations and parity → Task 3. Final verification covers targeted, contract, type and integration suites.
 
-**Cross-wave findings.** This checkout has no caller-verification implementation. The index's exact three UI interfaces are preserved; additive route projections are identified as prerequisites rather than fabricated existing fields. Sibling-plan verification also caught W01’s `{data}` envelopes and W05’s full nested refusal payload; both are reflected in the final client. Existing `/config` fits readiness. A reusable contact picker, contact drawer and HTTP M365 user search do not exist: the plan adds the smallest web primitives and assigns a Graph-backed picker route to W01. Administrative mint resource/digest support is explicitly W05-owned. Stale tier-2 workstation prose is superseded by v5 D4 and review P1: unbound is tier 1.
+**Cross-wave findings.** #1 → Task 1 requires W02's corrected `{data}` suggestions envelope; Task 4 drives the combined load through the browser client and Task 15 runs W02's real-route/client test. #5 → Task 1 validates and preserves all five W01 HTTP projection fields on start/get/cancel/attest/admin/history/ticket; W05 adds consumed-intent status without changing index interfaces. #6 → Tasks 1/11 consume `{row,defaults,baseline,effective}` for both ownership scopes and both GET/PUT; null fields use defaults or partner baseline, separately from effective values. #7 → Tasks 1/8 consume the W01 directory envelope, use returned tenant/OID only, and clear choices on unavailable/error responses. #8 → Tasks 1/4/10 preserve per-device readiness, disable unavailable options and reject unavailable/missing preselection with a ready-device positive control. #16 → Tasks 1/3/5/6 cover translated failed-action guidance, polling transitions, badge output and an explicit fresh challenge; W05 owns the live release/outbound-failure, retained-marker and reuse-refusal test. #18 → Task 9 implements visible-page contact selection and explicit per-destination attestation through the authorized endpoint; partial failures retry without replaying successes. Task 15 registers the bulk mutation owner and dark-mode surface. Backend Graph, projection, authorization and release behavior remain owned by the sibling plans, not simulated by web fixtures.
 
-**Type and state consistency.** API methods use canonical contact IDs, never portal user IDs; partner policy carries no browser-selected partner ID. UI identity, match/reverse codes and step-up data are never persisted in URL state. Polls are cancellable, sequential and scoped; components remount on org/subject changes. The ticket badge uses server freshness and actual consumed action. Administrative disable proves an existing factor, never synthesized release-context MFA. AI refusals never auto-retry an identity mutation.
+**Type and state consistency.** API methods use canonical contact IDs, never portal user IDs; partner policy carries no browser-selected partner ID. UI identity, match/reverse codes and step-up data are never persisted in URL state. Polls are cancellable, sequential and scoped; components remount on org/subject changes. The ticket badge uses server freshness, actual consumed action and consumed-intent status. An absent/null intent status is unknown; consumption alone never means execution failed. Bulk attestation never promotes establishment locally or carries selected IDs across org/page/filter changes. Administrative disable proves an existing factor, never synthesized release-context MFA. AI refusals never auto-retry an identity mutation.
 
 **Review discipline.** Source paths and current integration seams were read before writing; new files are marked Create, not cited as existing implementations. Code fences define each new interface, component, helper, mutation and failing-test assertion. Planned implementation commands are not execution evidence. This plan authoring changes only this Markdown file and makes no product changes or commits.

@@ -46,15 +46,15 @@
 | `apps/api/src/services/callerVerification/publicLookup.ts`, `publicLookup.test.ts` | token lookup and safe card projection |
 | `apps/api/src/routes/callerVerifyPublic.ts`, `callerVerifyPublic.test.ts` | public GET/POST and request budget |
 | `apps/api/src/index.ts` | unauthenticated `/verify` mount adjacent to `/support` |
-| `apps/api/src/routes/callerVerifyPublic.integration.test.ts` | real Postgres/Redis, CAS, late rejection, budgets |
-| `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts` | exclude/include the co-located live suite |
+| `apps/api/src/routes/callerVerifyPublic.integration.test.ts` | Task 7: real Postgres/Redis, CAS, late rejection, budgets, ambient decision/observation/receipt rollback and RLS refusal |
+| `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts` | Tasks 7, 11: exclude/include both co-located live suites |
 | `packages/shared/src/m365/readActions.ts`, `readActions.test.ts` | dedicated OID-only mailbox read and field allowlist |
 | `apps/api/src/services/m365DirectGraph.ts`, `m365DirectGraph.test.ts` | tenant-pinned direct read and tenant-keyed token cache |
 | `apps/m365-graph-read-executor/src/microsoft/readActions.ts`, `readActions.test.ts` | executor dispatch and four-field projection |
 | `apps/api/src/services/m365ControlPlane/readActionService.ts`, `readActionService.test.ts` | ambient-RLS mailbox execution without synthetic auth |
 | `apps/api/src/services/delegantClient.ts`, `delegantClient.test.ts` | explicit mailbox tool contract |
 | `apps/api/src/services/aiToolsM365.ts`, `aiToolsM365.test.ts` | mailbox backend selection and attribution |
-| `apps/api/src/services/callerVerification/mailboxes.ts`, `mailboxes.test.ts` | canonical lowercased mailbox set |
+| `apps/api/src/services/callerVerification/mailboxes.ts`, `mailboxes.test.ts`, `mailboxes.integration.test.ts` | Task 11: canonical mailbox set; real adapter prefetch without request context and reader attribution |
 | `apps/api/src/services/callerVerification/gate.ts`, `gate.test.ts`, `index.ts` | real fetcher wiring and typed refusal |
 | `apps/web/src/locales/en/callerVerification.json` | English public-card catalog |
 | `apps/web/src/locales/de-DE/callerVerification.json`, `es-419/callerVerification.json`, `fr-CA/callerVerification.json`, `fr-FR/callerVerification.json`, `it-IT/callerVerification.json`, `pt-BR/callerVerification.json`, `tr-TR/callerVerification.json` | translated catalogs; all paths relative to `apps/web/src/locales/` |
@@ -905,12 +905,14 @@ export async function applyDecision(input: { verificationId: string; decision:
       return view(changed??await loadVerification(row.orgId,row.id),null,await targetContact(row));
     });
   };
-  // Public lookup and CAS already have a short system transaction. Reuse it;
-  // unconditionally detaching here would hold two pooled connections.
-  if(getCurrentDbAccessContext()?.scope==='system') return decide();
-  return runOutsideDbContext(()=>withSystemDbAccessContext(decide,'callerVerification.applyDecision'));
+  // Reuse the authorized transaction for every scope, including W02's
+  // receipt + decision + observation transaction. RLS still limits visibility.
+  if (getCurrentDbAccessContext()) return decide();
+  return withSystemDbAccessContext(decide, 'callerVerification.applyDecision');
 }
 ```
+
+The context rule matches W02 Task 10 verbatim: reuse any existing authorized organization, partner or system transaction; open a system transaction only when none exists. An invisible row stays `not_found`, with no elevated retry. Public handlers explicitly establish their narrow system context before calling; `applyDecision` must never detach from its caller. Task 7 tests rollback and a successful retry through the W02 receipt/decision/observation sequence without requiring W02 to land first.
 
 Number choices always carry the database `expires_at > now()` predicate, even if W01's pure `decisionStatus` computes `expired`. Timeout retains its separate pending-only transition. The contact lock serializes late rejection eligibility with W01 rejection/override; `handleRejection` takes the same reentrant contact lock and ordered subject locks before its non-rejected CAS. Only that handler opens the incident. The public response ignores the resulting view. Duplicate decisions leave the first decision IP intact.
 
@@ -935,7 +937,7 @@ git commit -m "feat(caller-verification): accept public choices and late rejecti
 
 **Interfaces:**
 - Consumes: `getTestDb()` and `getTestRedis()` at integration `setup.ts:54,91`; `createPartner`, `createOrganization`, `createUser` in `db-utils.ts:176,216,129`; real `handleRejection` and public routes.
-- Produces: live test proving `breeze_app` system-context reachability, one changed row across concurrent requests, late rejection+incident, and namespace-specific budgets.
+- Produces: live test proving `breeze_app` system-context reachability, one changed row across concurrent requests, late rejection+incident, namespace-specific budgets, atomic receipt/decision/observation rollback, scoped refusal and a context-free decision fallback.
 
 - [ ] **Step 1: Write the fixture and failing live tests**
 
@@ -1077,6 +1079,91 @@ it('publishes prepared committed links and cannot publish a rolled-back row',asy
 });
 ```
 
+Append these imports and the transaction regressions to the same suite. `createSite`, `devices`, `deviceCommands`, `auditLogs` and `withDbAccessContext` exist in the current tree. `applyDecision`, `observeLogin` and the binding schema are W01 anchors. This reproduces W02 Task 10's receipt/decision/observation sequence using the real services; it needs no W02 module on the parallel W03 branch. After merging W02, also run its Task 15 handler-level rollback regression with `cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/callerVerification/workstation.integration.test.ts` against the running test stack.
+
+```ts
+import { createSite } from '../__tests__/integration/db-utils';
+import { devices, deviceCommands, callerVerificationSubjectBindings, auditLogs } from '../db/schema';
+import { withDbAccessContext } from '../db';
+import { applyDecision } from '../services/callerVerification/service';
+import * as subjects from '../services/callerVerification/subjects';
+
+it('rolls back receipt, decision, audit and observation together, then permits retry',async()=>{
+ const f=await seed(),admin=getTestDb(),site=await createSite({orgId:f.org.id});
+ const [device]=await admin.insert(devices).values({orgId:f.org.id,siteId:site.id,
+  agentId:randomUUID(),hostname:'test-workstation',osType:'linux',osVersion:'test',
+  architecture:'amd64',agentVersion:'test',lastUser:'alex',status:'online'}).returning();
+ if(!device)throw new Error('device fixture missing');
+ const [command]=await admin.insert(deviceCommands).values({deviceId:device.id,
+  type:'caller_verify',targetRole:'agent',status:'pending'}).returning();
+ if(!command)throw new Error('command fixture missing');
+ const [binding]=await admin.insert(callerVerificationSubjectBindings).values({
+  orgId:f.org.id,contactId:f.contact.id,entraTenantId:randomUUID(),entraOid:randomUUID(),
+  upnSnapshot:'alex@example.com',source:'directory_sync'}).returning();
+ if(!binding)throw new Error('binding fixture missing');
+ await admin.update(callerVerifications).set({method:'workstation',agentCommandId:command.id,
+  workstationDeviceRef:device.id,deviceHostname:device.hostname,osUsername:'alex'})
+  .where(eq(callerVerifications.id,f.v.id));
+ const context={scope:'organization' as const,orgId:f.org.id,accessibleOrgIds:[f.org.id],
+  accessiblePartnerIds:[],userId:f.v.initiatedByUserId};
+ const principal={osPrincipal:'uid:501@test-workstation',osUsername:'alex',upn:'alex@example.com'};
+ const receipt={status:'completed' as const,stdout:JSON.stringify({delivered:true,
+  choice:f.v.matchValue,principal:{uid:501,username:'alex',upn:principal.upn}})};
+ const receive=()=>withDbAccessContext(context,async()=>{
+  await db.update(deviceCommands).set({status:'completed',completedAt:new Date(),result:receipt})
+   .where(eq(deviceCommands.id,command.id));
+  // Same identity lock and call order as W02's authenticated result handler.
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${f.org.id}`}))`);
+  const result=await applyDecision({verificationId:f.v.id,
+   decision:{kind:'choice',value:f.v.matchValue},principal});
+  expect(result.status).toBe('verified');
+  await subjects.observeLogin({orgId:f.org.id,contactId:f.contact.id,...principal});
+ });
+ const realObserveLogin=subjects.observeLogin;
+ const observe=vi.spyOn(subjects,'observeLogin').mockImplementationOnce(async input=>{
+  await realObserveLogin(input);
+  const [changed]=await db.select().from(callerVerificationSubjectBindings)
+   .where(eq(callerVerificationSubjectBindings.id,binding.id));
+  expect(changed?.osPrincipal).toBe(principal.osPrincipal);
+  throw new Error('observation probe');
+ });
+ try {
+  await expect(receive()).rejects.toThrow('observation probe');
+  expect(observe).toHaveBeenCalledTimes(1);
+ } finally {observe.mockRestore();}
+ const [rolledBack]=await admin.select().from(callerVerifications).where(eq(callerVerifications.id,f.v.id));
+ expect(rolledBack).toMatchObject({status:'pending',decidedAt:null,osPrincipalObserved:null});
+ const [rolledBackReceipt]=await admin.select().from(deviceCommands).where(eq(deviceCommands.id,command.id));
+ expect(rolledBackReceipt).toMatchObject({status:'pending',completedAt:null,result:null});
+ const [rolledBackBinding]=await admin.select().from(callerVerificationSubjectBindings)
+  .where(eq(callerVerificationSubjectBindings.id,binding.id));
+ expect(rolledBackBinding).toMatchObject({osPrincipal:null,source:'directory_sync'});
+ const effects=()=>admin.select().from(auditLogs).where(and(eq(auditLogs.orgId,f.org.id),
+  eq(auditLogs.resourceId,f.v.id),eq(auditLogs.action,'caller_verification.verified')));
+ expect(await effects()).toHaveLength(0);
+ await receive();
+ const [committed]=await admin.select().from(callerVerifications).where(eq(callerVerifications.id,f.v.id));
+ expect(committed).toMatchObject({status:'verified',osPrincipalObserved:principal.osPrincipal});
+ const [committedReceipt]=await admin.select().from(deviceCommands).where(eq(deviceCommands.id,command.id));
+ expect(committedReceipt).toMatchObject({status:'completed',result:receipt});
+ const [committedBinding]=await admin.select().from(callerVerificationSubjectBindings)
+  .where(eq(callerVerificationSubjectBindings.id,binding.id));
+ expect(committedBinding).toMatchObject({osPrincipal:principal.osPrincipal,osUsername:'alex',source:'observed_login'});
+ expect(await effects()).toHaveLength(1);
+});
+it('does not elevate an unrelated org decision, but opens a context for a headless caller',async()=>{
+ const f=await seed(),other=await createOrganization({partnerId:f.org.partnerId});
+ const decide=()=>applyDecision({verificationId:f.v.id,decision:{kind:'choice',value:f.v.matchValue}});
+ await expect(withDbAccessContext({scope:'organization',orgId:other.id,accessibleOrgIds:[other.id],
+  accessiblePartnerIds:[]},decide)).rejects.toMatchObject({code:'not_found'});
+ const [unchanged]=await getTestDb().select().from(callerVerifications).where(eq(callerVerifications.id,f.v.id));
+ expect(unchanged?.status).toBe('pending');
+ await expect(runOutsideDbContext(decide)).resolves.toMatchObject({status:'verified'});
+});
+```
+
+The rollback fixture leaves the verification's binding references null so the old detached implementation fails by committing the decision/audit, not by waiting on a second connection's subject lock. The observed binding still exercises real observation SQL. Temporarily restore the old system-only context predicate to prove the rollback and cross-org tests fail, then restore Task 6's exact context rule before committing.
+
 Only the temporary probe uses admin SQL; the route and decision use production `db` as `breeze_app`. Generated identifiers and UUIDs are test-owned, never request input. The probe counts writes rather than checking only final status, which would miss a last-writer-wins bug. The fixture deliberately uses `actionScope:'any'`; it does not forge an unbound reset grant.
 
 - [ ] **Step 2: Register and run to failure**
@@ -1086,12 +1173,12 @@ Expected before Task 6's CAS predicate: the concurrent-write count or late-rejec
 
 - [ ] **Step 3: Apply the minimal implementation and prove the outbox boundary**
 
-Restore Task 6's exact CAS predicates; use the W01 incident implementation with its existing unique `(org_id,source_type,source_ref)` index (`db/schema/incidentResponse.ts:86`). The late-rejection test calls the real handler twice for deterministic idempotency. W01 opens the incident inside `applyDecision` through `handleRejection`, so the assertion observes the actual route transaction before replay. Its publisher subsequently consumes `rejectionNotifiedAt IS NULL` for notification; it does not create the fence or incident. Task 3's port test and the publisher test below prove link delivery reachability.
+Restore Task 6's exact CAS predicates and ambient-context rule; use the W01 incident implementation with its existing unique `(org_id,source_type,source_ref)` index (`db/schema/incidentResponse.ts:86`). The late-rejection test calls the real handler twice for deterministic idempotency. W01 opens the incident inside `applyDecision` through `handleRejection`, so the assertion observes the actual route transaction before replay. Its publisher subsequently consumes `rejectionNotifiedAt IS NULL` for notification; it does not create the fence or incident. Task 3's port test and the publisher test below prove link delivery reachability.
 
 - [ ] **Step 4: Run to pass**
 
 Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/callerVerifyPublic.integration.test.ts`.
-Expected: eight live tests, no mocked DB/rate limiter, one concurrent state update and one incident. Integration setup truncates tenant roots with CASCADE and flushes Redis before each test (`setup.ts:366,384`); do not delete append-only audit rows yourself.
+Expected: ten live tests, no mocked DB/rate limiter, one concurrent state update and one incident. Integration setup truncates tenant roots with CASCADE and flushes Redis before each test (`setup.ts:366,384`); do not delete append-only audit rows yourself.
 
 - [ ] **Step 5: Commit**
 
@@ -1370,7 +1457,8 @@ git commit -m "feat(m365): execute mailbox reads through the Graph control plane
 **Files:**
 - Modify: `apps/api/src/services/delegantClient.ts:71,107`, `apps/api/src/services/delegantClient.test.ts` (broker payload contract).
 - Modify: `apps/api/src/services/aiToolsM365.ts:59,73,102`, `apps/api/src/services/aiToolsM365.test.ts` (new internal dispatcher, existing tools unchanged).
-- Create: `apps/api/src/services/callerVerification/mailboxes.ts`, `apps/api/src/services/callerVerification/mailboxes.test.ts`.
+- Create: `apps/api/src/services/callerVerification/mailboxes.ts`, `apps/api/src/services/callerVerification/mailboxes.test.ts`, `apps/api/src/services/callerVerification/mailboxes.integration.test.ts`.
+- Modify: `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts` (exclude/include the mailbox live suite).
 - Modify: `apps/api/src/services/callerVerification/gate.ts`, `apps/api/src/services/callerVerification/gate.test.ts`, `apps/api/src/services/callerVerification/index.ts` (**W01 anchors:** mailbox fetcher stub, email candidate check, barrel exports).
 
 **Interfaces:**
@@ -1464,10 +1552,84 @@ it('refuses multiple matching Delegant connections',async()=>{
 ```
 No fixture uses a UPN as an accepted mailbox action.
 
+Create `mailboxes.integration.test.ts` with the real DB contexts, mailbox port, normalization and adapter. Only the outbound broker call is stubbed; connection selection and reader attribution remain real. These are W03's executable prefetch-contract tests for W05 Task 5, which owns `prepareCallerDispatch`; W05 Task 13 supplies the successful email dispatch/marker test using the real W03 adapter after all waves land.
+
+```ts
+import '../../__tests__/integration/setup';
+import { getTestDb } from '../../__tests__/integration/setup';
+import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { getCurrentDbAccessContext, runOutsideDbContext, withDbAccessContext } from '../../db';
+import { delegantM365Connections } from '../../db/schema';
+import * as delegant from '../delegantClient';
+import { withMailboxReader } from '../aiToolsM365';
+import { callerVerificationPorts } from './ports';
+import { destinationHash, normalizeDestination } from './destinations';
+
+async function seedMailbox() {
+ const partner=await createPartner(),org=await createOrganization({partnerId:partner.id});
+ const tech=await createUser({partnerId:partner.id,email:`${randomUUID()}@example.com`});
+ const target={entraTenantId:randomUUID(),entraOid:randomUUID()};
+ await getTestDb().insert(delegantM365Connections).values({orgId:org.id,
+  customerLabel:'mailbox-test',customerDisplayName:'Mailbox test',delegantOrgId:randomUUID(),
+  delegantConnectionId:randomUUID(),m365TenantId:target.entraTenantId,status:'active'});
+ return {org,tech,target};
+}
+let f: Awaited<ReturnType<typeof seedMailbox>>;
+beforeEach(async()=>{
+ f=await seedMailbox();
+ vi.spyOn(delegant,'invokeDelegantTool').mockImplementation(async args=>{
+  // The adapter's three short connection probes have all committed before HTTP.
+  expect(getCurrentDbAccessContext()).toBeUndefined();
+  expect(args.connection.orgId).toBe(f.org.id);
+  expect(args.parameters).toEqual({userId:f.target.entraOid,expectedTenantId:f.target.entraTenantId});
+  return {kind:'ok',data:{id:f.target.entraOid,userPrincipalName:'Target@Example.com',
+   mail:'Primary@Example.com',proxyAddresses:['SMTP:Alias@Example.com']}};
+ });
+});
+afterEach(()=>vi.restoreAllMocks());
+// Exactly W05's pre-lock pipeline; no Hono/AuthContext or fabricated session.
+const prefetch=async(technicianUserId:string)=>new Set((await runOutsideDbContext(()=>
+ withMailboxReader(technicianUserId,()=>callerVerificationPorts.mailboxes({orgId:f.org.id,target:f.target}))))
+ .map(value=>normalizeDestination('email',value.replace(/^smtp:/i,'')))
+ .filter((value):value is string=>!!value).map(destinationHash));
+it('supplies known mailbox hashes for a headless email dispatch prefetch',async()=>{
+ expect(getCurrentDbAccessContext()).toBeUndefined();
+ expect(await prefetch(f.tech.id)).toEqual(new Set([
+  'target@example.com','primary@example.com','alias@example.com'].map(destinationHash)));
+ expect(delegant.invokeDelegantTool).toHaveBeenCalledWith(expect.objectContaining({
+  actingUser:expect.objectContaining({breezeUserId:f.tech.id})}),expect.anything());
+ // Distinct recovery email is eligible for the same-mailbox predicate.
+ expect((await prefetch(f.tech.id)).has(destinationHash('recovery@example.net'))).toBe(false);
+});
+it('detaches the prefetch from an authorized transaction and restores that context',async()=>{
+ const context={scope:'organization' as const,orgId:f.org.id,accessibleOrgIds:[f.org.id],
+  accessiblePartnerIds:[],userId:f.tech.id};
+ await withDbAccessContext(context,async()=>{
+  expect(await prefetch(f.tech.id)).toContain(destinationHash('alias@example.com'));
+  expect(getCurrentDbAccessContext()).toBe(context);
+ });
+ expect(getCurrentDbAccessContext()).toBeUndefined();
+});
+it('isolates concurrent readers and refuses an unattributed port call',async()=>{
+ const secondTechnician=randomUUID();
+ await Promise.all([prefetch(f.tech.id),prefetch(secondTechnician)]);
+ expect(new Set(vi.mocked(delegant.invokeDelegantTool).mock.calls.map(([args])=>
+  args.actingUser.breezeUserId))).toEqual(new Set([f.tech.id,secondTechnician]));
+ vi.mocked(delegant.invokeDelegantTool).mockClear();
+ await expect(runOutsideDbContext(()=>callerVerificationPorts.mailboxes({orgId:f.org.id,target:f.target})))
+  .rejects.toThrow('mailbox_reader_missing');
+ expect(delegant.invokeDelegantTool).not.toHaveBeenCalled();
+});
+```
+
+The negative control is the W05 bug itself: temporarily remove `withMailboxReader` from `prefetch` and observe `mailbox_reader_missing` in the first test; removing only `runOutsideDbContext` fails the second test's no-held-context assertion. Restore both wrappers before committing. Do not mock the mailbox port or adapter to an array: that would conceal the missing reader again.
+
 - [ ] **Step 2: Run to failure**
 
 Run: `cd apps/api && npx vitest run src/services/callerVerification/mailboxes.test.ts`.
-Expected: missing mailbox module.
+Expected: missing mailbox module. Add `'src/services/callerVerification/mailboxes.integration.test.ts'` to integration `include` and unit `exclude`, alongside Task 7's route suite. From the repository root run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/callerVerification/mailboxes.integration.test.ts`. Before implementation the live suite must fail on the missing adapter/module, not report zero collected tests.
 
 - [ ] **Step 3: Implement all three dispatch branches and the set**
 
@@ -1476,6 +1638,7 @@ Add imports in `aiToolsM365.ts`: `AsyncLocalStorage` from `node:async_hooks`, `r
 ```ts
 const mailboxReader = new AsyncLocalStorage<string>();
 export function withMailboxReader<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  // Internal attribution only; independent of HTTP auth and DB context.
   return mailboxReader.run(userId, fn);
 }
 export async function fetchMailboxResourceByOrg(orgId: string, subject: EntraSubject): Promise<unknown> {
@@ -1507,7 +1670,7 @@ export async function fetchMailboxResourceByOrg(orgId: string, subject: EntraSub
 }
 ```
 
-Reader attribution is request-local async state, not a mutable module-level user ID. It works in the headless gate because the gate has `technicianUserId`; it does not synthesize auth or trust a new public actor field. The broker session string is an audit correlation for this internal read, not an invented interactive session or step-up grant. Preserve static Delegant principal IDs exactly as the existing client does.
+Reader attribution is invocation-local async state, not a mutable module-level user ID. `withMailboxReader` works with no request or DB context; it does not open a transaction. Callers that can hold an ambient transaction must detach the network prefetch explicitly with `runOutsideDbContext` as shown below. The adapter opens only short system-scoped connection probes and closes each before outbound I/O. It works in the headless gate because the gate has `technicianUserId`; it does not synthesize auth or trust a new public actor field. The broker session string is an audit correlation for this internal read, not an invented interactive session or step-up grant. Preserve static Delegant principal IDs exactly as the existing client does.
 
 In `delegantClient.ts`, import `m365ReadActionSchema` and `M365_READ_ACTION_FIELDS`. At the beginning of `invokeDelegantTool`, before JWT minting, add:
 
@@ -1563,24 +1726,40 @@ mailboxes: async ({orgId,target}) => {
 },
 ```
 
-In `gate.ts`, import `withMailboxReader` from `../aiToolsM365` and replace only `await ports.mailboxes({orgId:input.orgId,target:input.target})` with:
+In `gate.ts`, retain W01's `runOutsideDbContext` import from `../../db`, import `withMailboxReader` from `../aiToolsM365`, and replace only `await ports.mailboxes({orgId:input.orgId,target:input.target})` with:
 
 ```ts
-await withMailboxReader(input.technicianUserId,
-  () => ports.mailboxes({orgId:input.orgId,target:input.target}))
+await runOutsideDbContext(() => withMailboxReader(input.technicianUserId,
+  () => ports.mailboxes({orgId:input.orgId,target:input.target})))
 ```
 
-Keep W01's surrounding normalization/hash pipeline and catch-to-`mailboxHashes=null` unchanged. It prefetches outside a DB scope and then rechecks candidates under subject locks. Only an email candidate requires a known mailbox set; a Graph outage must not invalidate a usable SMS or workstation grant. W01's existing email branch converts null to `reason='subject_mailboxes_unknown'` and its `refuse` helper constructs the exact cross-wave error payload. Query the target OID, including a manager-authorized disable of another person. Export `fetchTargetMailboxes` from `index.ts`. The adapter does not widen authenticated tools: only the existing gate supplies the technician reader context after its authorization/policy checks.
+**W05 consumer contract (finding #2):** its final dispatch prefetch bypasses the ordinary gate prefetch. W05 Task 5 must import `withMailboxReader` from `../aiToolsM365`, retain `runOutsideDbContext` from `../../db`, and use this exact replacement for its email branch, before acquiring dispatch locks. That caller is the incorrect side of the finding: calling the port directly is deliberately still an error. W03 supplies the context-free reader wrapper and real adapter; W05 owns applying this block in its not-yet-created `dispatch.ts` and the full successful email dispatch test. Neither the port signature nor the cross-wave gate contract changes.
+
+```ts
+if (prepared.grant?.method === 'email') {
+  try {
+    const mailboxes = await runOutsideDbContext(() => withMailboxReader(gateInput.technicianUserId,
+      () => callerVerificationPorts.mailboxes({ orgId: input.orgId, target: gateInput.target })));
+    mailboxHashes = new Set(mailboxes
+      .map(value => normalizeDestination('email', value.replace(/^smtp:/i, '')))
+      .filter((value): value is string => !!value).map(destinationHash));
+  } catch { mailboxHashes = null; }
+}
+```
+
+The reader ID comes from W05's persisted intent (`gateInput.technicianUserId`), never a new public field. Do not infer it from request-local auth: SDK and worker dispatches are headless. Preserve fail-closed handling for a real backend failure.
+
+Keep W01's surrounding normalization/hash pipeline and catch-to-`mailboxHashes=null` unchanged. It prefetches outside a DB scope and then rechecks candidates under subject locks. Only an email candidate requires a known mailbox set; a Graph outage must not invalidate a usable SMS or workstation grant. W01's existing email branch converts null to `reason='subject_mailboxes_unknown'` and its `refuse` helper constructs the exact cross-wave error payload. Query the target OID, including a manager-authorized disable of another person. Export `fetchTargetMailboxes` from `index.ts`. The adapter does not widen authenticated tools: the gate and W05's authorized dispatch prefetch supply the persisted technician reader context.
 
 - [ ] **Step 4: Run to pass**
 
 Run: `cd apps/api && npx vitest run src/services/callerVerification/mailboxes.test.ts src/services/callerVerification/gate.test.ts src/services/aiToolsM365.test.ts src/services/delegantClient.test.ts src/services/m365ControlPlane/readActionService.test.ts`.
-Expected: normalization failures never become empty sets; existing tool routing unaffected. Preserve W01 gate tests for email aliases and add the real fetcher mock to its existing dependency seam, asserting `reason:'subject_mailboxes_unknown'` and no consumption when `fetchTargetMailboxes` rejects.
+Run the three live adapter tests with `cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/callerVerification/mailboxes.integration.test.ts`; then run `pnpm test-stack down` from the repository root (also on failure). Expected: context-free and detached reads return known hashes with correct attribution, reader state never leaks, normalization failures never become empty sets, and existing tool routing is unaffected. Preserve W01 gate tests for email aliases and add the real fetcher mock to its existing dependency seam, asserting `reason:'subject_mailboxes_unknown'` and no consumption when `fetchTargetMailboxes` rejects.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/delegantClient.ts apps/api/src/services/delegantClient.test.ts apps/api/src/services/aiToolsM365.ts apps/api/src/services/aiToolsM365.test.ts apps/api/src/services/callerVerification/mailboxes.ts apps/api/src/services/callerVerification/mailboxes.test.ts apps/api/src/services/callerVerification/gate.ts apps/api/src/services/callerVerification/gate.test.ts apps/api/src/services/callerVerification/index.ts apps/api/src/services/callerVerification/ports.ts
+git add apps/api/src/services/callerVerification/mailboxes.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts apps/api/src/services/delegantClient.ts apps/api/src/services/delegantClient.test.ts apps/api/src/services/aiToolsM365.ts apps/api/src/services/aiToolsM365.test.ts apps/api/src/services/callerVerification/mailboxes.ts apps/api/src/services/callerVerification/mailboxes.test.ts apps/api/src/services/callerVerification/gate.ts apps/api/src/services/callerVerification/gate.test.ts apps/api/src/services/callerVerification/index.ts apps/api/src/services/callerVerification/ports.ts
 git commit -m "feat(caller-verification): resolve target mailbox sets across M365 backends"
 ```
 
@@ -2012,19 +2191,19 @@ Do not call a nonexistent root `typecheck` script. Confirm the exhaustive execut
 (cd apps/web && npx vitest run src/components/callerVerification/CallerVerifyCard.test.tsx src/lib/i18n/callerVerification.test.ts src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts src/lib/__tests__/no-silent-mutations.test.ts)
 ```
 
-Read the reported test-file counts. Unit configuration must exclude the co-located live route suite. The W01 service/gate tests must execute, not be silently absent. Run `src/services/callerVerification/linkPorts.test.ts` and the live publisher path in Task 7; the companion W01 plan defines `publishCallerVerificationEffects` in `jobs/callerVerificationPublisher.ts`.
+Read the reported test-file counts. Unit configuration must exclude both co-located live suites. The W01 service/gate tests must execute, not be silently absent. Run `src/services/callerVerification/linkPorts.test.ts` and the live publisher path in Task 7; the companion W01 plan defines `publishCallerVerificationEffects` in `jobs/callerVerificationPublisher.ts`.
 
 - [ ] **Step 5: Run live DB and tenancy contracts**
 
 ```bash
 pnpm test-stack up
-(cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/callerVerifyPublic.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts)
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/callerVerifyPublic.integration.test.ts src/services/callerVerification/mailboxes.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts)
 (cd apps/api && npx vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts)
 (cd apps/api && npx vitest run --config vitest.config.integration-suite-coverage.ts src/__tests__/integration/integration-suite-coverage.integration.test.ts)
 pnpm test-stack down
 ```
 
-Run `pnpm db:check-drift` against the migrated test stack before teardown. Expected: every named suite runs with nonzero tests; the public suite has eight cases; RLS remains enabled+forced; no device/ticket snapshot-name discovery; all columns remain export-classified. Always tear down in a shell `trap` or `finally` if a command fails. Do not enable the production flag to run tests. The live rejection case requires W01's incident behavior and is a hard dependency failure if that implementation is only a stub.
+Run `pnpm db:check-drift` against the migrated test stack before teardown. Expected: every named suite runs with nonzero tests; the public suite has ten cases and the mailbox adapter suite has three cases; RLS remains enabled+forced; no device/ticket snapshot-name discovery; all columns remain export-classified. Always tear down in a shell `trap` or `finally` if a command fails. Do not enable the production flag to run tests. The live rejection case requires W01's incident behavior and is a hard dependency failure if that implementation is only a stub.
 
 - [ ] **Step 6: Commit and open the implementation PR**
 
@@ -2040,7 +2219,7 @@ Use the resolved tracking numbers, with the branch exactly `feature/<parent#>-ca
 
 ## Self-review
 
-**Spec coverage.** Link token and asynchronous delivery → Tasks 1–3. D2 exact technician/action/target, reverse code, three stable candidates, rejection and independent callback script → Tasks 5, 12–13. Public route scope, readiness, no-store, rate limits and two-tier miss budget → Tasks 4–6. One-winner CAS, late rejection and incident idempotency → Task 7. Dedicated four-field mailbox action across direct Graph, control plane and Delegant → Tasks 8–11. Gate fetcher and failure-to-`subject_mailboxes_unknown` → Task 11. All wave checks and PR → Task 14.
+**Spec coverage.** Link token and asynchronous delivery → Tasks 1–3. D2 exact technician/action/target, reverse code, three stable candidates, rejection and independent callback script → Tasks 5, 12–13. Public route scope, readiness, no-store, rate limits and two-tier miss budget → Tasks 4–6. One-winner CAS, late rejection and incident idempotency → Task 7. Finding #3: reuse any authorized decision transaction, with real receipt/decision/audit/observation rollback, retry, cross-org refusal and headless fallback coverage → Tasks 6–7. Dedicated four-field mailbox action across direct Graph, control plane and Delegant → Tasks 8–11. Gate fetcher and failure-to-`subject_mailboxes_unknown` → Task 11. Finding #2 (W03 side): context-free reader attribution, explicit W05 detached-prefetch block, real adapter/hash success and context-isolation tests → Task 11; W05 owns the dispatch marker/outbound acceptance test. All wave checks and PR → Task 14.
 
 **Contract consistency.** No table, enum, route, command or IPC rename. W01 service signatures are retained; `fetchTargetMailboxes(orgId, subject): Promise<Set<string>>` is the W03 addition. New private adapter names are explicitly defined here, not attributed to nonexistent source. `getTwilioService('messaging')` and `sendSmsMessage(phoneNumber,message,options?)` are the real Twilio path. The email helper reuses `renderLayout`, not a guessed template API. The flag remains off.
 
@@ -2048,4 +2227,4 @@ Use the resolved tracking numbers, with the branch exactly `feature/<parent#>-ca
 
 **Review rationale retained.** Late rejection is not blocked by a pending/expiry precheck; public number matching does not establish technician identity; aliases come from the pinned target OID; missing alias data never becomes an empty success; provider success never approves a grant; current destination hash prevents a delayed worker from sending to a replacement address; a counted SQL-update probe detects last-writer-wins; separate Redis namespaces prevent caller traffic from exhausting Quick Support.
 
-**Execution limits.** This is an implementation plan, not a report of tests run or code deployed. All new interfaces, files and commands have explicit tasks. The only cross-wave missing artifacts are identified as W01 prerequisites; their source lines cannot honestly be supplied before W01 lands. The document-writing change touches only this plan and leaves the index and companion wave plans unchanged.
+**Execution limits.** This is an implementation plan, not a report of tests run or code deployed. All new interfaces, files and commands have explicit tasks. Cross-wave missing artifacts are identified as W01 prerequisites and the explicitly W05-owned dispatch consumer; W02's merge regression is identified separately and is not required by the parallel W03 tests; their source lines cannot honestly be supplied before their owning waves land. The document-writing change touches only this plan and leaves the index and companion wave plans unchanged.

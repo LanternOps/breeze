@@ -22,8 +22,8 @@
 - Classify all four new `action_intents` columns as `included` in `CORE_TENANT_EXPORT_POLICY`. Existing cascade/merge classifications remain; W01 owns the four caller tables' cascade/export/merge/RLS registrations.
 - Readiness flag is `CALLER_VERIFICATION_ENABLED`. It remains false through Tasks 1–13, then defaults true in Task 14. False hides authenticated routes/UI and refuses protected execution; it is not a bypass switch. Missing intents always refuse. Do not expose W04 entry points before enforcement and rejection work.
 - Preserve the exact gate interface: `requireCallerVerification(input: GateInput): Promise<{ verificationId: string; tier: number }>` with `GateInput = { orgId: string; action: CallerVerificationAction; target: EntraSubject; backendTenantId: string; technicianUserId: string; intentId: string; mode: 'check' | 'consume' }`. Creation uses `check` on unused evidence; dispatch separately insists on consumed ownership. Do not change what `check` means globally.
-- Preserve `withSubjectLocks<T>(tx: Tx, bindingIds: Array<string | null>, fn: () => Promise<T>): Promise<T>`: ascending, deduplicated UUIDs, nulls omitted. Rejection, consume and dispatch lock **both requester and target**, including manager A authorising B. No external mutation while those locks or their transaction remain open.
-- The default partner policy requires tier 2; an org can only tighten it. A configured tier 0 still requires pinned identity, matching backend tenant and a durable intent. The index requires a verification ID even at tier 0 but specifies no sentinel; reconcile W01's implementation by returning `{ verificationId: '', tier: 0 }` for that explicit bypass; dispatch explicitly bypasses only grant ownership at tier 0, never identity/fence/intent checks. Task 5 specifies this branch rather than inventing a grant row.
+- Preserve `withSubjectLocks<T>(tx: Tx, bindingIds: Array<string | null>, fn: () => Promise<T>): Promise<T>`: ascending, deduplicated UUIDs, nulls omitted. Rejection and positive-tier consume/dispatch lock **both requester and target**, including manager A authorising B. No external mutation while those locks or their transaction remain open.
+- The default partner policy requires tier 2; an org can only tighten it. A configured tier 0 still requires pinned identity, matching backend tenant and a durable intent. The index requires a verification ID even at tier 0 but specifies no sentinel; reconcile W01's implementation by returning `{ verificationId: '', tier: 0 }` for that explicit bypass; dispatch branches at tier 0 before binding, grant and fence checks, while retaining feature readiness, pinned identity, backend tenant, intent and dispatch-marker checks. Task 5 specifies this branch rather than inventing a grant row.
 - `withSystemDbAccessContext` joins an ambient context. A background outbox job calls it directly. Request-originated escalation must use `runOutsideDbContext` **at the boundary**, never inside a transaction already holding subject locks. Dispatch reopens the same restricted org context, commits the marker, and only then performs HTTP/broker I/O.
 - Web mutations use `runAction`; all new UI strings use real translations in all 8 locales: `en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`. This wave consumes W04's UI without adding a second flow.
 - Branch `feature/<parent#>-caller-verification/wave-<sub#>`; PR body `Closes #<sub#>`. Resolve those two issue numbers from the assigned wave before creating the implementation branch. No merge/deploy in this plan.
@@ -41,7 +41,7 @@
 | `apps/api/src/services/actionIntents/callerTarget.ts` | Protected action mapping, pinned connection loading |
 | `apps/api/src/services/actionIntents/intentService.ts` | Resolve/check/store target before approval fan-out |
 | `apps/api/src/services/actionIntents/revalidateRelease.ts` | Post-claim consume, structured failure |
-| `apps/api/src/services/callerVerification/dispatch.ts`, `dispatchGateContext.ts` | Short scoped dispatch transaction and exact consumed-grant context |
+| `apps/api/src/services/callerVerification/dispatch.ts`, `dispatch.test.ts`, `dispatchGateContext.ts` | Task 5: tier-zero branch, reader-scoped mailbox prefetch and committed dispatch marker |
 | `apps/api/src/services/m365ControlPlane/readActionService.ts` | Verify the actual target-lookup credential against the expected tenant |
 | `apps/api/src/jobs/callerVerificationPublisher.ts` | W01-owned durable administrative notification publication |
 | `apps/api/src/services/callerVerification/gate.ts`, `locks.ts`, `rejection.ts` | W01-owned gate/fence/locking seam |
@@ -56,13 +56,14 @@
 | `apps/api/src/services/mfaStepUpGrant.ts` | Administrative operation and digest |
 | `apps/api/src/routes/auth/schemas.ts`, `mfa.ts` | Interactive step-up operation/resource |
 | `apps/api/src/services/callerVerification/administrativeContext.ts`, `administrative.ts` | Request proof context, durable row and live eligibility |
-| `apps/api/src/services/callerVerification/service.ts` | W01-owned fixed `createAdministrative` export |
+| `apps/api/src/services/callerVerification/service.ts` | Tasks 11–12: preserve administrative attempt cap/audit actor; project consumed intent status through W01’s HTTP view |
 | `apps/api/src/routes/callerVerification.ts` | W01-owned administrative POST |
 | `apps/api/src/services/callerVerification/refusal.ts` | Single safe refusal serializer |
 | `apps/api/src/services/aiAgentSdk.ts`, `apps/api/src/jobs/intentReleaseWorker.ts` | Inline/worker refusal persistence |
 | `apps/api/src/routes/mcpServer.ts`, `apps/api/src/routes/helper/index.ts` | External MCP and helper stream/history adapters |
 | `apps/api/src/services/callerVerification/callerVerificationGate.contract.test.ts` | Four-file named-case wiring contract |
-| `apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts` | Real DB race, tenant and administrative proofs |
+| `apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts` | Task 13: email adapter, bindingless tier zero, administrative cap/audit and outbound failure through real release |
+| `apps/api/src/services/callerVerification/readiness.test.ts`, `apps/api/src/config/env.callerVerification.test.ts` | Task 14: inherited and new activation tests agree on unset→true, explicit false and invalid values |
 | `apps/api/src/config/env.ts`, `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml` | Activation and API env mapping |
 | `apps/docs/src/content/docs/security/caller-verification.mdx`, `docs/release-notes/next-release-draft.md` | User/operator guidance |
 
@@ -602,7 +603,9 @@ export async function prepareCallerDispatch(input: {
   const prepared = await runOutsideDbContext(() => withDbAccessContext(context, async () => {
     const [pin] = await db.select().from(actionIntents).where(and(eq(actionIntents.id, input.intentId!), eq(actionIntents.orgId, input.orgId))).limit(1);
     if (!pin?.requestedByUserId || !pin.targetEntraTenantId || !pin.targetEntraOid) refuse('target_rebound');
-    const [grant] = await db.select().from(callerVerifications).where(and(eq(callerVerifications.orgId, input.orgId), eq(callerVerifications.consumedIntentRef, pin.id))).limit(1);
+    const policy = await getEffectivePolicy(input.orgId);
+    const requiredTier = input.action === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser;
+    const [grant] = requiredTier === 0 ? [] : await db.select().from(callerVerifications).where(and(eq(callerVerifications.orgId, input.orgId), eq(callerVerifications.consumedIntentRef, pin.id))).limit(1);
     return { pin, grant };
   }));
   const gateInput: GateInput = { orgId: input.orgId, action: input.action,
@@ -610,8 +613,12 @@ export async function prepareCallerDispatch(input: {
     backendTenantId: input.backendTenantId, technicianUserId: prepared.pin.requestedByUserId!, intentId: input.intentId!, mode: 'check' };
   let mailboxHashes: Set<string> | null = null;
   if (prepared.grant?.method === 'email') {
-    try { mailboxHashes = new Set((await callerVerificationPorts.mailboxes({ orgId: input.orgId, target: gateInput.target }))
-      .map(value => normalizeDestination('email', value.replace(/^smtp:/i, ''))).filter((value): value is string => !!value).map(destinationHash)); } catch { mailboxHashes = null; }
+    try {
+      const mailboxes = await runOutsideDbContext(() => withMailboxReader(gateInput.technicianUserId,
+        () => callerVerificationPorts.mailboxes({ orgId: input.orgId, target: gateInput.target })));
+      mailboxHashes = new Set(mailboxes.map(value => normalizeDestination('email', value.replace(/^smtp:/i, '')))
+        .filter((value): value is string => !!value).map(destinationHash));
+    } catch { mailboxHashes = null; }
   }
   await runOutsideDbContext(() => withDbAccessContext(context, async () => {
     const [intent] = await db.select().from(actionIntents).where(and(
@@ -622,11 +629,21 @@ export async function prepareCallerDispatch(input: {
         intent.targetEntraOid !== input.oid) refuse('target_rebound');
     const backend = await loadPinnedCallerBackend(input.orgId, input.connectionId);
     if (backend.tenantId !== input.backendTenantId || backend.tenantId !== intent.targetEntraTenantId) refuse('tenant_mismatch');
+    if (!isCallerVerificationEnabled()) refuse('feature_disabled');
+    const policy = await getEffectivePolicy(input.orgId);
+    const requiredTier = input.action === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser;
+    const markDispatch = async () => {
+      const marked = await db.update(actionIntents).set({ dispatchStartedAt: sql`now()` }).where(and(
+        eq(actionIntents.id, intent.id), eq(actionIntents.orgId, input.orgId),
+        eq(actionIntents.status, 'executing'), isNull(actionIntents.dispatchStartedAt),
+      )).returning({ id: actionIntents.id });
+      if (!marked.length) throw new Error('Dispatch already started; reconcile the existing intent before retrying');
+    };
+    // Policy disables verification-specific checks, not the durable dispatch boundary.
+    if (requiredTier === 0) { await markDispatch(); return; }
     const target = await resolveTargetBinding(input.orgId, {
       entraTenantId: intent.targetEntraTenantId!, entraOid: intent.targetEntraOid!,
     });
-    const policy = await getEffectivePolicy(input.orgId);
-    const requiredTier = input.action === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser;
     const [consumed] = await db.select().from(callerVerifications).where(and(
       eq(callerVerifications.orgId, input.orgId), eq(callerVerifications.consumedIntentRef, intent.id),
     )).limit(1);
@@ -640,8 +657,8 @@ export async function prepareCallerDispatch(input: {
           lockedGrant.requesterBindingId !== consumed?.requesterBindingId || lockedGrant.targetBindingId !== target.id)) {
         refuse('target_rebound', requiredTier);
       }
-      // W01's fence predicate includes cooling-off and override, applied
-      // even for tier 0. It must use this SAME transaction-routed db.
+      // Positive-tier dispatch uses W01's cooling-off/override predicate
+      // in this SAME transaction-routed db.
       try { await assertCallerSubjectsUnfenced(input.orgId, [target.id, consumed?.requesterBindingId ?? null]); }
       catch (error) {
         if (error instanceof CallerVerificationValidationError &&
@@ -652,17 +669,13 @@ export async function prepareCallerDispatch(input: {
       const verified = await withPreparedDispatchGate({ input: gateInput, verificationId: consumed?.id ?? null, mailboxHashes },
         () => gate(gateInput));
       if (requiredTier > 0 && verified.verificationId !== consumed!.id) refuse('grant_consumed', requiredTier);
-      const marked = await db.update(actionIntents).set({ dispatchStartedAt: sql`now()` }).where(and(
-        eq(actionIntents.id, intent.id), eq(actionIntents.orgId, input.orgId),
-        eq(actionIntents.status, 'executing'), isNull(actionIntents.dispatchStartedAt),
-      )).returning({ id: actionIntents.id });
-      if (!marked.length) throw new Error('Dispatch already started; reconcile the existing intent before retrying');
+      await markDispatch();
     });
   }));
 }
 ```
 
-Import `withPreparedDispatchGate`, `GateInput`, `callerVerificationPorts`, `normalizeDestination` and `destinationHash` in `dispatch.ts` from the corresponding sibling modules. Export a wrapper over W01's existing `fencedUntil` with this exact new internal signature: `assertCallerSubjectsUnfenced(orgId: string, bindingIds: Array<string | null>): Promise<void>`. It resolves binding contacts, reads `rejected_by_user` rows, applies policy cooling-off and `fence_override_until`, and throws `contact_fenced`. Do not create a second independent fence algorithm. Rejection must acquire the full sorted lock set **before** writing the fence, and dispatch must re-read the consumed row under those locks through the real gate; a snapshot from before locking is not authority.
+Import `withMailboxReader` from W03's `../aiToolsM365`, `isCallerVerificationEnabled` from `./gate`, and `withPreparedDispatchGate`, `GateInput`, `callerVerificationPorts`, `normalizeDestination` and `destinationHash` in `dispatch.ts` from the corresponding sibling modules. Export a wrapper over W01's existing `fencedUntil` with this exact new internal signature: `assertCallerSubjectsUnfenced(orgId: string, bindingIds: Array<string | null>): Promise<void>`. It resolves binding contacts, reads `rejected_by_user` rows, applies policy cooling-off and `fence_override_until`, and throws `contact_fenced`. Do not create a second independent fence algorithm. Rejection must acquire the full sorted lock set **before** writing the fence, and dispatch must re-read the consumed row under those locks through the real gate; a snapshot from before locking is not authority.
 
 The wrapper reuses W01's fence calculation; add `inArray` and the validation error import to `gate.ts`:
 
@@ -681,7 +694,7 @@ export async function assertCallerSubjectsUnfenced(orgId: string, bindingIds: Ar
 
 No `requireCallerVerification` implementation may escape this context or open a separate connection for the fence/CAS. Graph mailbox reads should be fetched before locks, then binding/destination identity rechecked under locks. A committed marker with a subsequent HTTP failure remains an honest “dispatch started” record, not proof Microsoft applied it.
 
-- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/services/callerVerification/dispatch.test.ts src/services/callerVerification/gate.test.ts` → pass; Task 13 proves commit visibility and lock races with real PostgreSQL.
+- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/services/callerVerification/dispatch.test.ts src/services/callerVerification/gate.test.ts` → pass; Task 13 additionally proves bindingless tier-zero dispatch, successful email dispatch through W03’s real mailbox adapter, commit visibility and lock races with real PostgreSQL.
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -1201,7 +1214,7 @@ export async function administrativeEligible(input: {
 
 `auth.token.sid` is **refreshTokenFamilies.familyId**, not `sessions.id`: `jwt.ts` promotes `refreshFam` to `sid`. Read live DB epochs, not only cached token claims. Gate administrative branch calls `administrativeEligible` with stored row fields; false throws `stepup_invalidated`. It remains exempt from `allowedMethods` and requester/destination checks, but must meet target/fence/technician rules and `allowAdministrativeDisable`. Reject it for reset, regardless of `action_scope` corruption.
 
-Within W01 `createAdministrative`, retain its existing actor/org/contact site checks and view serializer. Replace its inactive stub body after those checks with:
+W01 `createAdministrative` is an implemented factory with a default-refusing proof port, not a stub. Retain its feature flag and actor/org/contact site checks and HTTP view projection. Replace the proof adapter and row construction after those checks with the following body, preserving the contact lock, hourly count, cap and incremented attempt number. Import `lockContact` alongside `withSubjectLocks`; the cap must run before Redis grant consumption:
 
 ```ts
 const proof = administrativeProofFor(actor.userId);
@@ -1213,10 +1226,19 @@ const bindings = (await bindingsForContact(input.orgId, input.targetContactId))
   .filter(b => !b.revokedAt && b.entraTenantId && b.entraOid);
 if (bindings.length !== 1) throw new CallerVerificationValidationError('subject_ambiguous', 'One current Entra binding is required');
 const target = bindings[0]!;
+await lockContact(input.orgId, input.targetContactId);
 return withSubjectLocks(db, [target.id], async () => {
 const current = await resolveTargetBinding(input.orgId, { entraTenantId: target.entraTenantId!, entraOid: target.entraOid! });
 if (current.id !== target.id || current.contactId !== input.targetContactId) throw new CallerVerificationValidationError('target_rebound', 'Target binding changed');
 await assertCallerSubjectsUnfenced(input.orgId, [target.id]);
+const [attempts] = await db.select({ count: sql<number>`count(*)::int` }).from(callerVerifications).where(and(
+  eq(callerVerifications.orgId, input.orgId), eq(callerVerifications.contactId, input.targetContactId),
+  sql`${callerVerifications.createdAt}>now()-interval '1 hour'`,
+));
+const count = attempts!.count;
+if (count >= policy.maxAttemptsPerHour) {
+  throw new CallerVerificationValidationError('attempt_cap', 'Contact attempt limit reached');
+}
 const now = new Date();
 if (!await administrativeEligible({ orgId: input.orgId, userId: actor.userId, sid: proof.sid,
   authEpoch: proof.authEpoch, mfaEpoch: proof.mfaEpoch, verifiedAt: now, ttlMinutes: policy.verificationTtlMinutes })) {
@@ -1241,14 +1263,14 @@ const [row] = await db.insert(callerVerifications).values({
   expiresAt: new Date(verifiedAt.getTime() + policy.verificationTtlMinutes * 60_000),
   // Administrative rows never deliver a challenge; keep NOT NULL schema
   // fields valid without creating any public bearer token.
-  matchValue: '00', decoyValues: ['01', '02'], reverseCode: '0000', attemptNo: 1,
+  matchValue: '00', decoyValues: ['01', '02'], reverseCode: '0000', attemptNo: count + 1,
 }).returning();
-await recordEffect(row!, 'administrative_created');
+await recordEffect(row!, 'administrative_created', actor.userId);
 return get(actor, input.orgId, row!.id);
 });
 ```
 
-Place binding/fence revalidation and insertion under `withSubjectLocks` on the target, within the existing request transaction. Consume returns **boolean**, so copy the exact successfully matched binding above; there is no `grant.verifiedAt` to copy. Stamp time after consume. Failed SQL after Redis GETDEL requires another interactive step-up; never recreate the consumed grant. Import W01's `recordEffect` from `./effects`; it records the administrative audit, including reason, transactionally. W01's new publisher uses the ledger itself as its durable outbox. Leave `deliveryPublishedAt` null for administrative rows and extend that publisher as specified below; no new outbox table is needed.
+Keep the contact lock before the target subject lock, with the hourly count, step-up consume and insertion inside the existing request transaction. Count all methods and statuses in the last hour, as W01 does. Task 13 races two administrative requests at the cap and verifies the losing request retains its step-up grant and the winner audits the technician. Consume returns **boolean**, so copy the exact successfully matched binding above; there is no `grant.verifiedAt` to copy. Stamp time after consume. Failed SQL after Redis GETDEL requires another interactive step-up; never recreate the consumed grant. Import W01's `recordEffect` from `./effects`; it records the administrative audit, including reason, transactionally. W01's new publisher uses the ledger itself as its durable outbox. Leave `deliveryPublishedAt` null for administrative rows and extend that publisher as specified below; no new outbox table is needed.
 
 Add the actual route using W01's `cv`, `base`, `write`, `actor(c)` and `oid(c)` helpers and `administrativeCallerVerificationSchema`:
 
@@ -1314,7 +1336,7 @@ git commit -m "feat(caller-verification): create session-bound administrative gr
 
 ### Task 12: Preserve typed refusals through all four adapters
 
-**Files:** Modify `apps/api/src/services/aiAgentSdk.ts:1207,1455,1477`, `apps/api/src/services/aiAgentSdk.test.ts`; `apps/api/src/services/aiAgentSdkTools.ts:132,367,468,668,1097`, `apps/api/src/services/aiAgentSdkTools.m365gating.test.ts`; `apps/api/src/jobs/intentReleaseWorker.ts:707,738,922`, `apps/api/src/jobs/intentReleaseWorker.test.ts`; `apps/api/src/routes/mcpServer.ts:1324`, `apps/api/src/routes/mcpServer.test.ts`; `apps/api/src/routes/helper/index.test.ts:148,306`. Read helper stream/history at `apps/api/src/routes/helper/index.ts:383–405,612`; no product change there if passthrough remains intact.
+**Files:** Modify `apps/api/src/services/aiAgentSdk.ts:1207,1455,1477`, `apps/api/src/services/aiAgentSdk.test.ts`; `apps/api/src/services/aiAgentSdkTools.ts:132,367,468,668,1097`, `apps/api/src/services/aiAgentSdkTools.m365gating.test.ts`; `apps/api/src/jobs/intentReleaseWorker.ts:707,738,922`, `apps/api/src/jobs/intentReleaseWorker.test.ts`; `apps/api/src/routes/mcpServer.ts:1324`, `apps/api/src/routes/mcpServer.test.ts`; `apps/api/src/routes/helper/index.test.ts:148,306`. Read helper stream/history at `apps/api/src/routes/helper/index.ts:383–405,612`; no product change there if passthrough remains intact. Also modify W01-owned `apps/api/src/services/callerVerification/service.ts` (the additive HTTP projection).
 
 **Interfaces:** Denied `PreToolUseCallback` adds `requiresCallerVerification?: CallerRefusalPayload`. Worker persists `{ error: 'Caller verification required', requiresCallerVerification }` in `ActionIntentTransitionPatch.result`; existing failure `errorCode` remains `caller_verification_required`. MCP retains text-content envelope and sets `isError:true`; helper retains JSON in `tool_result.output` and history `toolOutput`.
 
@@ -1448,7 +1470,46 @@ if (refusal) {
 }
 ```
 
-Return normally, no BullMQ throw or retry. A refused final gate writes no marker and made no mutation. For a transport failure after a marker, retain normal execution failure and stored consumption; surface W04's “verification used, action failed, re-verify” state from the persisted intent/grant relationship, never clear `consumed_at`.
+Return normally, no BullMQ throw or retry. A refused final gate writes no marker and made no mutation. For a transport failure after a marker, retain normal execution failure and stored consumption. The concrete projection below supplies W04's translated “verification used, action failed, re-verify” state from the persisted intent/grant relationship; never clear `consumed_at`. Task 13 exercises this path through the real release worker and a failing outbound client.
+
+Extend W01's **existing** `service.ts` additive HTTP projection; do not change the index's `VerificationView` or return signatures. W04 consumes the exact field `consumedIntentStatus` and owns its translated failed-action/re-verification UI in `VerificationStatus`, `VerificationFlow` and `TicketVerificationBadge` (W04 Tasks 3, 5–6, including all eight locale values for `usedActionFailed` and `reverify`). Preserve those consumers unchanged. Replace W01's additive type and pure projection helper with the following; the optional final argument preserves its existing test calls:
+
+```ts
+export type VerificationDetails = VerificationView & {
+  remainingAttempts: number | null; usableUntil: string | null; incidentId: string | null;
+  consumedAction: CallerVerificationAction | null;
+  consumedIntentStatus: typeof actionIntents.$inferSelect['status'] | null;
+  undeliverableReason: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' | 'sms_failed' | 'email_failed' | null;
+};
+export function verificationDetails(r: VerificationRow, userId: string | null, targetId: string | null,
+  policy: Awaited<ReturnType<typeof getEffectivePolicy>>, attempts: number, incidentId: string | null,
+  actionName: string | null, intentStatus: typeof actionIntents.$inferSelect['status'] | null = null): VerificationDetails {
+  const reasons = ['no_session_for_user', 'session_not_console', 'helper_outdated', 'sms_failed', 'email_failed'] as const;
+  const reason = reasons.find(value => value === r.reason) ?? null;
+  const proofAt = r.method === 'administrative_stepup' ? r.stepupVerifiedAt : r.decidedAt;
+  return { ...view(r, userId, targetId), remainingAttempts: Math.max(0, policy.maxAttemptsPerHour - attempts),
+    usableUntil: r.status === 'verified' && proofAt
+      ? new Date(proofAt.getTime() + policy.verificationTtlMinutes * 60000).toISOString() : null,
+    incidentId,
+    consumedAction: !r.consumedAt ? null : actionName === 'm365_reset_password' ? 'reset_password'
+      : actionName === 'm365_disable_user' ? 'disable_user' : null,
+    consumedIntentStatus: r.consumedAt ? intentStatus : null,
+    undeliverableReason: r.status === 'undeliverable' ? reason : null };
+}
+```
+
+In `projectVerification`, replace its consumed-intent select and final return with this concrete code. The authorized org predicate is required even under system scope; a merge may leave the historical intent in the former org. Do not expose executor errors, credentials, or raw `result`:
+
+```ts
+const [intent] = r.consumedAt && r.consumedIntentRef
+  ? await db.select({ actionName: actionIntents.actionName, status: actionIntents.status }).from(actionIntents)
+    .where(and(eq(actionIntents.orgId, r.orgId), eq(actionIntents.id, r.consumedIntentRef))).limit(1)
+  : [];
+return verificationDetails(r, userId, targetId, policy, Number(attempts?.count ?? 0),
+  incident?.id ?? null, intent?.actionName ?? null, intent?.status ?? null);
+```
+
+All start/get/cancel/attest/history/ticket/admin responses retain W01's `projectVerification` path. An absent or out-of-org intent projects null while `consumedAt` remains set. Task 13's real release failure asserts this projection through the authorized `get` reader, with a separate cross-org negative control. Run the exact W04 response and presentation suites in Step 4; the failed-action display must be driven by `consumedIntentStatus === 'failed'`, never by consumption alone. Re-verification creates a fresh challenge through W04's existing `runAction` path; it never replays the failed intent.
 
 MCP catch becomes:
 
@@ -1460,12 +1521,12 @@ const safeError = compactToolResultForChat(toolName, JSON.stringify(refusal ?? {
 
 Keep its failure ledger/MCP envelope. Session-aware SDK catch likewise uses `callerRefusal(error)` before generic sanitisation and passes the safe serialized object to `safePostToolUse`; never put a `SecretToolResult.secrets` into the refusal. Check `compactToolResultForChat` does not discard `requiresCallerVerification`; if it transforms that tool's payload, return this bounded refusal object before compaction. Existing Tier-3 MCP denial at `mcpServer.ts:1215` must remain.
 
-- [ ] **Step 4: Run:** Step 2 command plus `cd apps/api && npx vitest run src/services/aiAgentSdkTools.m365gating.test.ts` → each adapter has a passing behavioural assertion; helper stream/history remain intact.
+- [ ] **Step 4: Run:** Step 2 command plus `cd apps/api && npx vitest run src/services/aiAgentSdkTools.m365gating.test.ts` → each adapter has a passing behavioural assertion; helper stream/history remain intact. Also run `cd apps/api && npx vitest run src/services/callerVerification/service.test.ts` and `cd apps/web && npx vitest run src/lib/api/callerVerification.test.ts src/components/callerVerification/VerificationStatus.test.tsx src/components/callerVerification/VerifyCallerModal.test.tsx src/components/callerVerification/TicketVerificationBadge.test.tsx` to verify the inherited projection and translated re-verification consumers.
 - [ ] **Step 5: Commit.**
 
 ```bash
 ls apps/api/migrations | sort | tail -1
-git add apps/api/src/services/aiAgentSdk.ts apps/api/src/services/aiAgentSdk.test.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.m365gating.test.ts apps/api/src/jobs/intentReleaseWorker.ts apps/api/src/jobs/intentReleaseWorker.test.ts apps/api/src/routes/mcpServer.ts apps/api/src/routes/mcpServer.test.ts apps/api/src/routes/helper/index.test.ts
+git add apps/api/src/services/callerVerification/service.ts apps/api/src/services/aiAgentSdk.ts apps/api/src/services/aiAgentSdk.test.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.m365gating.test.ts apps/api/src/jobs/intentReleaseWorker.ts apps/api/src/jobs/intentReleaseWorker.test.ts apps/api/src/routes/mcpServer.ts apps/api/src/routes/mcpServer.test.ts apps/api/src/routes/helper/index.test.ts
 git commit -m "fix(caller-verification): preserve refusals through every adapter"
 ```
 
@@ -1516,7 +1577,7 @@ The live suite imports `./setup` and seeds **before each test** because shared s
 ```ts
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, users, contacts, sites, actionIntents,
@@ -1528,6 +1589,46 @@ import { resolveTargetBinding } from '../../services/callerVerification/subjects
 import { loadPinnedCallerBackend } from '../../services/actionIntents/callerTarget';
 import { revokeIntentsForSubject } from '../../services/actionIntents/revokeIntentsForSubject';
 import { computeArgumentDigest, canonicalizeArguments } from '../../services/actionIntents/canonicalize';
+import { getCurrentDbAccessContext, runOutsideDbContext } from '../../db';
+import { callerVerificationDestinations, auditLogs, approvalRequests } from '../../db/schema';
+import { destinationHash } from '../../services/callerVerification/destinations';
+import * as mailboxReadService from '../../services/m365ControlPlane/readActionService';
+
+// Match the existing jobs/intentReleaseWorkerM365Headless.integration.test.ts
+// transport boundary. No gate, dispatch, headless service or DB mocks.
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import { get as getVerification } from '../../services/callerVerification/service';
+const outbound = vi.hoisted(() => ({ executeWriteAction: vi.fn() }));
+vi.mock('../../services/m365ControlPlane/graphActionsExecutorClient', () => ({
+  createGraphActionsExecutorClient: () => ({ executeWriteAction: outbound.executeWriteAction }),
+  GraphActionsExecutorClientError: class GraphActionsExecutorClientError extends Error {},
+}));
+let releaseTempDir: string;
+let releaseSigningFile: string;
+beforeAll(() => {
+  releaseTempDir = mkdtempSync(join(tmpdir(), 'breeze-caller-release-'));
+  releaseSigningFile = join(releaseTempDir, 'signing.jwk');
+  writeFileSync(releaseSigningFile, JSON.stringify({ kty: 'OKP', crv: 'Ed25519', alg: 'EdDSA',
+    use: 'sig', kid: 'graph-actions-api-1', x: Buffer.alloc(32, 1).toString('base64url'),
+    d: Buffer.alloc(32, 2).toString('base64url') }), { mode: 0o600 });
+});
+beforeEach(() => {
+  outbound.executeWriteAction.mockReset();
+  for (const [name, value] of Object.entries({
+    M365_GRAPH_ACTIONS_TOOLS_ENABLED: 'true', M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: '*',
+    M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: 'c3333333-3333-4333-8333-333333333333',
+    M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION: '0123456789abcdef0123456789abcdef',
+    M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF: 'akv://vault.example/m365-customer-graph-actions/0123456789abcdef0123456789abcdef',
+    M365_GRAPH_ACTIONS_EXECUTOR_URL: 'https://executor.example.test',
+    M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: 'm365-graph-actions-executor',
+    M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: releaseSigningFile,
+    M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: 'graph-actions-api-1',
+  })) vi.stubEnv(name, value);
+});
+afterAll(() => rmSync(releaseTempDir, { recursive: true, force: true }));
 
 async function seed() {
   return withSystemDbAccessContext(async () => {
@@ -1568,6 +1669,7 @@ async function seed() {
 }
 let f: Awaited<ReturnType<typeof seed>>;
 beforeEach(async () => { vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true'); f = await seed(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 const run = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn, 'caller-enforcement-test');
 const gateInput = (intentId = f.intent.id) => ({ orgId: f.org.id, action: 'disable_user' as const,
   target: { entraTenantId: f.tenant, entraOid: f.target.entraOid! }, backendTenantId: f.tenant,
@@ -1575,6 +1677,119 @@ const gateInput = (intentId = f.intent.id) => ({ orgId: f.org.id, action: 'disab
 const dispatchInput = () => ({ orgId: f.org.id, action: 'disable_user' as const, intentId: f.intent.id,
   connectionId: f.connection.id, backendTenantId: f.tenant, oid: f.target.entraOid! });
 
+it('tier zero dispatches a bindingless target and still prevents duplicate dispatch', async () => {
+  await run(async () => {
+    await db.update(callerVerificationPolicies).set({ requiredTierDisableUser: 0 })
+      .where(eq(callerVerificationPolicies.partnerId, f.partner.id));
+    await db.delete(callerVerifications).where(eq(callerVerifications.orgId, f.org.id));
+    await db.delete(callerVerificationSubjectBindings).where(eq(callerVerificationSubjectBindings.orgId, f.org.id));
+  });
+  await expect(run(() => requireCallerVerification(gateInput()))).resolves.toEqual({ verificationId: '', tier: 0 });
+  await expect(run(() => prepareCallerDispatch({ ...dispatchInput(), oid: randomUUID() })))
+    .rejects.toMatchObject({ payload: { reason: 'target_rebound' } });
+  await expect(run(() => prepareCallerDispatch({ ...dispatchInput(), backendTenantId: randomUUID() })))
+    .rejects.toMatchObject({ payload: { reason: 'tenant_mismatch' } });
+  vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+  await expect(run(() => prepareCallerDispatch(dispatchInput())))
+    .rejects.toMatchObject({ payload: { reason: 'feature_disabled' } });
+  vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+  const [before] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, f.intent.id)));
+  expect(before!.dispatchStartedAt).toBeNull();
+  await expect(run(() => prepareCallerDispatch(dispatchInput()))).resolves.toBeUndefined();
+  const [after] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, f.intent.id)));
+  expect(after!.dispatchStartedAt).toBeInstanceOf(Date);
+  await expect(run(() => prepareCallerDispatch(dispatchInput()))).rejects.toThrow('Dispatch already started');
+});
+it('email dispatch uses the real W03 mailbox adapter with reader attribution outside the DB context', async () => {
+  await run(async () => {
+    await db.insert(m365Connections).values({ ...f.connection, id: randomUUID(),
+      profile: 'customer-graph-read', credentialDomain: 'customer-graph-read' });
+    await db.update(callerVerificationPolicies).set({ requiredTierDisableUser: 2 })
+      .where(eq(callerVerificationPolicies.partnerId, f.partner.id));
+    const [destination] = await db.insert(callerVerificationDestinations).values({
+      orgId: f.org.id, contactId: f.contact.id, kind: 'email',
+      valueHash: destinationHash('manager@example.com'), valueRedacted: 'm•••@example.com',
+      source: 'technician', setByUserId: f.user.id, setAt: new Date(Date.now() - 8 * 86400_000),
+    }).returning();
+    await db.update(callerVerifications).set({ method: 'email', destinationId: destination!.id,
+      tier: 2, tierReason: 'destination_established' }).where(eq(callerVerifications.id, f.grant.id));
+  });
+  // Only the selected backend read is stubbed. Ports, fetchTargetMailboxes,
+  // fetchMailboxResourceByOrg, withMailboxReader and both gates remain real.
+  const read = vi.spyOn(mailboxReadService, 'executeM365MailboxReadByOrg').mockImplementation(async (orgId, target, actorId) => {
+    expect(getCurrentDbAccessContext()).toBeUndefined();
+    expect({ orgId, target, actorId }).toEqual({ orgId: f.org.id,
+      target: { entraTenantId: f.tenant, entraOid: f.target.entraOid }, actorId: f.user.id });
+    return { id: f.target.entraOid!, userPrincipalName: 'target@example.com',
+      mail: 'target@example.com', proxyAddresses: ['SMTP:target@example.com', 'smtp:alias@example.com'] };
+  });
+  await run(() => requireCallerVerification(gateInput()));
+  expect(read).toHaveBeenCalledTimes(1);
+  await expect(run(() => prepareCallerDispatch(dispatchInput()))).resolves.toBeUndefined();
+  expect(read).toHaveBeenCalledTimes(2);
+  const [intent] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, f.intent.id)));
+  expect(intent!.dispatchStartedAt).toBeInstanceOf(Date);
+});
+it('outbound failure after consumption fails release, retains the marker, and refuses reuse', async () => {
+  const role = await createRole({ scope: 'organization', orgId: f.org.id });
+  await grantRolePermissions(role.id, [{ resource: 'm365', action: 'execute' }]);
+  await assignUserToOrganization(f.user.id, f.org.id, role.id);
+  await run(async () => {
+    await db.update(actionIntents).set({ status: 'approved' }).where(eq(actionIntents.id, f.intent.id));
+    await db.insert(approvalRequests).values({ userId: f.user.id, requestingClientLabel: 'Caller regression',
+      actionLabel: 'Disable target', actionToolName: f.intent.actionName, actionArguments: f.intent.arguments,
+      riskTier: 'high', riskSummary: 'Block sign-in', status: 'approved', expiresAt: f.intent.expiresAt,
+      intentId: f.intent.id, boundArgumentDigest: f.intent.argumentDigest });
+  });
+  let atDispatch: { intent: typeof actionIntents.$inferSelect | undefined;
+    grant: typeof callerVerifications.$inferSelect | undefined } | undefined;
+  outbound.executeWriteAction.mockImplementationOnce(async () => {
+    // Fresh connections prove both writes committed BEFORE the outbound call.
+    atDispatch = await runOutsideDbContext(() => run(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, f.intent.id));
+      const [grant] = await db.select().from(callerVerifications).where(eq(callerVerifications.id, f.grant.id));
+      return { intent, grant };
+    }));
+    throw new Error('executor transport failed');
+  });
+  // Do not wrap release in run(): the production worker owns its boundaries.
+  await releaseApprovedIntent(f.intent.id);
+  expect(outbound.executeWriteAction).toHaveBeenCalledTimes(1);
+  // Assert outside the outbound double: worker error handling must not swallow
+  // an assertion failure and accidentally make this regression pass.
+  expect(atDispatch).toMatchObject({
+    intent: { status: 'executing', dispatchStartedAt: expect.any(Date) },
+    grant: { consumedAt: expect.any(Date), consumedIntentRef: f.intent.id },
+  });
+  const [failed] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, f.intent.id)));
+  const [used] = await run(() => db.select().from(callerVerifications).where(eq(callerVerifications.id, f.grant.id)));
+  expect(failed).toMatchObject({ status: 'failed', errorCode: 'execution_error', dispatchStartedAt: expect.any(Date) });
+  expect(used).toMatchObject({ consumedAt: expect.any(Date), consumedIntentRef: f.intent.id });
+  const actor: CallerVerificationActor = { userId: f.user.id, partnerId: f.partner.id,
+    scope: 'organization', accessibleOrgIds: [f.org.id], allowedSiteIds: null, displayName: 'Technician' };
+  await expect(run(() => getVerification(actor, f.org.id, f.grant.id))).resolves.toMatchObject({
+    consumedAction: 'disable_user', consumedIntentStatus: 'failed', consumedAt: used!.consumedAt!.toISOString(),
+  });
+  const [second] = await run(() => db.insert(actionIntents).values({ ...f.intent,
+    id: randomUUID(), idempotencyKey: randomUUID(), status: 'executing', dispatchStartedAt: null }).returning());
+  await expect(run(() => requireCallerVerification(gateInput(second!.id))))
+    .rejects.toMatchObject({ payload: { reason: 'grant_consumed' } });
+  await releaseApprovedIntent(f.intent.id);
+  expect(outbound.executeWriteAction).toHaveBeenCalledTimes(1);
+  const [retained] = await run(() => db.select().from(callerVerifications).where(eq(callerVerifications.id, f.grant.id)));
+  expect(retained!.consumedAt).toEqual(used!.consumedAt);
+  expect(retained!.consumedIntentRef).toBe(f.intent.id);
+});
+it('consumed-intent projection does not cross organizations or erase consumption', async () => {
+  const other = await seed();
+  await run(() => db.update(callerVerifications).set({ consumedAt: new Date(), consumedIntentRef: other.intent.id })
+    .where(eq(callerVerifications.id, f.grant.id)));
+  const actor: CallerVerificationActor = { userId: f.user.id, partnerId: f.partner.id,
+    scope: 'organization', accessibleOrgIds: [f.org.id], allowedSiteIds: null, displayName: 'Technician' };
+  const result = await run(() => getVerification(actor, f.org.id, f.grant.id));
+  expect(result).toMatchObject({ consumedAction: null, consumedIntentStatus: null });
+  expect(result.consumedAt).not.toBeNull();
+});
 it('two different intents cannot consume one grant; same-intent retry can', async () => {
   const [second] = await run(() => db.insert(actionIntents).values({ ...f.intent,
     id: randomUUID(), idempotencyKey: randomUUID(), dispatchStartedAt: null }).returning());
@@ -1652,7 +1867,7 @@ it('rejection after dispatch reports the irreversible boundary honestly', async 
 });
 ```
 
-- [ ] **Step 2: Run red:** `pnpm test-stack up`, then `cd apps/api && npx vitest run src/services/callerVerification/callerVerificationGate.contract.test.ts` and `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts`. Before Tasks 5/9/11 are complete these expose missing fences, markers or step-up checks; after implementation they must pass with non-zero counts.
+- [ ] **Step 2: Run red:** `pnpm test-stack up`, then `cd apps/api && npx vitest run src/services/callerVerification/callerVerificationGate.contract.test.ts` and `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts`. Before Tasks 5/9/11/12 are complete these expose missing reader context, tier-zero bypass, attempt caps, audit attribution, consumed-intent projection, fences, markers or step-up checks; after implementation they must pass with non-zero counts.
 - [ ] **Step 3: Complete the behavioural matrix by appending the following concrete variants to the fixture.** Use real gate/DB, stub only outbound clients:
 
 ```ts
@@ -1678,7 +1893,7 @@ it('changing a connection tenant cannot redirect an already-consumed intent', as
 });
 ```
 
-Add these administrative fixtures and tests to the same live suite. The existing DB utilities are verified at `__tests__/integration/db-utils.ts:324,349,405`; they create real roles and memberships. Extend imports with `refreshTokenFamilies`, `m365Connections`, `incidents`, `createAdministrative`, `withSubjectLocks`, `withAdministrativeProof`, `mintStepUpGrant`, `callerVerificationAdministrativeDigest`, `buildAuthContextForIntent`, `CallerVerificationActor`, and the utilities below.
+Add these administrative fixtures and tests to the same live suite. The existing DB utilities are verified at `__tests__/integration/db-utils.ts:324,349,405`; they create real roles and memberships. Extend imports with `refreshTokenFamilies`, `m365Connections`, `incidents`, `createAdministrative`, `withSubjectLocks`, `withAdministrativeProof`, `mintStepUpGrant`, `validateStepUpGrant` (both from `../../services/mfaStepUpGrant`), `callerVerificationAdministrativeDigest`, `buildAuthContextForIntent`, `CallerVerificationActor`, and the utilities below.
 
 ```ts
 import { createRole, grantRolePermissions, assignUserToOrganization } from './db-utils';
@@ -1703,6 +1918,37 @@ async function adminFixture() {
       entraTenantId: f.tenant, entraOid: f.target.entraOid!, reason }) };
   return { proof, actor, bind, reason };
 }
+it('serializes administrative attempts, preserves the capped proof, and audits the technician', async () => {
+  const a = await adminFixture();
+  // Two recent attempts of different statuses count; an older one does not.
+  await run(() => db.insert(callerVerifications).values([
+    { ...f.grant, id: randomUUID(), contactId: f.other.id, requesterBindingId: f.target.id,
+      status: 'cancelled', attemptNo: 1 },
+    { ...f.grant, id: randomUUID(), contactId: f.other.id, requesterBindingId: f.target.id,
+      status: 'revoked', attemptNo: 2 },
+    { ...f.grant, id: randomUUID(), contactId: f.other.id, requesterBindingId: f.target.id,
+      status: 'expired', createdAt: new Date(Date.now() - 2 * 3600_000) },
+  ]));
+  const ids = await Promise.all([mintStepUpGrant(a.bind), mintStepUpGrant(a.bind)]);
+  expect(ids.every(Boolean)).toBe(true);
+  const results = await Promise.allSettled(ids.map(id => run(() => withAdministrativeProof(a.proof,
+    () => createAdministrative(a.actor, { orgId: f.org.id, targetContactId: f.other.id,
+      reason: a.reason, stepUpGrantId: id! })))));
+  expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+  const loser = results.findIndex(r => r.status === 'rejected');
+  expect(results[loser]).toMatchObject({ status: 'rejected', reason: { code: 'attempt_cap' } });
+  expect(await validateStepUpGrant(ids[loser]!, a.bind)).toBe(true);
+  const rows = await run(() => db.select().from(callerVerifications).where(and(
+    eq(callerVerifications.orgId, f.org.id), eq(callerVerifications.method, 'administrative_stepup'))));
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.attemptNo).toBe(3);
+  const audits = await run(() => db.select().from(auditLogs).where(and(
+    eq(auditLogs.orgId, f.org.id), eq(auditLogs.resourceId, rows[0]!.id),
+    eq(auditLogs.action, 'caller_verification.administrative_created'))));
+  expect(audits).toHaveLength(1);
+  expect(audits[0]).toMatchObject({ actorType: 'user', actorId: f.user.id,
+    details: expect.objectContaining({ reason: a.reason }) });
+});
 it.each(['operation', 'digest', 'session'] as const)('administrative grant rejects wrong %s', async wrong => {
   const a = await adminFixture();
   const minted = { ...a.bind,
@@ -1829,7 +2075,7 @@ These identifiers They must also populate the existing mocked auth/contact/bindi
 
 Retain Tasks 2/6/7/8 backend fixtures for Delegant-only routing, two-profile binding, renamed UPN, zero mutation on refusal and exactly one on pass. Preserve W01 RLS/merge/deletion suites; this system fixture cannot prove RLS in their place.
 
-- [ ] **Step 4: Run green:** Step 2's two test commands plus `cd apps/api && npx vitest run src/services/m365DirectGraph.test.ts src/services/aiToolsM365.test.ts src/services/m365ControlPlane/writeActionService.test.ts src/services/callerVerification/administrative.test.ts`. Apply the migration a second time on the test stack and rerun the column/immutability checks; no duplicate trigger or data rewrite.
+- [ ] **Step 4: Run green:** `cd apps/api && npx vitest run src/services/callerVerification/callerVerificationGate.contract.test.ts` and `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts`, plus `cd apps/api && npx vitest run src/services/m365DirectGraph.test.ts src/services/aiToolsM365.test.ts src/services/m365ControlPlane/writeActionService.test.ts src/services/callerVerification/administrative.test.ts`. Apply the migration a second time on the test stack and rerun the column/immutability checks; no duplicate trigger or data rewrite.
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -1840,7 +2086,7 @@ git commit -m "test(caller-verification): prove dispatch, revocation and session
 
 ### Task 14: Activate the finished feature and publish operator guidance
 
-**Files:** Modify W01 flag in `apps/api/src/config/env.ts` (current flag conventions at `:642`), W01-owned `apps/api/src/services/callerVerification/gate.ts` flag adapter; create `apps/api/src/config/env.callerVerification.test.ts`; modify `.env.example:1093`, `docker-compose.yml:278`, `deploy/docker-compose.prod.yml:202`; create `apps/docs/src/content/docs/security/caller-verification.mdx`; modify `docs/release-notes/next-release-draft.md:13`.
+**Files:** Modify W01 flag in `apps/api/src/config/env.ts` (current flag conventions at `:642`), W01-owned `apps/api/src/services/callerVerification/gate.ts` flag adapter; create `apps/api/src/config/env.callerVerification.test.ts`; modify inherited `apps/api/src/services/callerVerification/readiness.test.ts`; modify `.env.example:1093`, `docker-compose.yml:278`, `deploy/docker-compose.prod.yml:202`; create `apps/docs/src/content/docs/security/caller-verification.mdx`; modify `docs/release-notes/next-release-draft.md:13`.
 
 **Interfaces:** Existing public `isCallerVerificationEnabled(): boolean` delegates to config. New/defaulted `callerVerificationEnabled(): boolean` reads `CALLER_VERIFICATION_ENABLED` at call time; absent→true, literal `'true'`→true, other values→false. Preserve explicit operator false. Activation is contingent on the prior tests and W01–W04 being merged.
 
@@ -1853,8 +2099,7 @@ import { callerVerificationEnabled } from './env';
 afterEach(() => vi.unstubAllEnvs());
 it.each([[undefined, true], ['true', true], ['false', false], ['', false], ['garbage', false]])(
   'readiness flag %s -> %s', (value, expected) => {
-    if (value === undefined) delete process.env.CALLER_VERIFICATION_ENABLED;
-    else vi.stubEnv('CALLER_VERIFICATION_ENABLED', value as string);
+    vi.stubEnv('CALLER_VERIFICATION_ENABLED', value as string | undefined);
     expect(callerVerificationEnabled()).toBe(expected);
   });
 it('maps the flag into both API compose environment anchors', () => {
@@ -1865,7 +2110,22 @@ it('maps the flag into both API compose environment anchors', () => {
 });
 ```
 
-- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts` → missing true default/mapping.
+Replace W01's inherited `readiness.test.ts` matrix in the same task; leaving its unset→false assertion would contradict activation. Preserve its explicit-false and invalid-value coverage:
+
+```ts
+import { afterEach, expect, it, vi } from 'vitest';
+import { callerVerificationEnabled } from '../../config/env';
+afterEach(() => vi.unstubAllEnvs());
+it.each([
+  [undefined, true], ['', false], ['false', false], ['1', false],
+  ['yes', false], ['TRUE', false], ['garbage', false], ['true', true],
+] as const)('exact activated readiness value %s -> %s', (value, expected) => {
+  vi.stubEnv('CALLER_VERIFICATION_ENABLED', value);
+  expect(callerVerificationEnabled()).toBe(expected);
+});
+```
+
+- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts` → missing true default/mapping.
 - [ ] **Step 3: Implement the config default and docs.**
 
 ```ts
@@ -1935,12 +2195,12 @@ Upgrade agents/helpers for workstation verification, establish Entra bindings an
 
 W04 owns translated product copy. Verify its `callerVerification.json` keys in all eight locales and its `runAction` adoption; add no English-only fallback UI here. Docs remain in the docs site's existing language convention.
 
-- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/config/envComposeParity.test.ts`; `cd apps/web && npx vitest run src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts`; `cd apps/docs && pnpm check && pnpm build` → pass. Check both false-hidden and true-visible W04 tests.
+- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts src/config/envComposeParity.test.ts`; `cd apps/web && npx vitest run src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts`; `cd apps/docs && pnpm check && pnpm build` → pass. Check both false-hidden and true-visible W04 tests.
 - [ ] **Step 5: Commit.**
 
 ```bash
 ls apps/api/migrations | sort | tail -1
-git add apps/api/src/config/env.ts apps/api/src/config/env.callerVerification.test.ts apps/api/src/services/callerVerification/gate.ts .env.example docker-compose.yml deploy/docker-compose.prod.yml apps/docs/src/content/docs/security/caller-verification.mdx docs/release-notes/next-release-draft.md
+git add apps/api/src/config/env.ts apps/api/src/config/env.callerVerification.test.ts apps/api/src/services/callerVerification/readiness.test.ts apps/api/src/services/callerVerification/gate.ts .env.example docker-compose.yml deploy/docker-compose.prod.yml apps/docs/src/content/docs/security/caller-verification.mdx docs/release-notes/next-release-draft.md
 git commit -m "feat(caller-verification): activate enforcement and document rollout"
 ```
 
@@ -2015,10 +2275,10 @@ Review the PR once with independent security review focused on identity/tenant p
 
 ## Self-review
 
-**Spec coverage.** D11/D14 pinning and route stability → Tasks 1–3, 6–8; D5 creation/release/three-backend enforcement → Tasks 3–8; D13 post-claim single-use semantics and same-intent retry → Tasks 4–5, 13; D8 rejection, honest dispatch classification, system revocation and incident terminal linkage → Tasks 9, 13; D15 interactive administrative operation/digest, session family, epochs and requester/target authorisation → Tasks 10–11, 13; refusal adapters → Task 12; D16 activation, compose mapping, docs and release note → Tasks 14–15. W01 policy, provenance, composite FKs, cascade/export/merge and W02/W03 delivery remain dependency contracts, explicitly rerun at wave verification.
+**Spec coverage.** D11/D14 pinning and route stability → Tasks 1–3, 6–8; D5 creation/release/three-backend enforcement → Tasks 3–8; D13 post-claim single-use semantics, real outbound failure with retained consumption/marker and refusal of another intent → Tasks 4–5, 12–13; tier-zero policy order with bindingless target → Tasks 5, 13; W03 email-reader context and successful email dispatch → Tasks 5, 13; D8 rejection, honest dispatch classification, system revocation and incident terminal linkage → Tasks 9, 13; D15 interactive administrative operation/digest, session family, epochs, preserved contact attempt cap before proof consumption, technician audit attribution and requester/target authorisation → Tasks 10–11, 13; refusal adapters → Task 12; consumed-intent status projection for W04’s translated failure/re-verification UI → Tasks 12–13; D16 activation, inherited readiness test, compose mapping, docs and release note → Tasks 14–15. W01 policy, provenance, composite FKs, cascade/export/merge and W02/W03 delivery remain dependency contracts, explicitly rerun at wave verification.
 
-**Verified repository corrections.** The session backend union currently lacks control-plane; the headless worker owns that route. Session-aware SDK drops the existing `actionIntentId`. Direct token cache omits tenant. Control-plane strict action schema needs OID support before the executor receives it. Release actor synthesises MFA at current line 292; step-up SID names a refresh family, not a legacy session. Cancel's public permission check is unsuitable; its operation-first CAS/outbox helpers are reusable. No incident append service exists. RLS coverage is excluded by the general integration runner. These are addressed explicitly rather than copied from stale spec line hints.
+**Verified repository corrections.** The session backend union currently lacks control-plane; the headless worker owns that route. Session-aware SDK drops the existing `actionIntentId`. Direct token cache omits tenant. Control-plane strict action schema needs OID support before the executor receives it. Release actor synthesises MFA at current line 292; step-up SID names a refresh family, not a legacy session. Cancel's public permission check is unsuitable; its operation-first CAS/outbox helpers are reusable. No incident append service exists. RLS coverage is excluded by the general integration runner. The real `intentReleaseWorkerM365Headless.integration.test.ts` supplies the outbound-client/configuration pattern, and `mfaStepUpGrant.ts` supplies a non-consuming proof validator for the cap regression. W03’s `withMailboxReader` and W01’s `projectVerification` are verified plan outputs, not pre-existing checkout modules. These are addressed explicitly rather than copied from stale spec line hints.
 
-**Type consistency.** Cross-wave gate, actor, service, error and revocation signatures are retained; only W05-private helpers and optional existing execution context plumbing are added. The refusal field is always `requiresCallerVerification`, the release code always `caller_verification_required`, the administrative operation always `caller_verification_administrative_disable`. No token, principal or epoch comes from a tool argument or administrative request body.
+**Type consistency.** Cross-wave gate, actor, service, error and revocation signatures are retained; only W05-private helpers, optional existing execution context plumbing and the additive HTTP `consumedIntentStatus` field are added; the index `VerificationView` stays unchanged. The refusal field is always `requiresCallerVerification`, the release code always `caller_verification_required`, the administrative operation always `caller_verification_administrative_disable`. No token, principal or epoch comes from a tool argument or administrative request body.
 
 **Execution completeness.** Run every red/green task against merged dependencies; update source anchors when prior waves move them. The document does not claim product tests were run while writing it. Security success requires behavioural client assertions and real DB races in addition to source contracts. Default activation is the last implementation change, and the last task ends at a reviewable PR.

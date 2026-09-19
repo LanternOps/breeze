@@ -8,7 +8,7 @@
 
 **Tech Stack:** PostgreSQL 15+, hand-written SQL, Drizzle, Hono, shared Zod, Vitest with Drizzle mocks and a real Postgres/Redis integration stack.
 
-**Spec:** `docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design.md` v5: D1, D4, D6–D8, D11–D16, D18; Data model; Tiers and establishment; Service layer; authenticated API excluding administrative/device-suggestions; W01 tests. Cross-wave names and signatures come from `docs/superpowers/plans/security-auth/2026-09-19-caller-verification.md`; its signatures supersede the design's older `freshForSubject` / `resolveSubject` names. Review-note corrections in v5 supersede earlier notes saying unbound workstation is tier 2 or FK deletion is NO ACTION.
+**Spec:** `docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design.md` v5: D1, D4, D6–D8, D11–D16, D18; Data model; Tiers and establishment; Service layer; authenticated API excluding administrative/device-suggestions; independent login telemetry; W01 tests. Cross-wave names and signatures come from `docs/superpowers/plans/security-auth/2026-09-19-caller-verification.md`; its signatures supersede the design's older `freshForSubject` / `resolveSubject` names. Review-note corrections in v5 supersede earlier notes saying unbound workstation is tier 2 or FK deletion is NO ACTION.
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - Register all columns/tables in cascade, export and merge contracts. `required_tier_reset_password` is `reviewedIncluded`; token/match/decoy/reverse/value-hash material is `excludedSensitive`.
 - Readiness flag `CALLER_VERIFICATION_ENABLED` defaults false. The cross-wave contract says exactly `=== 'true'`; do not accept `1`/`yes`/`on` for this particular flag. Every authenticated feature route returns 404 before authentication while off. Existing M365 flows stay unchanged until W05.
 - Use ambient `db` inside request transactions; `assertInTransaction` guards multi-write helpers. System jobs enter `runOutsideDbContext(() => withSystemDbAccessContext(...))`. Do not assume a nested system context elevates a request. Never perform Graph/email/agent I/O while holding the request transaction.
-- Lock order: identity namespace/contact locks before binding locks; binding UUIDs deduplicated and sorted ascending. Gate, rejection, rebinding and W05 dispatch share `withSubjectLocks`. Re-read mutable state after acquiring locks.
+- Lock order: identity namespace, then contact locks, then binding locks; binding UUIDs deduplicated and sorted ascending. Gate, rejection, rebinding and W05 dispatch share `withSubjectLocks`. Re-read mutable state after acquiring locks.
 - Web mutations use `runAction`. W04 supplies real translations in all 8 locales (`en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`); W01 creates no web surface or locale files.
 - Branch `feature/<parent#>-caller-verification/wave-<sub#>`; PR body `Closes #<sub#>`. These issue-number tokens are workflow inputs from the wave issue, not invented issue numbers. Implementation commits below are future executor instructions; writing this plan does not execute them.
 - Tests use `cd apps/api && npx vitest run <path>` and `cd packages/shared && npx vitest run <path>`. Integration requires `pnpm test-stack up` / `pnpm test-stack down`. Read `.claude/skills/breeze-testing/SKILL.md`; mirror `contacts/crud.test.ts:1`, `contacts/import.test.ts:1`, `routes/orgContacts.test.ts:1` hoisting, real UUIDs and SQL-condition assertions.
@@ -42,6 +42,12 @@
 | `apps/api/src/services/orgMergeCustomExecutors.ts`, `orgMerge.ts` | Resolve collisions before moves; expire/revoke after moves |
 | `apps/api/src/services/callerVerification/{types,errors,locks,policy,tiers,subjects,destinations,service,gate,rejection,index}.ts` | Cross-wave contract modules |
 | `apps/api/src/services/callerVerification/{access,ports,effects,merge,testing}.ts` | Explicit new internal helpers; testing is test-only |
+| `apps/api/src/services/callerVerification/{directory,loginObservation}.ts`, `{directory,loginObservation}.test.ts` | Task 8: Graph picker, reachable sync/reconciliation and independent session evidence |
+| `agent/internal/collectors/sessions.go`, `sessions_test.go`, `session_principal_windows.go`, `session_principal_unix.go` | Task 8: authenticated OS principal telemetry and retry preservation |
+| `apps/api/src/routes/agents/{schemas,sessions}.ts`, `sessions.test.ts` | Task 8: authenticated session ingestion and device/org-bound observation |
+| `apps/api/src/services/callerVerification/deviceMove.ts`, `deviceMove.test.ts`, `apps/api/src/routes/devices/moveOrg.ts`, `moveOrg.test.ts` | Task 13: original-org workstation revocation inside move transaction |
+| `apps/api/src/routes/config.ts`, `config.test.ts` | Task 14: server readiness response consumed by W04 |
+| `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, `selfManagedDbContextRoutes.test.ts` | Task 14: short DB scopes around Graph search, sync and attestation |
 | `apps/api/src/services/callerVerification/{locks,policy,tiers,subjects,destinations,service,gate,rejection,merge,writers,readiness}.test.ts` | Unit and source-contract coverage |
 | `apps/api/src/services/actionIntents/revokeIntentsForSubject.ts` | W05 replacement seam, returns empty arrays in W01 |
 | `apps/api/src/services/contacts/{crud,compat,import}.ts`, `types.ts` | Destination provenance and trusted directory entry point |
@@ -53,7 +59,7 @@
 | `apps/api/src/jobs/callerVerificationPublisher.ts`, `services/workerRegistry.ts` | Post-commit publication/retry lifecycle |
 | `apps/api/src/config/{env,validate}.ts`, `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml` | Default-off flag, validation and container pass-through |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | Both dual-axis allowlists |
-| `apps/api/src/__tests__/integration/callerVerification.integration.test.ts` | The one new live-DB file: RLS, FKs, merge, deletion, concurrent consume |
+| `apps/api/src/__tests__/integration/callerVerification.integration.test.ts` | Task 15: RLS/FKs, merge/deletion/races, live authenticated route matrix, projections, sync/login/move, admin cap/audit and decision/receipt rollback |
 
 ### Task 1: Create the three evidence tables and enums
 
@@ -717,6 +723,20 @@ export async function getEffectivePolicy(orgId: string): Promise<EffectiveCaller
  const rows=await db.select().from(callerVerificationPolicies).where(or(eq(callerVerificationPolicies.orgId,orgId),and(isNull(callerVerificationPolicies.orgId),eq(callerVerificationPolicies.partnerId,org.partnerId))));
  return resolveEffectivePolicy(rows.find(r=>r.partnerId===org.partnerId)??null,rows.find(r=>r.orgId===orgId)??null);
 }
+export function policyResponse(partnerRow:PolicyRow|null,orgRow:PolicyRow|null,owner:'org'|'partner'){
+ const {provenance:_provenance,ignored:_ignored,...baseline}=resolveEffectivePolicy(partnerRow,null);
+ return {row:owner==='partner'?partnerRow:orgRow,defaults:structuredClone(CALLER_VERIFICATION_POLICY_DEFAULTS),baseline,effective:resolveEffectivePolicy(partnerRow,owner==='org'?orgRow:null)};
+}
+export async function getPolicyResponse(owner:'org'|'partner',ownerId:string){
+ if(owner==='partner'){
+  const [row]=await db.select().from(callerVerificationPolicies).where(eq(callerVerificationPolicies.partnerId,ownerId)).limit(1);
+  return policyResponse(row??null,null,'partner');
+ }
+ const [org]=await db.select().from(organizations).where(eq(organizations.id,ownerId)).limit(1);
+ if(!org)throw new Error('Organization not found');
+ const rows=await db.select().from(callerVerificationPolicies).where(or(eq(callerVerificationPolicies.orgId,ownerId),and(isNull(callerVerificationPolicies.orgId),eq(callerVerificationPolicies.partnerId,org.partnerId))));
+ return policyResponse(rows.find(r=>r.partnerId===org.partnerId)??null,rows.find(r=>r.orgId===ownerId)??null,'org');
+}
 // tiers.ts
 import type { CallerVerificationMethod } from './types';
 import type { EffectiveCallerVerificationPolicy } from './policy';
@@ -728,6 +748,22 @@ export function computeTier(input: { method: CallerVerificationMethod; boundPrin
  if(method==='workstation')return input.boundPrincipal?{tier:3,reason:'bound_principal'}:{tier:1,reason:'unbound_principal'};
  return input.destinationEstablished?{tier:2,reason:'destination_established'}:{tier:1,reason:'destination_recent'};
 }
+```
+
+Add to `policy.test.ts`; Task 15 also checks both HTTP verbs/scopes with real rows:
+
+```ts
+import { policyResponse,CALLER_VERIFICATION_POLICY_DEFAULTS } from './policy';
+it.each(['org','partner'] as const)('returns independent defaults, baseline and effective for %s',owner=>{
+ const partner=row({requiredTierResetPassword:1,verificationTtlMinutes:60});
+ const org=row({requiredTierResetPassword:3,verificationTtlMinutes:15});
+ const result=policyResponse(partner,org,owner);
+ expect(result.row).toBe(owner==='org'?org:partner);
+ expect(result.defaults).toEqual(CALLER_VERIFICATION_POLICY_DEFAULTS);
+ expect(result.baseline).toMatchObject({requiredTierResetPassword:1,verificationTtlMinutes:60});
+ expect(result.effective).toMatchObject({requiredTierResetPassword:owner==='org'?3:1,verificationTtlMinutes:owner==='org'?15:60});
+ expect(result.baseline).not.toHaveProperty('provenance');
+});
 ```
 
 - [ ] **Step 4:** Run `cd apps/api && npx vitest run src/services/callerVerification/policy.test.ts src/services/callerVerification/tiers.test.ts`. Expected: PASS; no Graph calls in either pure function.
@@ -917,7 +953,7 @@ git commit -m "feat(caller-verification): track destination provenance at every 
 
 ### Task 8: Canonical bindings and a real trusted directory-import entry point
 
-**Files:** Create `apps/api/src/services/callerVerification/subjects.ts`, `apps/api/src/services/callerVerification/subjects.test.ts`; Modify `apps/api/src/services/contacts/import.ts:724,841`, `apps/api/src/services/contacts/import.test.ts:1`. Existing Graph seam: `apps/api/src/services/m365ControlPlane/readActionService.ts:108`; connection lookup at 139; shared read action at `packages/shared/src/m365/readActions.ts:49`.
+**Files:** Create `apps/api/src/services/callerVerification/directory.ts`, `directory.test.ts`, `loginObservation.ts`, `loginObservation.test.ts`, `agent/internal/collectors/session_principal_windows.go`, `session_principal_unix.go`; Modify `agent/internal/collectors/sessions.go`, `sessions_test.go`, `apps/api/src/routes/agents/schemas.ts`, `sessions.ts`, `sessions.test.ts`; Create `apps/api/src/services/callerVerification/subjects.ts`, `apps/api/src/services/callerVerification/subjects.test.ts`; Modify `apps/api/src/services/contacts/import.ts:724,841`, `apps/api/src/services/contacts/import.test.ts:1`. Existing Graph seam: `apps/api/src/services/m365ControlPlane/readActionService.ts:108`; connection lookup at 139; shared read action at `packages/shared/src/m365/readActions.ts:49`.
 
 **Interfaces:** `resolveTargetBinding(orgId: string, subject: EntraSubject): Promise<BindingRow>`; `bindingsForContact(orgId: string, contactId: string): Promise<BindingRow[]>`; `upsertDirectorySyncBinding(input: { orgId: string; contactId: string; entraTenantId: string; entraOid: string; upn: string | null }): Promise<void>`; `attestBinding(actor: CallerVerificationActor, input: { orgId: string; contactId: string; entraTenantId: string; entraOid: string; upn: string | null }): Promise<BindingRow>`; `observeLogin(input: { orgId: string; contactId: string; osPrincipal: string; osUsername: string; upn: string | null }): Promise<void>`; `revokeBinding(actor: CallerVerificationActor, orgId: string, bindingId: string): Promise<void>`.
 
@@ -986,9 +1022,10 @@ export async function upsertDirectorySyncBinding(input:Claim):Promise<void>{awai
 export async function attestBinding(actor:CallerVerificationActor,input:Claim):Promise<BindingRow>{await reachableContact(actor,input.orgId,input.contactId);return claim(input,'technician_attested',actor.userId);}
 export async function observeLogin(input:{orgId:string;contactId:string;osPrincipal:string;osUsername:string;upn:string|null}):Promise<void>{
  if(!input.upn)return;
+ assertInTransaction('observeLogin');
  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${input.orgId}`}))`);
- const rows=await bindingsForContact(input.orgId,input.contactId),matches=rows.filter(r=>r.entraOid&&r.upnSnapshot?.toLowerCase()===input.upn!.toLowerCase());
- if(matches.length!==1)return;const target=matches[0]!;
+ const matches=await db.select().from(b).where(and(eq(b.orgId,input.orgId),isNull(b.revokedAt),sql`${b.entraOid} IS NOT NULL AND ${b.entraTenantId} IS NOT NULL`,sql`lower(${b.upnSnapshot})=lower(${input.upn})`)).limit(2);
+ if(matches.length!==1||matches[0]!.contactId!==input.contactId)return;const target=matches[0]!;
  const others=await db.select().from(b).where(and(eq(b.orgId,input.orgId),eq(b.osPrincipal,input.osPrincipal),isNull(b.revokedAt)));
  await withSubjectLocks(db,[target.id,...others.map(r=>r.id)],async()=>{
   if(others.some(r=>r.contactId!==input.contactId)){
@@ -1031,6 +1068,7 @@ export async function importDirectoryContact(auth:AuthContext,input:{orgId:strin
   await reachableContact(actor,input.orgId,input.contactId);
   const claim={orgId:input.orgId,contactId:input.contactId,entraTenantId:connection.tenantId!,entraOid:user.id,upn:user.userPrincipalName??null};
   if(mode==='technician_attested')return attestBinding(actor,claim);
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${input.orgId}`}))`);
   await updateContact(db,input.contactId,input.orgId,{email:user.mail??user.userPrincipalName??undefined},{userId:auth.user.id,destinationSource:'import'});
   await upsertDirectorySyncBinding(claim);
   const rows=await db.select().from(callerVerificationSubjectBindings).where(and(eq(callerVerificationSubjectBindings.orgId,input.orgId),eq(callerVerificationSubjectBindings.contactId,input.contactId),eq(callerVerificationSubjectBindings.entraOid,user.id))).orderBy(desc(callerVerificationSubjectBindings.createdAt)).limit(1);
@@ -1039,13 +1077,360 @@ export async function importDirectoryContact(auth:AuthContext,input:{orgId:strin
 }
 ```
 
-Import `callerVerificationSubjectBindings` from `../../db/schema/callerVerification` and `desc` from `drizzle-orm` for the final history read. Returning a revoked conflict row lets the caller report 409 without throwing away committed revocations. The manual path validates server evidence first and stamps an attestation in one transaction without changing the contact destination. Directory deletion is inferred only from a complete authoritative sync, never a partial page; W01 exposes explicit revocation and never auto-deletes history.
+Import `callerVerificationSubjectBindings` from `../../db/schema/callerVerification` and `desc, sql` from `drizzle-orm` for the final history read and identity advisory lock. Returning a revoked conflict row lets the caller report 409 without throwing away committed revocations. The manual path validates server evidence first and stamps an attestation in one transaction without changing the contact destination. Directory deletion is inferred only from a complete authoritative sync, never a partial page; W01 exposes explicit revocation and never auto-deletes history.
+
+- [ ] **Step 3a: Add reachable directory search and authoritative sync.** Create `services/callerVerification/directory.ts` and `directory.test.ts`. Existing `executeM365ReadAction` returns collection `items` and `truncated`; `m365.user.list` accepts `pageSize:50` and the executor bounds pagination. A truncated snapshot can import selected users but must never revoke disappearances. Only full-org administrators may enumerate the org-wide directory; this endpoint has no contact/site selector. Binding a known OID still checks the selected contact's site through `importDirectoryContact`.
+
+```ts
+// directory.ts
+import { z } from 'zod';
+import { and,eq,isNull,sql } from 'drizzle-orm';
+import { db,withDbAccessContext } from '../../db';
+import { m365Connections } from '../../db/schema';
+import { callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
+import { dbAccessContextFromAuth,type AuthContext } from '../../middleware/auth';
+import { executeM365ReadAction } from '../m365ControlPlane/readActionService';
+import { importDirectoryContact } from '../contacts/import';
+import { withSubjectLocks } from './locks';
+import { CallerVerificationValidationError as Invalid } from './errors';
+export interface DirectoryUser { entraTenantId:string;entraOid:string;upn:string;displayName:string }
+export interface DirectorySearch { available:boolean;users:DirectoryUser[];truncated:boolean }
+const ready=(c:{tenantId:string|null;status:string}|undefined)=>!!c?.tenantId&&['active','degraded'].includes(c.status);
+async function connection(auth:AuthContext,orgId:string){
+ if(auth.allowedSiteIds!=null||(auth.scope!=='system'&&!auth.canAccessOrg(orgId)))throw new Invalid('not_found','Directory not found');
+ return withDbAccessContext(dbAccessContextFromAuth(auth),async()=>{
+  const [c]=await db.select().from(m365Connections).where(and(eq(m365Connections.orgId,orgId),eq(m365Connections.profile,'customer-graph-read'))).limit(1);return c;
+ });
+}
+async function snapshot(auth:AuthContext,orgId:string,search?:string){
+ const before=await connection(auth,orgId);if(!ready(before))return null;
+ const result=await executeM365ReadAction(auth,{type:'m365.user.list',...(search?{search}:{}),pageSize:50},orgId);
+ if(!result.ok||result.kind!=='collection')throw new Invalid('directory_unavailable','Directory read unavailable');
+ const parsed=z.array(z.object({id:z.string().uuid(),userPrincipalName:z.string().min(1).max(320),displayName:z.string().max(255).nullable().optional()})).safeParse(result.items);
+ if(!parsed.success)throw new Invalid('directory_unavailable','Invalid directory response');
+ const after=await connection(auth,orgId);
+ if(!ready(after)||after!.id!==before!.id||after!.tenantId!==before!.tenantId)throw new Invalid('directory_changed','Directory tenant changed');
+ return {connection:before!,users:parsed.data,truncated:result.truncated};
+}
+export async function directoryUsers(auth:AuthContext,orgId:string,search:string):Promise<DirectorySearch>{
+ const s=await snapshot(auth,orgId,search);
+ return s?{available:true,truncated:s.truncated,users:s.users.map(u=>({entraTenantId:s.connection.tenantId!,entraOid:u.id,upn:u.userPrincipalName,displayName:u.displayName??u.userPrincipalName}))}:{available:false,users:[],truncated:false};
+}
+export async function syncDirectory(auth:AuthContext,orgId:string,mappings:{contactId:string;entraOid:string}[]){
+ const s=await snapshot(auth,orgId);if(!s)throw new Invalid('directory_unavailable','Directory unavailable');
+ const seen=new Set(s.users.map(u=>u.id.toLowerCase()));
+ for(const m of mappings){
+  if(!seen.has(m.entraOid.toLowerCase()))throw new Invalid('directory_unavailable','Selected user missing from sync');
+  await importDirectoryContact(auth,{orgId,contactId:m.contactId,directoryObjectId:m.entraOid,expectedTenantId:s.connection.tenantId!},'directory_sync');
+ }
+ if(s.truncated)return {imported:mappings.length,revoked:0,complete:false};
+ return withDbAccessContext(dbAccessContextFromAuth(auth),async()=>{
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${orgId}`}))`);
+  const [current]=await db.select().from(m365Connections).where(and(eq(m365Connections.id,s.connection.id),eq(m365Connections.orgId,orgId))).limit(1).for('share');
+  if(!ready(current)||current!.tenantId!==s.connection.tenantId)throw new Invalid('directory_changed','Directory tenant changed');
+  // Include observed_login and technician_attested: source can change without changing canonical identity.
+  const rows=await db.select().from(b).where(and(eq(b.orgId,orgId),eq(b.entraTenantId,s.connection.tenantId!),isNull(b.revokedAt)));
+  const missing=rows.filter(r=>r.entraOid&&!seen.has(r.entraOid.toLowerCase()));
+  await withSubjectLocks(db,missing.map(r=>r.id),async()=>{
+   for(const row of missing){
+    await db.update(b).set({revokedAt:new Date(),updatedAt:new Date()}).where(and(eq(b.id,row.id),eq(b.orgId,orgId),isNull(b.revokedAt)));
+    await db.execute(sql`UPDATE caller_verifications SET status='revoked' WHERE org_id=${orgId}::uuid AND consumed_at IS NULL AND status IN ('pending','verified') AND (requester_binding_id=${row.id}::uuid OR target_binding_id=${row.id}::uuid)`);
+    await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result) VALUES(${orgId}::uuid,'user',${auth.user.id}::uuid,'caller_verification.directory_missing','caller_verification',${row.id}::uuid,'success')`);
+   }
+  });
+  return {imported:mappings.length,revoked:missing.length,complete:true};
+ });
+}
+```
+
+The explicit sync POST below is the execution path: Graph, not uploaded external IDs, supplies each claim. Earlier valid imports can commit before a later import fails; **no disappearance reconciliation runs unless every import and the full snapshot succeed**. A complete empty snapshot revokes all active bindings in that tenant. No connection, failed read, malformed response, truncated page, or tenant switch implies deletion.
+
+```ts
+// directory.test.ts
+import { beforeEach,expect,it,vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+const m=vi.hoisted(()=>({queue:[] as unknown[][],read:vi.fn(),import:vi.fn(),update:vi.fn(),execute:vi.fn(),locks:vi.fn()}));
+vi.mock('../../db',()=>({db:{
+ select:()=>{let rows:unknown[]|undefined;const q:any={from:()=>q,where:()=>q,limit:()=>q,for:()=>q,then:(resolve:any)=>{rows??=m.queue.shift()??[];return Promise.resolve(rows).then(resolve);}};return q;},
+ update:()=>({set:(value:unknown)=>({where:async(predicate:unknown)=>m.update(value,predicate)})}),execute:m.execute,
+},withDbAccessContext:async(_ctx:unknown,fn:()=>unknown)=>fn()}));
+vi.mock('../../middleware/auth',()=>({dbAccessContextFromAuth:()=>({})}));
+vi.mock('../m365ControlPlane/readActionService',()=>({executeM365ReadAction:m.read}));
+vi.mock('../contacts/import',()=>({importDirectoryContact:m.import}));
+vi.mock('./locks',()=>({withSubjectLocks:async(_db:unknown,ids:unknown,fn:()=>unknown)=>{m.locks(ids);return fn();}}));
+import { directoryUsers,syncDirectory } from './directory';
+import type { AuthContext } from '../../middleware/auth';
+const org='11111111-1111-4111-8111-111111111111',tenant='22222222-2222-4222-8222-222222222222',oid='33333333-3333-4333-8333-333333333333';
+const c={id:'44444444-4444-4444-8444-444444444444',orgId:org,tenantId:tenant,status:'active'};
+const auth={scope:'organization',user:{id:oid},canAccessOrg:(id:string)=>id===org} as AuthContext;
+beforeEach(()=>{vi.clearAllMocks();m.queue=[];m.read.mockResolvedValue({ok:true,kind:'collection',items:[{id:oid,userPrincipalName:'alex@example.com',displayName:'Alex'}],truncated:false});m.import.mockResolvedValue({id:oid});});
+it('projects verified tenant and W04 envelope payload',async()=>{
+ m.queue.push([c],[c]);expect(await directoryUsers(auth,org,'alex')).toEqual({available:true,truncated:false,users:[{entraTenantId:tenant,entraOid:oid,upn:'alex@example.com',displayName:'Alex'}]});
+});
+it('reports missing connection without Graph',async()=>{
+ m.queue.push([]);expect(await directoryUsers(auth,org,'alex')).toEqual({available:false,users:[],truncated:false});expect(m.read).not.toHaveBeenCalled();
+});
+it.each([{...auth,allowedSiteIds:['site']},{...auth,canAccessOrg:()=>false}])('refuses restricted access',async restricted=>{
+ await expect(directoryUsers(restricted as AuthContext,org,'alex')).rejects.toMatchObject({code:'not_found'});expect(m.read).not.toHaveBeenCalled();
+});
+it('rejects a tenant change during search',async()=>{
+ m.queue.push([c],[{...c,tenantId:oid}]);await expect(directoryUsers(auth,org,'alex')).rejects.toMatchObject({code:'directory_changed'});
+});
+it('reconciles only absent identities under shared locks and preserves consumed history',async()=>{
+ const missing='66666666-6666-4666-8666-666666666666';
+ m.queue.push([c],[c],[c],[{id:missing,entraOid:missing},{id:oid,entraOid:oid}]);
+ expect(await syncDirectory(auth,org,[{contactId:oid,entraOid:oid}])).toEqual({imported:1,revoked:1,complete:true});
+ expect(m.import).toHaveBeenCalledWith(auth,{orgId:org,contactId:oid,directoryObjectId:oid,expectedTenantId:tenant},'directory_sync');
+ expect(m.update).toHaveBeenCalledTimes(1);expect(m.locks).toHaveBeenCalledWith([missing]);
+ const sqls=m.execute.mock.calls.map(([q])=>new PgDialect().sqlToQuery(q));
+ const revoke=sqls.find(q=>q.sql.includes('UPDATE caller_verifications'))!;
+ expect(revoke.sql).toContain('consumed_at IS NULL');expect(revoke.params).toEqual([org,missing,missing]);
+});
+it('does not reconcile partial pages',async()=>{
+ m.queue.push([c],[c]);m.read.mockResolvedValue({ok:true,kind:'collection',items:[],truncated:true});
+ expect(await syncDirectory(auth,org,[])).toEqual({imported:0,revoked:0,complete:false});expect(m.update).not.toHaveBeenCalled();
+});
+it.each(['graph','import','tenant'] as const)('never reconciles after %s failure',async failure=>{
+ m.queue.push([c],[c],[failure==='tenant'?{...c,tenantId:oid}:c]);
+ if(failure==='graph')m.read.mockResolvedValue({ok:false,message:'private provider detail'});
+ if(failure==='import')m.import.mockRejectedValue(new Error('write failed'));
+ await expect(syncDirectory(auth,org,[{contactId:oid,entraOid:oid}])).rejects.toThrow();expect(m.update).not.toHaveBeenCalled();
+});
+it('sanitizes upstream search failures',async()=>{
+ m.queue.push([c]);m.read.mockResolvedValue({ok:false,message:'secret upstream response'});
+ await expect(directoryUsers(auth,org,'alex')).rejects.toMatchObject({code:'directory_unavailable',message:'Directory read unavailable'});
+});
+```
+
+Task 14 installs the following handlers after `orgPath`/`base` are declared. Import `z` from `zod` and `{directoryUsers,syncDirectory}` from `../services/callerVerification/directory`:
+
+```ts
+callerVerificationRoutes.get(`${orgPath}/caller-verification-directory-users`,...base,read,
+ zValidator('query',z.object({search:z.string().trim().min(1).max(120).regex(/^[^"'\\]+$/)})),async c=>
+ c.json({data:await directoryUsers(c.get('auth') as AuthContext,oid(c),c.req.valid('query').search)}));
+callerVerificationRoutes.post(`${orgPath}/caller-verification-directory-sync`,...base,write,requireMfa(),
+ zValidator('json',z.object({mappings:z.array(z.object({contactId:z.string().uuid(),entraOid:z.string().uuid()}).strict()).max(200)}).strict()),async c=>
+ c.json({data:await syncDirectory(c.get('auth') as AuthContext,oid(c),c.req.valid('json').mappings)}));
+```
+
+Add these entries to `selfManagedDbContextRoutes.ts` along with the binding POST in Task 14; all DB phases above open explicit auth contexts and all Graph calls occur between them:
+
+```ts
+{method:'GET',pattern:/^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-users\/?$/},
+{method:'POST',pattern:/^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-sync\/?$/},
+```
+
+Add to `selfManagedDbContextRoutes.test.ts`:
+
+```ts
+it.each([['GET','caller-verification-directory-users'],['POST','caller-verification-directory-sync']])('self-manages %s %s', (method,path)=>{
+ expect(isSelfManagedDbContextRoute(method,`/api/v1/orgs/o/${path}`)).toBe(true);
+ expect(isSelfManagedDbContextRoute(method==='GET'?'POST':'GET',`/api/v1/orgs/o/${path}`)).toBe(false);
+});
+```
+
+Extend Task 14's `routes` matrix with these two entries:
+
+```ts
+['GET',`/orgs/${org}/caller-verification-directory-users?search=alex`],
+['POST',`/orgs/${org}/caller-verification-directory-sync`],
+```
+ Those route additions are committed in Task 14, after `base` exists. Run the new service tests now with `cd apps/api && npx vitest run src/services/callerVerification/directory.test.ts`; include `directory.ts` and `directory.test.ts` in this task's commit.
+
+- [ ] **Step 3b: Observe authenticated login telemetry independently of a challenge.** Modify `agent/internal/collectors/sessions.go`, `sessions_test.go`, `apps/api/src/routes/agents/schemas.ts`, `sessions.ts`, `sessions.test.ts`; create the two platform collector files and `services/callerVerification/loginObservation.ts`, `loginObservation.test.ts` below. Existing `Heartbeat.sendSessionInventory` in `agent/internal/heartbeat/heartbeat.go` already transmits and retries both slices; no new transport or helper message is introduced.
+
+Add `Principal *SessionPrincipal` with JSON tag `json:"principal,omitempty"` to both `UserSession` and `UserSessionEvent`. Define the type and collector-local injection point (test instances inject; production instances use the OS reader, avoiding global mutable seams):
+
+```go
+type SessionPrincipal struct {
+ SID string `json:"sid,omitempty"`
+ UID *uint32 `json:"uid,omitempty"`
+ Username string `json:"username"`
+ UPN string `json:"upn,omitempty"`
+}
+// Add inside SessionCollector:
+principalReader func(string, string, uint32) *SessionPrincipal
+// Add method:
+func (c *SessionCollector) readPrincipal(username, session string, uid uint32) *SessionPrincipal {
+ if c.principalReader != nil { return c.principalReader(username, session, uid) }
+ return principalForSession(username, session, uid)
+}
+```
+
+In `refreshSessions`'s `UserSession` literal add `Principal:c.readPrincipal(detected.Username,detected.Session,detected.UID)`. At the start of `applyEvent`, before `c.mu.Lock`, compute the login evidence and use it in both that branch's `UserSession` literal and the appended `UserSessionEvent` literal:
+
+```go
+var principal *SessionPrincipal
+if event.Type == sessionbroker.SessionLogin {
+ principal = c.readPrincipal(event.Username, event.Session, event.UID)
+}
+// Add to both literals:
+Principal: principal,
+```
+
+```go
+// agent/internal/collectors/session_principal_windows.go
+//go:build windows
+
+package collectors
+
+import (
+ "strconv"
+ "strings"
+ "golang.org/x/sys/windows"
+)
+
+func principalForSession(username, session string, _ uint32) *SessionPrincipal {
+ id, err := strconv.ParseUint(session, 10, 32)
+ if err != nil { return nil }
+ var token windows.Token
+ if windows.WTSQueryUserToken(uint32(id), &token) != nil { return nil }
+ defer token.Close()
+ u, err := token.GetTokenUser()
+ if err != nil { return nil }
+ account, domain, _, err := u.User.Sid.LookupAccount("")
+ if err != nil { return nil }
+ canonical := account
+ if domain != "" { canonical = domain + `\` + account }
+ // WTSUserName supplies an unqualified name; token still comes from this session.
+ if !strings.EqualFold(account, username) && !strings.EqualFold(canonical, username) { return nil }
+ p := &SessionPrincipal{SID:u.User.Sid.String(), Username:username}
+ upn, err := windows.TranslateAccountName(canonical, windows.NameSamCompatible, windows.NameUserPrincipal, 256)
+ if err == nil { p.UPN = upn }
+ return p
+}
+```
+
+```go
+// agent/internal/collectors/session_principal_unix.go
+//go:build !windows
+
+package collectors
+
+func principalForSession(username, _ string, uid uint32) *SessionPrincipal {
+ return &SessionPrincipal{UID:&uid, Username:username}
+}
+```
+
+No Unix UPN is synthesized. Unavailable Windows tokens/UPNs also produce no binding observation; neither local account names nor email-like usernames prove directory identity. SID comes from the session token, not from caller-controlled fields. Add this test to existing `sessions_test.go` (imports `testing`, `time`, `encoding/json`, `sessionbroker` already exist):
+
+```go
+func TestLoginPrincipalSurvivesCollectionAndRetry(t *testing.T) {
+ c := &SessionCollector{sessions:make(map[string]UserSession), principalReader:func(username, session string, uid uint32)*SessionPrincipal {
+  return &SessionPrincipal{SID:"S-1-5-21-1", Username:username, UPN:"alex@example.com"}
+ }}
+ c.applyEvent(sessionbroker.SessionEvent{Type:sessionbroker.SessionLogin,Username:"alex",Session:"2"},time.Now())
+ rows,err:=c.Collect()
+ if err!=nil || len(rows)!=1 || rows[0].Principal==nil || rows[0].Principal.UPN!="alex@example.com" { t.Fatalf("rows=%+v err=%v",rows,err) }
+ events:=c.DrainEvents(256)
+ if len(events)!=1 || events[0].Principal==nil { t.Fatal("login identity missing") }
+ c.RequeueEvents(events)
+ again:=c.DrainEvents(256)
+ if len(again)!=1 || again[0].Principal.SID!="S-1-5-21-1" { t.Fatal("retry lost principal") }
+ encoded,err:=json.Marshal(again[0])
+ if err!=nil { t.Fatal(err) }
+ var wire struct { Principal *SessionPrincipal `json:"principal"` }
+ if err=json.Unmarshal(encoded,&wire);err!=nil || wire.Principal==nil || wire.Principal.UPN!="alex@example.com" { t.Fatalf("wire=%s err=%v",encoded,err) }
+}
+```
+
+Add the following schema before `submitSessionsSchema` and `principal:sessionPrincipalSchema.optional()` inside **both** nested session/event objects:
+
+```ts
+const sessionPrincipalSchema=z.object({
+ sid:z.string().regex(/^S-\d(?:-\d+)+$/).max(184).optional(),
+ uid:z.number().int().min(0).max(4294967295).optional(),
+ username:z.string().min(1).max(255),upn:z.string().min(1).max(320).optional(),
+}).refine(p=>(p.sid!==undefined)!==(p.uid!==undefined),'Exactly one SID or UID is required');
+```
+
+```ts
+// loginObservation.ts
+import { and,eq,isNotNull,isNull,sql } from 'drizzle-orm';
+import { db,assertInTransaction } from '../../db';
+import { callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
+import { observeLogin } from './subjects';
+export type SessionPrincipal={sid?:string;uid?:number;username:string;upn?:string};
+export async function observeSessionPrincipal(orgId:string,hostname:string,username:string,p:SessionPrincipal|undefined):Promise<void>{
+ if(!p?.upn||p.username.toLowerCase()!==username.toLowerCase()||((p.sid!==undefined)===(p.uid!==undefined)))return;
+ assertInTransaction('observeSessionPrincipal');
+ await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${orgId}`}))`);
+ const rows=await db.select().from(b).where(and(eq(b.orgId,orgId),isNull(b.revokedAt),isNotNull(b.entraTenantId),isNotNull(b.entraOid),sql`lower(${b.upnSnapshot})=lower(${p.upn})`)).limit(2);
+ if(rows.length!==1)return;
+ await observeLogin({orgId,contactId:rows[0]!.contactId,osPrincipal:p.sid??`uid:${p.uid}@${hostname}`,osUsername:p.username,upn:p.upn});
+}
+```
+
+The `observeLogin` implementation above also checks uniqueness across the entire org, including W02 calls with an explicit contact. Its identity namespace lock is acquired before subject locks. Directory import takes this namespace lock before `updateContact` can acquire a contact lock; this matches `applyDecision` → `handleRejection` and avoids a contact/identity lock inversion.
+
+In `routes/agents/sessions.ts`, import `observeSessionPrincipal` from `../../services/callerVerification/loginObservation`. Immediately after the existing device-not-found return add:
+
+```ts
+if(agent?.agentId!==agentId||agent.orgId!==device.orgId)return c.json({error:'Device not found'},403);
+```
+
+After the existing `await db.transaction(...)` and before event publication, use the authenticated ambient transaction established by `agentAuth.ts` (the nested session transaction has released its savepoint, not committed the outer request). Do not swallow observation errors: fail the upload so the existing agent retry path retains the events. The binding helper is idempotent. This does not claim arbitrary JavaScript errors roll back all session inventory writes: the current agent-auth middleware awaits Hono `next()` without rethrowing `c.error`. Task 15 separately proves decision/receipt atomicity inside the explicit result transaction required by W02.
+
+```ts
+for(const session of activeSessions)await observeSessionPrincipal(device.orgId,device.hostname,session.username,session.principal);
+for(const event of data.events??[])if(event.type==='login')await observeSessionPrincipal(device.orgId,device.hostname,event.username,event.principal);
+```
+
+```ts
+// loginObservation.test.ts
+import { beforeEach,expect,it,vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+const m=vi.hoisted(()=>({rows:[] as {contactId:string}[],observe:vi.fn(),where:vi.fn()}));
+vi.mock('../../db',()=>({assertInTransaction:vi.fn(),db:{execute:vi.fn(),select:()=>({from:()=>({where:(q:unknown)=>{m.where(q);return {limit:async()=>m.rows};}})})}}));
+vi.mock('./subjects',()=>({observeLogin:m.observe}));
+import { observeSessionPrincipal } from './loginObservation';
+const org='11111111-1111-4111-8111-111111111111',contact='22222222-2222-4222-8222-222222222222';
+const principal={sid:'S-1-5-21-1',username:'alex',upn:'alex@example.com'};
+beforeEach(()=>{vi.clearAllMocks();m.rows=[];});
+it.each([{rows:[]},{rows:[{contactId:contact},{contactId:org}]}])('ignores unmatched and ambiguous UPN',async({rows})=>{
+ m.rows=rows;await observeSessionPrincipal(org,'host','alex',principal);expect(m.observe).not.toHaveBeenCalled();
+});
+it('resolves exactly one existing binding in the authenticated org',async()=>{
+ m.rows=[{contactId:contact}];await observeSessionPrincipal(org,'host','alex',principal);
+ expect(m.observe).toHaveBeenCalledWith({orgId:org,contactId:contact,osPrincipal:principal.sid,osUsername:'alex',upn:principal.upn});
+ const query=new PgDialect().sqlToQuery(m.where.mock.calls[0]![0]);
+ expect(query.sql).toContain('"org_id" =');expect(query.params).toContain(org);expect(query.sql).toContain('lower(');
+});
+it('never substitutes username or inconsistent principal',async()=>{
+ await observeSessionPrincipal(org,'host','alex',{uid:0,username:'alex'});
+ await observeSessionPrincipal(org,'host','alex',{uid:501,username:'mallory',upn:principal.upn});
+ expect(m.observe).not.toHaveBeenCalled();expect(m.where).not.toHaveBeenCalled();
+});
+```
+
+In existing `sessions.test.ts`, add `vi.mock('../../services/callerVerification/loginObservation',()=>({observeSessionPrincipal:vi.fn()}))` and its import. Before `app.route` in `beforeEach`, install `app.use('*',async(c,next)=>{c.set('agent',{agentId:AGENT_ID,orgId:'org-1'});await next();})`. Existing positive cases continue using their device/transaction mocks. Add inside the describe:
+
+```ts
+it('forwards independent login principal from an authenticated session report',async()=>{
+ mockDeviceLookup();const principal={sid:'S-1-5-21-1',username:'alex',upn:'alex@example.com'};
+ const response=await app.request(`/agents/${AGENT_ID}/sessions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessions:[],events:[{type:'login',username:'alex',sessionType:'console',principal}]})});
+ expect(response.status).toBe(200);
+ expect(observeSessionPrincipal).toHaveBeenCalledWith('org-1','host-1','alex',principal);
+});
+it('refuses a token from another org before observation',async()=>{
+ const foreign=new Hono();foreign.use('*',async(c,next)=>{c.set('agent',{agentId:AGENT_ID,orgId:'org-2'});await next();});foreign.route('/agents',sessionsRoutes);
+ mockDeviceLookup();const response=await foreign.request(`/agents/${AGENT_ID}/sessions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessions:[]})});
+ expect(response.status).toBe(403);expect(observeSessionPrincipal).not.toHaveBeenCalled();expect(db.transaction).not.toHaveBeenCalled();
+});
+```
+
+Run `(cd agent && go test -race ./internal/collectors/... ./internal/heartbeat/...)` and `(cd apps/api && npx vitest run src/services/callerVerification/loginObservation.test.ts src/routes/agents/sessions.test.ts)`. Compile the Windows collector in a Windows CI runner with `cd agent && go test -race ./internal/collectors/...`; a Unix-only pass does not exercise WTS. Task 15 adds live org-isolation/ambiguity and rollback evidence. Commit this extension explicitly after those unit suites:
+
+```bash
+git add agent/internal/collectors/sessions.go agent/internal/collectors/sessions_test.go agent/internal/collectors/session_principal_windows.go agent/internal/collectors/session_principal_unix.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/sessions.ts apps/api/src/routes/agents/sessions.test.ts apps/api/src/services/callerVerification/loginObservation.ts apps/api/src/services/callerVerification/loginObservation.test.ts apps/api/src/services/callerVerification/subjects.ts
+git commit -m "feat(caller-verification): observe directory-bound principals on login"
+```
 
 - [ ] **Step 4:** Run `cd apps/api && npx vitest run src/services/callerVerification/subjects.test.ts src/services/contacts/import.test.ts`. Expected: PASS with positive CSV creation and zero binding calls.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add apps/api/src/services/callerVerification/subjects.ts apps/api/src/services/callerVerification/subjects.test.ts apps/api/src/services/contacts/import.ts apps/api/src/services/contacts/import.test.ts
+git add apps/api/src/services/callerVerification/directory.ts apps/api/src/services/callerVerification/directory.test.ts apps/api/src/services/callerVerification/subjects.ts apps/api/src/services/callerVerification/subjects.test.ts apps/api/src/services/contacts/import.ts apps/api/src/services/contacts/import.test.ts
 git commit -m "feat(caller-verification): bind canonical subjects only from trusted evidence"
 ```
 
@@ -1146,9 +1531,9 @@ it('checks flag, then tier zero, then backend tenant, before resolving subject',
 });
 const policy={requiredTierResetPassword:1,requiredTierDisableUser:1,verificationTtlMinutes:30,coolingOffHours:24,allowedMethods:['workstation','sms','email','callback_attestation'],allowCrossTechnicianUse:false,allowAdministrativeDisable:true,disableUserAuthorizerRoles:['admin'],destinationMinAgeDays:7,requireAttestedDestination:false};
 const binding={id:'44444444-4444-4444-8444-444444444444',orgId:input.orgId,contactId:'55555555-5555-4555-8555-555555555555',entraTenantId:'tenant',entraOid:'oid',osPrincipal:'sid',revokedAt:null};
-function candidate(patch:Record<string,unknown>={}){return {id:'66666666-6666-4666-8666-666666666666',orgId:input.orgId,contactId:binding.contactId,requesterBindingId:binding.id,targetBindingId:binding.id,targetEntraTenantId:'tenant',targetEntraOid:'oid',status:'verified',method:'callback_attestation',actionScope:'reset_password',initiatedByUserId:input.technicianUserId,decidedAt:new Date(),consumedAt:null,consumedIntentRef:null,destinationId:'destination',...patch};}
+function candidate(patch:Record<string,unknown>={}){return {id:'66666666-6666-4666-8666-666666666666',orgId:input.orgId,contactId:binding.contactId,requesterBindingId:binding.id,targetBindingId:binding.id,targetEntraTenantId:'tenant',targetEntraOid:'oid',status:'verified',method:'callback_attestation',actionScope:'reset_password',initiatedByUserId:input.technicianUserId,decidedAt:new Date(),consumedAt:null,consumedIntentRef:null,destinationId:'destination',workstationDeviceRef:'77777777-7777-4777-8777-777777777777',...patch};}
 beforeEach(()=>{vi.clearAllMocks();m.results.length=0;vi.stubEnv('CALLER_VERIFICATION_ENABLED','true');m.policy.mockResolvedValue({...policy});m.resolve.mockResolvedValue(binding);m.eligible.mockResolvedValue(true);m.mailboxes.mockResolvedValue(['other@example.com']);m.destination.mockResolvedValue({id:'destination',valueHash:destinationHash('caller@example.com')});});
-function seed(row:ReturnType<typeof candidate>){m.results.push([row],[],[],[],[row],[],[binding],[{id:binding.contactId,siteId:null,roles:['admin']}],[{id:row.id}]);}
+function seed(row:ReturnType<typeof candidate>,devicePresent=true){m.results.push([row],[],[],[],[row],[],[binding],[{id:binding.contactId,siteId:null,roles:['admin']}],...(row.method==='workstation'?[devicePresent?[{id:row.workstationDeviceRef}]:[]]:[]),[{id:row.id}]);}
 it.each([
  [{consumedAt:new Date(),consumedIntentRef:'other'},'grant_consumed'],
  [{targetEntraOid:'substituted'},'target_rebound'],
@@ -1160,6 +1545,10 @@ it.each([
 it('does not elevate unbound workstation even if its stored tier was 3',async()=>{
  m.policy.mockResolvedValue({...policy,requiredTierResetPassword:2});seed(candidate({method:'workstation',tier:3,osPrincipalObserved:null}));
  await expect(requireCallerVerification({...input,backendTenantId:'tenant'})).rejects.toMatchObject({payload:{reason:'no_fresh_verification'}});
+});
+it('refuses a moved workstation even for same-intent consumed retry',async()=>{
+ seed(candidate({method:'workstation',consumedAt:new Date(),consumedIntentRef:input.intentId}),false);
+ await expect(requireCallerVerification({...input,backendTenantId:'tenant'})).rejects.toMatchObject({payload:{reason:'target_rebound'}});
 });
 it('email mailbox uncertainty refuses while callback needs no mailbox read',async()=>{
  m.mailboxes.mockRejectedValue(new Error('offline'));seed(candidate({method:'email'}));await expect(requireCallerVerification({...input,backendTenantId:'tenant'})).rejects.toMatchObject({payload:{reason:'subject_mailboxes_unknown'}});
@@ -1184,6 +1573,7 @@ import { and,eq,desc,sql,isNull } from 'drizzle-orm';
 import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v,callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { contacts } from '../../db/schema/contacts';
+import { devices } from '../../db/schema/devices';
 import { callerVerificationEnabled } from '../../config/env';
 import type { CallerVerificationAction,EntraSubject,VerificationRow } from './types';
 import { CallerVerificationRequiredError, type CallerVerificationRefusal } from './errors';
@@ -1257,6 +1647,10 @@ export async function requireCallerVerification(input:GateInput):Promise<{verifi
      const [contact]=await db.select().from(contacts).where(and(eq(contacts.id,r.contactId),eq(contacts.orgId,input.orgId))).limit(1);
      if(!contact||!requesterAuthorized(input.action,requester,target,contact,p.disableUserAuthorizerRoles)){reason='requester_not_authorized';return null;}
      bound=!!r.osPrincipalObserved&&requester.osPrincipal===r.osPrincipalObserved;
+     if(r.method==='workstation'){
+      const [device]=r.workstationDeviceRef?await db.select({id:devices.id}).from(devices).where(and(eq(devices.id,r.workstationDeviceRef),eq(devices.orgId,input.orgId))).limit(1):[];
+      if(!device){reason='target_rebound';return null;}
+     }
      if(r.method==='sms'||r.method==='email'){
       const d=await currentDestination(input.orgId,r.contactId,r.method==='sms'?'mobile':'email');
       if(!d||d.id!==r.destinationId)return null;destinationEstablished=isEstablished(d,p);
@@ -1450,7 +1844,7 @@ export async function freshForTicket(actor: CallerVerificationActor, orgId: stri
 // service.test.ts
 import { beforeEach,expect,it,vi } from 'vitest';
 const ref=vi.hoisted(()=>({db:null as any,policy:vi.fn(),bindings:vi.fn()}));
-vi.mock('../../db',()=>({db:new Proxy({}, {get:(_,key)=>ref.db[key]}),assertInTransaction:vi.fn(),runOutsideDbContext:(f:()=>unknown)=>f(),withSystemDbAccessContext:(f:()=>unknown)=>f()}));
+vi.mock('../../db',()=>({db:new Proxy({}, {get:(_,key)=>ref.db[key]}),assertInTransaction:vi.fn(),runOutsideDbContext:(f:()=>unknown)=>f(),withSystemDbAccessContext:(f:()=>unknown)=>f(),getCurrentDbAccessContext:()=>({scope:'organization'})}));
 vi.mock('./effects',()=>({recordEffect:vi.fn()}));
 vi.mock('./gate',()=>({fencedUntil:async()=>null}));
 vi.mock('./policy',async original=>({...await original<typeof import('./policy')>(),getEffectivePolicy:ref.policy}));
@@ -1500,7 +1894,7 @@ it('does not advertise or start a workstation without its adapter',async()=>{
 });
 it('creates a callback row and returns its initiator secrets',async()=>{
  const now=new Date(),row={id:user,...input,initiatedByUserId:user,createdAt:now,expiresAt:now,decidedAt:null,consumedAt:null,matchValue:'42',decoyValues:['11','73'],reverseCode:'1234'};
- state.results.push([contact],[contact],[contact],[contact],[contact],[{count:0}],[row]);
+ state.results.push([contact],[contact],[contact],[contact],[contact],[{count:0}],[row],[{count:1}],[]);
  expect((await start(actor,input)).secrets).toEqual({matchValue:'42',decoyValues:['11','73'],reverseCode:'1234'});expect(state.calls.filter(c=>c.name==='insert')).toHaveLength(1);
 });
 ```
@@ -1541,7 +1935,7 @@ async function targetContact(r:VerificationRow):Promise<string|null>{
  if(!r.targetBindingId)return null;const [t]=await db.select().from(b).where(and(eq(b.id,r.targetBindingId),eq(b.orgId,r.orgId))).limit(1);return t?.contactId??null;
 }
 export async function get(actor:CallerVerificationActor,orgId:string,id:string):Promise<VerificationView>{
- const r=await loadVerification(orgId,id);await reachableContact(actor,orgId,r.contactId);const target=await targetContact(r);if(target)await reachableContact(actor,orgId,target);return view(r,actor.userId,target);
+ const r=await loadVerification(orgId,id);await reachableContact(actor,orgId,r.contactId);const target=await targetContact(r);if(target)await reachableContact(actor,orgId,target);return projectVerification(r,actor.userId,target);
 }
 export async function methodsForContact(actor:CallerVerificationActor,orgId:string,contactId:string,actionScope:CallerVerificationActionScope):Promise<MethodAvailability[]>{
  const contact=await reachableContact(actor,orgId,contactId);const p=await getEffectivePolicy(orgId),bindings=await bindingsForContact(orgId,contactId),rows:MethodAvailability[]=[];
@@ -1566,7 +1960,7 @@ export async function start(actor:CallerVerificationActor,input:StartInput):Prom
  if(input.ticketId){[ticket]=await db.select().from(tickets).where(and(eq(tickets.id,input.ticketId),eq(tickets.orgId,orgId))).limit(1);
   if(!ticket||ticket.deletedAt||ticket.requesterContactId!==contactId)throw new Invalid('not_found','Ticket not found');await assertTicketDeviceReach(actor,orgId,ticket.deviceId);}
  let device:typeof devices.$inferSelect|undefined;
- if(input.deviceId){[device]=await db.select().from(devices).where(and(eq(devices.id,input.deviceId),eq(devices.orgId,orgId))).limit(1);
+ if(input.deviceId){[device]=await db.select().from(devices).where(and(eq(devices.id,input.deviceId),eq(devices.orgId,orgId))).limit(1).for('share');
   if(!device||actor.allowedSiteIds!==null&&(!device.siteId||!actor.allowedSiteIds.includes(device.siteId)))throw new Invalid('not_found','Device not found');}
  if(input.method==='workstation'&&(!device||!input.username))throw new Invalid('device_required','Workstation requires device and username');
  await lockContact(orgId,contactId);
@@ -1582,13 +1976,13 @@ export async function start(actor:CallerVerificationActor,input:StartInput):Prom
   const computed=computeTier({method:input.method,boundPrincipal:false,destinationEstablished:!!dest&&isEstablished(dest,p),policy:p});
   const [row]=await db.insert(v).values({orgId,contactId,requesterBindingId:currentR?.id??null,targetBindingId:currentT?.id??null,targetEntraTenantId:currentT?.entraTenantId,targetEntraOid:currentT?.entraOid,initiatedByUserId:actor.userId,technicianLabel:actor.displayName,actionScope:input.actionScope,targetLabel:currentT?.upnSnapshot??target.name,method:input.method,status:'pending',tier:computed.tier,tierReason:computed.reason,...secret,challengeTokenHash:token?createHash('sha256').update(token).digest('hex'):null,destinationId:dest?.id,destinationRedacted:dest?.valueRedacted,workstationDeviceRef:device?.id,deviceHostname:device?.hostname,osUsername:input.username,ticketRef:ticket?.id,ticketNumber:(ticket?.internalNumber??ticket?.ticketNumber)?.slice(0,32),attemptNo:count!+1,expiresAt:new Date(now.getTime()+(input.method==='callback_attestation'?0:input.method==='workstation'?p.workstationTimeoutSeconds*1000:600000)),attestationNote:input.note}).returning();
   if(input.method!=='callback_attestation')await ports.prepare(row!,token);
-  await recordEffect(row!,'started',actor.userId);return view(row!,actor.userId,target.id);
+  await recordEffect(row!,'started',actor.userId);return projectVerification(row!,actor.userId,target.id);
  });
 }
 export async function listForContact(actor:CallerVerificationActor,orgId:string,contactId:string):Promise<{rows:VerificationView[];fencedUntil:string|null}>{
  await reachableContact(actor,orgId,contactId);const p=await getEffectivePolicy(orgId);
  const records=await db.select().from(v).where(and(eq(v.orgId,orgId),eq(v.contactId,contactId))).orderBy(desc(v.createdAt)).limit(50);
- const rows:VerificationView[]=[];for(const r of records){const target=await targetContact(r);if(target)await reachableContact(actor,orgId,target);rows.push(view(r,actor.userId,target));}
+ const rows:VerificationView[]=[];for(const r of records){const target=await targetContact(r);if(target)await reachableContact(actor,orgId,target);rows.push(await projectVerification(r,actor.userId,target));}
  return {rows,fencedUntil:(await fencedUntil(orgId,contactId,p))?.toISOString()??null};
 }
 async function assertTicketDeviceReach(actor:CallerVerificationActor,orgId:string,deviceId:string|null):Promise<void>{
@@ -1605,6 +1999,59 @@ export async function freshForTicket(actor:CallerVerificationActor,orgId:string,
 }
 ```
 
+- [ ] **Step 3a: Produce the additive HTTP view at every authenticated service return.** Keep `VerificationView` and the index signatures unchanged; the runtime result is a structural extension. `get`, `start`, `listForContact`, and Task 13's administrative factory call `projectVerification` below; cancel/attest/ticket already call those readers. W05 retains these returns. `applyDecision` is internal and continues using the secret-free base `view`. Add imports `incidents` from `../../db/schema/incidentResponse`, `actionIntents` from `../../db/schema/actionIntents`, and `CallerVerificationAction` from `./types`.
+
+```ts
+export type VerificationDetails=VerificationView & {
+ remainingAttempts:number|null;usableUntil:string|null;incidentId:string|null;
+ consumedAction:CallerVerificationAction|null;
+ undeliverableReason:'no_session_for_user'|'session_not_console'|'helper_outdated'|'sms_failed'|'email_failed'|null;
+};
+export function verificationDetails(r:VerificationRow,userId:string|null,targetId:string|null,
+ policy:Awaited<ReturnType<typeof getEffectivePolicy>>,attempts:number,incidentId:string|null,actionName:string|null):VerificationDetails{
+ const reasons=['no_session_for_user','session_not_console','helper_outdated','sms_failed','email_failed'] as const;
+ const reason=reasons.find(value=>value===r.reason)??null;
+ const proofAt=r.method==='administrative_stepup'?r.stepupVerifiedAt:r.decidedAt;
+ return {...view(r,userId,targetId),remainingAttempts:Math.max(0,policy.maxAttemptsPerHour-attempts),
+  usableUntil:r.status==='verified'&&proofAt?new Date(proofAt.getTime()+policy.verificationTtlMinutes*60000).toISOString():null,
+  incidentId,consumedAction:!r.consumedAt?null:actionName==='m365_reset_password'?'reset_password':actionName==='m365_disable_user'?'disable_user':null,
+  undeliverableReason:r.status==='undeliverable'?reason:null};
+}
+export async function projectVerification(r:VerificationRow,userId:string|null,targetId:string|null):Promise<VerificationDetails>{
+ const policy=await getEffectivePolicy(r.orgId);
+ const [attempts]=await db.select({count:sql<number>`count(*)::int`}).from(v)
+  .where(and(eq(v.orgId,r.orgId),eq(v.contactId,r.contactId),sql`${v.createdAt}>now()-interval '1 hour'`));
+ const [incident]=await db.select({id:incidents.id}).from(incidents)
+  .where(and(eq(incidents.orgId,r.orgId),eq(incidents.sourceType,'caller_verification'),eq(incidents.sourceRef,r.id))).limit(1);
+ const [intent]=r.consumedAt&&r.consumedIntentRef?await db.select({actionName:actionIntents.actionName}).from(actionIntents)
+  .where(and(eq(actionIntents.orgId,r.orgId),eq(actionIntents.id,r.consumedIntentRef))).limit(1):[];
+ return verificationDetails(r,userId,targetId,policy,Number(attempts?.count??0),incident?.id??null,intent?.actionName??null);
+}
+```
+
+A deleted or moved intent yields `consumedAction:null`; never infer the consumed action from `actionScope='any'`. Persist delivery failure in `reason` in Task 13's decision UPDATE so this reader has a producer. Unknown internal reasons map to null rather than leaking provider text. Grant expiry uses the current policy TTL and administrative proof time, not challenge expiry. `usableUntil` is descriptive, not a gate decision.
+
+Add to `service.test.ts` (reuse `actor`, `org`, `user` and the real policy resolver):
+
+```ts
+import { verificationDetails } from './service';
+it('projects required fields without secrets or guessing consumed any-scope action',()=>{
+ const at=new Date('2026-09-19T12:00:00Z'),p=resolveEffectivePolicy(null,null);
+ const row={id:user,orgId:org,contactId:user,initiatedByUserId:user,method:'callback_attestation',status:'verified',
+  createdAt:at,expiresAt:at,decidedAt:at,consumedAt:at,actionScope:'any',reason:null} as VerificationRow;
+ const result=verificationDetails(row,'another-user',null,p,4,'incident','m365_disable_user');
+ expect(result).toMatchObject({remainingAttempts:0,usableUntil:'2026-09-19T12:30:00.000Z',incidentId:'incident',consumedAction:'disable_user',undeliverableReason:null});
+ expect(result).not.toHaveProperty('secrets');expect(verificationDetails(row,null,null,p,0,null,null).consumedAction).toBeNull();
+ expect(verificationDetails({...row,method:'administrative_stepup',stepupVerifiedAt:new Date('2026-09-19T11:59:00Z')},null,null,p,0,null,null).usableUntil).toBe('2026-09-19T12:29:00.000Z');
+});
+it.each(['no_session_for_user','session_not_console','helper_outdated','sms_failed','email_failed'] as const)('projects persisted delivery reason %s',reason=>{
+ const at=new Date(),row={id:user,orgId:org,contactId:user,createdAt:at,expiresAt:at,decidedAt:at,consumedAt:null,status:'undeliverable',reason} as VerificationRow;
+ expect(verificationDetails(row,null,null,resolveEffectivePolicy(null,null),1,null,null)).toMatchObject({remainingAttempts:2,usableUntil:null,undeliverableReason:reason});
+});
+```
+
+The successful callback mock above includes the count and incident queries used by this projection. Task 15 supplies real HTTP response-contract checks for all currently mounted reads/mutations and a factory check for W05's administrative response. Run `cd apps/api && npx vitest run src/services/callerVerification/service.test.ts` before the existing Step 5 commit.
+
 The attempt count and INSERT share the contact advisory lock and ambient transaction; every initiation path, including administrative creation, takes it. Number-choice expiry and grant TTL are different: callback's challenge expires immediately, but its later attestation starts grant freshness. `freshForTicket` is a badge read, never an authorization decision; gate rechecks current tier and subject.
 
 - [ ] **Step 4:** Run `cd apps/api && npx vitest run src/services/callerVerification/service.test.ts`. Expected: PASS. The cap, ticket, site, D15 and adapter cases all assert refusal before insertion.
@@ -1617,7 +2064,7 @@ git commit -m "feat(caller-verification): start challenges and expose scoped pri
 
 ### Task 13: Decisions, administrative factory and durable publication
 
-**Files:** Modify `apps/api/src/services/callerVerification/service.ts` and `apps/api/src/services/callerVerification/service.test.ts` (Task 12 creation); Create `apps/api/src/jobs/callerVerificationPublisher.ts`; Modify `apps/api/src/services/workerRegistry.ts:1083`.
+**Files:** Create `apps/api/src/services/callerVerification/deviceMove.ts`, `deviceMove.test.ts`; Modify `apps/api/src/routes/devices/moveOrg.ts`, `moveOrg.test.ts`, `apps/api/src/services/callerVerification/service.ts` and `apps/api/src/services/callerVerification/service.test.ts` (Task 12 creation); Create `apps/api/src/jobs/callerVerificationPublisher.ts`; Modify `apps/api/src/services/workerRegistry.ts:1083`.
 
 **Interfaces:** Consumes the rejection handler and transaction-only delivery ports; produces `publishCallerVerificationEffects(): Promise<void>` plus these exact cross-wave exports:
 
@@ -1646,7 +2093,7 @@ it('only a live pending number choice verifies; timeout never approves',()=>{
 ```
 
 - [ ] **Step 2:** Run `cd apps/api && npx vitest run src/services/callerVerification/service.test.ts`. Expected: missing `decisionStatus` export.
-- [ ] **Step 3: Add transition bodies and the post-commit publisher.** Add `runOutsideDbContext`, `withSystemDbAccessContext` to the db import; import `handleRejection` from `./rejection`. `applyDecision` is an internal system entry point; W02/W03 must authenticate command/token ownership before calling it.
+- [ ] **Step 3: Add transition bodies and the post-commit publisher.** Add `getCurrentDbAccessContext`, `withSystemDbAccessContext` to the db import; import `handleRejection` from `./rejection`. `applyDecision` reuses any existing authorized transaction and opens a system transaction only when no context exists; W03 must retain this any-context check, not narrow it to system scope. The identity namespace lock precedes subject locks so W02 can safely call `observeLogin` afterward in the same transaction; W02/W03 must authenticate command/token ownership before calling it.
 
 ```ts
 export function decisionStatus(status:CallerVerificationStatus,expiresAt:Date,decision:Parameters<typeof applyDecision>[0]['decision'],match:string):CallerVerificationStatus|null{
@@ -1672,8 +2119,9 @@ export async function attest(actor:CallerVerificationActor,orgId:string,id:strin
  });return get(actor,orgId,id);
 }
 export async function applyDecision(input:{verificationId:string;decision:{kind:'choice';value:string}|{kind:'not_me'}|{kind:'timeout'}|{kind:'undeliverable';reason:string};principal?:{osPrincipal:string;osUsername:string;upn:string|null};fromIp?:string}):Promise<VerificationView>{
- return runOutsideDbContext(()=>withSystemDbAccessContext(async()=>{
+ const decide=async()=>{
   const [row]=await db.select().from(v).where(eq(v.id,input.verificationId)).limit(1);if(!row)throw new Invalid('not_found','Verification not found');
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${row.orgId}`}))`);
   if(input.decision.kind==='not_me'){await handleRejection(row.id);return view(await loadVerification(row.orgId,row.id),null,await targetContact(row));}
   return withSubjectLocks(db,[row.requesterBindingId,row.targetBindingId],async()=>{
    const fresh=await loadVerification(row.orgId,row.id),status=decisionStatus(fresh.status,fresh.expiresAt,input.decision,fresh.matchValue);if(!status)return view(fresh,null,await targetContact(fresh));
@@ -1681,10 +2129,12 @@ export async function applyDecision(input:{verificationId:string;decision:{kind:
    const bound=!!input.principal&&bindings.some(b=>b.osPrincipal===input.principal!.osPrincipal&&!!input.principal!.upn&&b.upnSnapshot?.toLowerCase()===input.principal!.upn.toLowerCase());
    const dest= row.method==='sms'||row.method==='email'?await currentDestination(row.orgId,row.contactId,row.method==='sms'?'mobile':'email'):null;
    const tier=computeTier({method:row.method,boundPrincipal:bound,destinationEstablished:!!dest&&dest.id===row.destinationId&&isEstablished(dest,p),policy:p});
-   const [changed]=await db.update(v).set({status,decidedAt:new Date(),decidedFromIp:input.fromIp,osPrincipalObserved:input.principal?.osPrincipal,tier:tier.tier,tierReason:tier.reason}).where(and(eq(v.id,row.id),eq(v.status,'pending'),...(status==='verified'||status==='wrong_choice'?[sql`${v.expiresAt}>now()`]:[]))).returning();
+   const [changed]=await db.update(v).set({status,decidedAt:new Date(),decidedFromIp:input.fromIp,osPrincipalObserved:input.principal?.osPrincipal,tier:tier.tier,tierReason:tier.reason,...(input.decision.kind==='undeliverable'?{reason:input.decision.reason}:{})}).where(and(eq(v.id,row.id),eq(v.status,'pending'),...(status==='verified'||status==='wrong_choice'?[sql`${v.expiresAt}>now()`]:[]))).returning();
    if(changed)await recordEffect(changed,status);return view(changed??await loadVerification(row.orgId,row.id),null,await targetContact(row));
   });
- },'callerVerification.applyDecision'));
+ };
+ if(getCurrentDbAccessContext())return decide();
+ return withSystemDbAccessContext(decide,'callerVerification.applyDecision');
 }
 export async function createAdministrative(actor:CallerVerificationActor,input:{orgId:string;targetContactId:string;reason:string;stepUpGrantId:string}):Promise<VerificationView>{
  if(!callerVerificationEnabled())throw new Invalid('feature_disabled','Caller verification is disabled');
@@ -1694,20 +2144,88 @@ export async function createAdministrative(actor:CallerVerificationActor,input:{
  const bindings=(await bindingsForContact(input.orgId,target.id)).filter(b=>b.entraOid&&b.entraTenantId);if(bindings.length!==1)throw new Invalid('subject_unmatched','Canonical target required');
  const binding=bindings[0]!;
  // W05 adapter consumes exactly the operation/org/tenant/OID/reason/session/epoch-bound interactive proof.
- const proof=await ports.consumeStepUp(actor,{orgId:input.orgId,target:{entraTenantId:binding.entraTenantId!,entraOid:binding.entraOid!},reason:input.reason.trim(),stepUpGrantId:input.stepUpGrantId});
  await lockContact(input.orgId,target.id);
  return withSubjectLocks(db,[binding.id],async()=>{
   if(await fencedUntil(input.orgId,target.id,p))throw new Invalid('contact_fenced','Target is fenced');
   const current=(await bindingsForContact(input.orgId,target.id)).find(r=>r.id===binding.id);if(!current||current.entraOid!==binding.entraOid||current.entraTenantId!==binding.entraTenantId)throw new Invalid('target_rebound','Target binding changed');
   const [{count}]=await db.select({count:sql<number>`count(*)::int`}).from(v).where(and(eq(v.orgId,input.orgId),eq(v.contactId,target.id),sql`${v.createdAt}>now()-interval '1 hour'`));if(count!>=p.maxAttemptsPerHour)throw new Invalid('attempt_cap','Contact attempt limit reached');
+  const proof=await ports.consumeStepUp(actor,{orgId:input.orgId,target:{entraTenantId:binding.entraTenantId!,entraOid:binding.entraOid!},reason:input.reason.trim(),stepUpGrantId:input.stepUpGrantId});
   const now=new Date();const [row]=await db.insert(v).values({orgId:input.orgId,contactId:target.id,requesterBindingId:null,targetBindingId:binding.id,targetEntraTenantId:binding.entraTenantId,targetEntraOid:binding.entraOid,initiatedByUserId:actor.userId,technicianLabel:actor.displayName,actionScope:'disable_user',targetLabel:binding.upnSnapshot??target.name,method:'administrative_stepup',reason:input.reason.trim(),stepupSessionId:proof.sid,stepupAuthEpoch:proof.authEpoch,stepupMfaEpoch:proof.mfaEpoch,stepupVerifiedAt:now,status:'verified',tier:3,tierReason:'administrative',...challengeSecrets(),attemptNo:count!+1,decidedAt:now,expiresAt:new Date(now.getTime()+p.verificationTtlMinutes*60000)}).returning();
-  await recordEffect(row!,'administrative_created',actor.userId);return view(row!,actor.userId,target.id);
+  await recordEffect(row!,'administrative_created',actor.userId);return projectVerification(row!,actor.userId,target.id);
  });
 }
 
 ```
 
-Administrative proof defaults to refusal in W01. W05 registers the consumer using actual session/epochs; it cannot use the synthesized release `mfa:true`. Do not add the administrative route or step-up operation here. `not_me` is not processed by the ordinary pending/expiry CAS; the rejection helper owns that atomic transition.
+The contact lock, hourly count, cap-before-proof-consumption, `attemptNo:count!+1`, and `recordEffect(row!,'administrative_created',actor.userId)` are implemented invariants, not a stub. W05 replaces only the proof adapter and retains these operations and the additive view projection. Administrative proof defaults to refusal in W01. W05 registers the consumer using actual session/epochs; it cannot use the synthesized release `mfa:true`. Do not add the administrative route or step-up operation here. `not_me` is not processed by the ordinary pending/expiry CAS; the rejection helper owns that atomic transition.
+
+- [ ] **Step 3a: Revoke workstation grants inside the device move transaction.** Create `apps/api/src/services/callerVerification/deviceMove.ts` and `deviceMove.test.ts`; modify `apps/api/src/routes/devices/moveOrg.ts`. The route already owns an explicit `tx`; pass it through both queries and advisory locks. Never open a second context or use ambient `db` for this hook.
+
+```ts
+// deviceMove.ts
+import { sql } from 'drizzle-orm';
+import { withSubjectLocks,type Tx } from './locks';
+export async function revokeWorkstationGrantsForMove(tx:Tx,sourceOrgId:string,deviceId:string):Promise<void>{
+ const rows=await tx.execute(sql`SELECT requester_binding_id,target_binding_id FROM caller_verifications
+  WHERE org_id=${sourceOrgId}::uuid AND workstation_device_ref=${deviceId}::uuid
+  AND method='workstation' AND status IN ('pending','verified')`);
+ const ids=(rows as unknown as Array<{requester_binding_id:string|null;target_binding_id:string|null}>).flatMap(r=>[r.requester_binding_id,r.target_binding_id]);
+ await withSubjectLocks(tx,ids,async()=>{
+  await tx.execute(sql`UPDATE caller_verifications
+   SET status=CASE WHEN status='pending' THEN 'expired'::caller_verification_status ELSE 'revoked'::caller_verification_status END
+   WHERE org_id=${sourceOrgId}::uuid AND workstation_device_ref=${deviceId}::uuid
+   AND method='workstation' AND status IN ('pending','verified') AND consumed_at IS NULL`);
+ });
+}
+```
+
+Import `revokeWorkstationGrantsForMove` from `../../services/callerVerification/deviceMove` in `routes/devices/moveOrg.ts`. Inside its existing transaction, after locked source/target validation and PAM checks, immediately before `tx.update(devices).set({orgId:targetOrgId,...})`, insert:
+
+```ts
+const [callerMoveDevice]=await tx.select({orgId:devices.orgId}).from(devices).where(eq(devices.id,deviceId)).limit(1).for('update');
+if(callerMoveDevice?.orgId!==sourceOrgId)throw new Error('Device organization changed during move');
+await revokeWorkstationGrantsForMove(tx,sourceOrgId,deviceId);
+```
+
+Prevent a concurrent start from publishing a new old-org grant after the hook's snapshot: in Task 12's `start` device lookup append `.for('share')` to its existing `.limit(1)` query. The device share lock remains until the start's grant INSERT commits; the move's device row lock waits for it. Conversely, a lookup after the move cannot match the old org. Acquire the device lock before contact/subject locks on both paths. The new `SELECT ... FOR UPDATE` above is required: this checkout's route does not yet lock the device before its UPDATE. Keep the existing ascending organization locks first, then the new device lock, then the hook's subject locks. Snapshots and consumed history remain untouched, including the original org. The hook locks consumed verified rows too (without updating them); Task 10 rechecks the device org under these same subject locks even on same-intent retries. Its device read deliberately has no row lock, avoiding reversal of move/start device-before-subject ordering. Thus an already consumed but undispatched grant cannot regain authorization after movement.
+
+```ts
+// deviceMove.test.ts
+import { expect,it,vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { revokeWorkstationGrantsForMove } from './deviceMove';
+it('uses the move transaction, ordered shared locks, original org and unused-only update',async()=>{
+ const execute=vi.fn().mockResolvedValueOnce([{requester_binding_id:'b',target_binding_id:'a'}]).mockResolvedValue([]);
+ await revokeWorkstationGrantsForMove({execute} as never,'org','device');
+ const queries=execute.mock.calls.map(([q])=>new PgDialect().sqlToQuery(q));
+ expect(queries.map(q=>q.params)).toEqual([['org','device'],['a'],['b'],['org','device']]);
+ expect(queries[3]!.sql).toContain('consumed_at IS NULL');
+ expect(queries[3]!.sql).not.toContain('SET org_id');expect(queries[3]!.sql).not.toContain('consumed_at=');
+});
+```
+
+Update existing `apps/api/src/routes/devices/moveOrg.test.ts` so its real route harness recognizes the new locked device read. At the top of `rigTransactionSuccess`'s `tx.select` implementation, before its payload branch, insert:
+
+```ts
+if(cols&&'orgId' in cols){
+ return {from:()=>({where:()=>({limit:()=>({for:async(mode:string)=>{
+  statements.push(`SELECT devices FOR ${mode}`);return [{orgId:SOURCE_ORG}];
+ }})})})};
+}
+```
+
+In its existing lock-order test, keep the assertions for indices 0–5 (constraints, orgs, PAM, re-home, detach), and replace `expect(statements[6]).toBe('UPDATE devices')` with:
+
+```ts
+expect(statements[6]).toBe('SELECT devices FOR update');
+expect(collapseStmt(statements[7]!)).toContain('SELECT requester_binding_id,target_binding_id FROM caller_verifications');
+expect(collapseStmt(statements[8]!)).toContain('UPDATE caller_verifications');
+expect(statements[9]).toBe('UPDATE devices');
+```
+
+The empty-grant fixture takes no subject advisory locks; the dedicated helper test above covers their ordered acquisition. The live move test supplies actual grants and consumed history. Include `moveOrg.test.ts` in Step 5's commit.
+
+Run `cd apps/api && npx vitest run src/services/callerVerification/deviceMove.test.ts src/services/callerVerification/service.test.ts src/routes/devices/moveOrg.test.ts src/routes/devices/moveOrg.coverage.test.ts`. Task 15 calls the real authenticated move route, verifies an eligible old grant before movement, refuses its subsequent use and checks unchanged consumed history. Include the helper/tests/move route in Step 5's commit.
 
 Implement the publisher with a BullMQ repeat job, outside request context. A stable queue job and concurrency 1 serialize the publisher; multiple replicas use the same job ID/queue. Each committed rejection is scanned until marked. Create notifications with per-user verification dedupe keys; send email outside DB contexts; mark only after successful completion. SMTP provider ambiguity is the explicit at-least-once limitation in Global Constraints.
 
@@ -1761,15 +2279,15 @@ Add the registry entry beside the existing ticket publisher (`workerRegistry.ts:
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add apps/api/src/services/callerVerification/service.ts apps/api/src/services/callerVerification/service.test.ts apps/api/src/jobs/callerVerificationPublisher.ts apps/api/src/services/workerRegistry.ts
+git add apps/api/src/services/callerVerification/deviceMove.ts apps/api/src/services/callerVerification/deviceMove.test.ts apps/api/src/routes/devices/moveOrg.ts apps/api/src/routes/devices/moveOrg.test.ts apps/api/src/services/callerVerification/service.ts apps/api/src/services/callerVerification/service.test.ts apps/api/src/jobs/callerVerificationPublisher.ts apps/api/src/services/workerRegistry.ts
 git commit -m "feat(caller-verification): implement decisions and administrative factory seam"
 ```
 
 ### Task 14: Authenticated routes, policy writes and barrel exports
 
-**Files:** Create `apps/api/src/routes/callerVerification.ts`, `apps/api/src/routes/callerVerification.test.ts`, `apps/api/src/services/callerVerification/index.ts`; Modify `apps/api/src/routes/orgContacts.ts:110`, `apps/api/src/index.ts:834`, `apps/api/src/middleware/selfManagedDbContextRoutes.ts:30`, `apps/api/src/middleware/selfManagedDbContextRoutes.test.ts:291`.
+**Files:** Modify `apps/api/src/routes/config.ts`, `apps/api/src/routes/config.test.ts`; Create `apps/api/src/routes/callerVerification.ts`, `apps/api/src/routes/callerVerification.test.ts`, `apps/api/src/services/callerVerification/index.ts`; Modify `apps/api/src/routes/orgContacts.ts:110`, `apps/api/src/index.ts:834`, `apps/api/src/middleware/selfManagedDbContextRoutes.ts:30`, `apps/api/src/middleware/selfManagedDbContextRoutes.test.ts:291`.
 
-**Interfaces:** Produces every authenticated spec API route except `/administrative` and device-suggestions, plus the callback `/attest` and specified fence-override POST. Consumes actual `authMiddleware`, `requireScope`, `requirePermission`, `requireMfa`, `PERMISSIONS.ORGS_READ/ORGS_WRITE`, `canReachContactSite`, `canManagePartnerWidePolicies`. Binding Graph reads use the existing self-managed context route mechanism (`auth.ts:768`) so no outer transaction stays open across Graph.
+**Interfaces:** Produces the `/config` readiness field, directory search/sync routes from Task 8, and every authenticated spec API route except `/administrative` and device-suggestions, plus the callback `/attest` and specified fence-override POST. Consumes actual `authMiddleware`, `requireScope`, `requirePermission`, `requireMfa`, `PERMISSIONS.ORGS_READ/ORGS_WRITE`, `canReachContactSite`, `canManagePartnerWidePolicies`. Binding Graph reads use the existing self-managed context route mechanism (`auth.ts:768`) so no outer transaction stays open across Graph.
 
 - [ ] **Step 1: Write route tests with functional authorization stubs.**
 
@@ -1816,6 +2334,34 @@ it('requires write plus MFA and validates start bodies',async()=>{
 });
 ```
 
+- [ ] **Step 1a: Cover the public readiness producer.** Extend existing `apps/api/src/routes/config.test.ts` inside its `GET /config` describe (reuse `request`). Add `callerVerification:false` to both existing exact `features` expectations. In its `beforeEach`, `vi.stubEnv('CALLER_VERIFICATION_ENABLED','false')`; in `afterEach`, `vi.unstubAllEnvs()`.
+
+```ts
+it.each(['true','false','','garbage'])('returns caller verification readiness for %s',async value=>{
+ vi.stubEnv('CALLER_VERIFICATION_ENABLED',value);
+ const {status,body}=await request();
+ expect(status).toBe(200);expect(body.features.callerVerification).toBe(value==='true');
+});
+```
+
+In `apps/api/src/routes/config.ts`, import `isCallerVerificationEnabled` from `../services/callerVerification/gate` and add this property inside the existing `features` object:
+
+```ts
+callerVerification: isCallerVerificationEnabled(),
+```
+
+Run `cd apps/api && npx vitest run src/routes/config.test.ts src/services/callerVerification/readiness.test.ts`. Both response values must pass through the real getter. W01 keeps unset false. W05 Task 14 must **replace** Task 5's inherited unset expectation when activating the default, preserving explicit-false and invalid cases; use this exact replacement there (not in W01):
+
+```ts
+it.each([[undefined,true],['',false],['false',false],['1',false],['yes',false],['TRUE',false],['garbage',false],['true',true]] as const)(
+ 'activated readiness value %s', (value,expected)=>{
+  vi.stubEnv('CALLER_VERIFICATION_ENABLED',value);
+  expect(callerVerificationEnabled()).toBe(expected);
+ });
+```
+
+That later activation runs `cd apps/api && npx vitest run src/services/callerVerification/readiness.test.ts src/config/env.callerVerification.test.ts src/routes/config.test.ts`; its activation commit includes the inherited readiness test. W01's Step 5 below commits only the default-off producer and tests.
+
 - [ ] **Step 2:** Run `cd apps/api && npx vitest run src/routes/callerVerification.test.ts`. Expected: missing router.
 - [ ] **Step 3: Implement the thin router.** Route-local middleware avoids a wildcard flag/auth gate accidentally applying to unrelated APIs. Export `canReachContactSite` in orgContacts; its null-site exception is preserved exactly.
 
@@ -1837,7 +2383,7 @@ import { bindingsForContact,attestBinding,revokeBinding } from '../services/call
 import { attestDestination,isEstablished } from '../services/callerVerification/destinations';
 import { reachableContact } from '../services/callerVerification/access';
 import { fenceOverride } from '../services/callerVerification/rejection';
-import { getEffectivePolicy,resolveEffectivePolicy } from '../services/callerVerification/policy';
+import { getEffectivePolicy,resolveEffectivePolicy,getPolicyResponse } from '../services/callerVerification/policy';
 import { CallerVerificationRequiredError,CallerVerificationValidationError } from '../services/callerVerification/errors';
 import { importDirectoryContact } from '../services/contacts/import';
 import type { CallerVerificationActor } from '../services/callerVerification/types';
@@ -1892,7 +2438,7 @@ for(const owner of ['org','partner'] as const){
   if(a.scope!=='system'&&!a.canAccessOrg(oid(c)))throw new CallerVerificationValidationError('not_found','Policy not found');
   const [org]=await db.select({id:organizations.id}).from(organizations).where(eq(organizations.id,oid(c))).limit(1);if(!org)throw new CallerVerificationValidationError('not_found','Policy not found');return eq(p.orgId,oid(c));
  };
- callerVerificationRoutes.get(path,...base,read,async c=>{const where=await ownerWhere(c),[row]=await db.select().from(p).where(where).limit(1);return c.json({data:{row:row??null,effective:owner==='org'?await getEffectivePolicy(oid(c)):resolveEffectivePolicy(row??null,null)}});});
+ callerVerificationRoutes.get(path,...base,read,async c=>{await ownerWhere(c);return c.json({data:await getPolicyResponse(owner,owner==='org'?oid(c):(c.get('auth') as AuthContext).partnerId!)});});
  callerVerificationRoutes.put(path,...base,write,requireMfa(),zValidator('json',callerVerificationPolicySchema),async c=>{
   const a=c.get('auth') as AuthContext;if(owner==='partner'&&!canManagePartnerWidePolicies(a))return c.json({error:'Partner-wide administration required'},403);
   const where=await ownerWhere(c);await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-policy:${owner}:${owner==='org'?oid(c):a.partnerId}`}))`);
@@ -1901,12 +2447,12 @@ for(const owner of ['org','partner'] as const){
   const old=resolveEffectivePolicy(before??null,null),next=resolveEffectivePolicy(row!,null);
   const weakened=owner==='partner'&&(next.requiredTierResetPassword<old.requiredTierResetPassword||next.requiredTierDisableUser<old.requiredTierDisableUser||(next.destinationMinAgeDays===0&&old.destinationMinAgeDays!==0)||(!old.allowCrossTechnicianUse&&next.allowCrossTechnicianUse));
   await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result,details) VALUES(${owner==='org'?oid(c):null}::uuid,'user',${a.user.id}::uuid,${weakened?'caller_verification.policy_weakened':'caller_verification.policy_updated'},'caller_verification',${row!.id}::uuid,'success',${JSON.stringify({before:before??null,after:row})}::jsonb)`);
-  return c.json({data:{row,effective:owner==='org'?await getEffectivePolicy(oid(c)):next}});
+  return c.json({data:await getPolicyResponse(owner,owner==='org'?oid(c):a.partnerId!)});
  });
 }
 ```
 
-Add this precise self-managed entry so only the Graph-backed binding POST escapes the ambient request transaction:
+Add this precise self-managed entry alongside Task 8's directory GET/sync POST entries so all three Graph operations manage their own short DB phases:
 
 ```ts
 { method:'POST',pattern:/^\/api\/v1\/orgs\/[^/]+\/contacts\/[^/]+\/caller-verification-bindings\/?$/ },
@@ -1915,14 +2461,14 @@ Add this precise self-managed entry so only the Graph-backed binding POST escape
 Append the exact route-selection test to `selfManagedDbContextRoutes.test.ts`:
 
 ```ts
-it('self-manages only the Graph binding POST',()=>{
+it('self-manages the Graph binding POST but not ordinary verification writes',()=>{
  const path='/api/v1/orgs/o/contacts/c/caller-verification-bindings';
  expect(isSelfManagedDbContextRoute('POST',path)).toBe(true);
  expect(isSelfManagedDbContextRoute('DELETE',`${path}/b`)).toBe(false);
  expect(isSelfManagedDbContextRoute('POST','/api/v1/orgs/o/caller-verifications')).toBe(false);
 });
 ```
- The binding handler's every DB phase explicitly uses `withAuthDbAccessContext`; its Graph fetch runs with no held transaction. Mount in `apps/api/src/index.ts` with `import { callerVerificationRoutes } from './routes/callerVerification';` and `api.route('/', callerVerificationRoutes);` beside line 834. No unauthenticated `/verify` route is added.
+ The binding, directory-search and directory-sync handlers' every DB phase explicitly uses `withAuthDbAccessContext`; its Graph fetch runs with no held transaction. Mount in `apps/api/src/index.ts` with `import { callerVerificationRoutes } from './routes/callerVerification';` and `api.route('/', callerVerificationRoutes);` beside line 834. No unauthenticated `/verify` route is added.
 
 Create `services/callerVerification/index.ts`:
 
@@ -1943,7 +2489,7 @@ export * from './rejection';
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add apps/api/src/routes/callerVerification.ts apps/api/src/routes/callerVerification.test.ts apps/api/src/routes/orgContacts.ts apps/api/src/index.ts apps/api/src/services/callerVerification/index.ts apps/api/src/middleware/selfManagedDbContextRoutes.ts apps/api/src/middleware/selfManagedDbContextRoutes.test.ts
+git add apps/api/src/routes/config.ts apps/api/src/routes/config.test.ts apps/api/src/routes/callerVerification.ts apps/api/src/routes/callerVerification.test.ts apps/api/src/routes/orgContacts.ts apps/api/src/index.ts apps/api/src/services/callerVerification/index.ts apps/api/src/middleware/selfManagedDbContextRoutes.ts apps/api/src/middleware/selfManagedDbContextRoutes.test.ts
 git commit -m "feat(caller-verification): expose permission-gated verification and policy APIs"
 ```
 
@@ -1951,7 +2497,7 @@ git commit -m "feat(caller-verification): expose permission-gated verification a
 
 **Files:** Create `apps/api/src/__tests__/integration/callerVerification.integration.test.ts` only. Existing harness: `setup.ts:54,84`, `db-utils.ts:129,176,216`; real merge example `orgMerge.integration.test.ts:789`.
 
-**Interfaces:** Consumes production `withDbAccessContext`, `withSystemDbAccessContext`, `executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgMergeResult>` and `requireCallerVerification`; produces live assertions for SQLSTATE 42501/23503/23514 and exactly-one-consumer semantics. No mocked RLS and no rollback-only merge fixture.
+**Interfaces:** Consumes production `withDbAccessContext`, `withSystemDbAccessContext`, `executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgMergeResult>`, `requireCallerVerification`, real JWT-authenticated routers and directory/login helpers; produces live assertions for SQLSTATE 42501/23503/23514/22001, own-site positive controls, sibling/foreign refusals, response projections, sync completion, move invalidation, atomic decisions and exactly-one-consumer semantics. No mocked RLS and no rollback-only merge fixture.
 
 - [ ] **Step 1: Write the integration tests below.** Each rejected write has its own transaction; a 42501 must be the database error, not an application guard. The normal integration runner already attaches setup; do not attach a second truncate hook.
 
@@ -2086,6 +2632,248 @@ it('real committed org merge handles pending, consumed and colliding identities'
 });
 ```
 
+- [ ] **Step 1a: Exercise the real authenticated HTTP routes, not service substitutes.** Append the following to the same integration file, merging imports. JWT issuance, memberships, permissions, site reach, RLS and service mutations are real. Only the external directory-read seam is mocked. Mount `/api/v1` so the self-managed Graph-route selector is exercised. `setupTestEnvironment` and `createAccessToken` are the existing harness used by `billingEvidenceDeviceMove.integration.test.ts`; site membership/cache invalidation follows `alertsReadAuthorization.integration.test.ts`.
+
+```ts
+import { Hono } from 'hono';
+import { vi } from 'vitest';
+import { setupTestEnvironment,createSite } from './db-utils';
+import { organizationUsers,devices,deviceCommands,m365Connections } from '../../db/schema';
+import { createAccessToken } from '../../services/jwt';
+import { clearPermissionCache } from '../../services/permissions';
+import { callerVerificationRoutes } from '../../routes/callerVerification';
+import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { createAdministrative,applyDecision } from '../../services/callerVerification/service';
+import { observeLogin } from '../../services/callerVerification/subjects';
+import { destinationHash } from '../../services/callerVerification/destinations';
+import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
+import { callerVerificationPorts,configureCallerVerificationPorts } from '../../services/callerVerification/ports';
+import { CALLER_VERIFICATION_POLICY_DEFAULTS } from '../../services/callerVerification/policy';
+import type { CallerVerificationActor } from '../../services/callerVerification/types';
+const directoryRead=vi.hoisted(()=>vi.fn());
+vi.mock('../../services/m365ControlPlane/readActionService',()=>({executeM365ReadAction:directoryRead}));
+const liveApp=new Hono().route('/api/v1',callerVerificationRoutes).route('/api/v1/devices',moveOrgRoutes);
+const originalPorts={...callerVerificationPorts};
+afterEach(()=>{configureCallerVerificationPorts(originalPorts);directoryRead.mockReset();});
+function expectHttpVerification(value:Record<string,unknown>){
+ expect(value.remainingAttempts).toEqual(expect.any(Number));
+ for(const key of ['usableUntil','incidentId','consumedAction','undeliverableReason']){
+  expect(value).toHaveProperty(key);expect(value[key]===null||typeof value[key]==='string',key).toBe(true);
+ }
+ expect(value).not.toHaveProperty('challengeTokenHash');expect(value).not.toHaveProperty('deliveryPayload');
+}
+async function liveFixture(scope:'organization'|'partner'='organization',restricted=true){
+ const env=await setupTestEnvironment({scope});
+ const sibling=await createSite({orgId:env.organization.id}),other=await createOrganization({partnerId:env.partner.id}),otherSite=await createSite({orgId:other.id});
+ if(scope==='organization'&&restricted){
+  await getTestDb().update(organizationUsers).set({siteIds:[env.site.id]}).where(eq(organizationUsers.userId,env.user.id));
+  await clearPermissionCache(env.user.id);
+ }
+ const token=await createAccessToken({sub:env.user.id,email:env.user.email,roleId:env.role.id,orgId:scope==='organization'?env.organization.id:null,partnerId:env.partner.id,scope,mfa:true,aep:1,mep:1,sid:randomUUID()});
+ const request=(method:string,path:string,body?:unknown)=>liveApp.request(`/api/v1${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
+ const tenants=new Map([[env.organization.id,randomUUID()],[other.id,randomUUID()]]);
+ const families=await sys(async()=>{
+  await db.insert(p).values({partnerId:env.partner.id,requiredTierResetPassword:1});
+  for(const [orgId,tenantId] of tenants)await db.insert(m365Connections).values({orgId,tenantId,clientId:randomUUID(),profile:'customer-graph-read',authMode:'application-certificate',credentialDomain:'customer-graph-read',vaultRef:'akv://vault.example/test-certificate/version',credentialVersion:'test-version',permissionManifestVersion:1,status:'active'});
+  const result=[];
+  for(const [orgId,siteId] of [[env.organization.id,env.site.id],[env.organization.id,sibling.id],[other.id,otherSite.id]] as const){
+   const [contact]=await db.insert(contacts).values({orgId,siteId,name:'HTTP caller',roles:['admin'],email:`${randomUUID()}@example.com`}).returning();
+   const entraTenantId=tenants.get(orgId)!,entraOid=randomUUID();
+   const [binding]=await db.insert(b).values({orgId,contactId:contact!.id,entraTenantId,entraOid,upnSnapshot:contact!.email,source:'directory_sync',osPrincipal:`sid:${entraOid}`}).returning();
+   const [destination]=await db.insert(d).values({orgId,contactId:contact!.id,kind:'email',valueHash:destinationHash(contact!.email!),valueRedacted:'h***@example.com',source:'import',setAt:new Date(Date.now()-10*86400000)}).returning();
+   const [ticket]=await db.insert(tickets).values({orgId,partnerId:env.partner.id,requesterContactId:contact!.id,ticketNumber:`HTTP-${randomUUID()}`,subject:'Caller route fixture'}).returning();
+   const [verification]=await db.insert(v).values({orgId,contactId:contact!.id,requesterBindingId:binding!.id,targetBindingId:binding!.id,targetEntraTenantId:entraTenantId,targetEntraOid:entraOid,initiatedByUserId:env.user.id,technicianLabel:'HTTP technician',method:'callback_attestation',actionScope:'reset_password',status:'pending',tier:1,tierReason:'attestation',matchValue:'42',decoyValues:['11','73'],reverseCode:'1234',attemptNo:1,expiresAt:new Date(Date.now()+600000),ticketRef:ticket!.id,ticketNumber:ticket!.ticketNumber.slice(0,32)}).returning();
+   result.push({orgId,siteId,contact:contact!,binding:binding!,destination:destination!,ticket:ticket!,verification:verification!});
+  }return result;
+ });
+ const actor:CallerVerificationActor={userId:env.user.id,partnerId:env.partner.id,scope,accessibleOrgIds:scope==='organization'?[env.organization.id]:[env.organization.id,other.id],allowedSiteIds:scope==='organization'&&restricted?[env.site.id]:null,displayName:env.user.name};
+ return {env,request,actor,families};
+}
+type LiveFamily=Awaited<ReturnType<typeof liveFixture>>['families'][number];
+const contactUrl=(f:LiveFamily)=>`/orgs/${f.orgId}/contacts/${f.contact.id}`;
+const verificationUrl=(f:LiveFamily)=>`/orgs/${f.orgId}/caller-verifications/${f.verification.id}`;
+type RouteCase={name:string;method:string;path:(f:LiveFamily)=>string;body?:(f:LiveFamily)=>unknown;status:number;projection?:'row'|'history'|'ticket'};
+const liveCases:RouteCase[]=[
+ {name:'get',method:'GET',path:verificationUrl,status:200,projection:'row'},
+ {name:'history',method:'GET',path:f=>`${contactUrl(f)}/caller-verifications`,status:200,projection:'history'},
+ {name:'methods',method:'GET',path:f=>`${contactUrl(f)}/caller-verifications/methods`,status:200},
+ {name:'start',method:'POST',path:f=>`/orgs/${f.orgId}/caller-verifications`,body:f=>({contactId:f.contact.id,method:'callback_attestation',actionScope:'reset_password',ticketId:f.ticket.id}),status:202,projection:'row'},
+ {name:'cancel',method:'POST',path:f=>`${verificationUrl(f)}/cancel`,status:200,projection:'row'},
+ {name:'attest',method:'POST',path:f=>`${verificationUrl(f)}/attest`,body:()=>({note:'Called the established number and confirmed the requester.'}),status:200,projection:'row'},
+ {name:'delete binding',method:'DELETE',path:f=>`${contactUrl(f)}/caller-verification-bindings/${f.binding.id}`,status:200},
+ {name:'attest destination',method:'POST',path:f=>`${contactUrl(f)}/caller-verification-destinations/${f.destination.id}/attest`,status:200},
+ {name:'override',method:'POST',path:f=>`${contactUrl(f)}/caller-verifications/fence-override`,body:()=>({reason:'Security confirmed the caller using an independent channel.'}),status:200},
+ {name:'ticket',method:'GET',path:f=>`/orgs/${f.orgId}/tickets/${f.ticket.id}/caller-verification`,status:200,projection:'ticket'},
+];
+it.each(liveCases)('authenticated $name permits own site and denies sibling/foreign sites',async entry=>{
+ const f=await liveFixture(),own=f.families[0]!;
+ if(entry.name==='override')await sys(()=>db.update(v).set({status:'rejected_by_user',decidedAt:new Date()}).where(eq(v.id,own.verification.id)));
+ const response=await f.request(entry.method,entry.path(own),entry.body?.(own));
+ expect(response.status,await response.clone().text()).toBe(entry.status);const {data}=await response.json();
+ if(entry.projection==='row')expectHttpVerification(data);
+ if(entry.projection==='history'){expect(data.rows).toHaveLength(1);expectHttpVerification(data.rows[0]);}
+ if(entry.projection==='ticket'){expect(data.row.id).toBe(own.verification.id);expectHttpVerification(data.row);}
+ if(entry.name==='start')expect(data.id).not.toBe(own.verification.id);
+ if(entry.name==='cancel')expect(data.status).toBe('cancelled');
+ if(entry.name==='attest'){expect(data.status).toBe('verified');expect(data.usableUntil).not.toBeNull();}
+ if(entry.name==='delete binding')expect((await sys(()=>db.select().from(b).where(eq(b.id,own.binding.id))))[0]!.revokedAt).not.toBeNull();
+ if(entry.name==='attest destination')expect((await sys(()=>db.select().from(d).where(eq(d.id,own.destination.id))))[0]!.attestedByUserId).toBe(f.env.user.id);
+ if(entry.name==='override')expect((await sys(()=>db.select().from(v).where(eq(v.id,own.verification.id))))[0]!.fenceOverrideUntil).not.toBeNull();
+ for(const denied of f.families.slice(1)){
+  const snapshot=()=>sys(async()=>({verifications:await db.select().from(v).where(eq(v.contactId,denied.contact.id)).orderBy(v.id),bindings:await db.select().from(b).where(eq(b.contactId,denied.contact.id)).orderBy(b.id),destinations:await db.select().from(d).where(eq(d.contactId,denied.contact.id)).orderBy(d.id)}));
+  const before=await snapshot(),refusal=await f.request(entry.method,entry.path(denied),entry.body?.(denied));
+  expect(refusal.status,await refusal.clone().text()).toBe(404);expect(await snapshot()).toEqual(before);
+ }
+});
+it('manual binding uses Graph evidence and denies inaccessible contacts before Graph',async()=>{
+ // Real Graph read actions reject site-constrained sessions, so the positive is unrestricted.
+ const f=await liveFixture('organization',false),own=f.families[0]!;
+ directoryRead.mockResolvedValue({ok:true,kind:'resource',resource:{id:own.binding.entraOid,userPrincipalName:own.binding.upnSnapshot}});
+ const body=(x:LiveFamily)=>({entraTenantId:x.binding.entraTenantId,entraOid:x.binding.entraOid,upn:x.binding.upnSnapshot});
+ const path=(x:LiveFamily)=>`${contactUrl(x)}/caller-verification-bindings`;
+ const response=await f.request('POST',path(own),body(own));expect(response.status,await response.clone().text()).toBe(201);
+ expect((await response.json()).data).toMatchObject({id:own.binding.id,source:'technician_attested',attestedByUserId:f.env.user.id});
+ expect(directoryRead).toHaveBeenCalledTimes(1);
+ await getTestDb().update(organizationUsers).set({siteIds:[f.env.site.id]}).where(eq(organizationUsers.userId,f.env.user.id));await clearPermissionCache(f.env.user.id);
+ for(const denied of f.families.slice(1))expect((await f.request('POST',path(denied),body(denied))).status).toBe(404);
+ expect(directoryRead).toHaveBeenCalledTimes(1);
+});
+it.each(['organization','partner'] as const)('%s policy GET/PUT return defaults, baseline, own row and effective',async scope=>{
+ const f=await liveFixture(scope,false),orgId=f.env.organization.id;
+ await sys(()=>db.insert(p).values({orgId,requiredTierResetPassword:3}));
+ const path=scope==='partner'?'/partner/caller-verification-policy':`/orgs/${orgId}/caller-verification-policy`;
+ const check=async(response:Response,baseline:number,effective:number)=>{
+  expect(response.status,await response.clone().text()).toBe(200);const {data}=await response.json();
+  expect(data.defaults).toEqual(CALLER_VERIFICATION_POLICY_DEFAULTS);expect(data.baseline.requiredTierResetPassword).toBe(baseline);expect(data.effective.requiredTierResetPassword).toBe(effective);
+  expect(data.row[scope==='partner'?'partnerId':'orgId']).toBe(scope==='partner'?f.env.partner.id:orgId);
+ };
+ await check(await f.request('GET',path),1,scope==='partner'?1:3);
+ const next=scope==='partner'?0:2;
+ await check(await f.request('PUT',path,{requiredTierResetPassword:next}),scope==='partner'?0:1,next);
+ await check(await f.request('GET',path),scope==='partner'?0:1,next);
+});
+it('admin factory keeps cap before proof consumption, incremented attempt and technician audit',async()=>{
+ const f=await liveFixture(),own=f.families[0]!;
+ await sys(()=>db.update(p).set({maxAttemptsPerHour:2}).where(eq(p.partnerId,f.env.partner.id)));
+ const consume=vi.fn(async()=>({sid:randomUUID(),authEpoch:1,mfaEpoch:1}));configureCallerVerificationPorts({consumeStepUp:consume});
+ const input={orgId:own.orgId,targetContactId:own.contact.id,reason:'Confirmed employee offboarding with the authorized HR manager.',stepUpGrantId:randomUUID()};
+ const result=await sys(()=>createAdministrative(f.actor,input));expectHttpVerification(result as unknown as Record<string,unknown>);
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,result.id))))[0]!.attemptNo).toBe(2);
+ const audit=await sys(()=>db.select().from(auditLogs).where(and(eq(auditLogs.resourceId,result.id),eq(auditLogs.action,'caller_verification.administrative_created'))));
+ expect(audit).toHaveLength(1);expect(audit[0]).toMatchObject({actorType:'user',actorId:f.env.user.id});
+ await expect(sys(()=>createAdministrative(f.actor,{...input,stepUpGrantId:randomUUID()}))).rejects.toMatchObject({code:'attempt_cap'});expect(consume).toHaveBeenCalledTimes(1);
+});
+async function liveDevice(f:LiveFamily){
+ const [row]=await sys(()=>db.insert(devices).values({orgId:f.orgId,siteId:f.siteId,agentId:randomUUID(),hostname:'Caller workstation',osType:'windows',osVersion:'11',architecture:'x86_64',agentVersion:'test'}).returning());return row!;
+}
+it('real device move revokes old workstation authorization but preserves consumed history',async()=>{
+ const f=await liveFixture('partner',false),own=f.families[0]!,foreign=f.families[2]!,device=await liveDevice(own);
+ await sys(()=>db.update(v).set({method:'workstation',status:'verified',tier:3,tierReason:'bound_principal',decidedAt:new Date(),workstationDeviceRef:device.id,osPrincipalObserved:own.binding.osPrincipal}).where(eq(v.id,own.verification.id)));
+ const consumedIntent=randomUUID(),consumedAt=new Date();
+ const [consumed]=await sys(()=>db.insert(v).values({...own.verification,id:randomUUID(),method:'workstation',status:'verified',workstationDeviceRef:device.id,decidedAt:new Date(),consumedAt,consumedIntentRef:consumedIntent}).returning());
+ const input={orgId:own.orgId,action:'reset_password' as const,target:{entraTenantId:own.binding.entraTenantId!,entraOid:own.binding.entraOid!},backendTenantId:own.binding.entraTenantId!,technicianUserId:f.env.user.id,intentId:randomUUID(),mode:'check' as const};
+ expect(await requireCallerVerification(input)).toMatchObject({verificationId:own.verification.id});
+ expect(await requireCallerVerification({...input,intentId:consumedIntent})).toMatchObject({verificationId:consumed!.id});
+ const response=await f.request('POST',`/devices/${device.id}/move-org`,{orgId:foreign.orgId,siteId:foreign.siteId});expect(response.status,await response.clone().text()).toBe(200);
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,own.verification.id))))[0]).toMatchObject({orgId:own.orgId,workstationDeviceRef:device.id,status:'revoked',consumedAt:null});
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,consumed!.id))))[0]).toMatchObject({orgId:own.orgId,workstationDeviceRef:device.id,status:'verified',consumedIntentRef:consumedIntent,consumedAt});
+ await expect(requireCallerVerification({...input,mode:'consume'})).rejects.toMatchObject({payload:{orgId:own.orgId}});
+ await expect(requireCallerVerification({...input,intentId:consumedIntent,mode:'consume'})).rejects.toMatchObject({payload:{reason:'target_rebound'}});
+});
+```
+
+- [ ] **Step 1b: Verify rollback, independent observations, and directory HTTP execution against Postgres.** Append to the same file; these tests use the real helpers introduced in Tasks 8/13 and the fixture above.
+
+```ts
+it.each(['organization','system'] as const)('observation failure rolls back decision, receipt and effects in ambient %s context',async scope=>{
+ const f=await liveFixture(),own=f.families[0]!,device=await liveDevice(own);
+ const [command]=await sys(()=>db.insert(deviceCommands).values({deviceId:device.id,type:'caller_verify',status:'completed',result:{receipt:'before'}}).returning());
+ const decision={verificationId:own.verification.id,decision:{kind:'choice' as const,value:'42'},principal:{osPrincipal:own.binding.osPrincipal!,osUsername:'alex',upn:own.binding.upnSnapshot}};
+ const context={scope:'organization' as const,orgId:own.orgId,accessibleOrgIds:[own.orgId],accessiblePartnerIds:[],currentPartnerId:f.env.partner.id,userId:f.env.user.id};
+ const attempt=async()=>{
+  await db.update(deviceCommands).set({result:{receipt:'handled'}}).where(eq(deviceCommands.id,command!.id));
+  expect((await applyDecision(decision)).status).toBe('verified');
+  // Real database failure in the observation write, after the decision succeeded.
+  await observeLogin({orgId:own.orgId,contactId:own.contact.id,osPrincipal:own.binding.osPrincipal!,osUsername:'x'.repeat(256),upn:own.binding.upnSnapshot});
+ };
+ await code(scope==='system'?sys(attempt):withDbAccessContext(context,attempt),'22001');
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,own.verification.id))))[0]).toMatchObject({status:'pending',decidedAt:null});
+ expect((await sys(()=>db.select().from(deviceCommands).where(eq(deviceCommands.id,command!.id))))[0]!.result).toEqual({receipt:'before'});
+ expect(await sys(()=>db.select().from(ticketComments).where(eq(ticketComments.ticketId,own.ticket.id)))).toEqual([]);
+ expect(await sys(()=>db.select().from(ticketOutbox).where(eq(ticketOutbox.ticketId,own.ticket.id)))).toEqual([]);
+ expect(await sys(()=>db.select().from(auditLogs).where(eq(auditLogs.resourceId,own.verification.id)))).toEqual([]);
+ // Positive control proves the same path commits all three when observation succeeds.
+ await withDbAccessContext(context,async()=>{
+  await db.update(deviceCommands).set({result:{receipt:'handled'}}).where(eq(deviceCommands.id,command!.id));
+  await applyDecision(decision);
+  await observeLogin({orgId:own.orgId,contactId:own.contact.id,...decision.principal});
+ });
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,own.verification.id))))[0]!.status).toBe('verified');
+ expect((await sys(()=>db.select().from(deviceCommands).where(eq(deviceCommands.id,command!.id))))[0]!.result).toEqual({receipt:'handled'});
+ expect(await sys(()=>db.select().from(ticketOutbox).where(eq(ticketOutbox.ticketId,own.ticket.id)))).toHaveLength(1);
+});
+it('independent login resolves only a unique existing binding in its own org',async()=>{
+ const upn='observed@example.com',principal={sid:'S-1-5-21-987',username:'alex',upn};
+ await sys(()=>db.update(b).set({upnSnapshot:upn}).where(sql`${b.id} IN (${ba}::uuid,${bb}::uuid)`));
+ await withDbAccessContext(org(A),()=>observeSessionPrincipal(A,'host','alex',principal));
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,ba))))[0]!.osPrincipal).toBe(principal.sid);
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,bb))))[0]!.osPrincipal).toBe('sid:collision');
+ // Same UPN in another org alone must never create or update a local binding.
+ await sys(()=>db.update(b).set({upnSnapshot:'different@example.com',osPrincipal:null}).where(eq(b.id,ba)));
+ await withDbAccessContext(org(A),()=>observeSessionPrincipal(A,'host','alex',principal));
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,ba))))[0]!.osPrincipal).toBeNull();
+ // Two canonical identities in the same org sharing a UPN are ambiguous.
+ await sys(()=>db.update(b).set({upnSnapshot:upn}).where(sql`${b.id} IN (${ba}::uuid,${ba2}::uuid)`));
+ await withDbAccessContext(org(A),()=>observeSessionPrincipal(A,'host','alex',principal));
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,ba))))[0]!.osPrincipal).toBeNull();
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,ba2))))[0]!.osPrincipal).toBeNull();
+});
+it('directory search returns W04 data envelope and enforces real route authorization',async()=>{
+ const f=await liveFixture('organization',false),own=f.families[0]!;
+ directoryRead.mockResolvedValue({ok:true,kind:'collection',items:[{id:own.binding.entraOid,userPrincipalName:own.binding.upnSnapshot,displayName:'Alex'}],truncated:false});
+ const path=`/orgs/${own.orgId}/caller-verification-directory-users?search=alex`;
+ const response=await f.request('GET',path);expect(response.status).toBe(200);
+ expect(await response.json()).toEqual({data:{available:true,truncated:false,users:[{entraTenantId:own.binding.entraTenantId,entraOid:own.binding.entraOid,upn:own.binding.upnSnapshot,displayName:'Alex'}]}});
+ expect((await f.request('GET',`/orgs/${f.families[2]!.orgId}/caller-verification-directory-users?search=alex`)).status).toBe(404);
+ await getTestDb().update(organizationUsers).set({siteIds:[f.env.site.id]}).where(eq(organizationUsers.userId,f.env.user.id));await clearPermissionCache(f.env.user.id);
+ expect((await f.request('GET',path)).status).toBe(404);expect(directoryRead).toHaveBeenCalledTimes(1);
+});
+it('directory HTTP search reports unavailable and sanitizes failed reads',async()=>{
+ const f=await liveFixture('organization',false),own=f.families[0]!,path=`/orgs/${own.orgId}/caller-verification-directory-users?search=alex`;
+ await sys(()=>db.update(m365Connections).set({status:'revoked'}).where(eq(m365Connections.orgId,own.orgId)));
+ const unavailable=await f.request('GET',path);expect(unavailable.status).toBe(200);
+ expect(await unavailable.json()).toEqual({data:{available:false,users:[],truncated:false}});expect(directoryRead).not.toHaveBeenCalled();
+ await sys(()=>db.update(m365Connections).set({status:'active'}).where(eq(m365Connections.orgId,own.orgId)));
+ directoryRead.mockResolvedValue({ok:false,message:'private Graph failure'});
+ const failed=await f.request('GET',path);expect(failed.status).toBe(400);
+ expect(await failed.json()).toEqual({code:'directory_unavailable',error:'Directory read unavailable'});
+});
+it.each(['complete','partial','failed','tenant-changed'] as const)('directory sync %s controls disappearance reconciliation',async mode=>{
+ const f=await liveFixture('organization',false),own=f.families[0]!,missing=f.families[1]!,foreign=f.families[2]!;
+ await sys(()=>db.update(v).set({status:'verified',decidedAt:new Date()}).where(eq(v.id,missing.verification.id)));
+ const usedAt=new Date(),intentId=randomUUID();
+ const [used]=await sys(()=>db.insert(v).values({...missing.verification,id:randomUUID(),status:'verified',decidedAt:new Date(),consumedAt:usedAt,consumedIntentRef:intentId}).returning());
+ directoryRead.mockImplementation(async(_auth:unknown,action:{type:string})=>{
+  if(mode==='failed')return {ok:false,message:'private upstream error'};
+  if(mode==='tenant-changed')await sys(()=>db.update(m365Connections).set({tenantId:randomUUID()}).where(eq(m365Connections.orgId,own.orgId)));
+  const resource={id:own.binding.entraOid,userPrincipalName:own.binding.upnSnapshot,mail:own.contact.email,displayName:'Alex'};
+  return action.type==='m365.user.get'?{ok:true,kind:'resource',resource}:{ok:true,kind:'collection',items:[resource],truncated:mode==='partial'};
+ });
+ const response=await f.request('POST',`/orgs/${own.orgId}/caller-verification-directory-sync`,{mappings:[{contactId:own.contact.id,entraOid:own.binding.entraOid}]});
+ expect(response.status,await response.clone().text()).toBe(mode==='complete'||mode==='partial'?200:400);
+ if(response.status===200)expect((await response.json()).data).toMatchObject({imported:1,complete:mode==='complete',revoked:mode==='complete'?1:0});
+ const [lost]=await sys(()=>db.select().from(b).where(eq(b.id,missing.binding.id)));
+ expect(lost!.revokedAt!==null).toBe(mode==='complete');
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,missing.verification.id))))[0]!.status).toBe(mode==='complete'?'revoked':'verified');
+ expect((await sys(()=>db.select().from(b).where(eq(b.id,foreign.binding.id))))[0]!.revokedAt).toBeNull();
+ expect((await sys(()=>db.select().from(v).where(eq(v.id,used!.id))))[0]).toMatchObject({status:'verified',consumedAt:usedAt,consumedIntentRef:intentId});
+});
+```
+
+Run `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerification.integration.test.ts` after Tasks 8/12–14. These additions are committed by this task's existing Step 5. W02's actual handler/receipt code lands later; it must run these inherited rollback cases as well as its transport-specific handler tests. W03 keeps the any-authorized-context transaction rule; W05 keeps the admin count/audit and additive projection assertions.
+
+The administrative HTTP route remains W05-owned; its W01 factory returns this projection and W05 must retain it. The live route matrix tests mounted W01 routes, and W05 adds the administrative authenticated-route case once it mounts that endpoint.
+
 - [ ] **Step 2:** From repository root run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerification.integration.test.ts`. Expected initial failure if any RLS policy, composite FK, merge registration or gate race is incorrect; before implementing Tasks 1–14 this file fails on absent tables/modules. Record the actual SQLSTATE/test name, not just a nonzero exit code.
 - [ ] **Step 3: Apply only the minimal corrections exposed by this suite.** The required production operations are already fully assigned in Tasks 1–14. For an FK failure the exact SQL is Task 1's column-specific constraints, for RLS Task 2's separate SELECT policy, for merge Task 4's two-pass hooks, and for concurrency Task 10's lock+CAS. Do not weaken assertions, seed as superuser to bypass the tested write, or add an RLS exemption. Add this catalog assertion to the same file so the smallest correct implementation is mechanical:
 
@@ -2126,7 +2914,8 @@ it('exports every fixed cross-wave service entry point',async()=>{
 ```bash
 (cd packages/shared && npx vitest run src/validators/callerVerification.test.ts && npx tsc --noEmit)
 (cd apps/api && npx tsc --noEmit)
-(cd apps/api && npx vitest run src/services/callerVerification src/routes/callerVerification.test.ts src/db/schema/callerVerification.test.ts src/services/contacts src/routes/orgContacts.test.ts src/config/validate.test.ts src/config/envComposeParity.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
+(cd agent && go test -race ./internal/collectors/... ./internal/heartbeat/...)
+(cd apps/api && npx vitest run src/services/callerVerification src/routes/callerVerification.test.ts src/routes/config.test.ts src/routes/agents/sessions.test.ts src/routes/devices/moveOrg.test.ts src/routes/devices/moveOrg.coverage.test.ts src/db/schema/callerVerification.test.ts src/services/contacts src/routes/orgContacts.test.ts src/config/validate.test.ts src/config/envComposeParity.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
 (cd apps/api && npx vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts)
 (cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerification.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/orgMerge.integration.test.ts)
 scripts/check-migration-naming.sh --against-ref origin/main
@@ -2134,7 +2923,7 @@ pnpm db:check-drift
 pnpm test-stack down
 ```
 
-Expected: all named files execute; typecheck and drift are clean; four tables classified exactly once; all physical columns export-classified; no new PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry; contact/target hard-deletes succeed; merge preserves consumption; one concurrent consume wins. If the stack was stopped after Task 15, run `pnpm test-stack up` first. No Go/web implementation changed; their unchanged full suites remain CI jobs rather than fabricated W01 tests. W02 must run `cd agent && go test -race ./internal/heartbeat/...`; W04 must run `cd apps/web && npx vitest run <path>` for its actual components.
+Expected: all named files execute; typecheck and drift are clean; four tables classified exactly once; all physical columns export-classified; no new PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry; contact/target hard-deletes succeed; merge preserves consumption; one concurrent consume wins. If the stack was stopped after Task 15, run `pnpm test-stack up` first. W01 changes Go session telemetry, so run the collector/heartbeat race suites above; W02 owns the challenge/helper protocol and its release. W01 changes no web implementation; W04 runs its UI suites. W02 must run `cd agent && go test -race ./internal/heartbeat/...`; W04 must run `cd apps/web && npx vitest run <path>` for its actual components.
 
 - [ ] **Step 5: Commit verification, open the PR, and stop before merge.** Read parent/sub issue numbers from the wave issue into `CALLER_PARENT_ISSUE` and `CALLER_WAVE_ISSUE`; branch must match the Global Constraints. Use the following exact commands after the implementation is complete:
 
@@ -2156,7 +2945,7 @@ Spec: docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design
 
 Tenancy: four forced-RLS tables; deferrable contact/org references; dual-axis SELECT-only partner baseline; cascade/export/merge registrations verified by live contracts.
 
-Validation: shared/API typechecks, targeted unit/route suites, caller-verification integration, RLS coverage, export/erasure and real org merge suites.
+Validation: shared/API typechecks, Go collector/heartbeat race suites, targeted unit/route suites, live authenticated caller-verification routes and sync/login/move tests, RLS coverage, export/erasure and real org merge suites.
 
 Rollout: CALLER_VERIFICATION_ENABLED=false. W02 supplies workstation preparation/delivery; W03 supplies links/mailbox reads; W05 supplies interactive step-up, intent revocation and backend enforcement. Existing M365 mutations are unchanged in W01. SMTP retries remain at-least-once across an ambiguous provider result.
 ''')
@@ -2169,8 +2958,8 @@ Run the repository's comprehensive PR review workflow against the concrete imple
 
 ## Self-review
 
-- Coverage: tables/enums/FKs/RLS/indexes (Tasks 1–3), conservative scoped backfill (2), complete lifecycle registrations and collision-first merge (3–4), stable errors/types/locks/readiness (5), baseline-then-tighten operators and all tiers (6), every destination writer including compatibility projection (7), trusted Graph binding versus uploaded IDs (8), validators (9), current-policy consume gate (10), fence/incident/revocation/audit/notifications/override (11), start/read/ticket/secret handling (12), state transitions/admin seam/publication (13), authenticated route matrix/policies/site reach (14), live DB contract (15), typecheck/contract suites/PR (16).
+- Coverage: tables/enums/FKs/RLS/indexes (Tasks 1–3), conservative scoped backfill (2), complete lifecycle registrations and collision-first merge (3–4), stable errors/types/locks/default-off readiness (5), baseline-then-tighten operators, defaults/baseline response projections and all tiers (6), every destination writer including compatibility projection (7), trusted Graph binding versus uploaded IDs, picker/search, reachable complete-sync reconciliation, and independent authenticated login telemetry (8), validators (9), current-policy consume gate and same-intent workstation ownership recheck (10), fence/incident/revocation/audit/notifications/override (11), start/read/ticket/secret handling plus all five additive HTTP fields (12), ambient decision atomicity, capped/admin-attributed factory, device-move revocation and publication (13), readiness response, directory wiring, policy projections and authenticated routes (14), live authenticated own-site/denied-site matrix, full response contracts, directory sync, login isolation, decision/receipt rollback, device move, admin cap/audit and DB contracts (15), typecheck/contract suites/PR (16).
 - Cross-wave contract: the index's table/enum names, signatures, paths, snapshots and migration slots are retained. W02 command `caller_verify`, payload `{ verificationId, username, technicianName, orgName, actionLabel, targetLabel, reverseCode, choices: [string, string, string], timeoutMs }`, result `{ delivered: boolean, choice?: string | 'not_me' | 'timeout', principal?: { sid?: string; uid?: number; username: string; upn?: string }, helperVersion?: string, error?: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' }`, and IPC `caller_verify_request` / `caller_verify_response` are reserved unchanged. W02 adds `CallerVerify bool \`json:"callerVerify"\``; W03 owns public `/verify/:token`; W05 owns `/orgs/:orgId/caller-verifications/administrative`.
-- Verified repository corrections: root router lives in `src/index.ts`; Graph-backed contact import must be added; compatibility projection is an additional email writer; portal profile is not currently a destination writer; site helper needs export; custom merge executors live in their own file; ticket outbox writer is private; security-recipient selection needs an explicit helper; asynchronous audit helpers are not transaction-atomic.
-- Security boundaries: no email-string target fallback, no CSV-created directory binding, no tier-2 unbound workstation, no same-mailbox email assurance, no cross-technician reuse by default, no consumed-grant resurrection, no destructive history FK cascade from target B into requester A, no ambient-context pseudo-elevation, no delivery before commit. Refusal tests and live races are required evidence, not optional review notes.
+- Verified repository corrections: session reporting already carries snapshots/events and retries, but lacks principal telemetry; its Windows detector supplies bare usernames and WTS tokens provide SID; Graph list reports truncation; device move requires an explicit device row lock before the new hook; real JWT/membership fixtures exercise routes; root router lives in `src/index.ts`; Graph-backed contact import must be added; compatibility projection is an additional email writer; portal profile is not currently a destination writer; site helper needs export; custom merge executors live in their own file; ticket outbox writer is private; security-recipient selection needs an explicit helper; asynchronous audit helpers are not transaction-atomic.
+- Security boundaries: no email-string target fallback, no CSV-created directory binding, no tier-2 unbound workstation, no same-mailbox email assurance, no cross-technician reuse by default, no consumed-grant resurrection, no destructive history FK cascade from target B into requester A, no ambient-context pseudo-elevation or decision detachment from authorized transactions, no deletion inferred from partial/failed sync, no device-move reuse, no delivery before commit. Refusal tests and live races are required evidence, not optional review notes.
 - Scope: this document is the only file written during planning. Implementation code blocks and commit/PR commands are instructions for the future wave executor. No product code, migration, commit, PR, or running stack is created by writing this plan. Local dependency directories are absent in this planning checkout, so embedded product tests/typechecks are future verification commands; this planning pass checks the document and source references only.
