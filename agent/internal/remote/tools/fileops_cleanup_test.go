@@ -242,8 +242,42 @@ func TestDeleteFilePermanentReportsBytesFreed(t *testing.T) {
 	}
 }
 
-func TestDeleteFilePermanentRecursiveSumsTreeSize(t *testing.T) {
+// Byte counting is a CLEANUP affordance, so the pre-delete traversal is gated
+// on the guard. The File Manager's own recursive delete keeps its single
+// RemoveAll traversal and cannot be failed by an OpenRoot that RemoveAll would
+// not have needed.
+func TestDeleteFilePermanentRecursiveLegacyDoesNotPreWalk(t *testing.T) {
 	tmpDir := t.TempDir()
+	tree := filepath.Join(tmpDir, "a", "b")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "one"), make([]byte, 1000), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var payload struct {
+		Deleted    bool  `json:"deleted"`
+		BytesFreed int64 `json:"bytesFreed"`
+	}
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path":      filepath.Join(tmpDir, "a"),
+		"permanent": true,
+		"recursive": true,
+	}), &payload)
+	if !payload.Deleted {
+		t.Fatal("the legacy recursive delete must still remove the tree")
+	}
+	if payload.BytesFreed != 0 {
+		t.Errorf("the un-guarded lane reports no byte count, got %d", payload.BytesFreed)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "a")); !os.IsNotExist(err) {
+		t.Error("the tree should be gone")
+	}
+}
+
+func TestDeleteFilePermanentRecursiveSumsTreeSize(t *testing.T) {
+	tmpDir := cleanupTempDir(t)
 	tree := filepath.Join(tmpDir, "a", "b")
 	if err := os.MkdirAll(tree, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -258,10 +292,17 @@ func TestDeleteFilePermanentRecursiveSumsTreeSize(t *testing.T) {
 	var payload struct {
 		BytesFreed int64 `json:"bytesFreed"`
 	}
+	aged := time.Now().Add(-48 * time.Hour)
+	for _, p := range []string{filepath.Join(tmpDir, "a", "b"), filepath.Join(tmpDir, "a")} {
+		if err := os.Chtimes(p, aged, aged); err != nil {
+			t.Fatalf("age: %v", err)
+		}
+	}
 	decodeSuccessPayload(t, DeleteFile(map[string]any{
-		"path":      filepath.Join(tmpDir, "a"),
-		"permanent": true,
-		"recursive": true,
+		"path":         filepath.Join(tmpDir, "a"),
+		"permanent":    true,
+		"recursive":    true,
+		"cleanupGuard": true,
 	}), &payload)
 	if payload.BytesFreed != 1024 {
 		t.Fatalf("expected bytesFreed=1024 for the whole tree, got %d", payload.BytesFreed)

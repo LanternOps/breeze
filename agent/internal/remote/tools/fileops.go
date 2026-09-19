@@ -1044,12 +1044,9 @@ func DeleteFile(payload map[string]any) CommandResult {
 				err = target.root.Remove(target.rel)
 			}
 		} else if info.IsDir() && recursive {
-			root, openErr := os.OpenRoot(cleanPath)
-			if openErr != nil {
-				return NewErrorResult(fmt.Errorf("failed to open directory: %w", openErr), time.Since(start).Milliseconds())
-			}
-			bytesFreed = sumTreeSizeAt(root, ".")
-			_ = root.Close()
+			// No pre-walk on the un-guarded File Manager lane: bytesFreed is a
+			// CLEANUP affordance, and an OpenRoot failure here would fail a
+			// delete that RemoveAll alone would have completed.
 			err = os.RemoveAll(cleanPath)
 		} else {
 			bytesFreed = info.Size()
