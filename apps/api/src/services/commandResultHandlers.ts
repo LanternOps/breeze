@@ -32,6 +32,7 @@ import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
+import { applyRebuildCommandResult } from './bareMetalRecoveryService';
 import { captureException } from './sentry';
 import { applyScriptCustomFieldWrites } from './customFields/scriptWriteBack';
 import type { ScriptCustomFieldWriteSummary } from '../db/schema/scripts';
@@ -205,6 +206,45 @@ async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceI
     });
   } catch (err) {
     console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
+    captureException(err);
+  }
+}
+
+/**
+ * W05a `bare_metal_rebuild`: close the restore_jobs row by the
+ * transport-authorized command id (same as every queued restore), then apply
+ * the terminal status to the recovery row for a rebuild host whose
+ * /bmr/recover/progress posts never reached the server. The progress route
+ * stays the primary path — applyRebuildCommandResult is idempotent on a row
+ * it already terminalised.
+ */
+async function handleBareMetalRebuildResult({ agentId, command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    await updateRestoreJobByCommandId({
+      commandId,
+      deviceId: resolvedDeviceId,
+      commandType: command.type,
+      result,
+    });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process bare-metal rebuild restore job for ${agentId}:`, err);
+    captureException(err);
+  }
+
+  const payload =
+    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+      ? (command.payload as Record<string, unknown>)
+      : {};
+  const recoveryId = typeof payload.recoveryId === 'string' && UUID_REGEX.test(payload.recoveryId) ? payload.recoveryId : null;
+  // The recovery was created in the host's org (queueBareMetalRebuild passes
+  // expectedOrgId), so the enqueue-time org is the scope for this write.
+  const orgId = typeof command.submittedOrgId === 'string' ? command.submittedOrgId : null;
+  if (!recoveryId || !orgId) return;
+
+  try {
+    await applyRebuildCommandResult({ recoveryId, orgId, result: result as unknown as Record<string, unknown> });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to apply bare-metal rebuild result to recovery ${recoveryId} for ${agentId}:`, err);
     captureException(err);
   }
 }
@@ -902,6 +942,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vm_restore_from_backup: handleVmRestoreResult,
   vm_instant_boot: handleVmRestoreResult,
   bmr_recover: handleVmRestoreResult,
+  bare_metal_rebuild: handleBareMetalRebuildResult,
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,

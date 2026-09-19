@@ -572,7 +572,8 @@
     "lastChecked": "Última comprobación",
     "noComplianceResultsReportedAssignA": "No se informaron resultados de cumplimiento. Asigne una Política de configuración con reglas de cumplimiento a este dispositivo o espere la próxima evaluación.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Asignar una política de configuración"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "No se pudo recuperar el dispositivo",
@@ -664,7 +665,14 @@
     "networkAsset": "Activo de red",
     "networkAssets": "Activos de red",
     "operatorTasks": "Tareas del operador",
-    "operatorTasksForThisDevice": "Tareas del operador de IA para este dispositivo"
+    "operatorTasksForThisDevice": "Tareas del operador de IA para este dispositivo",
+    "tabGroups": {
+      "monitoring": "Monitoreo",
+      "inventory": "Inventario",
+      "management": "Administración",
+      "history": "Historial y red",
+      "extensions": "Extensiones"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -1350,7 +1358,8 @@
       "status": "Estado",
       "type": "Tipo"
     },
-    "title": "Monitoreo de servicios y procesos"
+    "title": "Monitoreo de servicios y procesos",
+    "assignPolicy": "Asignar una política de configuración"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Todos los protocolos",

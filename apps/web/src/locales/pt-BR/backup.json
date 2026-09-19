@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB de RAM,",
     "gbDisk": "GB de disco",
-    "mode": "Modo"
+    "mode": "Modo",
+    "rebuildHost": "Host de reconstrução",
+    "outputPath": "Caminho de saída",
+    "rebuildEngine": "Mecanismo de reconstrução (Linux)",
+    "manualAttachNote": "Anexe o VHDX a uma VM do Hyper-V manualmente; a criação automática de VM para convidados Linux chegará com o mecanismo do Windows.",
+    "newIdentityNote": "A imagem reconstruída sempre recebe uma nova identidade de máquina e nunca retoma a identidade do dispositivo original."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "Especificações da VM",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Inicializa a VM diretamente do armazenamento de backup. Pronta em segundos. A migração em segundo plano copia os dados para o host.",
     "back": "Voltar",
     "continue": "Continuar",
-    "starting": "Iniciando..."
+    "starting": "Iniciando...",
+    "rebuildEngineLinux": "Mecanismo de reconstrução (Linux)",
+    "rebuildEngineDescription": "Reconstrói este snapshot de máquina completa Linux em uma imagem de disco VHDX do Hyper-V em um dispositivo Linux que executa o assistente Breeze. A imagem sempre recebe uma nova identidade de máquina.",
+    "selectRebuildHost": "Selecionar host de reconstrução Linux",
+    "chooseALinuxDeviceWithQemuUtils": "Escolha um dispositivo Linux online com qemu-utils instalado e espaço livre suficiente para a imagem.",
+    "outputPath": "Caminho de saída",
+    "outputPathHint": "Caminho absoluto no host de reconstrução terminando em .vhdx.",
+    "outputPathInvalid": "Informe um caminho absoluto que termine em .vhdx.",
+    "startRebuild": "Iniciar reconstrução",
+    "rebuildStarted": "Reconstrução iniciada. O VHDX aparecerá no host de reconstrução quando ela for concluída."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",
@@ -739,7 +753,28 @@
     "executionDetailsAreUnavailable": "Os detalhes da execução estão indisponíveis.",
     "abortDisasterRecoveryExecution": "Abortar execução de recuperação de desastre?",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivos"
+    "deviceCount_other": "{{count}} dispositivos",
+    "recoveryStatus": {
+      "created": "Código emitido",
+      "media_booted": "Mídia iniciada",
+      "planned": "Planejado",
+      "restoring": "Restaurando",
+      "validated": "Validado",
+      "rebooted": "Reiniciado",
+      "checked_in": "Registrado",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "refused": "Recusado",
+      "unknown": "Recuperação pendente"
+    },
+    "reissueCode": "Reemitir código",
+    "reissueCodeFailed": "Não foi possível reemitir o código de recuperação",
+    "cancelRecovery": "Cancelar recuperação",
+    "cancelRecoveryFailed": "Não foi possível cancelar a recuperação",
+    "recoveryCancelled": "Recuperação cancelada",
+    "codeShownOnce": "Este código é exibido apenas uma vez e expira em 15 minutos. Digite-o no prompt da mídia de recuperação.",
+    "copyCode": "Copiar código",
+    "copied": "Copiado"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Defina objetivos de recuperação, sequencie grupos e atribua dispositivos na ordem de restauração.",
@@ -769,7 +804,9 @@
     "groupCount_one": "{{count}} grupo",
     "groupCount_other": "{{count}} grupos",
     "uniqueDeviceCount_one": "{{count}} dispositivo único",
-    "uniqueDeviceCount_other": "{{count}} dispositivos únicos"
+    "uniqueDeviceCount_other": "{{count}} dispositivos únicos",
+    "chooseAStepTypeForEachGroup": "Escolha um tipo de etapa para cada grupo de recuperação.",
+    "rebuildWaitTimeoutOutOfRange": "O tempo limite de espera da reconstrução bare-metal deve ser um número inteiro entre {{min}} e {{max}} minutos."
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",
@@ -784,7 +821,23 @@
     "deviceSelection": "Seleção de dispositivos",
     "noDevicesAvailableToAssign": "Nenhum dispositivo disponível para atribuir.",
     "deviceCount_one": "{{count}} dispositivo",
-    "deviceCount_other": "{{count}} dispositivos"
+    "deviceCount_other": "{{count}} dispositivos",
+    "stepType": "Tipo de etapa",
+    "chooseAStepType": "Escolher um tipo de etapa",
+    "stepTypes": {
+      "vmRestoreFromBackup": "Restaurar VM a partir do backup",
+      "vmInstantBoot": "Inicialização instantânea de VM",
+      "hypervRestore": "Restauração do Hyper-V",
+      "mssqlRestore": "Restauração do SQL Server",
+      "bmrRecover": "Recuperação bare-metal (mídia de inicialização)",
+      "bareMetalRebuild": "Reconstrução bare-metal (mecanismo de reconstrução)"
+    },
+    "rebuildHost": "Host de reconstrução",
+    "rebuildHostHint": "Dispositivo Linux com qemu-utils que executa os ensaios. No failover, cada dispositivo inicializa a mídia de recuperação.",
+    "outputDir": "Diretório de saída",
+    "outputDirHint": "Diretório no host de reconstrução que recebe uma imagem VHDX por dispositivo.",
+    "waitTimeout": "Tempo limite de espera (min)",
+    "waitTimeoutHint": "Minutos de espera pelo registro de cada dispositivo antes que a etapa falhe."
   },
   "profiles": {
     "title": "Perfis de Backup",

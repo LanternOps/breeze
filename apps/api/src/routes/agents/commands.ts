@@ -100,6 +100,11 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'peripheral_policy_sync_v2',
   'pam_apply_v2',
   'pam_cleanup_v2',
+  // W05a: the handler both closes the restore job AND applies the terminal
+  // status to the bare_metal_recoveries row, so it is dispatched here rather
+  // than through the inline restore branch below (which would only do the
+  // first half and, if listed in both, do it twice).
+  'bare_metal_rebuild',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);

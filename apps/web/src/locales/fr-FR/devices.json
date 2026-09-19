@@ -572,7 +572,8 @@
     "lastChecked": "Dernière vérification",
     "noComplianceResultsReportedAssignA": "Aucun résultat de conformité n’a été rapporté. Attribuez une Politique de Configuration avec des règles de conformité à cet appareil, ou attendez la prochaine évaluation.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Attribuer une stratégie de configuration"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Impossible de récupérer l’appareil",
@@ -664,7 +665,14 @@
     "networkAsset": "Actif réseau",
     "networkAssets": "Actifs réseau",
     "operatorTasks": "Tâches de l'opérateur",
-    "operatorTasksForThisDevice": "Tâches de l'opérateur IA pour cet appareil"
+    "operatorTasksForThisDevice": "Tâches de l'opérateur IA pour cet appareil",
+    "tabGroups": {
+      "monitoring": "Surveillance",
+      "inventory": "Inventaire",
+      "management": "Gestion",
+      "history": "Historique et réseau",
+      "extensions": "Modules complémentaires"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -1350,7 +1358,8 @@
       "status": "Statut",
       "type": "Type"
     },
-    "title": "Service et surveillance des processus"
+    "title": "Service et surveillance des processus",
+    "assignPolicy": "Attribuer une stratégie de configuration"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Tous les protocoles",

@@ -259,8 +259,10 @@ func (r *run) attach(ctx context.Context) error {
 	switch r.opts.Target.Kind {
 	case TargetDisk:
 		r.disk = r.opts.Target.Path
-	case TargetImage:
-		dev, detach, err := r.sys.AttachImage(r.opts.Target.Path, r.opts.Target.ImageSizeBytes)
+	case TargetImage, TargetVHDX:
+		// RawPath: the image itself, or the vhdx target's raw staging
+		// file (converted and removed by the convert phase).
+		dev, detach, err := r.sys.AttachImage(r.opts.Target.RawPath(), r.opts.Target.ImageSizeBytes)
 		if err != nil {
 			return err
 		}
@@ -280,7 +282,7 @@ func (r *run) reattach(ctx context.Context) error {
 		if err := r.attach(ctx); err != nil {
 			return err
 		}
-		if r.opts.Target.Kind == TargetImage {
+		if r.opts.Target.Kind != TargetDisk {
 			if err := r.sys.Rescan(ctx, r.disk); err != nil {
 				return err
 			}

@@ -39,9 +39,23 @@ export { resolveMsKnob };
  * is the existing envelope made explicit (spec §3.1, §8 decision 2).
  */
 export const BACKUP_BASE_LEASE_MS_DEFAULT = 7 * 24 * 60 * 60 * 1000;
-const BACKUP_BASE_LEASE_MS_PRODUCTION_FLOOR = 60 * 60 * 1000;
+/**
+ * The helper's own publish margin — a Go constant (agent/internal/backup/
+ * snapshot.go `publishMargin`), NOT driven by BACKUP_PUBLISH_MARGIN_MS. The
+ * helper refuses to publish once now + this margin passes the lease, so a
+ * lease at or below it fails every backup at the manifest upload (found in
+ * the D18 W04 lab run, #5453). The floor therefore sits an hour above it.
+ */
+export const HELPER_PUBLISH_MARGIN_MS = 60 * 60 * 1000;
+const BACKUP_BASE_LEASE_MS_PRODUCTION_FLOOR = 2 * HELPER_PUBLISH_MARGIN_MS;
 export function resolveBackupBaseLeaseMs(): number {
-  return resolveMsKnob('BACKUP_BASE_LEASE_MS', BACKUP_BASE_LEASE_MS_DEFAULT, BACKUP_BASE_LEASE_MS_PRODUCTION_FLOOR);
+  const ms = resolveMsKnob('BACKUP_BASE_LEASE_MS', BACKUP_BASE_LEASE_MS_DEFAULT, BACKUP_BASE_LEASE_MS_PRODUCTION_FLOOR);
+  if (ms <= HELPER_PUBLISH_MARGIN_MS) {
+    console.warn(
+      `[BackupGcKnobs] BACKUP_BASE_LEASE_MS=${ms} is not above the helper's fixed ${HELPER_PUBLISH_MARGIN_MS} ms publish margin; every backup will fail to publish`,
+    );
+  }
+  return ms;
 }
 
 /**

@@ -5,11 +5,11 @@
  * VM specs, and restore mode before the user kicks off the job.
  */
 
-import { CheckCircle2, Cpu, Monitor, Server, Zap } from 'lucide-react';
+import { CheckCircle2, Cpu, FolderOutput, Monitor, Server, Wrench, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
-type RestoreMode = 'full' | 'instant';
+type RestoreMode = 'full' | 'instant' | 'rebuild';
 
 type VMRestoreConfirmStepProps = {
   snapshotLabel?: string;
@@ -19,6 +19,8 @@ type VMRestoreConfirmStepProps = {
   diskGB: number;
   mode: RestoreMode;
   vmName: string;
+  /** Rebuild engine only: absolute .vhdx path on the rebuild host. */
+  outputPath?: string;
 };
 
 export default function VMRestoreConfirmStep({
@@ -29,8 +31,10 @@ export default function VMRestoreConfirmStep({
   diskGB,
   mode,
   vmName,
+  outputPath,
 }: VMRestoreConfirmStepProps) {
   const { t } = useTranslation('backup');
+  const isRebuild = mode === 'rebuild';
   return (
     <div className="space-y-4">
       <div>
@@ -47,27 +51,46 @@ export default function VMRestoreConfirmStep({
         </div>
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Monitor className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.targetHost')} </div>
+            <Monitor className="h-4 w-4 text-primary" /> {isRebuild ? t('vMRestoreConfirmStep.rebuildHost') : t('vMRestoreConfirmStep.targetHost')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
             {hostname ?? 'None selected'}
           </p>
         </div>
+        {isRebuild ? (
+          <div className="rounded-md border border-dashed bg-muted/30 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <FolderOutput className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.outputPath')} </div>
+            <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
+              {outputPath || 'None'}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed bg-muted/30 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Cpu className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.vmSpecs')} </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {cpuCount} {t('vMRestoreConfirmStep.cpu')} {memoryMB} {t('vMRestoreConfirmStep.mbRam')} {diskGB} {t('vMRestoreConfirmStep.gbDisk')} </p>
+          </div>
+        )}
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Cpu className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.vmSpecs')} </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {cpuCount} {t('vMRestoreConfirmStep.cpu')} {memoryMB} {t('vMRestoreConfirmStep.mbRam')} {diskGB} {t('vMRestoreConfirmStep.gbDisk')} </p>
-        </div>
-        <div className="rounded-md border border-dashed bg-muted/30 p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            {mode === 'full' ? <Server className="h-4 w-4 text-primary" /> : <Zap className="h-4 w-4 text-primary" />}
+            {mode === 'full' ? <Server className="h-4 w-4 text-primary" /> : isRebuild ? <Wrench className="h-4 w-4 text-primary" /> : <Zap className="h-4 w-4 text-primary" />}
             {t('vMRestoreConfirmStep.mode')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            {mode === 'full' ? 'Full Restore' : 'Instant Boot'}
-            {vmName && ` - ${vmName}`}
+            {mode === 'full' ? 'Full Restore' : isRebuild ? t('vMRestoreConfirmStep.rebuildEngine') : 'Instant Boot'}
+            {!isRebuild && vmName && ` - ${vmName}`}
           </p>
         </div>
       </div>
+      {isRebuild && (
+        <div
+          data-testid="vm-restore-rebuild-manual-attach-note"
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
+        >
+          <p>{t('vMRestoreConfirmStep.manualAttachNote')}</p>
+          <p className="mt-1 text-muted-foreground">{t('vMRestoreConfirmStep.newIdentityNote')}</p>
+        </div>
+      )}
     </div>
   );
 }

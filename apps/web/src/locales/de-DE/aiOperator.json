@@ -114,7 +114,9 @@
   "operatorTaskFeed": {
     "loading": "Operator-Aufgaben werden geladen...",
     "loadFailed": "Operator-Aufgaben konnten nicht geladen werden.",
-    "empty": "Keine Operator-Aufgaben für dieses Gerät."
+    "empty": "Keine Operator-Aufgaben für dieses Gerät.",
+    "emptyHint": "Der KI-Operator untersucht und behebt Probleme auf einem Gerät, wenn Sie ihm eine Warnung delegieren. Für dieses Gerät delegierte Aufgaben erscheinen hier.",
+    "learnMore": "Mehr über den KI-Operator erfahren"
   },
   "delegate": {
     "button": "An Operator delegieren",

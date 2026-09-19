@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bmrCompleteSchema } from './schemas';
+import { bmrCompleteSchema, bmrVmRestoreSchema } from './schemas';
 
 // D14: a bare-metal recovery completion report was answering "Request body
 // too large" for a payload carrying ~9,900 unbounded `warnings` strings (the
@@ -75,5 +75,37 @@ describe('bmrCompleteSchema — completion report caps (D14)', () => {
     });
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data.result.failedFiles).toBeUndefined();
+  });
+});
+
+describe('bmrVmRestoreSchema — engine discriminated union (W05a)', () => {
+  const SNAP = '11111111-1111-4111-8111-111111111111';
+  const DEV = '22222222-2222-4222-8222-222222222222';
+
+  it('defaults a payload without engine to the Hyper-V variant', () => {
+    const parsed = bmrVmRestoreSchema.safeParse({ snapshotId: SNAP, targetDeviceId: DEV, hypervisor: 'hyperv', vmName: 'VM' });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.engine).toBe('hyperv');
+  });
+
+  it('accepts an explicit hyperv engine with the existing fields', () => {
+    const parsed = bmrVmRestoreSchema.safeParse({
+      engine: 'hyperv', snapshotId: SNAP, targetDeviceId: DEV, hypervisor: 'hyperv', vmName: 'VM', switchName: 'sw', vmSpecs: { memoryMb: 1024 },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts the rebuild variant and rejects identity, vm fields, relative and non-vhdx paths', () => {
+    const ok = bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, rebuildHostDeviceId: DEV, outputPath: '/srv/out.vhdx', imageSizeGb: 40 });
+    expect(ok.success).toBe(true);
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, rebuildHostDeviceId: DEV, outputPath: '/srv/out.vhdx', identity: 'original' }).success).toBe(false);
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, rebuildHostDeviceId: DEV, outputPath: '/srv/out.vhdx', vmName: 'x' }).success).toBe(false);
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, rebuildHostDeviceId: DEV, outputPath: 'srv/out.vhdx' }).success).toBe(false);
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, rebuildHostDeviceId: DEV, outputPath: '/srv/out.img' }).success).toBe(false);
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'rebuild', snapshotId: SNAP, outputPath: '/srv/out.vhdx' }).success).toBe(false);
+  });
+
+  it('rejects an unknown engine', () => {
+    expect(bmrVmRestoreSchema.safeParse({ engine: 'vmware', snapshotId: SNAP, targetDeviceId: DEV, hypervisor: 'hyperv', vmName: 'VM' }).success).toBe(false);
   });
 });
