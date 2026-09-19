@@ -47,19 +47,22 @@ What already exists and is reused: `device_disks` (`mountPoint, fsType, totalGb,
 
 | Wave | Title | Schema | Agent release | Ships independently |
 |---|---|---|---|---|
-| W01 | Correctness and hardening | none | yes (recycle bin, rule table, `cleanupGuard`, `contentsOnly`) | yes — old agents keep working; new API flags are ignored by old agents except `permanent`, which they already honour |
-| W02 | Multi-volume | migration | no | yes |
+| W01 | Correctness and hardening | none | yes (recycle bin, rule table, `cleanupGuard`, `contentsOnly`) | yes — old agents keep working (degradations below) |
+| W02 | Multi-volume | two migrations | no | as one API release: schema and code change together (see §4 rolling-deploy note) |
 | W03 | Tab completion and consolidation | none | no | yes |
-| W04 | OS-native cleaners | none (uses W02 `kind`) | yes | yes — old agents get "agent update required" |
-| W05 | AI parity, docs, lab proof, release | none | no | yes |
+| W04 | OS-native cleaners | none (uses W02 `kind`, `running`) | yes | yes — old agents get "agent update required" |
+| W05 | AI parity, docs, lab proof | none | no | release wave: gates the agent release on the W04 lab proof; not independent |
 
 W01 is deliberately schema-free so the fixes can land and deploy before the migration. W02 depends on W01 only for the `contentsOnly` bin semantics; W03 depends on W02 (`scan_path`); W04 depends on W02 (`kind`, `running`); W05 depends on W04.
 
-Mixed-version behaviour during W01 rollout: an old agent ignores unknown `file_delete` keys (`GetPayloadBool` defaults), so it performs a `permanent` recursive delete of a bin SID directory (depth 2, allowed) instead of a `contentsOnly` one — Explorer recreates the SID folder and `desktop.ini` on the next delete-to-bin, so the degradation is cosmetic. `cleanupGuard` is likewise absent on old agents; the API-side rule re-filter still applies. The web UI shows the agent version next to the result when it is below the W01 release so the difference is visible.
+Mixed-version behaviour during W01 rollout (new API, old agent): old agents ignore unknown `file_delete` keys (`GetPayloadBool` defaults). On Windows an old agent's scanner only ever emits `C:\$Recycle.Bin` (depth 1), which the boundary guard refuses, so the bin candidate fails with the existing "recursive delete denied" error and is reported `failed` — the same behaviour as today, now visible. On macOS/Linux an old agent performs a `permanent` recursive delete of the `.Trash` / `Trash` directory itself (depth ≥ 3, allowed) instead of a `contentsOnly` one; the OS recreates the directory on the next trash operation, so that degradation is cosmetic. `cleanupGuard` is absent on old agents; the API-side rule re-filter still applies. The web UI shows the agent version next to the result when it is below the W01 release so the difference is visible.
 
 ## 4. Data model (W02)
 
-Migration `apps/api/migrations/2026-10-20-140000-filesystem-multi-volume.sql` (sorts after the newest committed `2026-10-20-130000-…`; idempotent; `SELECT set_config('breeze.scope','system',true)` before any write; backfill counts via `RAISE WARNING`).
+Two migrations (both idempotent; the first elects `SELECT set_config('breeze.scope','system',true)` before any write and reports backfill counts via `RAISE WARNING`). Names below assume the newest file on `origin/main` is still `2026-10-20-140000-tickets-partner-org-composite-fk.sql` (as of 2026-09-19); the plan re-checks with `scripts/check-migration-naming.sh --against-ref origin/main` at commit time and bumps the time component if main has moved — the files must sort strictly after everything shipped.
+
+- `2026-10-20-150000-filesystem-multi-volume.sql` — DDL + backfill.
+- `2026-10-20-150100-filesystem-cleanup-run-status-running.sql` — `ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';` **alone**, per the repo convention (an added label cannot be used in the transaction that adds it, and autoMigrate wraps each file in one; precedent `2026-10-17-110400-report-type-endpoint-management-review.sql`).
 
 ```sql
 -- device_filesystem_snapshots
@@ -82,16 +85,16 @@ ALTER TABLE device_filesystem_cleanup_runs ADD COLUMN IF NOT EXISTS scan_path te
 ALTER TABLE device_filesystem_cleanup_runs ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'files';
 ALTER TABLE device_filesystem_cleanup_runs ADD CONSTRAINT device_filesystem_cleanup_runs_kind_chk CHECK (kind IN ('files','system'));  -- via DO $$ guard
 ALTER TABLE device_filesystem_cleanup_runs ADD COLUMN IF NOT EXISTS command_id uuid;  -- system runs: the queued system_cleanup_run command; no FK (device_commands rows are pruned independently)
-ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';
 ```
 
 Rules that apply and how this spec satisfies them:
 
-- **RLS:** all three tables already carry denormalised `org_id NOT NULL` with `breeze_has_org_access(org_id)` policies and `FORCE`. Column adds do not touch policies. No allowlist change in `rls-coverage.integration.test.ts`.
+- **RLS:** all three tables already carry denormalised `org_id NOT NULL` with `breeze_has_org_access(org_id)` policies and `FORCE`. Column adds do not touch policies; the scan-state PK swap has no FK referrers and the policy is PK-independent. No allowlist change in `rls-coverage.integration.test.ts`.
 - **Cascade lists:** all three tables are already in `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_CASCADE_DELETE_TABLES`, and `CORE_DEVICE_ORG_DENORMALIZED_TABLES`. No change.
-- **Export policy (fires on new columns):** `scan_path`, `kind`, `command_id` → `included` in `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts`). Enforced by `tenant-export-policy.integration.test.ts` under Integration Tests.
-- **Enum value:** `ADD VALUE IF NOT EXISTS` is legal inside autoMigrate's transaction on the project's Postgres, and the new value is not used in the same file (precedent: `2026-10-17-110400-report-type-endpoint-management-review.sql`).
-- **Drizzle:** `schema/filesystem.ts` mirrors the columns; `db:check-drift` must be clean.
+- **Export policy (fires on new columns):** `scan_path`, `kind`, `command_id` → `included` in `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts`). Enforced by `tenant-export-policy.integration.test.ts` under Integration Tests. Note that `plan` and `executed_actions` are already `excludedOpen` (jsonb), so a system run's action list does not appear in a tenant export; `kind`, `status`, `bytes_reclaimed`, `requested_at` do. Accepted.
+- **Writer contract change:** `upsertFilesystemScanState` (`filesystemAnalysis.ts:177`) currently uses `onConflictDoUpdate({ target: deviceId })`; after the PK swap that target has no unique index and every upsert fails with `42P10`. The conflict target becomes `(deviceId, scanPath)` and every reader/writer of scan state (`getFilesystemScanState`, the route, the agent result handler, the AI tool) takes `scanPath`. This is why W02 is one coordinated API release, not a schema-then-code pair.
+- **Rolling-deploy window:** Breeze production replaces the single API container (`docker compose up -d api`), so old and new API code never run against the new schema at once. On multi-replica self-hosts the window between migration and the last old replica draining makes old replicas fail scan-state upserts with `42P10` (the snapshot insert itself still succeeds); a scan re-run repairs state. Documented in the release notes.
+- **Drizzle:** `schema/filesystem.ts` mirrors the columns and the composite primary key; `db:check-drift` must be clean.
 - **Scan-path key normalisation** (shared helper `normalizeScanPath(osType, path)` in `packages/shared/src/utils/scanPath.ts`, used by API and web): Windows — upper-case drive letter, backslashes, trailing `\` only on a volume root (`C:\`, `D:\`), else no trailing separator; POSIX — `path.posix.normalize`, no trailing `/` except `/`. The stored `scan_path` is always the normalised form; the agent receives the normalised form too.
 
 ## 5. API (W01–W04)
@@ -122,44 +125,53 @@ All routes stay under `/devices/:id/filesystem`. Gating unchanged: `authMiddlewa
 
 - `POST /filesystem/system-cleanup/list` → queues `system_cleanup_list` (payload `{}`), returns `202 { commandId }`. The client polls `GET /devices/:id/commands/:commandId`; the completed result is the catalog (§7.3) stored on `deviceCommands.result`. No table.
 - `POST /filesystem/system-cleanup/run { actionIds: string[], params?: { journalVacuumBytes?: number } }` → inserts a `device_filesystem_cleanup_runs` row `kind='system', status='running', plan={actionIds, params, catalogVersion}`, queues `system_cleanup_run { runId, actionIds, params }`, returns `202 { cleanupRunId, commandId }`. The agent result handler in `agents/helpers.ts` (new `system_cleanup_run` branch, mirroring the `filesystem_analysis` one) sets `status` (`executed` if ≥1 action succeeded, else `failed`), `executedActions`, `bytesReclaimed` (measured), `approvedAt`, and writes `writeRouteAudit`-equivalent audit `device.filesystem.system_cleanup.run` with action ids, per-action status, and measured bytes. Command timeout `SYSTEM_CLEANUP_RUN_TIMEOUT_MS = 2 h` (DISM can be slow); a timeout marks the run `failed` with `error: 'timed out'`.
-- **Old-agent handling:** before queuing either command the route compares `device.agentVersion` (core semver, via the `agentEditionCompat` comparison helper) against `MIN_AGENT_VERSION_SYSTEM_CLEANUP` (the version W04 ships in, set at plan time) and returns `409 { error: 'agent_update_required', minAgentVersion }`. Defensive fallback: a command result whose `error` starts with `unknown command type:` also resolves to the same 409 shape on poll.
+- **Old-agent handling:** before queuing either command the route compares `device.agentVersion` (core semver, via `compareAgentVersions` in `services/agentEditionCompat.ts`) against `MIN_AGENT_VERSION_SYSTEM_CLEANUP` (the version W04 ships in, set at plan time) and returns `409 { error: 'agent_update_required', minAgentVersion }`. Defensive fallback: a command result whose `error` starts with `unknown command type:` also resolves to the same 409 shape on poll.
 - Action-id validation: `actionIds` must be a subset of `SYSTEM_CLEANUP_ACTION_IDS` (shared constant in `packages/shared/src/validators/systemCleanup.ts`, mirrored by the agent catalog); `journalVacuumBytes` bounded `64 MiB … 4 GiB`. Nothing else from the client reaches an argv.
+- **Command-type registries** (dispatch throws or denies without them): `COMMAND_OFFLINE_POLICY_REGISTRY` (`services/commandOfflinePolicy.ts`) — `system_cleanup_list` in the same TTL class as `filesystem_analysis`, `system_cleanup_run` in the long class used by patch/backup jobs (an unregistered type raises `UnregisteredCommandTypeError` on first dispatch); the per-command partner-trust allowlist (`services/partnerTrust.ts`, next to `filesystem_analysis`); `CommandTypes` in `services/commandQueue.ts`; `toolTimeouts.ts` if the AI tool (W05) dispatches it.
 
 ## 6. Agent — file engine (W01, W02)
 
-### 6.1 Rule table replaces the substring classifier
+### 6.1 Rooted rule table replaces the substring classifier
+
+The current classifier is a floating substring match (`strings.Contains(n, "/tmp/")`), so any directory that happens to be named `tmp`, `.cache` or `Library/Caches` anywhere on disk — including `/System/Library/Caches` on macOS and `/opt/<app>/tmp` on Linux — is in scope. The replacement matches **rooted patterns on path components**, never substrings.
 
 `agent/internal/remote/tools/filesystem_cleanup_rules.go`:
 
 ```go
 type cleanupRule struct {
     Category    string        // temp_files | browser_cache | package_cache | trash
-    OS          []string      // runtime.GOOS values; empty = all
-    Anchor      string        // normalised (lower, '/' separators) substring that must appear in the path
-    SafeSubdirs []string      // relative to the anchor match; empty = everything under the anchor
+    OS          string        // runtime.GOOS value
+    Pattern     string        // rooted, lower-cased, '/'-separated; components matched exactly; '*' = exactly one
+                              // component; '**' = the file subtree. Windows patterns start at the scanned
+                              // volume root ("<vol>/…"), POSIX patterns at "/".
+    Exclude     []string      // rooted sub-patterns removed from the match set
     MinAge      time.Duration // 0 = no threshold
-    Granularity string        // "file" (default) | "contents" (candidate = dir, delete children only)
+    Granularity string        // "file" (default) | "contents" (candidate = the matched dir; delete its children only)
 }
 ```
 
-v1 table (each row gets a positive and a negative unit test):
+Matching normalises the path (`\`→`/`, lower-case, volume root replaced by `<vol>`), splits into components, and walks the pattern component-by-component. A rule never matches across a symlink or reparse point encountered during the scan (the scanner already skips them unless `followSymlinks`). `Safe` is `true` only when a rule matched, no `Exclude` matched, and the min-age check passed.
 
-| Category | OS | Anchor | Safe sub-dirs | Min age | Granularity |
+v1 table (every row gets a positive and a negative unit test; negatives include `Bookmarks`, `History`, `Cookies`, `Login Data`, `places.sqlite`, `/system/library/caches/**`, `/opt/app/tmp/**`, `/var/lib/*/.cache/**`):
+
+| Category | OS | Patterns | Exclude | Min age | Granularity |
 |---|---|---|---|---|---|
-| temp_files | all | `/tmp/`, `/var/tmp/` | all | 24 h (payload `minAgeHours`, 1–720) | file |
-| temp_files | windows | `/windows/temp/`, `/appdata/local/temp/` | all | 24 h | file |
-| browser_cache | all | `/google/chrome/user data/`, `/microsoft/edge/user data/`, `/bravesoftware/brave-browser/user data/`, `/chromium/user data/` | `cache/`, `code cache/`, `gpucache/`, `service worker/cachestorage/`, `service worker/scriptcache/`, `dawncache/`, `shadercache/` | 0 | file |
-| browser_cache | all | `/mozilla/firefox/` | `cache2/`, `startupcache/`, `shader-cache/` | 0 | file |
-| browser_cache | darwin | `/library/caches/` (per-user and system) | all **except** `/library/caches/homebrew/` (package_cache) and `com.apple.bird/` (iCloud) | 0 | file |
-| browser_cache | linux | `/.cache/` | all **except** `/.cache/pip/` (package_cache) | 0 | file |
-| package_cache | linux | `/var/cache/apt/archives/`, `/var/cache/dnf/`, `/var/cache/yum/` | all | 0 | file |
-| package_cache | all | `/.npm/_cacache/`, `/.cache/pip/`, `/appdata/local/pip/cache/`, `/library/caches/homebrew/`, `/programdata/chocolatey/cache/`, `/.nuget/packages/` (`.nupkg` files only) | all | 0 | file |
-| package_cache | windows | `/appdata/local/packages/` | `*/ac/inetcache/`, `*/ac/temp/`, `*/tempstate/` | 0 | file |
-| trash | windows | `<volume root>/$recycle.bin/<sid>/` | — | 0 | contents (keep `desktop.ini`) |
-| trash | darwin | `/users/<name>/.trash/` | — | 0 | contents |
-| trash | linux | `/home/<name>/.local/share/trash/`, `/root/.local/share/trash/` | — | 0 | contents |
+| temp_files | windows | `<vol>/windows/temp/**`, `<vol>/users/*/appdata/local/temp/**` | — | 24 h (payload `minAgeHours`, 1–720) | file |
+| temp_files | darwin | `/tmp/**`, `/private/tmp/**`, `/private/var/tmp/**`, `/private/var/folders/*/*/t/**` | — | 24 h | file |
+| temp_files | linux | `/tmp/**`, `/var/tmp/**` | `/tmp/.x11-unix/**`, `/tmp/.ice-unix/**`, `/tmp/systemd-private-*/**` | 24 h | file |
+| browser_cache | windows | `<vol>/users/*/appdata/local/{google/chrome,microsoft/edge,bravesoftware/brave-browser,chromium}/user data/*/{cache,code cache,gpucache,dawncache,graphitedawncache,shadercache}/**`, `…/user data/*/service worker/{cachestorage,scriptcache}/**`, `<vol>/users/*/appdata/local/mozilla/firefox/profiles/*/{cache2,startupcache,shader-cache}/**` | — | 0 | file |
+| browser_cache | darwin | `/users/*/library/caches/**`, `/library/caches/**` | `/users/*/library/caches/homebrew/**` (→ package_cache), `/users/*/library/caches/com.apple.bird/**`, `/users/*/library/caches/cloudkit/**`, `/users/*/library/caches/com.apple.icloud*/**` | 0 | file |
+| browser_cache | linux | `/home/*/.cache/**`, `/root/.cache/**` | `/home/*/.cache/pip/**`, `/root/.cache/pip/**` (→ package_cache) | 0 | file |
+| package_cache | linux | `/var/cache/apt/archives/**`, `/var/cache/dnf/**`, `/var/cache/yum/**`, `/home/*/.cache/pip/**`, `/root/.cache/pip/**`, `/home/*/.npm/_cacache/**`, `/root/.npm/_cacache/**` | `/var/cache/apt/archives/lock`, `/var/cache/apt/archives/partial/**` | 0 | file |
+| package_cache | darwin | `/users/*/library/caches/homebrew/**`, `/users/*/.npm/_cacache/**`, `/users/*/.cache/pip/**`, `/users/*/.nuget/packages/**/*.nupkg` | — | 0 | file |
+| package_cache | windows | `<vol>/users/*/appdata/local/pip/cache/**`, `<vol>/users/*/appdata/local/npm-cache/_cacache/**`, `<vol>/programdata/chocolatey/cache/**`, `<vol>/users/*/.nuget/packages/**/*.nupkg`, `<vol>/users/*/appdata/local/packages/*/{ac/inetcache,ac/temp,tempstate}/**` | — | 0 | file |
+| trash | windows | `<vol>/$recycle.bin/*` (each SID dir; only when the scan root is the volume root) | — | 0 | contents (keep `desktop.ini`) |
+| trash | darwin | `/users/*/.trash` | — | 0 | contents |
+| trash | linux | `/home/*/.local/share/trash`, `/root/.local/share/trash` | — | 0 | contents |
 
-Removed from the current classifier: bare `/google/chrome/user data/`, `/mozilla/firefox/` (profile roots), `/edge/user data/` (too loose), bare `/appdata/local/packages/`. `Safe` is no longer a constant: it is `true` only when a rule matched and the min-age check passed. The same rule table is compiled into the API as data (`packages/shared/src/utils/cleanupRules.ts`, generated from a JSON file checked in at `packages/shared/src/utils/cleanupRules.json` that the Go side `go:embed`s) so execute-time re-filtering (§5.2) uses identical rules. A test on each side asserts the embedded JSON hash matches.
+Cleanup-time denied roots (checked by `cleanupGuard`, §6.3, in addition to the rules): `<vol>/windows/system32/**`, `<vol>/windows/winsxs/**`, `<vol>/program files/**`, `<vol>/program files (x86)/**`, `/system/**`, `/usr/**`, `/bin/**`, `/sbin/**`, `/etc/**`, `/private/var/db/**`, `/library/apple/**`. A path under these is rejected even if a rule matched.
+
+The same rule table is data: `packages/shared/src/utils/cleanupRules.json` is `go:embed`ded by the agent and imported by the API and web, so execute-time re-filtering (§5.2) uses identical rules. A test on each side asserts the embedded JSON's SHA-256 matches, and a shared fixture file (`cleanupRules.fixtures.json`, path → expected category or null) is run by both the Go and TypeScript matchers.
 
 ### 6.2 Trash per volume
 
@@ -168,8 +180,8 @@ Removed from the current classifier: bare `/google/chrome/user data/`, `/mozilla
 ### 6.3 `file_delete` additions
 
 - `permanent: true` — already supported; now sent by cleanup.
-- `cleanupGuard: true` — `DeleteFile` uses `os.Lstat`; refuses symlinks and Windows reparse points (`FILE_ATTRIBUTE_REPARSE_POINT`) with `status: 'rejected'`; refuses if the path is not under a rule anchor (re-applying the embedded rule table — defence in depth against a forged execute body). Existing containment and boundary checks stay.
-- `contentsOnly: true` — target must be a directory; children are `Lstat`ed and removed individually (symlinked children are skipped and reported, never followed); `desktop.ini` is preserved; the directory itself survives. Depth check applies to the directory, so `C:\$Recycle.Bin\S-1-5-21-…` (depth 2) passes while `C:\$Recycle.Bin` (depth 1) still fails.
+- `cleanupGuard: true` — **new behaviour**: `DeleteFile` today calls `os.Stat` (`fileops.go:645`), which follows links. Under `cleanupGuard` it calls `os.Lstat`, refuses symlinks and Windows reparse points (`FILE_ATTRIBUTE_REPARSE_POINT`) with `status: 'rejected'`, and refuses paths that do not match an embedded rule (§6.1) or that fall under a cleanup-denied root — defence in depth against a forged execute body. Existing containment and boundary checks stay.
+- `contentsOnly: true` — target must be a real directory (`Lstat`); immediate children are `Lstat`ed: symlinked or reparse-point children are skipped and reported, `desktop.ini` is preserved, everything else is removed with `os.RemoveAll`, which unlinks rather than follows links at any depth (Go's `RemoveAll` never traverses a symlink or reparse point). A test plants a symlink two levels deep pointing outside the tree and asserts the target survives. The directory itself survives. Depth check applies to the directory, so `C:\$Recycle.Bin\S-1-5-21-…` (depth 2) passes while `C:\$Recycle.Bin` (depth 1) still fails.
 - Result gains `bytesFreed` (sum of `Lstat` sizes actually removed) and `skippedLocked: []string` (Windows sharing violations → `skipped_locked`, never forced).
 
 ### 6.4 Accumulator fixes
@@ -195,19 +207,19 @@ type Action interface {
 }
 ```
 
-Common runner: absolute binary paths resolved at init (`%SystemRoot%\System32\cleanmgr.exe`, `dism.exe`, `/usr/bin/tmutil`, `/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/yum`, `/usr/bin/journalctl`), never `$PATH` lookup, never a shell; `exec.CommandContext` with a per-action timeout; stdout/stderr captured and capped at 16 KiB each; process tree killed on timeout (Windows: job object, POSIX: process group). Freed bytes per run = Σ over affected volumes of `disk.Usage(mount).Free` after − before, floored at 0, reported alongside per-action exit status. Argv builders are pure functions with table tests; parsers take fixture strings.
+Common runner: absolute binary paths resolved at init (`%SystemRoot%\System32\cleanmgr.exe`, `dism.exe`, `/usr/bin/tmutil`, `/usr/bin/apt-get`, `/usr/bin/dnf`, `/usr/bin/yum`, `/usr/bin/journalctl`), never `$PATH` lookup, never a shell; `exec.CommandContext` with a per-action timeout; stdout/stderr captured and capped at 16 KiB each; process tree killed on timeout (Windows: job object, POSIX: process group). **Output locale is pinned**: DISM is invoked with `/English`; apt, dnf, yum and journalctl run with `LC_ALL=C LANG=C` in the environment, otherwise parsers fail on non-English endpoints and would report an estimate of 0 with `estimateKnown: true`. A parser that cannot match its fixture shape returns `estimateKnown: false`, never 0. Freed bytes per run = Σ over affected volumes of `disk.Usage(mount).Free` after − before, floored at 0, reported alongside per-action exit status. Every estimate is an **upper bound** and the UI labels it "up to": DISM's two fields exceed what `StartComponentCleanup` reclaims (30-day grace, last backup retained), `journalctl --vacuum-size` removes archived files only, and Time Machine thinning is opportunistic. Argv builders are pure functions with table tests; parsers take fixture strings.
 
 ### 7.2 Catalog v1
 
 | ID | OS | What it runs | Estimate | Timeout | Risk flags |
 |---|---|---|---|---|---|
-| `win_cleanmgr` | windows | For each selected handler sub-id, set `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\<Handler>\StateFlags5555 = 2` (0 for all others in the allowlist), then `cleanmgr.exe /sagerun:5555`. `/d` is not supported with `/sagerun`, so all volumes are processed. | Per handler where a directory is known: `Update Cleanup` → none (opaque); `Delivery Optimization Files` → `%SystemRoot%\SoftwareDistribution\DeliveryOptimization`; `Previous Installations` → `%SystemDrive%\Windows.old`; `Upgrade Discarded Files` → `%SystemDrive%\$WINDOWS.~BT`, `$WINDOWS.~WS`; `Windows Upgrade Log Files` → `%SystemDrive%\$Windows.~BT\Sources\Panther`, `%SystemRoot%\Panther`; `Setup Log Files` → `%SystemRoot%\Logs`; `System error memory dump files` → `%SystemRoot%\MEMORY.DMP`; `System error minidump files` → `%SystemRoot%\Minidump`; `Windows Defender` → `%ProgramData%\Microsoft\Windows Defender\Scans\History\`; `Temporary Files` → `%SystemRoot%\Temp`; others → unknown | 60 min | `long_running` |
-| `win_dism_component_cleanup` | windows | `dism.exe /Online /Cleanup-Image /StartComponentCleanup` (never `/ResetBase`) | `dism.exe /Online /Cleanup-Image /AnalyzeComponentStore` → parse `Backups and Disabled Features` + `Cache and Temporary Data`; `Component Store Cleanup Recommended : No` → estimate 0 | 90 min | `long_running`, `may_require_reboot_free_state` |
-| `mac_tm_local_snapshots` | darwin | `tmutil thinlocalsnapshots / 9223372036854775807 4` (thin everything at max urgency) | `tmutil listlocalsnapshots /` → count only; bytes unknown | 10 min | — |
-| `mac_brew_cleanup` | darwin | reuse `patching.runBrewCleanup` (per-user account handling included) | `brew cleanup --prune=all -n` parsed "Would remove: … (N files, X MB)" | 10 min | — |
+| `win_cleanmgr` | windows | For each selected handler sub-id, set `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\<Handler>\StateFlags5555 = 2` (0 for all others in the allowlist), then `cleanmgr.exe /sagerun:5555`. `/d` is not supported with `/sagerun`, so all volumes are processed. **Session-0 caveat:** under the SYSTEM account cleanmgr renders a hidden progress UI and is known to return before its work finishes or to hang; the runner therefore waits for the job object (whole process tree) to exit, treats the exit code as informational only, reports `timed_out` with partial status when the 60-minute cap hits, and the acceptance criterion is the lab run in §11, not a unit test. | Per handler where a directory is known: `Update Cleanup` → none (opaque); `Delivery Optimization Files` → `%SystemRoot%\SoftwareDistribution\DeliveryOptimization`; `Previous Installations` → `%SystemDrive%\Windows.old`; `Upgrade Discarded Files` → `%SystemDrive%\$WINDOWS.~BT`, `$WINDOWS.~WS`; `Windows Upgrade Log Files` → `%SystemDrive%\$Windows.~BT\Sources\Panther`, `%SystemRoot%\Panther`; `Setup Log Files` → `%SystemRoot%\Logs`; `System error memory dump files` → `%SystemRoot%\MEMORY.DMP`; `System error minidump files` → `%SystemRoot%\Minidump`; `Windows Defender` → `%ProgramData%\Microsoft\Windows Defender\Scans\History\`; `Temporary Files` → `%SystemRoot%\Temp`; others → unknown | 60 min | `long_running`; per handler: `Update Cleanup` → `may_require_reboot` (space is released after restart), `Device Driver Packages` → `removes_driver_rollback` |
+| `win_dism_component_cleanup` | windows | `dism.exe /English /Online /Cleanup-Image /StartComponentCleanup` (never `/ResetBase`) | `dism.exe /English /Online /Cleanup-Image /AnalyzeComponentStore` → parse `Backups and Disabled Features` + `Cache and Temporary Data`; `Component Store Cleanup Recommended : No` → estimate 0 | 90 min | `long_running`, `may_require_reboot_free_state` |
+| `mac_tm_local_snapshots` | darwin | `tmutil listlocalsnapshots /` then `tmutil deletelocalsnapshots <date>` for each listed snapshot (deterministic; `thinlocalsnapshots` is opportunistic and may delete nothing) | snapshot count; bytes unknown | 10 min | — |
+| `mac_brew_cleanup` | darwin | new exported `patching.BrewCleanup(ctx, dryRun bool) (output string, err error)` extracted from the unexported, error-swallowing, debounced `(*HomebrewProvider).runBrewCleanup` (`homebrew.go:319`); keeps the console-user `sudo -n -H -u` handling; the patch-job caller keeps its swallow-and-log wrapper | `brew cleanup --prune=all -n` → trailing `==> This operation would free approximately X of disk space.` line | 10 min | — |
 | `linux_pkg_cache_clean` | linux | `apt-get clean` / `dnf clean all` / `yum clean all` (first present) | size of `/var/cache/apt/archives`, `/var/cache/dnf`, `/var/cache/yum` | 5 min | — |
-| `linux_pkg_autoremove` | linux | `apt-get -y autoremove` / `dnf -y autoremove` | `apt-get -s autoremove` → "After this operation, X MB disk space will be freed"; `dnf --assumeno autoremove` → "Freed space: X" | 15 min | `removes_packages` (UI shows a warning badge and requires the confirm dialog's second checkbox) |
-| `linux_journal_vacuum` | linux | `journalctl --vacuum-size=<bytes>` (param, default 256 MiB, bounded 64 MiB–4 GiB) | `journalctl --disk-usage` − target, floored at 0 | 5 min | — |
+| `linux_pkg_autoremove` | linux | `apt-get -y autoremove` / `dnf -y autoremove` | `apt-get -s autoremove` → "After this operation, X MB disk space will be freed"; `dnf --assumeno autoremove` → "Freed space: X" — dnf exits non-zero when it aborts under `--assumeno`, so the estimator accepts exit 1 when the summary parses; dnf5 (Fedora 41+) changed the summary format and yields `estimateKnown: false` until a fixture is added | 15 min | `removes_packages` (UI shows a warning badge and requires the confirm dialog's second checkbox) |
+| `linux_journal_vacuum` | linux | `journalctl --vacuum-size=<bytes>` (param, default 256 MiB, bounded 64 MiB–4 GiB) | `journalctl --disk-usage` − target, floored at 0 (upper bound: only archived journals are vacuumed) | 5 min | — |
 
 **Windows handler allowlist** for `win_cleanmgr` sub-actions (registry key names; anything else under `VolumeCaches` is never offered): `Update Cleanup`, `Delivery Optimization Files`, `Device Driver Packages`, `Previous Installations`, `Upgrade Discarded Files`, `Windows Upgrade Log Files`, `Setup Log Files`, `Temporary Setup Files`, `Service Pack Cleanup`, `System error memory dump files`, `System error minidump files`, `Windows Error Reporting Files`, `Windows Error Reporting System Archive Files`, `Windows Error Reporting System Queue Files`, `Temporary Files` (under the SYSTEM account this is `%SystemRoot%\Temp`, which is the machine-scoped temp we want), `Windows Defender`, `Old ChkDsk Files`, `Diagnostic Data Viewer database files`, `BranchCache`, `Content Indexer Cleaner`. Handler key names vary by Windows build (the WER handlers were consolidated in Windows 10 1809+), so the allowlist is matched against whatever subset exists on the device; missing names are simply not offered. Explicitly excluded: `DownloadsFolder` (user data), `Windows ESD installation files` (breaks Reset this PC), `Language Pack` (removes installed languages), and every per-user handler (`Recycle Bin`, `Thumbnail Cache`, `Temporary Internet Files`, `Internet Cache Files`, `Active Setup Temp Folders`, `GameNewsFiles`, `GameStatisticsFiles`, `GameUpdateFiles`) — under the SYSTEM service account these operate on the SYSTEM profile, not the logged-in user, and the file engine (§6.2) already covers user bins. Labels: the key name mapped through a fixed friendly-name table; the registry `Display` resource string is resolved with `SHLoadIndirectString` when available, else the key name is shown. `Available()` is false with reason `cleanmgr.exe not present` on Server Core.
 
@@ -237,7 +249,8 @@ Agent-update-required: a `409 agent_update_required` on either system-cleanup ca
 ## 9. AI tools (W05)
 
 - `disk_cleanup` gains `path` (normalised server-side; default OS root); preview stores a run and execute **must** pass that run's `cleanupRunId` (the tool's own state carries it between the two calls); `paths` capped at 200 like the route; empty-snapshot guard added; run-level audit written like the route.
-- New `system_cleanup` tool: `action: 'list' | 'run'`, `actionIds`, `params`. `list` is Tier 1; `run` is Tier 3 (approval) with rate limit `2 / 3600 s`. Registered in `aiGuardrails.ts` (tier + rate), `aiToolSchemas.ts`, `aiTools.ts` registry, `aiAgents/agentToolCatalog.ts`, `aiAgents/actManifest.ts` (action ids only, no free-form argv), `packages/shared/src/utils/aiToolLabels.ts`, `helperToolFilter.ts` (denied to the Helper), `toolTimeouts.ts` (2 h). Mobile `toolIndicatorLogic` label added.
+- New `system_cleanup` tool: `action: 'list' | 'run'`, `actionIds`, `params`. `list` is Tier 1; `run` is Tier 3 (approval) with rate limit `2 / 3600 s`. Registered in every tool registry — there are two: `aiTools.ts` (registry + `aiToolSchemas.ts`) **and** `aiAgentSdkTools.ts` (`TOOL_TIERS` + `makeHandler`, contract-tested by `agentToolCatalog.contract.test.ts` and `aiGuardrails.agentPrincipal.contract.test.ts`) — plus `aiGuardrails.ts` (tier + rate), `aiAgents/agentToolCatalog.ts`, `aiAgents/actManifest.ts` (action ids only, no free-form argv), `aiToolOutput.ts` (formatter branch, else raw JSON renders), `packages/shared/src/utils/aiToolLabels.ts`, `helperToolFilter.ts` (denied to the Helper), `toolTimeouts.ts` (2 h), web `components/ai-risk/tierConfig.ts` (the user-facing tier/rate matrix — W05 adds a `tierConfig.test.ts` asserting parity with `aiGuardrails.ts` so it stops drifting silently), mobile `toolIndicatorLogic`.
+- `disk_cleanup` is modelled as an unattended `ActTarget` with a byte bound in `aiAgents/actRevalidation.ts` and `actVerify.ts`; making `cleanupRunId` required changes the target shape those re-derive, so both are updated and their tests extended.
 - Built-in "Disk Cleanup" playbook (`builtInPlaybooks.ts`) passes `cleanupRunId` through and adds an optional final `system_cleanup list` step for reporting only (no auto-run).
 
 ## 10. Safety model
@@ -257,12 +270,17 @@ Agent-update-required: a `409 agent_update_required` on either system-cleanup ca
 - **Go (`go test -race ./...`)**: rule-table positives/negatives per row (Chrome `Bookmarks` is never a candidate; `Cache/f_000001` is); min-age gate; per-volume bin fixture (temp tree with `$Recycle.Bin/S-1-5-21-x/` and `desktop.ini` survives); `contentsOnly` skips a symlinked child; `cleanupGuard` rejects a symlink; top-by-size eviction; duplicate-map cap; JSON round-trip of the checkpoint payload; syscleanup argv builders and output parsers on fixtures (DISM analyze, `apt-get -s autoremove`, `dnf --assumeno autoremove`, `journalctl --disk-usage`, `brew cleanup -n`, `tmutil listlocalsnapshots`); handler allowlist excludes `DownloadsFolder`; `isRecursiveDeleteBoundaryFor` cases for `C:\$Recycle.Bin` (refused) and `C:\$Recycle.Bin\S-1-5-21-1` (allowed). No test executes a real cleaner.
 - **API (Vitest)**: route tests for volumes, path-keyed snapshot, required `cleanupRunId`, `rejectedPaths`, budget cut-off, 409 agent gate, system-cleanup list/run; migration replay + `db:check-drift`; `tenant-export-policy` and `tenantExportErasureRoundtrip` integration suites (new columns); `rls-coverage` unchanged but run; `migrationRlsScope.test.ts` passes (system scope set before the backfill).
 - **Web (Vitest + jsdom)**: utils; volume switch re-keys panels; select → execute payload carries `cleanupRunId` and only checked paths; partial failure renders amber; 409 renders the update banner; `no-silent-mutations` passes with the tab removed from the allowlist.
-- **Lab (W05, before the agent release):** Windows rig `WIN-IMDR2GAIDMV` — scan `C:\` and a second volume, empty its bin, run `Update Cleanup` + DISM, confirm measured free-space delta; KIT `lab-ubuntu-src` — `apt-get clean`, journal vacuum, autoremove estimate matches. Results recorded on the W05 sub-issue.
-- **Docs:** `apps/docs/src/content/docs/features/filesystem-analysis.mdx` rewritten for volumes, the finished tab, the native catalog, and the new tables/columns; release notes entry.
+- **Lab (W05, before the agent release; acceptance gate for W04):** Windows rig `WIN-IMDR2GAIDMV` — scan `C:\` and a second volume, empty its bin, run `Update Cleanup` + DISM as the SYSTEM service and confirm (a) the runner observes the whole cleanmgr process tree exiting in session 0 without hanging, (b) the measured free-space delta is non-zero after the flagged reboot; KIT `lab-ubuntu-src` — `apt-get clean`, journal vacuum, autoremove estimate matches the simulated output. Results recorded on the W05 sub-issue.
+- **Docs:** `apps/docs/src/content/docs/features/filesystem-analysis.mdx` rewritten for volumes, the finished tab, the native catalog, and the new tables/columns; `agents/commands.mdx` (two new command types), `features/ai.mdx`, `features/mcp-server.mdx`, `features/playbooks.mdx` (tool and playbook changes); `apps/api/src/data/docsIndex.json` regenerated; release notes entry including the W02 rolling-deploy note.
 
 ## 12. Advisor quorum
 
 Fable position: the design above. Independent reviews and their resolution:
 
 - **Codex `gpt-6-astra` xhigh, read-only** — attempted 2026-09-19 10:20 MDT; the Codex subscription was at its usage limit (resets 11:38 MDT). Re-run before any wave starts implementation; findings appended below.
-- **Independent Opus review (stand-in, 2026-09-19)** — findings and resolutions appended below.
+- **Independent Opus review (adversarial, no shared context, 2026-09-19)** — 20 verdicts; all incorporated:
+  - *Agreed with the design:* two engines / one surface (a single rules engine would have to fake an empty plan for opaque actions); the pinned-`cleanupRunId` + safe-category re-filter + agent anchor re-check closes the forged-execute path; the export-policy and cascade-list call-outs are correct.
+  - *Blockers found and fixed in this revision:* migration filename collided with two shipped `2026-10-20-140000-*` files (→ `150000`/`150100`, split enum add into its own file); the scan-state PK swap breaks `onConflictDoUpdate({ target: deviceId })` (→ §4 writer-contract paragraph, W02 is one coordinated release); `COMMAND_OFFLINE_POLICY_REGISTRY` and `partnerTrust` allowlist omitted for the two new command types (→ §5.3); rule anchors were still substrings (→ §6.1 rooted component patterns + denied roots; `/System/Library/Caches` was reachable on a SIP-off Mac).
+  - *Factual corrections:* `runBrewCleanup` is unexported and swallows errors (→ exported `BrewCleanup`); `brew cleanup -n` per-line shape (→ parse the summary line); DISM/apt/dnf output is localised (→ `/English`, `LC_ALL=C`); `dnf --assumeno` exits non-zero (→ accept exit 1 with a parsable summary); `thinlocalsnapshots` is opportunistic (→ `deletelocalsnapshots` per snapshot); estimates overstate (→ "up to" labelling); `DeleteFile` uses `os.Stat` today so `Lstat` is a change, not a restatement; nested reparse points under `contentsOnly` (→ explicit `RemoveAll` contract + test); `Update Cleanup` needs `may_require_reboot`, `Device Driver Packages` needs `removes_driver_rollback`; cleanmgr in session 0 needs a lab gate, not a unit test.
+  - *Wave corrections:* W01's mixed-version story was about an impossible pairing (SID enumeration is itself a W01 agent change) — rewritten per platform; W02 is not schema-then-code; W05 is a release wave.
+  - *Registries added to §9:* `aiAgentSdkTools.ts` second tool registry, `aiToolOutput.ts`, `actRevalidation.ts`/`actVerify.ts`, web `tierConfig.ts` (+ new parity test), five docs pages + `docsIndex.json`.
