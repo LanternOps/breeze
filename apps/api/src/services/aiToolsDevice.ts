@@ -28,7 +28,11 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { projectPublicDevice } from '../routes/devices/helpers';
-import { sanitizeUntrustedText, wrapUntrustedData } from './aiInputSanitizer';
+import {
+  sanitizeUntrustedText,
+  wrapUntrustedData,
+  UNTRUSTED_FIELD_MAX_LENGTH,
+} from './aiInputSanitizer';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -283,6 +287,10 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // Device memory is free text and is replayed straight into model context.
       // Sanitize every untrusted field, then render the whole set inside a
       // delimited untrusted-data block so it reads as data, not instructions.
+      // Collect sanitizer detections across every entry so a neutralized
+      // instruction/fence/truncation is recorded rather than silently dropped
+      // (mirrors the page-context path in aiAgent.ts / aiAgentSdk.ts).
+      const memoryFlags: string[] = [];
       const formatted = results.map(r => {
         const status = r.resolvedAt
           ? 'RESOLVED'
@@ -290,9 +298,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           ? 'EXPIRED'
           : 'ACTIVE';
 
-        let output = `[${status}] ${sanitizeUntrustedText(r.contextType, 40).toUpperCase()}: ${sanitizeUntrustedText(r.summary)}`;
+        let output = `[${status}] ${sanitizeUntrustedText(r.contextType, 40, memoryFlags).toUpperCase()}: ${sanitizeUntrustedText(r.summary, UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         if (r.details) {
-          output += `\nDetails: ${sanitizeUntrustedText(JSON.stringify(r.details, null, 2))}`;
+          output += `\nDetails: ${sanitizeUntrustedText(JSON.stringify(r.details, null, 2), UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`;
         }
         output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
         if (r.resolvedAt) {
@@ -301,7 +309,17 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return output;
       });
 
-      const block = wrapUntrustedData('device_memory', formatted.join('\n\n---\n\n'));
+      const block = wrapUntrustedData('device_memory', formatted.join('\n\n---\n\n'), memoryFlags);
+      if (memoryFlags.length > 0) {
+        console.warn(
+          '[AI] Device-memory sanitization flags:',
+          memoryFlags,
+          'device:',
+          deviceId,
+          'entries:',
+          results.length
+        );
+      }
       return `Found ${results.length} context entries:\n\n${block}`;
     },
   });

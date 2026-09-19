@@ -124,8 +124,13 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
 export const UNTRUSTED_FIELD_MAX_LENGTH = 2_000;
 /** Max characters of the body inside a single delimited untrusted-data block. */
 export const UNTRUSTED_BLOCK_MAX_LENGTH = 16_000;
+/** Inline marker appended wherever untrusted text was clipped by a cap. */
+export const UNTRUSTED_TRUNCATION_MARKER = '… [truncated]';
 
-const UNTRUSTED_FENCE = /<\/?untrusted_data(\s[^>]*)?>/giu;
+// `\b` + `[^>]*` also covers attribute-carrying and self-closing forms
+// (`<untrusted_data source="x">`, `<untrusted_data/>`) while leaving unrelated
+// tags with the same prefix (`<untrusted_datax>`) alone.
+const UNTRUSTED_FENCE = /<\/?untrusted_data\b[^>]*>/giu;
 
 /**
  * Sanitize a single untrusted free-text field (device memory, notes, strings
@@ -141,8 +146,12 @@ export function sanitizeUntrustedText(
   flags?: string[]
 ): string {
   const sink = flags ?? [];
-  if (value.length > maxLength) addFlag(sink, 'truncated');
-  return sanitizeField(value, maxLength, sink);
+  const truncated = value.length > maxLength;
+  if (truncated) addFlag(sink, 'truncated');
+  const sanitized = sanitizeField(value, maxLength, sink);
+  // Mark the cut inline, matching `wrapUntrustedData`'s convention, so a field
+  // that was clipped is not mistaken for source data that simply ended there.
+  return truncated ? `${sanitized}${UNTRUSTED_TRUNCATION_MARKER}` : sanitized;
 }
 
 /**
@@ -161,7 +170,7 @@ export function wrapUntrustedData(label: string, body: string, flags?: string[])
   let safe = body.replace(UNTRUSTED_FENCE, '[filtered]');
   if (safe !== body) addFlag(sink, 'fence_forgery');
   if (safe.length > UNTRUSTED_BLOCK_MAX_LENGTH) {
-    safe = `${safe.slice(0, UNTRUSTED_BLOCK_MAX_LENGTH)}\n… [truncated]`;
+    safe = `${safe.slice(0, UNTRUSTED_BLOCK_MAX_LENGTH)}\n${UNTRUSTED_TRUNCATION_MARKER}`;
     addFlag(sink, 'truncated');
   }
   return [

@@ -15,7 +15,12 @@ import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
 import { getActiveDeviceContext } from './brainDeviceContext';
-import { sanitizePageContext, sanitizeUntrustedText, wrapUntrustedData } from './aiInputSanitizer';
+import {
+  sanitizePageContext,
+  sanitizeUntrustedText,
+  wrapUntrustedData,
+  UNTRUSTED_FIELD_MAX_LENGTH,
+} from './aiInputSanitizer';
 import { looksLikeInternalErrorDetail } from './aiToolErrors';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
@@ -639,18 +644,30 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
               // Device memory is persisted untrusted text/JSON. Render it inside
               // a delimited untrusted-data block so it is treated as data, not
               // system-prompt instructions (prompt-injection defense).
+              const memoryFlags: string[] = [];
               const lines: string[] = [];
               for (const c of context) {
                 const detail = c.details
-                  ? ` — ${sanitizeUntrustedText(JSON.stringify(c.details))}`
+                  ? ` — ${sanitizeUntrustedText(JSON.stringify(c.details), UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}`
                   : '';
                 lines.push(
-                  `- [${sanitizeUntrustedText(c.contextType, 40).toUpperCase()}] ${sanitizeUntrustedText(c.summary)}${detail}`
+                  `- [${sanitizeUntrustedText(c.contextType, 40, memoryFlags).toUpperCase()}] ${sanitizeUntrustedText(c.summary, UNTRUSTED_FIELD_MAX_LENGTH, memoryFlags)}${detail}`
+                );
+              }
+              const memoryBlock = wrapUntrustedData('device_memory', lines.join('\n'), memoryFlags);
+              if (memoryFlags.length > 0) {
+                // Same rationale as the page-context flags above: the content is
+                // neutralized, but record that it needed neutralizing.
+                console.warn(
+                  '[AI] Device-memory sanitization flags:',
+                  memoryFlags,
+                  'device:',
+                  pageContext.id
                 );
               }
               parts.push('\n### Past Device Memory');
               parts.push('Previous interactions recorded the following context:');
-              parts.push(wrapUntrustedData('device_memory', lines.join('\n')));
+              parts.push(memoryBlock);
               parts.push('Consider this historical context when assisting the user. You do NOT need to call get_device_context — it has already been loaded.');
             }
           }
