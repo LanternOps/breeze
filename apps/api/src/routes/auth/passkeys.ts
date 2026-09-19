@@ -376,6 +376,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
           partnerId: auth.partnerId ?? null,
           scope: auth.scope,
           mfa: true,
+          mfaSrc: 'factor',
           mobileDeviceId: readMobileDeviceId(c) ?? undefined,
         },
         capability,
@@ -858,6 +859,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
+    mfaSrc: 'factor',
     mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 

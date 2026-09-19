@@ -1563,7 +1563,7 @@ describe('auth routes', () => {
       expect(body).toMatchObject({ mfaRequired: false });
       expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.objectContaining({ sub: 'user-1', mfa: true, mfa_src: 'factor' }),
         expect.anything(),
       );
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
@@ -1895,7 +1895,7 @@ describe('auth routes', () => {
       expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-1', recoveryCode);
 
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.objectContaining({ sub: 'user-1', mfa: true, mfa_src: 'factor' }),
         expect.anything(),
       );
       // Exactly one pending-record consume on success — the recovery branch
@@ -2284,6 +2284,8 @@ describe('auth routes', () => {
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
       expect(grants.has('grant-1')).toBe(false);
       expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
 
       const replay = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
       expect(replay.status).toBe(403);

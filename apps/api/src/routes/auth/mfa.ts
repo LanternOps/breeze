@@ -550,6 +550,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
+      mfaSrc: 'factor',
       // SR-001: bind to the mobile install id when present (MFA login path).
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     };
@@ -748,6 +749,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,
@@ -1152,6 +1154,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,

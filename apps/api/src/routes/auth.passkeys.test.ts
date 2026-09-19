@@ -1034,7 +1034,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
@@ -1236,7 +1236,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(await res.json()).toMatchObject({
