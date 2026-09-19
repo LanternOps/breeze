@@ -551,6 +551,10 @@
         "description": "Statuts, SLA, catégories, formulaires",
         "linkCta": "Gérer les paramètres de tickets →"
       },
+      "emailTemplates": {
+        "label": "Modèles d'e-mail",
+        "description": "Tickets, devis, factures, invitations"
+      },
       "sendingDomains": { "label": "Adresses d'expédition", "description": "Envoyez vos e-mails depuis votre propre domaine" },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -841,6 +845,45 @@
     "deleteExpiredTitle": "Supprimer les clés d’inscription expirées",
     "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Les clés qui alimentent encore un lien de téléchargement d’installateur actif sont conservées. Cela ne peut pas être annulé."
   },
+  "emailTemplates": {
+    "title": "Modèles d'e-mail",
+    "description": "Personnalisez les e-mails que les clients reçoivent pour les tickets, devis, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "usingDefault": "Par défaut",
+    "custom": "Personnalisé",
+    "subject": "Objet",
+    "heading": "Titre",
+    "buttonLabel": "Libellé du bouton",
+    "html": "Corps HTML",
+    "htmlAria": "Corps HTML de l'e-mail",
+    "insert": "Insérer :",
+    "preview": "Aperçu",
+    "save": "Enregistrer le modèle",
+    "reset": "Réinitialiser",
+    "saved": "Modèle d'e-mail enregistré",
+    "saveFailed": "Échec de l'enregistrement du modèle d'e-mail",
+    "loadFailed": "Échec du chargement des modèles d'e-mail.",
+    "back": "Retour à la liste",
+    "markupRemoved": "Une partie du balisage a été retirée : {{tags}}",
+    "variables": {
+      "ticket_number": "Numéro de ticket",
+      "ticket_subject": "Objet du ticket",
+      "requester_name": "Nom du demandeur",
+      "requester_email": "E-mail du demandeur",
+      "org_name": "Nom de l'organisation",
+      "partner_name": "Nom de l'entreprise",
+      "portal_url": "URL du portail",
+      "email_only_hint": "Indication e-mail uniquement",
+      "resolution_note": "Note de résolution",
+      "quote_number": "Numéro de devis",
+      "total": "Total",
+      "expiry_date": "Date d'expiration",
+      "accept_url": "URL d'acceptation",
+      "invoice_number": "Numéro de facture",
+      "due_date": "Date d'échéance",
+      "invite_url": "URL d'invitation",
+      "cta_button": "Bouton"
+    }
+  },
   "inboundEmail": {
     "saveError": "Impossible d’enregistrer les paramètres des e-mails entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",
     "orgNotAccessible": "Cette organisation n’est pas disponible sous le nom de votre partenaire.",
@@ -871,6 +914,8 @@
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les e-mails non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux tickets par e-mail",
+    "editEmailTemplates": "L'e-mail d'accusé de réception s'édite sous Modèles d'e-mail.",
+    "editEmailTemplatesLink": "Modifier les modèles d'e-mail",
     "autoresponseMessage": "Message d’autoréponse",
     "subject": "Sujet",
     "subjectPlaceholder": "Nous avons reçu votre demande : {{ticket_subject}}",

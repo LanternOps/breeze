@@ -2,6 +2,8 @@
 // Auth Types
 // ============================================
 
+import type { EmailTemplateId } from '../utils/emailTemplates';
+
 export * from './auth';
 export * from './deviceOptions';
 export * from './agentHealth';
@@ -779,6 +781,12 @@ export interface PartnerSettings {
   // (newly created or stale entries) are appended in createdAt order.
   organizationOrder?: string[];
   remoteAccessProviders?: InheritableRemoteAccessSettings;
+  emailTemplates?: Partial<Record<EmailTemplateId, {
+    subject?: string | null;
+    heading?: string | null;
+    buttonLabel?: string | null;
+    html?: string | null;
+  }>>;
 }
 
 // ============================================

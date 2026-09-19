@@ -70,12 +70,20 @@ Deleting and restoring both require the **ticket management** permission, held b
 
 The composer at the bottom of every ticket has two modes:
 
-- **Reply** (the default) -- a public response. If the ticket came from the customer portal, your reply appears in the requester's portal conversation.
-- **Internal note** -- visible only to your team. The composer switches to a clearly marked highlighted style with an "Internal: not visible to requester" banner, so there is no ambiguity about who will see what you are typing.
+- **Reply** (the default) -- a public response. If the ticket came from the customer portal, your reply appears in the requester's portal conversation. The requester also gets a laid-out email **notice** -- not the reply text. See [Public-reply email notice](#public-reply-email-notice).
+- **Internal note** -- visible only to your team. The composer switches to a clearly marked highlighted style with an "Internal: not visible to requester" banner, so there is no ambiguity about who will see what you are typing. Internal notes do not email the requester.
 
 Portal users only ever see public replies. Internal notes, status changes, and assignment history stay inside the dashboard.
 
 Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
+
+### Public-reply email notice
+
+A public technician reply emails the requester a laid-out transactional notice (subject, heading, and a **View ticket** button). **The reply text is never in the email.** The customer reads the reply in the [customer portal](/features/portal/). They respond by replying to the email. Email-only requesters (no portal login) never see the technician's words. Inbound comments (the customer writing in) also send no requester email, so they don't bounce in a loop.
+
+Partners edit this notice, the ticket-received acknowledgement, and the resolved-ticket mail under **Settings → Partner → Email templates**. The same tab also holds quote, invoice, and portal-invite mail. The **View ticket** button always goes to `/portal/tickets/:id` on your portal origin; partners cannot point it somewhere else. Self-hosted: set [`PUBLIC_PORTAL_URL`](/deploy/environment/#server) (or `PUBLIC_APP_URL`) so that button is reachable.
+
+Which path sends the mail is unchanged. A connected Microsoft 365 support mailbox still sends via Graph from that mailbox; otherwise the platform email service (EmailService) sends. `EMAIL_PROVIDER=auto` with no SMTP, Resend, or Mailgun host is a no-op on the EmailService path -- nothing is sent that way. Graph still sends if a mailbox is connected.
 
 ### Attachments
 
@@ -185,13 +193,13 @@ The address's local part (the bit before the `@`) is editable on the Inbound ema
 
 - **New tickets.** An email from a recognized customer creates a new ticket, with the subject as the ticket subject and the body as the first message.
 - **Threading.** Replies are matched back to their original ticket using the email's reply headers or the ticket number in the subject (for example `T-2026-0042`), so an ongoing conversation stays on one ticket. A reply to a resolved ticket reopens it.
-- **Public replies thread back.** When a technician sends a public reply, it reaches the customer over email, and their response threads back into the same ticket.
+- **Public replies thread back.** When a technician sends a public reply, the requester gets a laid-out email notice (the reply text is not in that mail), and their response threads back into the same ticket.
 
 ### Autoresponder
 
 An optional **autoresponder** sends customers a one-time acknowledgement when their email is received, so they know the ticket was created. It's rate-limited to avoid mail loops and is toggled per partner on the Inbound email card.
 
-Partners can customize the acknowledgement email's **subject** and **body** (plain text). The body supports three merge variables: `{{ticket_number}}`, `{{subject}}`, and `{{portal_url}}`. Leaving either field blank keeps the existing default wording unchanged. Configure both fields under **Settings → Ticketing → Inbound email**.
+Edit the acknowledgement under **Settings → Partner → Email templates** (Ticket received acknowledgement) -- subject, heading, and HTML body. Merge variables: `{{ticket_number}}`, `{{ticket_subject}}`, `{{requester_name}}`, `{{requester_email}}`, `{{org_name}}`, and `{{partner_name}}`. Leave it on the default to keep the built-in wording. This mail has no portal button; the customer replies to the email. Plain-text subject and body previously saved on the Inbound email card still apply until you save a template here.
 
 ### Review queue
 

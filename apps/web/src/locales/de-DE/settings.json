@@ -551,6 +551,10 @@
         "description": "Status, SLAs, Kategorien, Formulare",
         "linkCta": "Ticketing-Einstellungen verwalten →"
       },
+      "emailTemplates": {
+        "label": "E-Mail-Vorlagen",
+        "description": "Tickets, Angebote, Rechnungen, Einladungen"
+      },
       "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
       "aiBudgets": {
         "label": "KI-Budgets",
@@ -841,6 +845,45 @@
     "deleteExpiredTitle": "Abgelaufene Registrierungsschlüssel löschen",
     "deleteExpiredConfirm": "Alle abgelaufenen Registrierungsschlüssel löschen? Schlüssel, die noch einen aktiven Installer-Downloadlink versorgen, bleiben erhalten. Dies kann nicht rückgängig gemacht werden."
   },
+  "emailTemplates": {
+    "title": "E-Mail-Vorlagen",
+    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets, Angeboten, Rechnungen und Portaleinladungen erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
+    "usingDefault": "Standard",
+    "custom": "Angepasst",
+    "subject": "Betreff",
+    "heading": "Überschrift",
+    "buttonLabel": "Schaltflächenbeschriftung",
+    "html": "HTML-Text",
+    "htmlAria": "HTML-Text der E-Mail",
+    "insert": "Einfügen:",
+    "preview": "Vorschau",
+    "save": "Vorlage speichern",
+    "reset": "Auf Standard zurücksetzen",
+    "saved": "E-Mail-Vorlage gespeichert",
+    "saveFailed": "E-Mail-Vorlage konnte nicht gespeichert werden",
+    "loadFailed": "E-Mail-Vorlagen konnten nicht geladen werden.",
+    "back": "Zurück zur Liste",
+    "markupRemoved": "Ein Teil des Markups wurde entfernt: {{tags}}",
+    "variables": {
+      "ticket_number": "Ticketnummer",
+      "ticket_subject": "Betreff des Tickets",
+      "requester_name": "Name des Antragstellers",
+      "requester_email": "E-Mail des Antragstellers",
+      "org_name": "Name der Organisation",
+      "partner_name": "Firmenname",
+      "portal_url": "Portal-URL",
+      "email_only_hint": "Hinweis nur per E-Mail",
+      "resolution_note": "Lösungshinweis",
+      "quote_number": "Angebotsnummer",
+      "total": "Gesamtbetrag",
+      "expiry_date": "Ablaufdatum",
+      "accept_url": "Annahme-URL",
+      "invoice_number": "Rechnungsnummer",
+      "due_date": "Fälligkeitsdatum",
+      "invite_url": "Einladungs-URL",
+      "cta_button": "Schaltfläche"
+    }
+  },
   "inboundEmail": {
     "saveError": "Die Einstellungen für eingehende E-Mails konnten nicht gespeichert werden – Ihre Sitzung erfordert möglicherweise eine erneute Bestätigung für MFA. Wiederholen.",
     "orgNotAccessible": "Diese Organisation ist bei Ihrem Partner nicht verfügbar.",
@@ -871,6 +914,8 @@
     "dropUnverified": "E-Mails verwerfen, die die Absenderauthentifizierung nicht bestehen (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
+    "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
+    "editEmailTemplatesLink": "E-Mail-Vorlagen bearbeiten",
     "autoresponseMessage": "Automatische Antwortnachricht",
     "subject": "Betreff",
     "subjectPlaceholder": "Wir haben Ihre Anfrage erhalten: {{ticket_subject}}",
