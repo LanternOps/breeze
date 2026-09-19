@@ -23,8 +23,18 @@ import {
 // Direct module import, not the schema barrel — see the same note in runService.
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
+import { isDesignProfile } from './designProfile';
+import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
+import { computeDrift } from '../fleetDesign/drift';
+import { fileFleetDesignDocument } from '../fleetDesign/documents';
+import { captureException } from '../sentry';
 import { isNarrativeProfile } from './narrativeProfile';
+import { patchEvidenceRefs } from './patchEvidence';
+import { persistPatchPlan } from './patchPlan';
+import { isPatchProfile } from './patchProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
+import { resolveRecipientUserIds } from './recipients';
+import { indexEvidenceSubjects, type SweepEvidenceSubject } from './sweepEvidence';
 import { persistSweepFindings } from './sweepFindings';
 import { isSweepProfile } from './sweepProfile';
 import { persistTicketTriage } from './ticketTriageFindings';
@@ -179,6 +189,13 @@ export async function finalizeSweep(ctx: RunContext, result: LoopResult): Promis
       if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
     }
   }
+  // #4442 W04 — the same rows, indexed by the SYSTEM's own subject
+  // (`kind|deviceId|key`). A run with no sweep block has an EMPTY index, which
+  // refuses every proposal at gate 1b — fail closed, exactly like the device
+  // set above.
+  const evidenceSubjects = ctx.sweep
+    ? indexEvidenceSubjects(ctx.sweep.evidence)
+    : new Map<string, SweepEvidenceSubject>();
 
   try {
     const { proposals, intentIds } = await persistSweepFindings(
@@ -200,6 +217,21 @@ export async function finalizeSweep(ctx: RunContext, result: LoopResult): Promis
           ctx.run.policySnapshot.effective.limits.maxActionsPerRun
           ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
         evidenceDeviceIds,
+        evidenceSubjects,
+        // #4442 W05 — the three caps the readiness cohort walks against. The
+        // first two mirror what `runAuthorizeTransaction` enforces per intent;
+        // the cohort only bounds over-subscription across the occurrence. `??`
+        // tolerates a pre-v13 in-flight policy snapshot, which predates the
+        // per-occurrence device cap entirely.
+        maxFleetPercentPerDay:
+          ctx.run.policySnapshot.effective.limits.maxFleetPercentPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxFleetPercentPerDay,
+        maxPolicyDecisionsPerDay:
+          ctx.run.policySnapshot.effective.limits.maxPolicyDecisionsPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxPolicyDecisionsPerDay,
+        maxUnattendedDevicesPerSweep:
+          ctx.run.policySnapshot.effective.limits.maxUnattendedDevicesPerSweep
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
       },
       outcome.sweepFindings,
       result.agentAuth,
@@ -263,6 +295,39 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
     return null;
   }
 
+  // #4248 W03 — resolve the EMAIL recipients before the persist, from the
+  // run's immutable policy snapshot against the RUN org (the same input
+  // `runFinishedNotify` uses for the in-app notification), so the delivery
+  // rows land in the artifact's own transaction. A resolver failure must not
+  // cost the document: log loudly and persist with zero deliveries — the
+  // in-app notification path resolves its own recipients independently, so
+  // the run is still announced; only the email is missing, visibly, on the
+  // run detail's delivery summary (Task 10).
+  let emailRecipientUserIds: string[] = [];
+  let recipientsUnresolved = false;
+  try {
+    emailRecipientUserIds = await resolveRecipientUserIds(
+      {
+        orgId: ctx.agent.orgId,
+        partnerId: ctx.agent.partnerId,
+        recipients: ctx.run.policySnapshot.effective.recipients,
+      },
+      ctx.run.orgId,
+    );
+  } catch (error) {
+    // Recorded on the OUTCOME, not just in the log: with zero delivery rows
+    // this is otherwise indistinguishable from "this org configured no
+    // recipients", and the weekly report reaches nobody in silence — the
+    // exact failure class this wave exists to remove.
+    recipientsUnresolved = true;
+    console.error('[aiAgentRunLoop] could not resolve narrative email recipients — persisting with no deliveries', {
+      runId: ctx.run.id, orgId: ctx.run.orgId, error,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'aiAgents', operation: 'resolveNarrativeEmailRecipients', runId: ctx.run.id, orgId: ctx.run.orgId,
+    });
+  }
+
   try {
     const { reportId, reportRunId } = await persistNarrativeReport({
       run: {
@@ -275,9 +340,11 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
       occurrenceKey: ctx.narrative.occurrenceKey || null,
       context: ctx.narrative.context,
       outcome: outcome.narrative,
+      emailRecipientUserIds,
     });
     // TWO ids, never the narrative or the context — see the field's docstring.
     outcome.narrativeReport = { reportId, reportRunId };
+    if (recipientsUnresolved) outcome.narrativeRecipientsUnresolved = true;
     return null;
   } catch (error) {
     if (error instanceof NarrativePersistConflictError) {
@@ -291,6 +358,165 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
     }
     console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
     return 'narrative_persist_failed';
+  }
+}
+
+/**
+ * Fleet Designer W01 (#5651) — the design sibling of `finalizeVerdict`/
+ * `finalizeSweep`/`finalizeNarrative` above. Persists the validated
+ * `FleetDesignOutcome` as a system-authored report artifact and links
+ * `ai_agent_runs.report_run_id`.
+ *
+ * UNLIKE `finalizeNarrative`, a missing schedule is NOT an error: a Fleet
+ * Design definition is keyed on the ORG (`reports_ai_fleet_design_org_uniq`),
+ * not on `(org_id, source_ai_agent_schedule_id)`, so a manually triggered
+ * design run — `POST /ai/fleet-design/runs` has no schedule at all — finds
+ * or creates the same org-scoped definition exactly like a scheduled one
+ * does. There is no `design_no_schedule` error code because there is nothing
+ * that condition would ever refuse.
+ */
+/**
+ * AI patch agent W01 (#5747) — the patch sibling of the finalizers above.
+ * Re-validates every submitted item against the run's ASSEMBLED evidence and
+ * the device's CURRENT org (`persistPatchPlan`) and writes the dispositions
+ * onto `outcome.patchPlan`, which `finishRun` serializes into the run row.
+ *
+ * W02 (#5748): `persistPatchPlan` now also mints one device-scoped Tier-3
+ * approval card per eligible `install` item, so — exactly like
+ * `finalizeSweep` — it takes the AGENT's effective allowlist and action cap,
+ * and its pending intent ids flow into `result.intentIds`. No stall-reaper
+ * re-read: the run row's own CAS in `finishRun` still refuses a run that left
+ * `running`, and an intent minted for a run that was reaped is a pending card
+ * a human still has to decide (the sweep finalizer accepts the same).
+ *
+ * `patch_plan_missing` mirrors `narrative_missing` / `design_missing`; a
+ * failed membership/eligibility/suppression read reports
+ * `patch_plan_persist_failed` and leaves the items without a disposition
+ * rather than guessing one.
+ */
+export async function finalizePatchPlan(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isPatchProfile(ctx.run)) return null;
+  const { outcome } = result;
+  if (!outcome.patchPlan || !ctx.patch) return 'patch_plan_missing';
+  try {
+    const { dispositions, intentIds } = await persistPatchPlan(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.run.scheduleId,
+        // The AGENT's effective allowlist off the already-loaded run row —
+        // the same authority `agentReleaseAuthority.ts` re-checks at release.
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+        // The AGENT's POST-RUN minting cap. NOT `patchLimits`' hard `0`, which
+        // governs what the run LOOP may execute (a patch run executes
+        // nothing) — the same split `finalizeSweep` documents. `??` tolerates
+        // a v1 policy snapshot, which predates the field entirely.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+      },
+      outcome.patchPlan,
+      patchEvidenceRefs(ctx.patch.evidence),
+      result.agentAuth,
+    );
+    // W03 (#5749): the queued-offline coverage note travels with the plan so
+    // the digest can state it without re-reading the evidence.
+    outcome.patchPlan = { ...outcome.patchPlan, dispositions, queuedOffline: ctx.patch.evidence.queuedOffline };
+    for (const intentId of intentIds) result.intentIds.push(intentId);
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] patch plan re-validation failed', { runId: ctx.run.id, error });
+    captureException(error, undefined, { service: 'aiAgents', operation: 'finalizePatchPlan', runId: ctx.run.id });
+    return 'patch_plan_persist_failed';
+  }
+}
+
+export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isDesignProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.fleetDesign) return 'design_missing';
+  if (!ctx.design) return 'design_missing';
+
+  // Same IMPORTANT-4 re-read every sibling above carries: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip rather than publish a
+  // customer-facing artifact under a run nobody owns any more. (A tiny window
+  // remains between this read and the transaction below — closed properly
+  // there, by the `FOR UPDATE` lock plus the `report_run_id IS NULL` CAS.)
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped fleet design persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  // W05 (#5655): drift is computed HERE, deterministically, from the approved
+  // design the evidence loader found and the live state it loaded beside it
+  // — never from anything the model submitted. No applied design → null.
+  const { approvedDesign, driftLive } = ctx.design.evidence;
+  const drift = approvedDesign && driftLive ? computeDrift(approvedDesign, driftLive) : null;
+
+  try {
+    const { reportId, reportRunId } = await persistFleetDesignReport({
+      run: {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.design.scheduleId,
+      },
+      agent: { id: ctx.agent.id, name: ctx.agent.name },
+      evidence: ctx.design.evidence,
+      outcome: outcome.fleetDesign,
+      drift,
+    });
+    // TWO ids, never the evidence or the outcome again — see the field's
+    // docstring on `AgentRunOutcome.fleetDesignReport`.
+    outcome.fleetDesignReport = { reportId, reportRunId };
+
+    // W05 (#5655): a SCHEDULED design files its own PDF in the org's document
+    // library (and onto the linked deliverable); a manual run is filed by the
+    // technician from the page. Best effort AFTER the artifact is linked — a
+    // storage fault must never fail a run whose report already exists.
+    if (ctx.design.scheduleId) {
+      const timezone = ctx.design.evidence.org.timezone;
+      try {
+        // No ambient context here (same as `persistFleetDesignReport`, which
+        // wraps itself); the document service expects one, so provide it.
+        await inSystemDbContext(() => fileFleetDesignDocument({
+          orgId: ctx.run.orgId,
+          reportRunId,
+          actor: { userId: null, partnerId: ctx.orgPartnerId ?? null, accessibleOrgIds: null },
+          timezone,
+        }));
+      } catch (error) {
+        // Best effort, but never invisible: a systemic storage or deliverable
+        // fault would otherwise stop every scheduled design filing itself with
+        // no signal at all (the run still completes, so there is no error code
+        // to carry it). Same treatment `designEvidence.ts` gives a loader that
+        // fails without failing the run.
+        console.error('[aiAgentRunLoop] failed to file the fleet design document', { runId: ctx.run.id, reportRunId, error });
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          service: 'aiAgents', operation: 'fileFleetDesignDocument', runId: ctx.run.id, reportRunId, orgId: ctx.run.orgId,
+        });
+      }
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof FleetDesignPersistConflictError) {
+      // A race that resolved correctly (another executor linked an artifact,
+      // or the run moved) — logged at warn, not error, and given its own
+      // code so it is distinguishable from a genuine write failure on the
+      // run row.
+      console.warn('[aiAgentRunLoop] fleet design artifact was not linked to this run', {
+        runId: ctx.run.id, reason: (error as Error).message,
+      });
+      return 'design_persist_conflict';
+    }
+    console.error('[aiAgentRunLoop] failed to persist the fleet design report', { runId: ctx.run.id, error });
+    return 'design_persist_failed';
   }
 }
 

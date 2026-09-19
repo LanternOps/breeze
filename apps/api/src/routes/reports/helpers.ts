@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { isManagedEvidenceType } from '../../services/managedEvidenceRegistry';
 import { db } from '../../db';
 import { portalBranding, reports, reportRuns } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -160,18 +161,25 @@ export const reportDefinitionMetadataProjection = {
  *
  * TWO independent signals, deliberately OR-ed. `execution_scope_principal_kind
  * = 'system'` is the provenance the scheduled-report worker also keys on;
- * `type = 'ai_org_narrative'` is the report's identity. Either alone would
- * leave a gap: a row whose principal was somehow rewritten to 'user' is still a
- * narrative nobody can regenerate, and a future system-managed report of an
- * ordinary type would still have no acting user to mutate on behalf of.
+ * `type = 'ai_org_narrative'` (or, since Fleet Designer W01 #5651,
+ * `'ai_fleet_design'`) is the report's identity. Either alone would leave a
+ * gap: a row whose principal was somehow rewritten to 'user' is still a
+ * narrative/design nobody can regenerate, and a future system-managed report
+ * of an ordinary type would still have no acting user to mutate on behalf of.
  *
  * Reads and downloads never consult this — a system-managed report exists to be
  * read. Only the four mutation routes do.
  */
 export function isSystemManagedReportDefinition(
-  row: { type: string | null; executionScopePrincipalKind: string | null },
+  row: { type: string | null; executionScopePrincipalKind: string | null; portalSelfService?: boolean | null },
 ): boolean {
-  return row.executionScopePrincipalKind === 'system' || row.type === 'ai_org_narrative';
+  return row.executionScopePrincipalKind === 'system'
+    || row.type === 'ai_org_narrative'
+    || row.type === 'ai_fleet_design'
+    // #5784 W01: the org's ONE managed evidence definition — DEFINITION-based,
+    // not type-based, because a managed evidence type also has ordinary
+    // user-authored definitions a technician must keep full control of.
+    || (row.type !== null && isManagedEvidenceType(row.type) && row.portalSelfService === true);
 }
 
 export function tenantAuthorizedReportCondition(

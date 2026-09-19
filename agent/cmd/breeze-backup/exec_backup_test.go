@@ -265,19 +265,26 @@ func TestDefaultVSS(t *testing.T) {
 		name        string
 		goos        string
 		systemImage bool
+		hasPaths    bool
 		want        bool
 	}{
-		{"windows file backup defaults VSS on", "windows", false, true},
-		{"windows system_image defaults VSS off", "windows", true, false},
-		{"linux file backup defaults VSS off", "linux", false, false},
-		{"linux system_image defaults VSS off", "linux", true, false},
-		{"darwin file backup defaults VSS off", "darwin", false, false},
-		{"darwin system_image defaults VSS off", "darwin", true, false},
+		{"windows file backup defaults VSS on", "windows", false, false, true},
+		{"windows system_image without paths defaults VSS off", "windows", true, false, false},
+		// #5493: a wholeMachine system_image run (systemImage=true, paths
+		// present) walks the OS root the same as a file-mode run, so it
+		// needs VSS on Windows the same as file mode — VSS must not stay
+		// off just because SystemImage is also true.
+		{"windows system_image WITH paths (wholeMachine) defaults VSS on", "windows", true, true, true},
+		{"linux file backup defaults VSS off", "linux", false, false, false},
+		{"linux system_image without paths defaults VSS off", "linux", true, false, false},
+		{"linux system_image with paths defaults VSS off (non-windows)", "linux", true, true, false},
+		{"darwin file backup defaults VSS off", "darwin", false, false, false},
+		{"darwin system_image defaults VSS off", "darwin", true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := defaultVSS(tt.goos, tt.systemImage); got != tt.want {
-				t.Fatalf("defaultVSS(%q, %v) = %v, want %v", tt.goos, tt.systemImage, got, tt.want)
+			if got := defaultVSS(tt.goos, tt.systemImage, tt.hasPaths); got != tt.want {
+				t.Fatalf("defaultVSS(%q, %v, %v) = %v, want %v", tt.goos, tt.systemImage, tt.hasPaths, got, tt.want)
 			}
 		})
 	}
@@ -293,6 +300,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantBucket      string   // for s3
 		wantBasePath    string   // for local
 		wantPaths       []string // expected manager paths
+		wantExcludes    []string // expected manager excludes (nil unless set)
 		wantSystemImage bool     // expected SystemStateEnabled
 		wantVSS         bool     // expected VSSEnabled
 
@@ -364,6 +372,31 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantBucket:      "my-bucket",
 			wantSystemImage: true,
 			wantVSS:         true,
+		},
+		{
+			// #5493: a wholeMachine profile fans out systemImage:true WITH
+			// paths + excludes (backupWorker.ts resolveBackupTargets), so ONE
+			// run must walk the OS root AND collect system state — instead
+			// of the pre-#5493 files-less system_image-only snapshot.
+			name:            "systemImage with paths (wholeMachine) sets Paths + Excludes and keeps SystemStateEnabled",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true,"wholeMachine":true,"paths":["/"],"excludes":["/proc/**","/sys/**"]}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantPaths:       []string{"/"},
+			wantExcludes:    []string{"/proc/**", "/sys/**"},
+			wantSystemImage: true,
+			wantVSS:         runtime.GOOS == "windows",
+		},
+		{
+			// Without paths, system_image stays exactly as before: Paths nil,
+			// VSS off (its own consistency mechanism is system state, not VSS).
+			name:            "systemImage without paths leaves Paths nil and VSS off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantPaths:       nil,
+			wantSystemImage: true,
+			wantVSS:         false,
 		},
 		{
 			name:    "unsupported provider errors",
@@ -458,6 +491,16 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			for i := range tt.wantPaths {
 				if gotPaths[i] != tt.wantPaths[i] {
 					t.Errorf("paths[%d] = %q, want %q", i, gotPaths[i], tt.wantPaths[i])
+				}
+			}
+
+			gotExcludes := mgr.GetExcludes()
+			if len(gotExcludes) != len(tt.wantExcludes) {
+				t.Fatalf("excludes = %v, want %v", gotExcludes, tt.wantExcludes)
+			}
+			for i := range tt.wantExcludes {
+				if gotExcludes[i] != tt.wantExcludes[i] {
+					t.Errorf("excludes[%d] = %q, want %q", i, gotExcludes[i], tt.wantExcludes[i])
 				}
 			}
 

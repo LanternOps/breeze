@@ -79,6 +79,7 @@ interface RawImpactCounterFields {
   fixWatchesHeld: number;
   fixWatchesRecurred: number;
   narrativesDelivered: number;
+  fleetDesignsDelivered: number;
   llmCents: number;
 }
 
@@ -142,6 +143,7 @@ const COUNTER_SUM_SELECT: Record<AiAgentImpactCounterKey, SQL<number>> = {
   fixWatchesHeld: sql<number>`COALESCE(SUM(${aiAgentImpactDaily.fixWatchesHeld}), 0)::int`,
   fixWatchesRecurred: sql<number>`COALESCE(SUM(${aiAgentImpactDaily.fixWatchesRecurred}), 0)::int`,
   narrativesDelivered: sql<number>`COALESCE(SUM(${aiAgentImpactDaily.narrativesDelivered}), 0)::int`,
+  fleetDesignsDelivered: sql<number>`COALESCE(SUM(${aiAgentImpactDaily.fleetDesignsDelivered}), 0)::int`,
 };
 const LLM_CENTS_SUM = sql<number>`COALESCE(SUM(${aiAgentImpactDaily.llmCents}), 0)::int`;
 

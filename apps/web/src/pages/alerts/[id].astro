@@ -5,6 +5,6 @@ import AlertDetailPage from '../../components/alerts/AlertDetailPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Alert Details">
+<DashboardLayout titleKey="titles.alertsDetail">
   <AlertDetailPage alertId={id!} client:load />
 </DashboardLayout>

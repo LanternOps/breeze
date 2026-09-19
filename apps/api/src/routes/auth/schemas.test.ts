@@ -149,4 +149,53 @@ describe('mfaStepUpSchema operation field', () => {
       })
     ).toThrow();
   });
+
+  // Device move-org step-up (spec 2026-09-18 D2): client-requestable, and its
+  // resource binding must be accepted by this schema. acceptCurrencyMismatch
+  // is optional here because the device route's body schema makes it optional
+  // — the digest normalises the omission to false.
+  it('accepts device_move_org with a move-org resource binding', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'device_move_org',
+      resource: {
+        deviceId: '00000000-0000-4000-8000-000000000010',
+        targetOrgId: '00000000-0000-4000-8000-000000000020',
+        targetSiteId: '00000000-0000-4000-8000-000000000030',
+      },
+    });
+    expect(parsed.operation).toBe('device_move_org');
+    expect(parsed.resource).toMatchObject({ targetOrgId: '00000000-0000-4000-8000-000000000020' });
+  });
+
+  it('accepts device_move_org with acceptCurrencyMismatch: true', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'passkey',
+      credential: { id: 'cred-1' },
+      operation: 'device_move_org',
+      resource: {
+        deviceId: '00000000-0000-4000-8000-000000000010',
+        targetOrgId: '00000000-0000-4000-8000-000000000020',
+        targetSiteId: '00000000-0000-4000-8000-000000000030',
+        acceptCurrencyMismatch: true,
+      },
+    });
+    expect(parsed.resource).toMatchObject({ acceptCurrencyMismatch: true });
+  });
+
+  it('rejects a move-org resource with a non-uuid target site', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({
+        method: 'totp',
+        code: '123456',
+        operation: 'device_move_org',
+        resource: {
+          deviceId: '00000000-0000-4000-8000-000000000010',
+          targetOrgId: '00000000-0000-4000-8000-000000000020',
+          targetSiteId: 'site-1',
+        },
+      })
+    ).toThrow();
+  });
 });

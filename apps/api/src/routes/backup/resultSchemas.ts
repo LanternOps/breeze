@@ -45,6 +45,11 @@ export const backupSnapshotResultSchema = z.object({
   timestamp: z.string().datetime({ offset: true }).optional(),
   size: z.number().int().nonnegative().optional(),
   files: z.array(backupSnapshotFileResultSchema).optional(),
+  // D18 (#5429/§3.1): server-chosen dedupe base, echoed back by the agent so
+  // lineage can be recorded. Absent = full run or a legacy agent.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().int().nonnegative().optional(),
+  backupIdentity: z.string().optional(),
 });
 
 // system_image (Windows/macOS/Linux system-state) backups return a manifest

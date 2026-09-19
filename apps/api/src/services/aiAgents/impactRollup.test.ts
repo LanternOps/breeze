@@ -131,6 +131,14 @@ describe('rebuildOrgImpactRange', () => {
     }
   });
 
+  it('counts completed design runs that produced a report as fleet_designs_delivered (W05, #5655)', async () => {
+    await rebuildOrgImpactRange(ORG_ID, '2026-08-25', '2026-08-31');
+    const { text } = compiled();
+    expect(text).toMatch(/designs AS \(/);
+    expect(text).toMatch(/r\.profile = 'design'\s+AND r\.status = 'completed'\s+AND r\.report_run_id IS NOT NULL/);
+    expect(text).toContain('COALESCE(fd.fleet_designs_delivered, 0)');
+  });
+
   it('upserts a zero-emitting generate_series day grid', async () => {
     await rebuildOrgImpactRange(ORG_ID, '2026-08-25', '2026-08-31');
     const { text } = compiled();
@@ -143,7 +151,7 @@ describe('rebuildOrgImpactRange', () => {
     for (const column of [
       'alerts_judged', 'noise_flagged', 'suppressions_applied', 'tickets_triaged', 'drafts_sent',
       'fixes_proposed', 'fixes_executed', 'fix_watches_held', 'fix_watches_recurred',
-      'narratives_delivered', 'llm_cents',
+      'narratives_delivered', 'fleet_designs_delivered', 'llm_cents',
     ]) {
       expect(text).toMatch(new RegExp(`${column}\\s+= EXCLUDED\\.${column}`));
     }

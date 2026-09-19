@@ -37,6 +37,16 @@ x-api-env: &api-env
   DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
   DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
+  # #6048 — RLS GUC prologue deadline + wedged-backend detector/reclaimer.
+  DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: ${DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
+  DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_DISABLED: ${DB_WEDGED_BACKEND_RECLAIM_DISABLED:-}
+  DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS: ${DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS: ${DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS:-}
+  DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS: ${DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_CONFIRM_DELAY_MS: ${DB_WEDGED_BACKEND_CONFIRM_DELAY_MS:-}
   # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
   # above: deploy/environment.mdx documents these as working knobs, and an
   # unmapped var set in .env is silently inert. The monitor runs on its
@@ -55,6 +65,7 @@ x-api-env: &api-env
   REMOTE_WS_REDIS_TOPOLOGY: ${REMOTE_WS_REDIS_TOPOLOGY:?Set REMOTE_WS_REDIS_TOPOLOGY to standalone-single-primary}
   REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT: ${REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT:-}
   REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT: ${REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT:-}
+  REMOTE_DESKTOP_FENCE_REQUIRED: ${REMOTE_DESKTOP_FENCE_REQUIRED:-false}
   JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
   PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
   AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
@@ -124,6 +135,22 @@ x-api-env: &api-env
   # SMTP 30s inactivity, Mailgun 120s whole-request).
   SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
   MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
+  # Custom sender addresses / partner sending domains. All optional; unset =
+  # feature off. Compose interpolation only happens for vars listed here, so a
+  # value in .env alone is inert.
+  EMAIL_DOMAINS_PROVIDER: ${EMAIL_DOMAINS_PROVIDER:-}
+  EMAIL_DOMAINS_STATIC_ALLOWED: ${EMAIL_DOMAINS_STATIC_ALLOWED:-}
+  EMAIL_DOMAINS_RESEND_API_KEY: ${EMAIL_DOMAINS_RESEND_API_KEY:-}
+  EMAIL_DOMAINS_RESEND_SENDING_KEY: ${EMAIL_DOMAINS_RESEND_SENDING_KEY:-}
+  EMAIL_DOMAINS_REGION: ${EMAIL_DOMAINS_REGION:-}
+  EMAIL_DOMAINS_MAX_PER_PARTNER: ${EMAIL_DOMAINS_MAX_PER_PARTNER:-}
+  EMAIL_DOMAINS_DAILY_SEND_CAP: ${EMAIL_DOMAINS_DAILY_SEND_CAP:-}
+  EMAIL_DOMAINS_PARTNER_ALLOWLIST: ${EMAIL_DOMAINS_PARTNER_ALLOWLIST:-}
+  EMAIL_DOMAINS_DENYLIST: ${EMAIL_DOMAINS_DENYLIST:-}
+  EMAIL_DOMAINS_WEBHOOK_SECRET: ${EMAIL_DOMAINS_WEBHOOK_SECRET:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: ${EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES: ${EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: ${EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # Hardware warranty lookups (all optional, OFF unless set). See
   # https://docs.breezermm.com/deploy/environment/#warranty-lookups
@@ -131,6 +158,7 @@ x-api-env: &api-env
   DELL_CLIENT_SECRET: ${DELL_CLIENT_SECRET:-}
   LENOVO_API_KEY: ${LENOVO_API_KEY:-}
   LENOVO_WARRANTY_ENABLED: ${LENOVO_WARRANTY_ENABLED:-}
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: ${BREEZE_AI_SCRIPT_AUTHORING_ENABLED:-true}
   # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
   # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature
@@ -267,6 +295,37 @@ x-api-env: &api-env
   # Wave 5 Part B (#3827) sub-flag of BREEZE_AI_AGENTS_ENABLED — gates
   # attemptPolicyDecision; default off (dark-ship). See .env.example.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED: ${BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED:-false}
+
+  # BYO-MCP tool catalog (#5216 W01) — dark-shipped, default OFF. Mapped here
+  # because Compose interpolates only what this block names; without it the
+  # Tool Sources page and every /tool-sources route stay invisible in every
+  # deployment (same trap as AI_OPERATOR_* above).
+  TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
+  # Self-hosted only: let a tool source point at a private/loopback address.
+  TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
+  # AI execution plane (W01). Hosted-only; all optional. Empty strings are
+  # treated as unset by the readers (config/env.ts, services/artifacts/blobStorage.ts).
+  BREEZE_AI_WORKSPACE_ENABLED: ${BREEZE_AI_WORKSPACE_ENABLED:-false}
+  AI_WORKSPACE_BACKEND: ${AI_WORKSPACE_BACKEND:-}
+  VERCEL_SANDBOX_TOKEN: ${VERCEL_SANDBOX_TOKEN:-}
+  VERCEL_TEAM_ID: ${VERCEL_TEAM_ID:-}
+  VERCEL_PROJECT_ID: ${VERCEL_PROJECT_ID:-}
+  VERCEL_SANDBOX_IMAGE: ${VERCEL_SANDBOX_IMAGE:-}
+  VERCEL_SANDBOX_REGION_EU: ${VERCEL_SANDBOX_REGION_EU:-}
+  VERCEL_SANDBOX_REGION_US: ${VERCEL_SANDBOX_REGION_US:-}
+  AI_COMPUTE_PRICE_MULTIPLIER: ${AI_COMPUTE_PRICE_MULTIPLIER:-1.0}
+  BREEZE_REGION: ${BREEZE_REGION:-}
+  ARTIFACT_BLOB_BACKEND: ${ARTIFACT_BLOB_BACKEND:-}
+  ARTIFACT_S3_ENDPOINT_EU: ${ARTIFACT_S3_ENDPOINT_EU:-}
+  ARTIFACT_S3_ENDPOINT_US: ${ARTIFACT_S3_ENDPOINT_US:-}
+  ARTIFACT_S3_BUCKET_EU: ${ARTIFACT_S3_BUCKET_EU:-}
+  ARTIFACT_S3_BUCKET_US: ${ARTIFACT_S3_BUCKET_US:-}
+  ARTIFACT_S3_REGION_EU: ${ARTIFACT_S3_REGION_EU:-}
+  ARTIFACT_S3_REGION_US: ${ARTIFACT_S3_REGION_US:-}
+  ARTIFACT_S3_ACCESS_KEY: ${ARTIFACT_S3_ACCESS_KEY:-}
+  ARTIFACT_S3_SECRET_KEY: ${ARTIFACT_S3_SECRET_KEY:-}
+  ARTIFACT_S3_SSE: ${ARTIFACT_S3_SSE:-}
   # Per-partner BYO-LLM provider catalog (#3922 W01-W04) — off by default.
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # Native APNs push for the iOS app (all optional; unset = push disabled).
@@ -287,6 +346,10 @@ x-api-env: &api-env
   IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}
   M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
   M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
+  M365_TENANT_SYNC_ENABLED: ${M365_TENANT_SYNC_ENABLED:-false}
+  M365_SYNC_CONCURRENCY: ${M365_SYNC_CONCURRENCY:-4}
+  M365_SYNC_MAX_BACKLOG: ${M365_SYNC_MAX_BACKLOG:-500}
+  M365_SYNC_TICK_BATCH: ${M365_SYNC_TICK_BATCH:-200}
   # Synthetic sign-up monitor endpoints (deploy/.env.example calls out that
   # these MUST be mapped here for compose interpolation to reach the API).
   SYNTHETIC_TEST_TOKEN: ${SYNTHETIC_TEST_TOKEN:-}
@@ -296,6 +359,14 @@ x-api-env: &api-env
   # until #3239, so this whole class was exempt from it and never reached
   # the container. Same `${VAR:-}` reasoning as the block above.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+  # WebAuthn / passkeys (services/passkeys.ts). All optional: RP ID and origin
+  # default to PUBLIC_APP_URL's hostname/origin. Mapped so a deployment that
+  # serves the web app on a different host than PUBLIC_APP_URL (local stacks,
+  # reverse-proxied installs) can pin them — a value in .env alone never
+  # reaches the container.
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-}
+  WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-}
   LOGIN_ACCOUNT_LOCKOUT_MAX: ${LOGIN_ACCOUNT_LOCKOUT_MAX:-}
   LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: ${LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS:-}
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}

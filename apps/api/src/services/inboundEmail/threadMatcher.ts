@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import addressparser from 'nodemailer/lib/addressparser/index.js';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { tickets } from '../../db/schema';
+import { ticketEmailInbound, tickets, users } from '../../db/schema';
 import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
 
 // Per-partner ticket display number, e.g. T-2026-0001.
@@ -25,7 +26,9 @@ export interface MatchedTicket {
   emailThreadKey: string | null;
   internalNumber: string | null;
   submittedBy: string | null;
+  requesterContactId: string | null;
   submitterEmail: string | null;
+  assignedTo?: string | null;
 }
 
 const MATCH_COLS = {
@@ -36,6 +39,8 @@ const MATCH_COLS = {
   emailThreadKey: tickets.emailThreadKey,
   internalNumber: tickets.internalNumber,
   submittedBy: tickets.submittedBy,
+  requesterContactId: tickets.requesterContactId,
+  assignedTo: tickets.assignedTo,
   submitterEmail: tickets.submitterEmail
 };
 
@@ -53,26 +58,79 @@ export interface SenderResolver {
 }
 
 /**
- * Bind a subject-token (ticket-number) match to the sender (#3643). Ticket numbers
- * are sequential and enumerable and the token path carries no org predicate, so
- * without this ANY authenticated-domain sender could append a public comment to
- * another customer org's ticket (and reopen it). The thread-key path is
- * unguessable and needs no binding.
+ * Bind enumerable subject-token matches to the current requester. Header matches
+ * additionally admit existing thread participants (see senderIsThreadParticipant).
+ * Partner/org scoping and possession of a thread identifier are insufficient:
+ * portal ticket reads are requester-scoped, so another sender in the same
+ * organization must not append a public comment or reopen the requester's ticket.
+ * Authenticated technician callers omit the resolver and retain partner matching.
  */
 export async function senderIsBoundToTicket(
   from: string,
   ticket: MatchedTicket,
   sender: SenderResolver
 ): Promise<boolean> {
-  if (ticket.submitterEmail && ticket.submitterEmail.trim().toLowerCase() === from.trim().toLowerCase()) {
-    return true;
+  const normalizedFrom = from.trim().toLowerCase();
+  const matchesSnapshot = !!ticket.submitterEmail
+    && ticket.submitterEmail.trim().toLowerCase() === normalizedFrom;
+  const pu = await sender.portalUser();
+  if (pu?.orgId === ticket.orgId) {
+    // The immutable email snapshot is authority only while the same address is
+    // still an identity in the ticket's CURRENT organization. This matters
+    // after a privileged cross-org move: submittedBy/submitterEmail preserve
+    // historical attribution, but must not preserve mutation authority.
+    if (matchesSnapshot) return true;
+
+    // A login identifies the requester only when it is the exact submitting
+    // login or it is linked to the exact contact named on the ticket. Mere
+    // membership in the same customer organization is not authority: ticket
+    // numbers are sequential, and portal reads are requester/contact scoped.
+    return pu.id === ticket.submittedBy
+      || (pu.contactId !== null && pu.contactId === ticket.requesterContactId);
   }
 
-  const pu = await sender.portalUser();
-  if (pu && (pu.orgId === ticket.orgId || pu.id === ticket.submittedBy)) return true;
+  // Email-only tickets have no portal login. Their snapshot remains usable
+  // only while the sender's currently active domain association still names
+  // this organization. A legacy contact-only row with neither a matching
+  // login nor an exact email snapshot therefore fails closed.
+  if (!matchesSnapshot) return false;
+  const domain = await sender.domainOrg();
+  return domain?.orgId === ticket.orgId;
+}
 
-  const dom = await sender.domainOrg();
-  return !!dom && dom.orgId === ticket.orgId;
+// Header identifiers also reach CC'd colleagues, forwarded participants, and
+// technicians using mail clients. Only previously accepted mail on THIS ticket
+// establishes participation; quarantined/failed mail cannot authorize its sender.
+async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): Promise<boolean> {
+  const normalizedFrom = from.trim().toLowerCase();
+  if (!normalizedFrom || !ticket.partnerId) return false;
+  const priorMessages = await db.select({
+    fromAddress: ticketEmailInbound.fromAddress,
+    raw: ticketEmailInbound.raw
+  }).from(ticketEmailInbound).where(and(
+    eq(ticketEmailInbound.ticketId, ticket.id),
+    eq(ticketEmailInbound.partnerId, ticket.partnerId),
+    inArray(ticketEmailInbound.parseStatus, ['matched', 'created'])
+  ));
+  for (const message of priorMessages) {
+    if (message.fromAddress?.trim().toLowerCase() === normalizedFrom) return true;
+    const raw = message.raw as Record<string, unknown> | null;
+    // Mailgun retains the original form fields; Graph retains structured CCs.
+    for (const cc of [raw?.Cc, raw?.cc]) {
+      if (typeof cc === 'string' && addressparser(cc, { flatten: true })
+        .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom)) return true;
+    }
+    if (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
+      const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
+      return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
+    })) return true;
+  }
+  if (!ticket.assignedTo) return false;
+  const [tech] = await db.select({ id: users.id }).from(users).where(and(
+    eq(users.id, ticket.assignedTo),
+    sql`lower(trim(${users.email})) = ${normalizedFrom}`
+  )).limit(1);
+  return !!tech;
 }
 
 // Candidate threading keys: In-Reply-To + every References entry (a reply's parent
@@ -111,7 +169,7 @@ export async function findTicketInPartner(
     // replacement for the status/deleted_at guards below, so a link row can never
     // re-enable appending to a closed or soft-deleted ticket.
     const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -123,15 +181,23 @@ export async function findTicketInPartner(
           inArray(tickets.emailMessageId, candidateKeys),
           ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
         )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+      ));
+    // Hold the same requester-reassignment lock as the subject-token path.
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+      return row;
+    }
   }
 
   // 2) subject token [T-YYYY-NNNN] (scoped to partner, live tickets only)
   const m = (input.subject ?? '').match(TICKET_TOKEN_RE);
   if (m) {
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -139,8 +205,14 @@ export async function findTicketInPartner(
         ne(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
         eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
+      ));
+    // Inbound sender authorization and the eventual append/reopen must
+    // linearize with requester reassignment. The worker holds this transaction
+    // through those writes. Authenticated technician callers omit `sender` and
+    // retain the historical read-only query behavior.
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
       // The token is enumerable, so when the caller is unauthenticated (a sender
@@ -169,7 +241,7 @@ export async function findClosedTicketInPartner(
     // gated on status = 'closed' here — a link row only ever surfaces a ticket
     // that is ALREADY closed via this path, never re-opens/re-matches a live one.
     const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -187,14 +259,22 @@ export async function findClosedTicketInPartner(
           inArray(tickets.emailThreadKey, candidateKeys),
           ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
         )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+      ));
+    // Hold the same requester-reassignment lock as the subject-token path.
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+      return row;
+    }
   }
 
   const m = (input.subject ?? '').match(TICKET_TOKEN_RE);
   if (m) {
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -202,8 +282,10 @@ export async function findClosedTicketInPartner(
         eq(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
         eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
+      ));
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
       // The token is enumerable, so when the caller is unauthenticated (a sender

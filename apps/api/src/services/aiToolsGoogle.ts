@@ -37,6 +37,7 @@ import {
 } from './googleClient';
 import type { GoogleWorkspaceConnectionRow } from '../db/schema/google';
 import { getEmailService } from './email';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 
 export const googleToolTiers: Record<string, 1 | 3> = {
   google_lookup_user: 1,
@@ -235,6 +236,26 @@ function generateTempPassword(): string {
   return `Bz9!${raw.slice(0, 16)}`;
 }
 
+/**
+ * Site/exact-device ceiling for the MUTATING Google Workspace tools.
+ *
+ * Every google_* write is gated on `organizations:write` (aiGuardrails.ts),
+ * which a site-restricted technician can legitimately hold — so after the
+ * permission remap they could suspend an account, reset a password, rewrite
+ * licences, change group membership or add a mail delegate through chat. These
+ * Directory/Gmail operations act on the WHOLE Workspace tenant: a directory
+ * account has no per-site slice to narrow to, so they fail closed exactly as
+ * every other org-wide governance object does (`canMutateOrgWideGovernance`).
+ * Reads are unaffected.
+ *
+ * Returns the denial string to hand straight back, or `null` to proceed.
+ */
+function siteCeilingDenied(auth: AuthContext): string | null {
+  return canMutateOrgWideGovernance(auth)
+    ? null
+    : errorString('site_scope_denied', SITE_CEILING_WRITE_DENIED_MESSAGE);
+}
+
 // ── Tier 1: read ──────────────────────────────────────────────────────────────
 
 export async function googleLookupUserHandler(
@@ -306,6 +327,8 @@ export async function googleResetPasswordHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<SecretToolResult> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return { kind: 'error', llmText: ceiling };
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return { kind: 'error', llmText: ctx.error };
   return googleResetPasswordAction(ctx, input);
@@ -334,6 +357,8 @@ export async function googleSuspendUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleSuspendUserAction(ctx, input);
@@ -362,6 +387,8 @@ export async function googleRestoreUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleRestoreUserAction(ctx, input);
@@ -419,6 +446,8 @@ export async function googleAddToGroupHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleAddToGroupAction(ctx, input);
@@ -449,6 +478,8 @@ export async function googleRemoveFromGroupHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleRemoveFromGroupAction(ctx, input);
@@ -479,6 +510,8 @@ export async function googleMoveOuHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleMoveOuAction(ctx, input);
@@ -509,6 +542,8 @@ export async function googleRenameUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleRenameUserAction(ctx, input);
@@ -566,6 +601,8 @@ export async function googleAssignLicenseHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleAssignLicenseAction(ctx, input);
@@ -597,6 +634,8 @@ export async function googleRemoveLicenseHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleRemoveLicenseAction(ctx, input);
@@ -625,6 +664,8 @@ export async function googleResetTwoSvHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleResetTwoSvAction(ctx, input);
@@ -655,6 +696,8 @@ export async function googleAddMailDelegateHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleAddMailDelegateAction(ctx, input);
@@ -685,6 +728,8 @@ export async function googleRemoveMailDelegateHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleRemoveMailDelegateAction(ctx, input);
@@ -713,6 +758,8 @@ export async function googleSignOutHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleSignOutAction(ctx, input);
@@ -808,6 +855,8 @@ export async function googleSetForwardingHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleSetForwardingAction(ctx, input);
@@ -861,6 +910,8 @@ export async function googleDisableForwardingHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleDisableForwardingAction(ctx, input);
@@ -902,6 +953,8 @@ export async function googleSetVacationHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleSetVacationAction(ctx, input);
@@ -962,6 +1015,8 @@ export async function googleUpdateUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleUpdateUserAction(ctx, input);
@@ -1004,6 +1059,8 @@ export async function googleShareCalendarHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleShareCalendarAction(ctx, input);
@@ -1134,6 +1191,8 @@ export async function googleOffboardUserHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleOffboardUserAction(ctx, input);
@@ -1173,6 +1232,8 @@ export async function googleWipeMobileDeviceHandler(
   auth: AuthContext,
   sessionId: string,
 ): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleWipeMobileDeviceAction(ctx, input);
@@ -1317,6 +1378,7 @@ export async function googleEmailReportHandler(
       to,
       subject: `Google Workspace security drift — ${ctx.conn.customerDomain}`,
       html: renderDriftHtml(ctx.conn.customerDomain, drift),
+      purpose: 'staff.workspace_drift_report',
     });
     return `Emailed the Google Workspace security-drift report for ${ctx.conn.customerDomain} to ${to} (${users.length} users scanned, stale threshold ${staleDays}d).`;
   } catch (err) {

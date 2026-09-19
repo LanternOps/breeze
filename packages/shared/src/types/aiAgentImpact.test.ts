@@ -41,14 +41,14 @@ describe('normalizeImpactWeightOverrides', () => {
 });
 
 describe('estimateSecondsSaved', () => {
-  it('prices exactly the six priced counters and ignores the other four', () => {
+  it('prices exactly the six priced counters and ignores the other five', () => {
     // Non-uniform on purpose: a wrong-counter bug must change the total.
     const counters: AiAgentImpactCounters = {
       ...zeroCounters(),
       alertsJudged: 2, noiseFlagged: 3, ticketsTriaged: 5, draftsSent: 7,
       fixesExecuted: 11, narrativesDelivered: 13,
       suppressionsApplied: 1000, fixesProposed: 1000,
-      fixWatchesHeld: 1000, fixWatchesRecurred: 1000,
+      fixWatchesHeld: 1000, fixWatchesRecurred: 1000, fleetDesignsDelivered: 1000,
     };
     expect(estimateSecondsSaved(counters, DEFAULT_IMPACT_WEIGHTS)).toBe(
       2 * 90 + 3 * 240 + 5 * 360 + 7 * 300 + 11 * 900 + 13 * 1800,

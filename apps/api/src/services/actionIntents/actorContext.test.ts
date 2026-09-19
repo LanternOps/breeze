@@ -155,7 +155,7 @@ vi.mock('drizzle-orm', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildAuthContextForIntent, originPrincipalFor } from './actorContext';
+import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor } from './actorContext';
 import { IntentScopeLostError } from './intentTargetScope';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
@@ -753,6 +753,44 @@ describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
 
     expect(result).not.toBeNull();
   });
+
+  // ---------------------------------------------------------------------
+  // #5789 — agent-owned aiOrigin: persisted vs. freshly-minted
+  // ---------------------------------------------------------------------
+
+  it('prefers the PERSISTED aiOrigin (from a chat session) over the freshly-minted one', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(agentIntent({
+      aiOriginKind: 'ai_assistant',
+      aiOriginSessionId: 'sess-1',
+      aiOriginAgentRunId: null,
+    } as Partial<ActionIntent>));
+
+    expect(result).not.toBeNull();
+    // The persisted origin, NOT the freshly-minted { kind: 'ai_agent',
+    // agentRunId: 'run-1' } buildAgentAuthContext would otherwise mint.
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'sess-1' });
+  });
+
+  it('falls back to the freshly-minted { kind: ai_agent, agentRunId } origin when the intent has no persisted one', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(agentIntent({
+      aiOriginKind: null,
+      aiOriginSessionId: null,
+      aiOriginAgentRunId: null,
+    } as Partial<ActionIntent>));
+
+    expect(result).not.toBeNull();
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_agent', agentRunId: 'run-1' });
+  });
 });
 
 describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widening (agent-owned)', () => {
@@ -795,6 +833,10 @@ describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widenin
     expect(result!.canAccessOrg('org-1')).toBe(true);
     expect(result!.canAccessOrg('org-2')).toBe(true);
     expect(result!.canAccessOrg('org-3')).toBe(false);
+    // #5789: the widened-accessibleOrgIds branch rebuilds the returned object
+    // as `{ ...withOrigin, accessibleOrgIds, orgCondition, canAccessOrg }` —
+    // aiOrigin must still survive that spread.
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_agent', agentRunId: 'run-1' });
   });
 
   it('does NOT widen for a partner-scoped agent when the recorded target org belongs to ANOTHER partner', async () => {
@@ -869,5 +911,162 @@ describe('originPrincipalFor — ai_agent', () => {
       originPrincipalId: null,
       requestingAgentRunId: 'run-1',
     } as Partial<ActionIntent>))).toEqual({ kind: 'unknown' });
+  });
+});
+
+// ============================================================================
+// #5022 W01 Task 12 — the AI origin survives the approval boundary.
+//
+// `intentReleaseWorker` executes under an AuthContext rebuilt FROM SCRATCH by
+// `revalidateApprovedIntentForRelease`. For a human-owned intent that is
+// `buildUserOwnedAuthContext`, which synthesises the context from the `users`
+// row — so a chat-minted origin would be gone by the time the approved action
+// dispatches. It is read back off the persisted columns instead.
+// ============================================================================
+describe('buildAuthContextForIntent — AI origin reconstruction (#5022 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+    dbState.selectApiKeysResults.length = 0;
+    dbState.selectAgentRunsResults.length = 0;
+    dbState.selectAgentsResults.length = 0;
+    dbState.selectOrgsResults.length = 0;
+    dbState.selectDevicesResults.length = 0;
+  });
+
+  it('reconstructs the AI origin for a human-owned intent created from a chat session', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: 'ai_assistant',
+        aiOriginSessionId: 'sess-1',
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'sess-1' });
+  });
+
+  it('leaves aiOrigin undefined for an intent that had no AI origin', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: null,
+        aiOriginSessionId: null,
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toBeUndefined();
+  });
+
+  it('does not fabricate an origin from ids alone when the persisted kind is missing', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: null,
+        aiOriginSessionId: 'sess-1',
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #4177 (W04): the APPROVER's context for a user-owned release
+// (manage_tickets:log_time_entry). Partner-scoped, user_session principal,
+// and fail-closed unless the approver resolves on the partner axis of the
+// intent's own partner — time_entries is a partner-axis table.
+// -----------------------------------------------------------------------------
+describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+    dbState.selectApiKeysResults.length = 0;
+  });
+
+  const approver = { ...activeUser, id: 'approver-1', email: 'tech@example.com', name: 'Tess Tech' };
+  const agentIntent = () => baseIntent({
+    partnerId: 'partner-1',
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    actionName: 'manage_tickets',
+    arguments: { action: 'log_time_entry' },
+    decidedByUserId: 'approver-1',
+  } as Partial<ActionIntent>);
+
+  it('builds a PARTNER-scoped user_session context for a partner-axis approver', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+
+    const result = await buildApproverAuthContextForIntent(agentIntent(), 'approver-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.principal).toEqual({ kind: 'user_session' });
+    expect(result!.user.id).toBe('approver-1');
+    expect(result!.scope).toBe('partner');
+    expect(result!.partnerId).toBe('partner-1');
+    expect(result!.orgId).toBe('org-1');
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.token).toMatchObject({ sub: 'approver-1', scope: 'partner', partnerId: 'partner-1', roleId: 'role-1' });
+    expect(permState.getUserPermissions).toHaveBeenCalledWith('approver-1', { partnerId: 'partner-1', orgId: 'org-1' });
+  });
+
+  it('returns null for an org-axis approver — never widens an org member to partner scope', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: null, orgId: 'org-1', roleId: 'role-1', scope: 'organization',
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('returns null when the approver resolves on a DIFFERENT partner than the intent', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-other', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('returns null when the approver is no longer active', async () => {
+    dbState.selectUsersResults.push([{ ...approver, status: 'disabled' }]);
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('returns null when a selected-org partner approver no longer covers intent.orgId', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'selected', allowedOrgIds: ['org-99'],
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('the ordinary user-owned builder is unchanged: still org-scoped, still the recorded origin principal', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: 'org-1', roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
+    expect(result!.scope).toBe('organization');
+    expect(result!.principal).toEqual({ kind: 'user_session' });
   });
 });

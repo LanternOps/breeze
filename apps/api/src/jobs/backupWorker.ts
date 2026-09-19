@@ -13,6 +13,7 @@ import {
   backupJobs,
   backupSnapshotFiles,
   backupSnapshots,
+  backupSnapshotRetirements,
   backupConfigs,
   devices,
   configurationPolicies,
@@ -23,11 +24,13 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, ne, and, sql, isNull, lt, inArray } from 'drizzle-orm';
+import { eq, ne, and, or, desc, gt, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
+import { resolveBackupBaseLeaseMs } from '../services/backupGcKnobs';
+import { normalizeStorageIdentity } from './backupRetention';
 import {
   cleanupExpiredSnapshots,
   sweepUnreferencedBackupObjects,
@@ -43,6 +46,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
+import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   backupQueueJobDataSchema,
@@ -98,6 +102,20 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
         // deliberate operator retry is NOT suppressed by this.)
         return await processDispatchBackup(data, { redelivered: job.attemptsStarted > 1 });
       }
+      // cleanup-expired-snapshots is ALSO handled outside the blanket
+      // context (D18 §3.7): its own retention pass must open one real
+      // system-DB transaction PER CANDIDATE ROW so a retirement commits
+      // durably before the next row is even considered, and the GC sweep
+      // that follows must run in its own separate context so a sweep
+      // failure can never roll back a retirement already committed.
+      // processCleanupExpiredSnapshots (below) manages both of those
+      // contexts itself — nesting it inside runWithSystemDbAccess here would
+      // silently collapse every one of those into the single ambient
+      // transaction this task exists to eliminate.
+      if (data.type === 'cleanup-expired-snapshots') {
+        assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
+        return await processCleanupExpiredSnapshots();
+      }
       return runWithSystemDbAccess(async () => {
         switch (data.type) {
           case 'check-schedules':
@@ -106,9 +124,6 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
           case 'expire-recovery-tokens':
             assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
             return await processExpireRecoveryTokens();
-          case 'cleanup-expired-snapshots':
-            assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
-            return await processCleanupExpiredSnapshots();
           case 'process-results':
             assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
             return await processResults(data);
@@ -335,13 +350,29 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // GC's unit of work is a storage identity (possibly several backupConfigs
   // rows sharing one bucket), not a single "destination" row.
   gcSkippedIdentities: number;
-  // Subset of gcSkippedIdentities that fail-closed on an unfetchable FILE-type
+  // Subset of gcSkippedIdentities that fail-closed on an unfetchable
   // manifest — the distinct signal of a possible non-self-healing storage leak.
   gcBlockedIdentities: number;
+  // D18 W02: retirement rows CONFIRMED fully swept from storage this run
+  // (durable, via swept_at).
+  gcRetiredSwept: number;
+  // D18 W02: abandoned orphan-manifest prefixes reclaimed this run
+  // (best-effort observability metric, no DB row to confirm against).
+  gcOrphansSwept: number;
+  // D18 W02: identities that ran today's (pre-D18) algorithm only this run
+  // (legacy helper and/or unresolved NULL-storage_identity rows).
+  gcDeferredIdentities: number;
+  // D18 W02: storage_identity values with rows but no current config
+  // producing them (visibility only).
+  gcUnreachableIdentities: number;
 }> {
-  const orgRows = await db
-    .selectDistinct({ orgId: backupSnapshots.orgId })
-    .from(backupSnapshots);
+  // D18 §3.7: this whole function now runs with NO ambient DB context (it is
+  // called directly from the worker, no longer inside the blanket wrap) — the
+  // read below and cleanupExpiredSnapshots's own per-row work each open their
+  // OWN context explicitly.
+  const orgRows = await runWithSystemDbAccess(() =>
+    db.selectDistinct({ orgId: backupSnapshots.orgId }).from(backupSnapshots)
+  );
 
   let deleted = 0;
   let skipped = 0;
@@ -349,6 +380,10 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   let failed = 0;
 
   for (const { orgId } of orgRows) {
+    // cleanupExpiredSnapshots (backupRetention.ts) opens its OWN per-
+    // candidate-row system context internally — deliberately NOT wrapped
+    // here, so each row's retirement-insert + delete commits independently
+    // of every other row and of the sweep below.
     const result = await cleanupExpiredSnapshots(orgId);
     deleted += result.deleted;
     skipped += result.skippedLegalHold + result.skippedImmutable;
@@ -364,14 +399,31 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // all; GC is the only thing that does). A GC failure must never fail this
   // job: row-level retention already succeeded, and BullMQ would otherwise
   // retry/re-log the whole run over an unrelated object-storage problem.
+  //
+  // D18 §3.7 (W02): the call is BARE, at depth 0 — no ambient DB context.
+  // sweepUnreferencedBackupObjects (backupRetention.ts) now opens its own
+  // short per-identity withSystemDbAccessContext calls internally and makes
+  // every storage (list/fetch/delete) call outside any held context; wrapping
+  // the whole call in one context here (the pre-W02 shape) would defeat that
+  // split and pin a pooled connection across every identity's storage I/O.
+  // assertOutsideHeldDbContext inside sweepStorageIdentity is the runtime
+  // tripwire for this invariant.
   let gcDeleted = 0;
   let gcSkippedIdentities = 0;
   let gcBlockedIdentities = 0;
+  let gcRetiredSwept = 0;
+  let gcOrphansSwept = 0;
+  let gcDeferredIdentities = 0;
+  let gcUnreachableIdentities = 0;
   try {
     const gcResult = await sweepUnreferencedBackupObjects();
     gcDeleted = gcResult.deleted;
     gcSkippedIdentities = gcResult.skippedIdentities;
     gcBlockedIdentities = gcResult.blockedIdentities;
+    gcRetiredSwept = gcResult.retiredSwept;
+    gcOrphansSwept = gcResult.orphansSwept;
+    gcDeferredIdentities = gcResult.deferredIdentities;
+    gcUnreachableIdentities = gcResult.unreachableIdentities;
   } catch (err) {
     console.error('[BackupWorker] Backup object GC sweep failed — retention run still succeeded:', err);
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -391,7 +443,11 @@ export async function processCleanupExpiredSnapshots(): Promise<{
     );
   }
 
-  return { deleted, skipped, prunedByMaxVersions, failed, gcDeleted, gcSkippedIdentities, gcBlockedIdentities };
+  return {
+    deleted, skipped, prunedByMaxVersions, failed,
+    gcDeleted, gcSkippedIdentities, gcBlockedIdentities,
+    gcRetiredSwept, gcOrphansSwept, gcDeferredIdentities, gcUnreachableIdentities,
+  };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────
@@ -399,6 +455,40 @@ export async function processCleanupExpiredSnapshots(): Promise<{
 export interface BackupTarget {
   commandType: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * A file-mode backup resolved to zero usable paths (#6001).
+ *
+ * Typed rather than a bare Error so the dispatch catch — and any future caller
+ * — can tell "this configuration can never back anything up" apart from a
+ * transient resolution failure. The message is what a tech reads in the job's
+ * error log, so it names the remedy, not the internal invariant.
+ */
+export class EmptyBackupPathsError extends Error {
+  readonly code = 'BACKUP_NO_PATHS' as const;
+  constructor() {
+    super(
+      'File backup selected but no paths are configured for this device — ' +
+      'add at least one folder to the Backup tab of the configuration policy that governs it, ' +
+      'or attach a backup profile.'
+    );
+    this.name = 'EmptyBackupPathsError';
+  }
+}
+
+/**
+ * Whitespace-only and empty strings are not paths. Trimming here (rather than
+ * at the dozen call sites that can write them) keeps the emptiness test and the
+ * dispatched payload in agreement: a run must never be admitted on the strength
+ * of a path the agent would then discard.
+ */
+function normalizeBackupPaths(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return [];
+  return paths
+    .filter((p): p is string => typeof p === 'string')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
 }
 
 /**
@@ -416,18 +506,92 @@ export async function resolveBackupTargets(
   switch (backupMode) {
     case 'file': {
       const t = targets as { paths?: string[]; excludes?: string[] };
+      // #6001: REFUSE rather than emit `{ paths: [] }`. The only thing an empty
+      // list can ever produce is a command the agent bounces at 0s with
+      // "backup_run payload has no paths"; failing here turns that late, opaque
+      // agent error into a server-side job failure naming the remedy, for all
+      // three entry points (manual, run-all, scheduled sweep) at once.
+      //
+      // This guard is LOAD-BEARING, not a redundant belt: `min(1)` on
+      // `fileTargetsSchema` (packages/shared/src/validators/backupTargets.ts)
+      // is not imported by the API's write path, which persists
+      // `paths: Array.isArray(s.paths) ? s.paths : []` unchecked
+      // (services/configurationPolicy.ts). So an empty selection IS reachable
+      // in the settings row, and only the PROFILE resolver
+      // (`backupSelectionSpecs`) drops an empty-path selection before job
+      // creation. Legacy custom links have had no such check until now.
+      const paths = normalizeBackupPaths(t.paths);
+      if (paths.length === 0) {
+        throw new EmptyBackupPathsError();
+      }
+      // A path list that lost entries to normalization is not the selection the
+      // tech configured. Never silent: it is the only trail a support engineer
+      // has when asked why one folder in a policy stopped being backed up
+      // while the job still reports success.
+      const droppedPaths = (Array.isArray(t.paths) ? t.paths.length : 0) - paths.length;
+      if (droppedPaths > 0) {
+        console.warn(
+          `[BackupWorker] Dropped ${droppedPaths} unusable path entr${droppedPaths === 1 ? 'y' : 'ies'} ` +
+          `(non-string or blank) from the file selection for device ${deviceId} — ` +
+          'backing up the remaining ' + `${paths.length}`
+        );
+      }
       // Preserve the omitted-vs-empty distinction the agent relies on: a
       // missing excludes field means "fall back to locally-configured
       // excludes", an explicit [] means "no exclusions for this run".
-      const payload: Record<string, unknown> = { paths: t.paths ?? [] };
+      const payload: Record<string, unknown> = { paths };
       if (t.excludes !== undefined) {
         payload.excludes = t.excludes;
       }
       return [{ commandType: 'backup_run', payload }];
     }
 
-    case 'system_image':
-      return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+    case 'system_image': {
+      const t = targets as { wholeMachine?: boolean; excludes?: string[] };
+      if (t.wholeMachine !== true) {
+        // Byte-identical to the pre-#5493 payload: no paths, so the helper
+        // builds a files-less system_image-only snapshot (layout + state).
+        return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+      }
+      // #5493: whole-machine profile — walk the device's OS root alongside
+      // layout.json + system state so ONE snapshot carries everything the
+      // rebuild engine needs. Root is chosen server-side from the device's
+      // discovered osType, never trusted from the caller.
+      const [device] = await db
+        .select({ osType: devices.osType })
+        .from(devices)
+        .where(eq(devices.id, deviceId));
+      let root: string;
+      switch (device?.osType) {
+        case 'windows':
+          root = 'C:\\';
+          break;
+        case 'linux':
+          root = '/';
+          break;
+        default:
+          // osType is windows|macos|linux. macOS bare-metal recovery is out
+          // of scope (spec §12), and a missing device row means osType
+          // can't be resolved at all. Refuse loudly instead of defaulting
+          // to '/' — that would silently walk a macOS filesystem with the
+          // Linux exclude list, or dispatch a whole-machine job for a
+          // device we couldn't even identify.
+          throw new Error(
+            `whole-machine backup is not supported on ${device?.osType ?? 'unknown'}`
+          );
+      }
+      return [
+        {
+          commandType: 'backup_run',
+          payload: {
+            systemImage: true,
+            wholeMachine: true,
+            paths: [root],
+            excludes: Array.isArray(t.excludes) ? t.excludes : [],
+          },
+        },
+      ];
+    }
 
     case 'hyperv': {
       const t = targets as {
@@ -612,6 +776,144 @@ type BackupDispatchPrepare =
     };
 
 /**
+ * D18 §3.1/§3.6: stamps this job's storage_identity (from the providerConfig
+ * actually placed in the dispatch payload) on EVERY dispatched target —
+ * including `hyperv_backup`/`mssql_backup` (review fix: GC must be able to
+ * group those rows by identity too, even though they never carry a base pin)
+ * — and, only when `mode` is `'file'`/`'system_image'`, a FIXED publish-lease
+ * deadline plus, when an eligible incremental-dedupe base exists, a pin on it.
+ * `mode: null` (hyperv/mssql) stamps identity only and returns immediately.
+ *
+ * Lock order is JOB then SNAPSHOT (mirrors the parent-rows-first pattern at
+ * routes/devices/moveOrg.ts:248-253): the UPDATE on backup_jobs below takes
+ * the job row's lock first. The snapshot-row re-check is then done as TWO
+ * separate statements, not one outer-joined `FOR SHARE` — Postgres rejects
+ * `FOR UPDATE`/`FOR SHARE` on the nullable side of an outer join. First,
+ * `FOR SHARE` locks `backup_snapshots` ALONE; only once that lock is held is
+ * `backup_snapshot_retirements` checked with a second, plain (unlocked)
+ * SELECT — safe because by the time the FOR SHARE lock is granted, any
+ * concurrent retention transaction that already inserted a retirement row for
+ * this snapshot has either fully committed (so its retirement row is visible
+ * here) or is blocked behind this same lock (so no retirement can appear
+ * between the two selects). Retention's per-row delete (backupRetention.ts)
+ * takes `FOR UPDATE` on the same snapshot row — whichever side gets there
+ * first wins: the other either sees the live pin (and skips) or finds the row
+ * already gone (and this function falls back to a full run). No FK-column
+ * write happens while a lock from the other table is held (cf. #3911's
+ * key-share deadlock).
+ */
+async function stampDispatchPinAndIdentity(params: {
+  deviceId: string;
+  configId: string;
+  jobId: string;
+  mode: 'file' | 'system_image' | null;
+  provider: string;
+  providerConfig: Record<string, unknown>;
+}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null }> {
+  const storageIdentity = normalizeStorageIdentity(params.provider, params.providerConfig);
+
+  if (params.mode === null) {
+    // hyperv/mssql: identity only — no lease, no pin (spec: pins/leases are
+    // file/system_image only; storage_identity stamping is not).
+    await db.update(backupJobs).set({ storageIdentity }).where(eq(backupJobs.id, params.jobId));
+    return { baseSnapshotId: '', publishLeaseExpiresAt: null };
+  }
+  const mode = params.mode;
+
+  const leaseMs = resolveBackupBaseLeaseMs();
+  const publishLeaseExpiresAt = new Date(Date.now() + leaseMs);
+
+  return db.transaction(async (tx) => {
+    // Review fix (spec §3.1 selection criteria): "no retirement row" is part
+    // of the SELECTION itself, not a post-hoc check on whatever sorted first
+    // — a LEFT JOIN + IS NULL here means a retired newest snapshot simply
+    // isn't a candidate, so the next-newest eligible base (if any) still
+    // wins instead of dispatch falling back to a full run unnecessarily. The
+    // lock-time re-check below still exists to catch the narrow race where a
+    // retirement lands AFTER this select but before the FOR SHARE lock.
+    const [candidate] = await tx
+      .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
+      .from(backupSnapshots)
+      .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+      .leftJoin(
+        backupSnapshotRetirements,
+        and(
+          eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+          eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
+        ),
+      )
+      .where(
+        and(
+          eq(backupSnapshots.deviceId, params.deviceId),
+          eq(backupSnapshots.configId, params.configId),
+          // Review fix: scope by THIS dispatch's storage identity too. Without
+          // this, a config edit (§3.6) can leave the newest snapshot carrying
+          // the OLD identity while this job is stamped with the NEW one —
+          // dispatch would then pin a base whose row retention's pin check
+          // (scoped by storageIdentity) can never see, so retention would
+          // retire and delete it out from under an in-flight run.
+          eq(backupSnapshots.storageIdentity, storageIdentity),
+          mode === 'system_image'
+            ? eq(backupSnapshots.backupType, 'system_image')
+            : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+          or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, publishLeaseExpiresAt)),
+          eq(backupJobs.status, 'completed'),
+          isNull(backupSnapshotRetirements.id),
+        ),
+      )
+      .orderBy(desc(backupSnapshots.timestamp))
+      .limit(1);
+
+    // Lock order: JOB row first (this UPDATE stamps identity/lease/tentative
+    // pin unconditionally — every dispatched backup_run job gets these).
+    await tx
+      .update(backupJobs)
+      .set({
+        storageIdentity,
+        publishLeaseExpiresAt,
+        baseSnapshotId: candidate?.snapshotId ?? null,
+      })
+      .where(eq(backupJobs.id, params.jobId));
+
+    if (!candidate) {
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    // SNAPSHOT row second, locked ALONE (see docstring for why the retirement
+    // check cannot share this statement).
+    const [locked] = await tx
+      .select({ id: backupSnapshots.id })
+      .from(backupSnapshots)
+      .where(eq(backupSnapshots.id, candidate.id))
+      .for('share');
+
+    if (!locked) {
+      // Row already gone — a concurrent retention delete won the race.
+      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    const [retirement] = await tx
+      .select({ id: backupSnapshotRetirements.id })
+      .from(backupSnapshotRetirements)
+      .where(
+        and(
+          eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+          eq(backupSnapshotRetirements.snapshotId, candidate.snapshotId),
+        ),
+      )
+      .limit(1);
+
+    if (retirement) {
+      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt };
+  });
+}
+
+/**
  * Phase 3: resolve the backup mode/targets, build every target's command
  * payload and record its dispatch expectation — all inside ONE short system
  * DB context (#1105). Nothing here calls `dispatchCommandToAgent`; that send
@@ -648,6 +950,12 @@ async function prepareBackupDispatchTargets(
       .select({
         backupMode: configPolicyBackupSettings.backupMode,
         targets: configPolicyBackupSettings.targets,
+        // #6001: the legacy top-level column. The Backup tab writes the custom
+        // selection's folder list to BOTH `paths` and `targets.paths`, but only
+        // `targets` was ever read at dispatch — so a settings row written by an
+        // older UI/API build, or by an API caller that sends only the
+        // documented top-level `paths` field, dispatched an empty list.
+        legacyPaths: configPolicyBackupSettings.paths,
       })
       .from(configPolicyBackupSettings)
       .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
@@ -656,11 +964,32 @@ async function prepareBackupDispatchTargets(
     if (settings) {
       backupMode = settings.backupMode;
       modeTargets = (settings.targets as Record<string, unknown>) ?? {};
+      // Fall back ONLY when `targets` carries no usable file paths, and only
+      // for file mode — `targets` stays authoritative wherever it is populated,
+      // so this can never override a deliberate narrowing of the selection.
+      if (backupMode === 'file' && normalizeBackupPaths(modeTargets.paths).length === 0) {
+        const legacyPaths = normalizeBackupPaths(settings.legacyPaths);
+        if (legacyPaths.length > 0) {
+          modeTargets = { ...modeTargets, paths: legacyPaths };
+        }
+      }
     }
   }
 
-  // Resolve targets into typed commands based on backup mode
-  const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+  // Resolve targets into typed commands based on backup mode. A thrown error
+  // (e.g. an unsupported whole-machine device OS) means resolution refused
+  // outright rather than yielding zero targets — mark the job failed with
+  // that specific reason instead of falling through to the generic
+  // "no targets resolved" message below.
+  let targets: BackupTarget[];
+  try {
+    targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[BackupWorker] Backup target resolution refused for job ${data.jobId} (mode=${backupMode}, device=${data.deviceId}): ${message}`);
+    await markJobFailed(data.jobId, message);
+    return { status: 'done', result: { dispatched: false } };
+  }
 
   if (await isBackupJobCancelled(data.jobId)) {
     return { status: 'done', result: { dispatched: false } };
@@ -747,6 +1076,18 @@ async function prepareBackupDispatchTargets(
       }
     }
 
+    const dispatchPin = await stampDispatchPinAndIdentity({
+      deviceId: data.deviceId,
+      configId: data.configId,
+      jobId: commandJobId,
+      mode:
+        target.commandType === 'backup_run'
+          ? ((target.payload as Record<string, unknown>).systemImage === true ? 'system_image' : 'file')
+          : null,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
+    });
+
     const command: AgentCommand = {
       id: commandJobId,
       type: target.commandType,
@@ -757,6 +1098,18 @@ async function prepareBackupDispatchTargets(
         providerConfig: destination.providerConfig,
         storageEncryption: destination.storageEncryption,
         ...target.payload,
+        // Payload fields stay file/system_image-only (spec §3.1) even though
+        // storage_identity is now stamped for every target above. Spread
+        // LAST (review fix) so the server-owned dedupe-base pin/lease can
+        // never be silently shadowed by a same-named key in target.payload
+        // (resolveBackupTargets's file/system_image branches don't produce
+        // one today, but nothing enforces that going forward).
+        ...(target.commandType === 'backup_run'
+          ? {
+              baseSnapshotId: dispatchPin.baseSnapshotId,
+              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
+            }
+          : {}),
       },
     };
 
@@ -907,9 +1260,48 @@ async function processDispatchBackup(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
   let parentFailureDetail: string | null = null;
+  let deviceOrgChanged = false;
 
   try {
     for (const target of prepared) {
+      // Re-read after payload preparation and between sends: enqueue-time
+      // ownership cannot authorize a backup on a device moved to another org.
+      // Keep the relay acknowledgement wait outside the short DB context.
+      const admitted = await runWithSystemDbAccess(async () => {
+        const [device] = await db.select({ orgId: devices.orgId }).from(devices)
+          .where(eq(devices.id, data.deviceId)).limit(1);
+        if (device?.orgId === data.orgId) return true;
+
+        console.warn('[BackupWorker] Refusing backup dispatch: device_org_changed', {
+          jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
+        });
+        createAuditLogAsync({
+          orgId: data.orgId,
+          actorType: 'system',
+          actorId: '00000000-0000-0000-0000-000000000000',
+          action: 'backup.dispatch.denied',
+          resourceType: 'backup_job',
+          resourceId: data.jobId,
+          result: 'failure',
+          details: { deviceId: data.deviceId, reason: 'device_org_changed' },
+        });
+        return false;
+      });
+      if (!admitted) {
+        deviceOrgChanged = true;
+        for (const pending of prepared) {
+          if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
+          sendState.set(pending.commandJobId, 'failed');
+          failedTargets.push(`${pending.commandType} (device_org_changed)`);
+          if (pending.commandJobId === data.jobId) {
+            parentFailureDetail = 'device_org_changed';
+          } else {
+            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: 'device_org_changed' });
+          }
+        }
+        break;
+      }
+
       // Set BEFORE the await: if the send throws, delivery is ambiguous and
       // this row must be left in-flight rather than settled as never-sent.
       sendState.set(target.commandJobId, 'attempting');
@@ -956,9 +1348,11 @@ async function processDispatchBackup(
       if (sentCount === 0) {
         await markJobFailed(
           data.jobId,
-          lastNonOfflineOutcomeStatus
-            ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-            : 'Failed to send command to agent',
+          deviceOrgChanged
+            ? 'device_org_changed'
+            : lastNonOfflineOutcomeStatus
+              ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+              : 'Failed to send command to agent',
         );
         return { dispatched: false };
       }
@@ -1197,4 +1591,12 @@ export const __testOnly = {
   processResults,
   // Exposed for the wave 3.5b (#4084) dispatch-facade migration tests.
   processDispatchBackup,
+  // D18 W01 (#5429): exposed so integration tests can race this real
+  // function against cleanupExpiredSnapshots without hand-rolling its SQL.
+  stampDispatchPinAndIdentity,
+  // #6001: exposed so the backup-parity integration suite can assert on the
+  // ACTUAL backup_run payload a scheduled job produces (and on the job row a
+  // pathless link leaves behind) without standing up a queue + agent socket.
+  // This is the only place the settings row is turned into a command.
+  prepareBackupDispatchTargets,
 };

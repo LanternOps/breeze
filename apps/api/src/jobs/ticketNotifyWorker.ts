@@ -45,7 +45,7 @@ import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import {
   admitPush,
   assertSamePartner,
-  isAuthorisedForTicket,
+  isEligibleTicketRecipient,
   listAnySlaSubscribers,
   loadTicketPushPrefs,
   loadUserCandidate,
@@ -65,7 +65,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return withSystem(fn);
 };
 
-interface EmailPayload {
+interface EmailPayloadBase {
   to: string;
   subject: string;
   html: string;
@@ -78,6 +78,19 @@ interface EmailPayload {
   graphMailbox?: { tenantId: string; mailbox: string; originalMessageId: string | null };
 }
 
+/**
+ * Who this ticket email is FOR, in the sender contract's terms (spec §8.2).
+ * Both audiences leave through the same send loop below, so the classification
+ * has to travel with each payload rather than being decided at the transport.
+ * Precedence for customer mail is unchanged: connected Graph mailbox first,
+ * then the partner lane (W04), then the platform sender.
+ */
+type EmailPayloadSender =
+  | { purpose: 'ticket.staff_notification' }
+  | { purpose: 'ticket.customer_notification'; partnerId: string | null };
+
+type EmailPayload = EmailPayloadBase & EmailPayloadSender;
+
 async function getTicket(ticketId: string) {
   const rows = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
   return rows[0] ?? null;
@@ -86,6 +99,18 @@ async function getTicket(ticketId: string) {
 async function getOrgName(orgId: string): Promise<string> {
   const rows = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return rows[0]?.name ?? '';
+}
+
+async function resolveCurrentTicketPartner(
+  ticket: { partnerId?: string | null; orgId: string },
+  testFixtureFallback?: string | null
+): Promise<string | null> {
+  if (ticket.partnerId) return ticket.partnerId;
+  // Production full-row selects always include partnerId. This fallback keeps
+  // older narrow unit fixtures compatible without weakening runtime behavior.
+  if (ticket.partnerId === undefined) return testFixtureFallback ?? null;
+  const rows = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, ticket.orgId)).limit(1);
+  return rows[0]?.partnerId ?? null;
 }
 
 /** Resolved once per event; collected results are sent after the context exits. */
@@ -122,6 +147,7 @@ async function collectAssigneeNotification(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
+  if (ticket.deletedAt || (ticket.assignedTo !== undefined && ticket.assignedTo !== assigneeId)) return none;
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
@@ -130,20 +156,18 @@ async function collectAssigneeNotification(
   // tenant boundary is entirely app-layer from here on.
   const assignee = await loadUserCandidate(assigneeId);
   if (!assignee) return none;
-  // A NULL event.partnerId is NOT a mismatch. `tickets.partner_id` is
-  // deliberately nullable (2026-06-09-a-native-ticketing-core.sql: "old API
-  // code may still insert tickets without it during a rolling deploy") and both
-  // emitters propagate the null verbatim, so treating it as a forged recipient
-  // would drop the row AND the email main writes unconditionally — and raise a
-  // Sentry error for a legacy row. When the event carries no partner the PUSH
-  // is withheld (it is gated on event.partnerId below); the inbox row and email
-  // are not.
-  if (event.partnerId && !assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id })) return none;
+  const partnerId = await resolveCurrentTicketPartner(ticket, event.partnerId);
+  // assertSamePartner stays for its telemetry only — a mismatch here is a
+  // forged/moved user and must be reported, not merely refused. The AUTHORITY
+  // decision is isEligibleTicketRecipient, the one predicate ticket assignment
+  // uses, so the two surfaces cannot drift.
+  if (!partnerId || !assertSamePartner(assignee, partnerId, { ticketId: ticket.id })) return none;
+  if (!(await isEligibleTicketRecipient(assignee, partnerId, ticket.orgId, ticket.deviceId))) return none;
 
   // Idempotency anchor (D2): null = replay -> nothing else happens.
   const id = await createNotification({
     userId: assigneeId,
-    orgId: event.orgId,
+    orgId: ticket.orgId,
     type: 'ticket',
     priority: 'normal',
     title: `Ticket assigned: ${label}`,
@@ -159,28 +183,20 @@ async function collectAssigneeNotification(
         subject: `[${label}] Assigned to you: ${ticket.subject}`,
         html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
         bestEffort: true,
+        purpose: 'ticket.staff_notification',
       }]
     : [];
 
-  // Account status (D5) gates the PHONE only — a device cannot be registered
-  // without a login, so a non-active user has nothing to push to. It must never
-  // suppress the inbox row or the email: an invited technician assigned a
-  // ticket before accepting their invite still has to be told.
   const pushes: PendingPush[] = [];
   const prefs = await loadTicketPushPrefs(assigneeId);
-  if (
-    prefs.assignedEnabled &&
-    assignee.status === 'active' &&
-    event.partnerId &&
-    (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId))
-  ) {
+  if (prefs.assignedEnabled) {
     pushes.push({
       userId: assigneeId,
       spec: buildTicketPush({
         ticketId: ticket.id,
         reason: 'assigned',
         internalNumber: ticket.internalNumber ?? null,
-        orgName: await getOrgName(event.orgId),
+        orgName: await getOrgName(ticket.orgId),
       }),
     });
   }
@@ -214,7 +230,6 @@ async function collectRequesterEmail(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
-
   if (!ticket.submitterEmail) return [];
 
   const html = typeof bodyHtml === 'function' ? bodyHtml(ticket) : bodyHtml;
@@ -231,7 +246,9 @@ async function collectRequesterEmail(
       to: ticket.submitterEmail,
       subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
       html,
-      graphMailbox
+      graphMailbox,
+      purpose: 'ticket.customer_notification',
+      partnerId: ticket.partnerId ?? null
     }];
   }
 
@@ -267,7 +284,9 @@ async function collectRequesterEmail(
     html,
     replyTo,
     headers,
-    graphMailbox
+    graphMailbox,
+    purpose: 'ticket.customer_notification',
+    partnerId: ticket.partnerId ?? null
   }];
 }
 
@@ -288,7 +307,6 @@ async function collectAutoresponse(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
-
   let replyTo: string | undefined;
   let custom: { subject: string | null; body: string | null } | undefined;
   let partnerName = '';
@@ -342,7 +360,7 @@ async function collectAutoresponse(
   // are only used on the EmailService fallback path).
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox }];
+  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox, purpose: 'ticket.customer_notification', partnerId: ticket.partnerId ?? null }];
 }
 
 async function collectSlaBreachNotification(
@@ -352,8 +370,11 @@ async function collectSlaBreachNotification(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
+  if (ticket.deletedAt) return { emails: [], pushes: [] };
+  const partnerId = await resolveCurrentTicketPartner(ticket, event.partnerId);
+  if (!partnerId) return { emails: [], pushes: [] };
 
-  const label = event.payload.internalNumber ?? event.ticketId;
+  const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
   const target = event.payload.target;
   const emails: EmailPayload[] = [];
   const pushes: PendingPush[] = [];
@@ -365,27 +386,20 @@ async function collectSlaBreachNotification(
       reason: 'sla_breached',
       target,
       internalNumber: event.payload.internalNumber,
-      orgName: orgName ?? (orgName = await getOrgName(event.orgId)),
+      orgName: orgName ?? (orgName = await getOrgName(ticket.orgId)),
     });
 
-  /**
-   * The in-app row is ALWAYS written for a candidate that reaches here; `push`
-   * governs the phone only (spec D6: the throttle applies to every push, never
-   * to in-app rows, and every push-drop row in the spec's failure-modes table
-   * keeps "in-app row + email written"). Suppressing the inbox row would also
-   * be a silent behaviour regression: the owner's SLA row is unconditional on
-   * main today.
-   */
+  /** Once a recipient passes live eligibility, channel preference governs the phone only. */
   const notify = async (userId: string, opts: { push: boolean }): Promise<boolean> => {
     if (notified.has(userId)) return false;
     notified.add(userId);
     const id = await createNotification({
       userId,
-      orgId: event.orgId,
+      orgId: ticket.orgId,
       type: 'ticket',
       priority: 'normal',
       title: `SLA breached: ${label}`,
-      message: `${target} SLA breached for ${event.payload.subject}`,
+      message: `${target} SLA breached for ${ticket.subject}`,
       link: `/tickets#${event.payload.internalNumber ?? event.ticketId}`,
       dedupeKey: `ticket:${ticket.id}:sla:${target}:${userId}`,
     });
@@ -394,23 +408,22 @@ async function collectSlaBreachNotification(
     return true;
   };
 
-  // Owner: email and in-app row as before (unconditional). slaScope governs the
-  // PUSH only — 'off' means "stop buzzing my phone", not "hide it from my inbox".
+  // Owner: live eligibility governs every channel. After that, slaScope still
+  // controls only the phone — 'off' keeps the authorized inbox row and email.
   const assigneeId = event.payload.assigneeId;
   if (assigneeId) {
     const assignee = await loadUserCandidate(assigneeId);
-    // Same null-partner rule as the assigned branch: a legacy ticket with no
-    // partner_id is not a forged recipient, it just cannot be pushed.
-    const partnerOk = assignee && (!event.partnerId || assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id }));
-    if (assignee && partnerOk) {
+    // Same split as the assigned branch: assertSamePartner reports a forged
+    // recipient, isEligibleTicketRecipient decides.
+    const partnerOk = assignee && assertSamePartner(assignee, partnerId, { ticketId: ticket.id });
+    const currentOwner = ticket.assignedTo === undefined || ticket.assignedTo === assigneeId;
+    const eligible = assignee && partnerOk && currentOwner &&
+      await isEligibleTicketRecipient(assignee, partnerId, ticket.orgId, ticket.deviceId);
+    if (assignee && eligible) {
       const prefs = await loadTicketPushPrefs(assigneeId);
       // Short-circuit deliberately: skip the permission round-trip when the
       // preference (or a non-active account) already rules the push out.
-      const pushOwner =
-        prefs.slaScope !== 'off' &&
-        assignee.status === 'active' &&
-        !!event.partnerId &&
-        (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId));
+      const pushOwner = prefs.slaScope !== 'off';
       // The email is queued only AFTER the dedupe anchor confirms this is not a
       // replay. Queuing it first (as this branch originally did) meant a
       // redelivered BullMQ job re-emailed the owner while the row and the push
@@ -420,9 +433,10 @@ async function collectSlaBreachNotification(
       if (wrote && assignee.email) {
         emails.push({
           to: assignee.email,
-          subject: `SLA breached: ${label} — ${event.payload.subject}`,
-          html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(event.payload.subject)}</p>`,
+          subject: `SLA breached: ${label} — ${ticket.subject}`,
+          html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
           bestEffort: true,
+          purpose: 'ticket.staff_notification',
         });
       }
     }
@@ -431,17 +445,13 @@ async function collectSlaBreachNotification(
   // 'any' subscribers (D5): partner-filtered in SQL, re-authorised per user.
   // Push only — no email.
   //
-  // NOTE the asymmetry with the owner branch above, and it is intentional: an
-  // 'any' subscriber gets NO row at all when unauthorised, because they would
-  // not otherwise be a recipient of this ticket — writing an inbox row for
-  // someone who cannot access the org would leak the ticket's existence. The
-  // owner is already a legitimate recipient, so only their push is gated.
-  if (event.partnerId) {
-    const { users: subs } = await listAnySlaSubscribers(event.partnerId);
+  // Every subscriber is re-authorized against the current ticket before a row.
+  if (partnerId) {
+    const { users: subs } = await listAnySlaSubscribers(partnerId);
     for (const sub of subs) {
       if (notified.has(sub.userId)) continue;
-      if (!assertSamePartner(sub, event.partnerId, { ticketId: ticket.id })) continue;
-      if (!(await isAuthorisedForTicket(sub.userId, event.partnerId, event.orgId))) continue;
+      if (!assertSamePartner(sub, partnerId, { ticketId: ticket.id })) continue;
+      if (!(await isEligibleTicketRecipient(sub, partnerId, ticket.orgId, ticket.deviceId))) continue;
       await notify(sub.userId, { push: true });
     }
   }
@@ -595,12 +605,27 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
       // Platform EmailService path (tech/assignee notifications + customers on partners
       // with no connected mailbox). Skip silently if no transport is configured.
       if (!email) return;
+      // Branch rather than spread: `purpose` is the discriminant of
+      // SendEmailParams, so a union-typed value would not narrow.
+      if (payload.purpose === 'ticket.customer_notification') {
+        await email.sendEmail({
+          to: payload.to,
+          subject: payload.subject,
+          html: payload.html,
+          replyTo: payload.replyTo,
+          headers: payload.headers,
+          purpose: 'ticket.customer_notification',
+          partnerId: payload.partnerId
+        });
+        return;
+      }
       await email.sendEmail({
         to: payload.to,
         subject: payload.subject,
         html: payload.html,
         replyTo: payload.replyTo,
-        headers: payload.headers
+        headers: payload.headers,
+        purpose: 'ticket.staff_notification'
       });
     };
 

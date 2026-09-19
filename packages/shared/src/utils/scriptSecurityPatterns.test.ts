@@ -4,6 +4,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BASIC_SCRIPT_PATTERNS,
+  BASIC_SCRIPT_PATTERN_DESCRIPTIONS,
+  detectBasicScriptPatterns,
   STRICT_SCRIPT_PATTERNS,
   STRICT_SCRIPT_PATTERN_DESCRIPTIONS,
   detectStrictScriptPatterns,
@@ -19,21 +22,22 @@ const OBFUSCATION_KEY = 0x5a;
 type GoPattern = { source: string; description: string };
 
 /**
- * Parse the `strictPatterns` literal out of the agent's security.go.
+ * Parse a pattern-list literal (`basicPatterns` / `strictPatterns`) out of the
+ * agent's security.go.
  *
  * Deliberately a source parse rather than a hand-copied fixture: a fixture is
  * just a third copy that drifts alongside the second one. This fails the
  * moment the Go list changes without this mirror changing with it.
  */
-function parseGoStrictPatterns(): GoPattern[] {
+function parseGoPatterns(listName: 'basicPatterns' | 'strictPatterns'): GoPattern[] {
   const source = readFileSync(GO_SECURITY_SOURCE, 'utf8');
-  const start = source.indexOf('strictPatterns := []struct {');
-  if (start === -1) throw new Error('strictPatterns literal not found in security.go');
+  const start = source.indexOf(`${listName} := []struct {`);
+  if (start === -1) throw new Error(`${listName} literal not found in security.go`);
   const bodyStart = source.indexOf('}{', start);
-  if (bodyStart === -1) throw new Error('strictPatterns literal body not found');
+  if (bodyStart === -1) throw new Error(`${listName} literal body not found`);
   // The literal is closed by a `\t}` at exactly one level of indentation.
   const bodyEnd = source.indexOf('\n\t}\n', bodyStart);
-  if (bodyEnd === -1) throw new Error('strictPatterns literal terminator not found');
+  if (bodyEnd === -1) throw new Error(`${listName} literal terminator not found`);
   const body = source.slice(bodyStart + 2, bodyEnd);
 
   const patterns: GoPattern[] = [];
@@ -61,10 +65,37 @@ function parseGoStrictPatterns(): GoPattern[] {
       patterns.push({ source: decoded, description: obfuscated[2]! });
       continue;
     }
-    throw new Error(`unparsed strictPatterns entry: ${line}`);
+    throw new Error(`unparsed ${listName} entry: ${line}`);
   }
   return patterns;
 }
+function parseGoStrictPatterns(): GoPattern[] { return parseGoPatterns('strictPatterns'); }
+
+describe('basic script pattern mirror matches the Go validator', () => {
+  const goBasic = parseGoPatterns('basicPatterns');
+
+  it('parses a non-trivial number of BASIC patterns out of security.go', () => {
+    expect(goBasic.length).toBeGreaterThan(15);
+  });
+
+  it('mirrors every Go basic pattern source in order', () => {
+    expect(BASIC_SCRIPT_PATTERNS.map((p) => p.source)).toEqual(goBasic.map((p) => p.source));
+  });
+
+  it('mirrors every Go basic pattern description byte-for-byte', () => {
+    expect(BASIC_SCRIPT_PATTERNS.map((p) => p.description)).toEqual(goBasic.map((p) => p.description));
+  });
+
+  it('shares no description with the STRICT list — basic is never acknowledgeable', () => {
+    const strict = new Set(STRICT_SCRIPT_PATTERN_DESCRIPTIONS);
+    expect(BASIC_SCRIPT_PATTERN_DESCRIPTIONS.filter((d) => strict.has(d))).toEqual([]);
+  });
+
+  it('matches a fork bomb and does not match an ordinary cleanup script', () => {
+    expect(detectBasicScriptPatterns(':(){ :|:& };:')).toEqual(['fork bomb pattern']);
+    expect(detectBasicScriptPatterns('Remove-Item -Recurse -Force C:\\Temp\\cache')).toEqual([]);
+  });
+});
 
 describe('strict script pattern mirror matches the Go validator', () => {
   const goPatterns = parseGoStrictPatterns();

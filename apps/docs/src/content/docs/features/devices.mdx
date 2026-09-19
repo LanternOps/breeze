@@ -229,6 +229,7 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 |---------|----------|
 | **System** | Hostname, display name (editable), serial number, manufacturer, model. |
 | **Device Role** | The device's assigned role and how it was determined. |
+| **Function** | What the device is *for* (domain controller, kiosk, finance workstation, …), assessed by the AI Fleet designer or set by hand — see [Device function](#device-function) below. |
 | **Operating System** | OS type, version, build, and architecture. |
 | **Hardware Summary** | CPU model, cores/threads, RAM, disk, GPU, motherboard, BIOS version. |
 | **Power** | Battery and power status (portable devices only — see above). |
@@ -236,6 +237,14 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Agent** | Agent and watchdog versions, status, last seen, enrollment date, system uptime, logged-in user. |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
+
+### Device function
+
+**Function** (v0.113.0+) records what a device is *for*, as distinct from the billable **Device Role**. The built-in functions are Domain controller, File server, Print server, Hypervisor, Database server, Line-of-business workstation, Finance workstation, Executive workstation, Shared workstation, Conference room, Kiosk, Core switch, Edge firewall, Backup target and Unknown; **Custom…** lets you enter your own short label.
+
+A function is either assessed by the [Fleet designer](/features/ai-agents/#fleet-designer) AI agent — badged **AI**, with a confidence percentage and a **Why the designer thinks so** explanation — or set by a technician with **Change function**, badged **Manual**. A manual assessment supersedes the AI one and the designer never overwrites it; **Clear** removes the assessment and the field reads **Not assessed**. Changing or clearing a function needs `devices:write` and a fresh MFA check.
+
+Function is also available as the **Device Function** field in the device catalog filters and saved filters.
 
 ---
 

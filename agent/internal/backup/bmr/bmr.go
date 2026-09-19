@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -162,7 +163,11 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr)
+	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr, SystemStateOutcome{
+		Expected:      cfg.ExpectSystemState,
+		ManifestFound: stateResult.manifestFound,
+		Applied:       stateResult.applied,
+	})
 	if valErr != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("validation error: %s", valErr.Error()))
 	} else {
@@ -246,6 +251,13 @@ type manifestFile struct {
 	LinkTarget string             `json:"linkTarget,omitempty"`
 	ModeBits   uint32             `json:"modeBits,omitempty"`
 	Owner      *manifestFileOwner `json:"owner,omitempty"`
+	// Placeholder mirrors backup.SnapshotFile.Placeholder — same
+	// deliberately-independent-mirror rationale as the fields above. True
+	// only for a "dir" entry the walker force-recorded because the
+	// directory matched an exclude pattern (#5493); see
+	// restoreContentlessEntry's "dir" case for how it changes restore
+	// behavior (review fix).
+	Placeholder bool `json:"placeholder,omitempty"`
 }
 
 // manifestFileOwner mirrors backup.FileOwner.
@@ -468,6 +480,11 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	defer os.Remove(tmpPath)
 
 	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
+		if errors.Is(dlErr, ErrRecoverySessionLost) {
+			// Not "no state in this snapshot" — the helper can no longer
+			// download anything (#5635).
+			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
+		}
 		if cfg.ExpectSystemState {
 			// The bootstrap said this snapshot has system state (see
 			// hasSystemStateManifest, session.go) — a missing manifest here
@@ -592,6 +609,10 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			// complete, verified file.
 			_ = os.Remove(localPath)
 			verificationFailed = true
+			if errors.Is(dlErr, ErrRecoverySessionLost) {
+				// Every remaining artifact would fail the same way (#5635).
+				break
+			}
 			continue
 		}
 		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
@@ -831,6 +852,7 @@ func restoreFiles(
 	}
 
 	breakerTripped := false
+	var sessionLostErr error
 	for _, file := range manifest.Files {
 		if ctx != nil && ctx.Err() != nil {
 			if filesRestored > 0 {
@@ -903,7 +925,7 @@ func restoreFiles(
 		}
 
 		dlErr := provider.Download(file.BackupPath, targetPath)
-		if dlErr != nil {
+		if dlErr != nil && !errors.Is(dlErr, ErrRecoverySessionLost) {
 			// D19b: a destination that already exists with the owner-write
 			// bit cleared (the Windows ReadOnly attribute, or a backup
 			// app config file being restored in place) makes the
@@ -922,6 +944,13 @@ func restoreFiles(
 		}
 		if dlErr != nil {
 			addFailure("restore failed for %s: %s", file.SourcePath, dlErr.Error())
+			if errors.Is(dlErr, ErrRecoverySessionLost) {
+				// Run-level (#5635): every remaining file would fail the
+				// same way, so stop now rather than after
+				// maxConsecutiveDownloadFailures per-file warnings.
+				sessionLostErr = dlErr
+				break
+			}
 			if consecutiveFailures >= maxConsecutiveDownloadFailures {
 				breakerTripped = true
 				break
@@ -958,6 +987,14 @@ func restoreFiles(
 		bytesRestored += file.Size
 	}
 
+	if sessionLostErr != nil {
+		skipped := len(manifest.Files) - filesRestored - failedFiles
+		if len(warnings) < maxRecoveryWarnings {
+			warnings = append(warnings, fmt.Sprintf(
+				"aborting: recovery download session lost; %d files not attempted", skipped))
+		}
+	}
+
 	if breakerTripped {
 		skipped := len(manifest.Files) - filesRestored - failedFiles
 		if len(warnings) < maxRecoveryWarnings {
@@ -976,6 +1013,11 @@ func restoreFiles(
 			fmt.Sprintf("... and %d more metadata failures", fidelityFailures-maxRecoveryWarnings))
 	}
 
+	if sessionLostErr != nil {
+		return filesRestored, bytesRestored, warnings, failedFiles,
+			fmt.Errorf("bmr: aborted file restore (%d of %d files restored): %w",
+				filesRestored, len(manifest.Files), sessionLostErr)
+	}
 	if breakerTripped {
 		return filesRestored, bytesRestored, warnings, failedFiles,
 			fmt.Errorf("bmr: aborted after %d consecutive file failures (%d of %d files restored)",
@@ -1113,6 +1155,16 @@ func restoreContentlessEntry(targetPath string, file manifestFile) error {
 		}
 		return symlinkFile(file.LinkTarget, targetPath)
 	case "dir":
+		// Placeholder (review fix, #5493): mirrors backup.RestoreContentlessEntry's
+		// KindDir case (agent/internal/backup/restore.go) — an already-existing
+		// directory is left untouched rather than re-chmod'd, so this reinstall-
+		// then-recover path can't silently revert permissions a customer
+		// tightened on a pattern-excluded directory (e.g. /tmp) since the backup.
+		if file.Placeholder {
+			if info, statErr := os.Lstat(targetPath); statErr == nil && info.IsDir() {
+				return nil
+			}
+		}
 		if mkErr := os.MkdirAll(targetPath, 0o750); mkErr != nil {
 			return mkErr
 		}

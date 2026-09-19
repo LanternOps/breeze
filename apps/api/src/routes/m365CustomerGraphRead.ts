@@ -6,6 +6,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { isM365TenantSyncEnabled } from '../config/env';
 import { zValidator } from '../lib/validation';
 import {
   authMiddleware,
@@ -15,8 +16,10 @@ import {
 } from '../middleware/auth';
 import {
   deriveGrantHealth,
+  type GrantHealthState,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   listCustomerGraphReadConnections,
   retestCustomerGraphReadConnection,
   type CustomerGraphReadConnectionSnapshot,
@@ -29,11 +32,15 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { PERMISSIONS } from '../services/permissions';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import {
   M365_CUSTOMER_GRAPH_READ_OUTCOMES,
   recordM365CustomerGraphReadEvent,
   type M365CustomerGraphReadOutcome,
 } from '../services/m365ControlPlane/metrics';
+import { ON_DEMAND_SYNC_DOMAINS, requestOnDemandSync } from '../services/m365Sync/lifecycle';
+import { consumeOnDemandSyncSlot, releaseOnDemandSyncSlot } from '../services/m365Sync/onDemandLimiter';
+import { loadSyncSummary, type M365SyncSummary } from '../services/m365Sync/summary';
 
 const PROFILE_ID = 'customer-graph-read' as const;
 const PROFILE_DISPLAY_NAME = 'Customer Graph Read';
@@ -71,7 +78,16 @@ export interface CustomerGraphReadConnectionDto {
   clientId: string | null;
   displayName: string | null;
   status: CustomerGraphReadConnectionSnapshot['status'];
+  /**
+   * Derived health, not stored status. `manifest-stale` is the state the
+   * upgrade-consent banner keys off: the connection is executing fine on the
+   * grants it has, but the code manifest has moved on (spec §2.2).
+   */
+  grantHealth: GrantHealthState;
+  /** Manifest version stored on the row. */
   manifestVersion: number;
+  /** Manifest version this build requires. */
+  currentManifestVersion: number;
   observedGrants: CanonicalAppRoleAssignment[];
   missingGrants: CanonicalAppRoleAssignment[];
   unexpectedGrants: CanonicalAppRoleAssignment[];
@@ -84,11 +100,17 @@ export interface CustomerGraphReadEnvelope {
   profile: {
     id: typeof PROFILE_ID;
     displayName: string;
-    manifestVersion: 2;
+    // Was a hard-coded literal, which stops compiling the moment the manifest
+    // moves. The manifest is the single source; the DTO reports it.
+    manifestVersion: number;
     requiredGrants: M365ApplicationGrant[];
   };
   onboardingEnabled: boolean;
   connection: CustomerGraphReadConnectionDto | null;
+  /** W05: tenant sync is available in this deployment. Gates the Sync now button. */
+  syncEnabled: boolean;
+  /** W05: per-domain freshness plus entity counts. Null when the flag is off or nothing is seeded. */
+  sync: M365SyncSummary | null;
 }
 
 type ConnectionWithHealth = CustomerGraphReadConnectionSnapshot & { grantHealth?: GrantHealth };
@@ -107,7 +129,9 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphReadConnecti
     clientId: value.clientId === '' ? null : value.clientId,
     displayName: value.displayName,
     status: value.status,
+    grantHealth: health.state,
     manifestVersion: value.permissionManifestVersion,
+    currentManifestVersion: profileManifest.version,
     observedGrants: [...health.observedGrants],
     missingGrants: [...health.missingGrants],
     unexpectedGrants: [...health.unexpectedGrants],
@@ -117,10 +141,11 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphReadConnecti
   };
 }
 
-function envelope(
+async function envelope(
   orgId: string,
   connection: ConnectionWithHealth | null,
-): CustomerGraphReadEnvelope {
+): Promise<CustomerGraphReadEnvelope> {
+  const syncEnabled = isM365TenantSyncEnabled();
   return {
     profile: {
       id: PROFILE_ID,
@@ -130,6 +155,11 @@ function envelope(
     },
     onboardingEnabled: isM365CustomerGraphReadOnboardingEnabledForOrg(orgId),
     connection: connection ? toConnectionDto(connection) : null,
+    syncEnabled,
+    // Envelope-level, not on the connection DTO (W01 owns that shape). Read on
+    // the request's own DB context; rollup counts are filtered to the CURRENT
+    // connection's tenant because history rows outlive a rebind.
+    sync: syncEnabled ? await loadSyncSummary(orgId, connection?.tenantId ?? null) : null,
   };
 }
 
@@ -189,6 +219,12 @@ function lifecycleFailure(c: Context, error: unknown) {
     || code === 'tenant_already_bound') {
     return c.json({ error: 'Connection not found' }, 404);
   }
+  if (code === 'manifest_current') {
+    // Reachable by racing the banner (two tabs, double click). Saying so beats
+    // the generic message, because the correct next step is "reload", not
+    // "retry".
+    return c.json({ error: 'The connection already uses the current permission manifest' }, 409);
+  }
   return c.json({ error: 'Connection operation could not be completed' }, 409);
 }
 
@@ -202,7 +238,7 @@ m365CustomerGraphReadRoutes.get('/connections', requireOrgsRead, async (c) => {
   const resolved = resolveConcreteOrg(c.get('auth'), parsed.orgId);
   if (!('orgId' in resolved)) return c.json({ error: resolved.error }, resolved.status);
   const connections = await listCustomerGraphReadConnections(resolved.orgId);
-  return c.json(envelope(resolved.orgId, connections[0] ?? null));
+  return c.json(await envelope(resolved.orgId, connections[0] ?? null));
 });
 
 m365CustomerGraphReadRoutes.post(
@@ -210,6 +246,14 @@ m365CustomerGraphReadRoutes.post(
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -249,12 +293,79 @@ m365CustomerGraphReadRoutes.post(
   },
 );
 
+/**
+ * Starts a manifest upgrade on an existing connection (spec §2.2). Unlike the
+ * consent route above, this one does not move the connection to
+ * pending-consent — reads keep working on the grants the customer already
+ * approved for the whole duration of the Microsoft round trip, including if
+ * the administrator abandons it.
+ */
+m365CustomerGraphReadRoutes.post(
+  '/connections/:id/upgrade-consent',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    const { id } = c.req.valid('param');
+    try {
+      const correlationId = randomUUID();
+      const initiated = await initiateCustomerGraphReadUpgradeConsent({
+        connectionId: id,
+        orgId: resolved.orgId,
+        auth: c.get('auth'),
+      });
+      c.header('Set-Cookie', buildM365ConsentBindingCookie({
+        phase: 'admin_consent',
+        rawState: initiated.rawState,
+        connectionId: initiated.connection.id,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        tenantHint: null,
+      }), { append: true });
+      const auth = c.get('auth');
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.upgrade_consent_initiated',
+        orgId: resolved.orgId,
+        connectionId: initiated.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'initiated',
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ adminConsentUrl: initiated.consentUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
 m365CustomerGraphReadRoutes.post(
   '/connections/:id/retest',
   requireOrgsWrite,
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -297,12 +408,96 @@ m365CustomerGraphReadRoutes.post(
   },
 );
 
+/**
+ * On-demand tenant sync (spec §5.2). Same middleware chain as retest
+ * (organizations:write + MFA + concrete-org resolution incl. the partner-wide
+ * write gate), then — in this order, each deliberate:
+ *  1. the flag: a disabled feature 404s like disabled onboarding and never
+ *     consumes a rate-limit slot;
+ *  2. the connection: resolved before the limiter, so probing a wrong or
+ *     non-executable id cannot lock a technician out for 15 minutes;
+ *  3. the per-org Redis slot (fail-closed): 429 with a Retry-After header;
+ *  4. the claim, which is given back to the limiter if it never reached the
+ *     queue.
+ * Sign-in activity is not requested: its Graph limit is app-wide, so one
+ * "Sync now" must not spend the region's budget.
+ */
+m365CustomerGraphReadRoutes.post(
+  '/connections/:id/sync',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    if (!isM365TenantSyncEnabled()) {
+      return c.json({ error: 'Microsoft 365 tenant sync is not enabled' }, 404);
+    }
+    const { id } = c.req.valid('param');
+
+    const connections = await listCustomerGraphReadConnections(resolved.orgId);
+    const connection = connections.find((value) => value.id === id) ?? null;
+    if (!connection || !(connection.status === 'active' || connection.status === 'degraded')) {
+      return c.json({ error: 'Connection not found' }, 404);
+    }
+
+    const slot = await consumeOnDemandSyncSlot(resolved.orgId);
+    if (!slot.allowed) {
+      c.header('Retry-After', String(slot.retryAfterSeconds));
+      return c.json({
+        error: 'A tenant sync was requested recently. Try again shortly.',
+        retryAfter: slot.retryAfterSeconds,
+      }, 429);
+    }
+
+    try {
+      await requestOnDemandSync({ orgId: resolved.orgId, connectionId: connection.id });
+    } catch (error) {
+      await releaseOnDemandSyncSlot(resolved.orgId);
+      console.error(`[m365CustomerGraphRead] on-demand sync request failed for org=${resolved.orgId}:`, error);
+      return lifecycleFailure(c, error);
+    }
+
+    const auth = c.get('auth');
+    recordM365CustomerGraphReadEvent(c, {
+      event: 'm365.customer_graph_read.sync_requested',
+      orgId: resolved.orgId,
+      connectionId: connection.id,
+      profile: PROFILE_ID,
+      consentAttemptId: connection.consentAttemptId,
+      manifestVersion: connection.permissionManifestVersion,
+      outcome: 'initiated',
+      correlationId: randomUUID(),
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+    });
+    return c.json({ requested: true, domains: [...ON_DEMAND_SYNC_DOMAINS] });
+  },
+);
+
 m365CustomerGraphReadRoutes.post(
   '/connections/:id/disconnect',
   requireOrgsWrite,
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: a customer Graph connection covers the
+    // organization's WHOLE Entra tenant — establishing, upgrading, retesting,
+    // syncing or severing it has no per-site slice to narrow a site-restricted
+    // caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);

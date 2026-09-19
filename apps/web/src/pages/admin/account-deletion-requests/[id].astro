@@ -7,6 +7,6 @@ export const prerender = false;
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Account deletion request">
+<DashboardLayout titleKey="titles.adminAccountDeletionRequestsDetail">
   <AccountDeletionRequestDetail requestId={id ?? ''} client:load />
 </DashboardLayout>

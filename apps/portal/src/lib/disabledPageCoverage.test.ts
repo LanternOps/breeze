@@ -40,6 +40,10 @@ const GATED_API_METHODS: Record<string, string> = {
   getTickets: 'PORTAL_TICKETS_DISABLED',
   getTicket: 'PORTAL_TICKETS_DISABLED',
   getTicketForms: 'PORTAL_TICKETS_DISABLED',
+  getService: 'PORTAL_SERVICE_DISABLED',
+  getServiceOccurrences: 'PORTAL_SERVICE_DISABLED',
+  getDocuments: 'PORTAL_DOCUMENTS_DISABLED',
+  getHardwareLifecycleLatest: 'PORTAL_LIFECYCLE_DISABLED',
 };
 
 /**

@@ -22,9 +22,9 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
-const bind = (operation: 'add_factor' | 'rotate_recovery_codes' | 'register_approver_device') => ({
+const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
   operation,
   authEpoch: 1,
@@ -83,6 +83,59 @@ describe('maintenanceResourceDigest', () => {
   });
 });
 
+// Device move-org step-up (spec 2026-09-18 D2): the ONE canonicaliser the mint
+// route and the move route both call. A grant minted for one move intent must
+// never validate for another, and two callers describing the SAME intent must
+// hash byte-identically — including when one omits acceptCurrencyMismatch and
+// the other sends `false`.
+describe('moveOrgResourceDigest', () => {
+  const base = {
+    deviceId: '55555555-5555-4555-8555-555555555555',
+    targetOrgId: '22222222-2222-4222-8222-222222222222',
+    targetSiteId: '44444444-4444-4444-8444-444444444444',
+  };
+
+  it('treats an omitted acceptCurrencyMismatch as false', () => {
+    expect(moveOrgResourceDigest(base)).toBe(moveOrgResourceDigest({ ...base, acceptCurrencyMismatch: false }));
+  });
+
+  it('is insensitive to input key order', () => {
+    const reordered = { targetSiteId: base.targetSiteId, targetOrgId: base.targetOrgId, deviceId: base.deviceId };
+    expect(moveOrgResourceDigest(reordered)).toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds acceptCurrencyMismatch — accepting a billing consequence is a different grant', () => {
+    expect(moveOrgResourceDigest({ ...base, acceptCurrencyMismatch: true })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the device', () => {
+    expect(moveOrgResourceDigest({ ...base, deviceId: '55555555-5555-4555-8555-555555555556' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the target organization', () => {
+    expect(moveOrgResourceDigest({ ...base, targetOrgId: '22222222-2222-4222-8222-222222222223' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the target site', () => {
+    expect(moveOrgResourceDigest({ ...base, targetSiteId: '44444444-4444-4444-8444-444444444445' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('emits the sha256: prefixed shape the grant store compares literally', () => {
+    expect(moveOrgResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('scriptLanePolicyResourceDigest (#5612 W04)', () => {
+  it('binds the org AND the requested value AND the reset flag', () => {
+    const a = scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true });
+    expect(a).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(a).toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true, reset: false }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: false }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-2', unattendedEnabled: true }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true, reset: true }));
+  });
+});
+
 describe('passkeyRemovalResourceDigest', () => {
   it('is deterministic and isolates different passkey rows', () => {
     const first = passkeyRemovalResourceDigest('10000000-0000-4000-8000-000000000009');
@@ -108,6 +161,18 @@ describe('mfaStepUpGrant', () => {
       expect(redisStore.has(key)).toBe(true);
       expect(ttls.get(key)).toBe(300);
       expect(JSON.parse(redisStore.get(key)!)).toEqual(b);
+    });
+
+    // #5601 (Todd, 2026-09-11): the one multi-use operation gets a shorter
+    // window than the single-use default. Both numbers are pinned so a change
+    // to either is a deliberate edit here too.
+    it('writes approval_decide with a 120s TTL while every other operation keeps 300s', async () => {
+      const grantId = await mintStepUpGrant(bind('approval_decide'));
+      expect(ttls.get(`mfa:stepup:${grantId}`)).toBe(120);
+      const other = await mintStepUpGrant(bind('device_maintenance'));
+      expect(ttls.get(`mfa:stepup:${other}`)).toBe(300);
+      expect(stepUpGrantTtlSeconds('approval_decide')).toBe(120);
+      expect(stepUpGrantTtlSeconds('add_factor')).toBe(300);
     });
 
     it('returns null when Redis is down', async () => {
@@ -230,5 +295,57 @@ describe('mfaStepUpGrant operation isolation', () => {
     await expect(validateStepUpGrant(id!, bind('register_approver_device'))).resolves.toBe(true);
     // Non-consuming: the record is still present afterward.
     expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
+  });
+});
+
+/**
+ * #5601: the server-written `context` payload that lets a multi-use
+ * `approval_decide` grant carry WHAT its original ceremony achieved across the
+ * reuse window.
+ */
+describe('readStepUpGrant', () => {
+  it('returns the stored context when the binding matches', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3, at: 123 });
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.toEqual({
+      context: { level: 3, at: 123 },
+    });
+  });
+
+  it('is non-consuming, so one grant serves many redeems', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3 });
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.not.toBeNull();
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.not.toBeNull();
+    expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
+  });
+
+  it('refuses — and does NOT leak the context — on a binding mismatch', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3 });
+    await expect(readStepUpGrant(id!, bind('rotate_recovery_codes'))).resolves.toBeNull();
+    await expect(
+      readStepUpGrant(id!, { ...bind('add_factor'), sid: 'sid-2' }),
+    ).resolves.toBeNull();
+    await expect(
+      readStepUpGrant(id!, { ...bind('add_factor'), authEpoch: 99 }),
+    ).resolves.toBeNull();
+  });
+
+  it('reports an absent context as undefined rather than failing', async () => {
+    // Grants minted by every pre-#5601 operation store no context at all; they
+    // must stay readable rather than being mistaken for corrupt records.
+    const id = await mintStepUpGrant(bind('add_factor'));
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.toEqual({
+      context: undefined,
+    });
+  });
+
+  it('returns null for an unknown id', async () => {
+    await expect(readStepUpGrant('no-such-grant', bind('add_factor'))).resolves.toBeNull();
+  });
+
+  // The context is server-written payload, NOT something a caller presents, so
+  // including it in the equality check would make a legitimate redeem fail.
+  it('does not make the context part of the binding', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { anything: 'at all' });
+    await expect(validateStepUpGrant(id!, bind('add_factor'))).resolves.toBe(true);
   });
 });

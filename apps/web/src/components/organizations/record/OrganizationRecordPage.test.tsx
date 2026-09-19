@@ -20,6 +20,17 @@ vi.mock('@/lib/orgSwitch', () => ({
 const navigateToMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
+// The Service tab (#5573 W01) composes the deliverables components, which have
+// their own suites; here only the page's wiring (hash → tab → orgFetch prop)
+// is under test, so the tab is a stub that records what it was given.
+const serviceTabProps = vi.hoisted(() => vi.fn());
+vi.mock('./OrgServiceTab', () => ({
+  default: (props: { orgId: string; orgFetch: unknown }) => {
+    serviceTabProps(props);
+    return <div data-testid="org-service-tab" />;
+  },
+}));
+
 // OverflowTabs (the tab strip this page renders into) measures button widths
 // via `offsetWidth` against the container's `clientWidth`; jsdom always
 // reports 0 for both, which its own computeVisible() collapses to "only the
@@ -194,6 +205,16 @@ describe('OrganizationRecordPage — happy path', () => {
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-billing-tab')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tab')).toBeNull();
+  });
+
+  it('opens the Service tab named in the URL hash and hands it the record orgFetch', async () => {
+    window.location.hash = '#service';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-service-tab')).toBeTruthy());
+    expect(screen.queryByTestId('org-overview-tab')).toBeNull();
+    const props = serviceTabProps.mock.calls.at(-1)?.[0] as { orgId: string; orgFetch: unknown };
+    expect(props.orgId).toBe(RECORD_ORG);
+    expect(typeof props.orgFetch).toBe('function');
   });
 
   it('#contacts renders ContactsCard scoped to the record org', async () => {

@@ -54,7 +54,14 @@ export type PromotedComponent =
   | 'helper'
   | 'user-helper'
   | 'watchdog'
-  | 'backup';
+  | 'backup'
+  // recovery-iso (W04b) is never registered in agent_versions/binarySync —
+  // there is no per-device pinning need for recovery media, it is just "the
+  // current release's ISO" — so getPromotedComponentVersion always finds no
+  // row for it and this correctly, permanently falls back to the
+  // env-resolved BINARY_VERSION/BREEZE_VERSION, exactly like a deployment
+  // that has never synced.
+  | 'recovery-iso';
 
 /**
  * The promoted row could not be read, so we do NOT know which bytes match the

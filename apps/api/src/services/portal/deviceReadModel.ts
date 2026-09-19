@@ -1,4 +1,4 @@
-import { escapeCsvCell, type EnrichedPortalDevice } from '@breeze/shared';
+import { csvRow, type EnrichedPortalDevice } from '@breeze/shared';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -136,9 +136,6 @@ export async function* devicesCsvForOrg(
   orgId: string,
   args: { timezone: string },
 ): AsyncIterable<string> {
-  const csvRow = (values: readonly unknown[]) =>
-    values.map((value) => escapeCsvCell(String(value ?? ''))).join(',');
-
   yield csvRow([
     'Device',
     'Type',

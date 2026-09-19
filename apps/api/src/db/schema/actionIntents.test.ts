@@ -266,16 +266,39 @@ describe('action_intents schema', () => {
     expect(cols.policyKillEpoch.notNull).toBe(false);
   });
 
+  it('exposes the external (tenant tool-source) binding columns (tool catalog W01 PR B, #5216)', () => {
+    const cols = getTableColumns(actionIntents);
+    // Bare uuid, NO FK: the intent row is immutable evidence and must never be
+    // blocked (or tombstoned by ON DELETE SET NULL) when the tool row goes
+    // away — release revalidation reads the live row and fails closed.
+    expect(cols.toolSourceToolId).toBeDefined();
+    expect(cols.toolSourceToolId.notNull).toBe(false);
+    expect(cols.toolSourceToolId.dataType).toBe('string');
+    expect(cols.toolSourceToolId.columnType).toBe('PgUUID');
+    expect(cols.toolRevision).toBeDefined();
+    expect(cols.toolRevision.notNull).toBe(false);
+    expect(cols.toolRevision.columnType).toBe('PgText');
+  });
+
   it('has no extra/missing top-level columns', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
       [
+        'triggerKind',
+        'triggerRefId',
+        'triggerKey',
         'id',
         'orgId',
         'partnerId',
         'requestedByUserId',
         'originPrincipalKind',
         'originPrincipalId',
+        // #5022 W01 — the AI surface the intent was created from, so the
+        // origin survives the release worker's from-scratch AuthContext
+        // rebuild. Distinct from originPrincipal*, which is the REQUESTER.
+        'aiOriginKind',
+        'aiOriginSessionId',
+        'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
         'scopeKind',
@@ -307,6 +330,8 @@ describe('action_intents schema', () => {
         'decidedByUserId',
         'decidedAssuranceLevel',
         'decidedVia',
+        // AI script authoring W04 (#5612)
+        'scriptReviewerEvidence',
         'executionStartedAt',
         'executedAt',
         'result',
@@ -320,6 +345,9 @@ describe('action_intents schema', () => {
         'taskId',
         'taskStepKey',
         'operationKey',
+        // Tool catalog W01 PR B (#5216): external Tier-3 tool binding.
+        'toolSourceToolId',
+        'toolRevision',
       ].sort(),
     );
   });

@@ -1,0 +1,54 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'expo.modules.breezeattestation'
+version = '1.0.0'
+
+def expoModulesCorePlugin = new File(
+  project(":expo-modules-core").projectDir.absolutePath,
+  "ExpoModulesCorePlugin.gradle"
+)
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+android {
+  namespace "expo.modules.breezeattestation"
+  compileSdk safeExtGet("compileSdkVersion", 35)
+
+  defaultConfig {
+    // Deliberately NOT raised to 28 for StrongBox, and deliberately the same
+    // floor the app itself uses — a library minSdk above the app's fails the
+    // manifest merger outright. Key attestation and StrongBox are probed at
+    // RUNTIME by `isAttestationAvailable()`, so a device below 28 reports
+    // unavailable and the client takes the legacy unattested path (honest
+    // L2/L3) rather than the app failing to install.
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+  }
+
+  lintOptions {
+    abortOnError false
+  }
+
+  publishing {
+    singleVariant("release") {
+      withSourcesJar()
+    }
+  }
+}
+
+dependencies {
+  // Biometric-gated signing. `BiometricPrompt` + `CryptoObject` is the only
+  // way to satisfy `setUserAuthenticationRequired(true)` on a per-use key.
+  implementation "androidx.biometric:biometric:1.1.0"
+  // Play Integrity. OPTIONAL at runtime: a build with no Play services omits
+  // the token (the server's schema marks it optional) rather than fabricating
+  // one — a fake token is worse than an absent one.
+  implementation "com.google.android.play:integrity:1.4.0"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+}

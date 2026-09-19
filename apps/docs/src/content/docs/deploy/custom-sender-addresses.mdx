@@ -1,0 +1,248 @@
+---
+title: Custom sender addresses
+description: "Send Breeze RMM email from your own domain: one address via EMAIL_FROM, per-stream addresses on any relay, or the DNS wizard with a domain API."
+sidebar:
+  order: 3
+  label: Custom Sender Addresses
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Out of the box, every email Breeze sends leaves from one address: whatever you
+set as `EMAIL_FROM`. That is fine for a single-tenant install, but it means a
+ticket update, an invoice and a password reset all arrive from the same mailbox,
+and on a multi-partner server they all arrive from yours.
+
+Custom sender addresses let a partner send customer-facing mail from a domain
+they control, with a different address per kind of mail — `support@` for ticket
+updates, `billing@` for quotes and invoices. This page is about the mail Breeze
+**sends**. It has nothing to do with `TICKETS_INBOUND_DOMAIN`, which is the
+address Breeze **receives** on, or with `MAILGUN_DOMAIN`.
+
+<Aside>
+  This is entirely opt-in. Upgrading changes nothing: the release adds three
+  empty tables, no new environment variable is required, the background worker
+  is not registered, the settings tab is hidden, and every email is byte for byte
+  what it was before. Nothing below happens until you set
+  `EMAIL_DOMAINS_PROVIDER`.
+</Aside>
+
+## Which setup you want
+
+| | One address | Per-stream addresses | DNS wizard |
+|---|---|---|---|
+| `EMAIL_DOMAINS_PROVIDER` | unset | `static` | `resend` |
+| Works on | any transport | any transport — SMTP relay, Mailgun, Resend | Resend only |
+| Who proves the domain | you, by setting `EMAIL_FROM` | you, by listing it and sending a test | the partner, by publishing DNS records |
+| Addresses you get | one, for everything | one per mail stream | one per mail stream |
+| Extra setup | none | your relay must already be allowed to send as those addresses | a Resend key that can manage domains |
+| Suits | a single-tenant install | most self-hosters | a server with several partners, or one that wants Breeze to check DNS |
+
+## One address for everything
+
+This is what you already have. `EMAIL_FROM` is the sender for every message, and
+you can give it a display name:
+
+```bash
+EMAIL_FROM="Acme IT <support@acme.com>"
+```
+
+Nothing else on this page applies. Skip to [Environment
+Variables](/deploy/environment/) if that is all you wanted.
+
+## Per-stream addresses on any relay
+
+Set `EMAIL_DOMAINS_PROVIDER=static` when you relay through SMTP, Microsoft 365,
+Postfix, Amazon SES SMTP or Mailgun — anywhere Breeze has no domain API to ask.
+You tell Breeze which domains this server's mail relay is allowed to send as,
+and Breeze takes you at your word.
+
+<Aside type="caution" title="The precondition, in one sentence">
+  Your relay must already be allowed to send as those addresses — Microsoft 365
+  SendAs rights, a Postfix sender map, the relay's own verified domains — with
+  SPF and DKIM for the domain already in place.
+</Aside>
+
+**Listing a domain does not authorise it.** `EMAIL_DOMAINS_STATIC_ALLOWED` is
+your statement that the relay will accept those senders; Breeze cannot check it,
+and it does not publish, sign or verify anything on your behalf. SPF and DKIM for
+those domains are part of your mail setup, not part of Breeze.
+
+<Steps>
+
+1. **List the domains, then restart.**
+
+   ```bash
+   EMAIL_DOMAINS_PROVIDER=static
+   EMAIL_DOMAINS_STATIC_ALLOWED=acme.com
+   ```
+
+   On a server with more than one partner, bind each entry to the partner that
+   may claim it, by slug:
+
+   ```bash
+   EMAIL_DOMAINS_STATIC_ALLOWED=acme.com:acme,northwind.example:northwind
+   ```
+
+   An unbound entry can be claimed by any partner on the server, which is the
+   right behaviour for a single-partner install and the wrong one for a shared
+   server. A partner who tries to add a domain you have not listed is told to ask
+   their Breeze administrator.
+
+2. **Add the domain in the interface.**
+
+   Partner Settings, under Communications, now has a **Sender Addresses** tab.
+   Add the domain there. It sits in "Waiting for DNS" until the next step —
+   there are no DNS records to publish in this mode.
+
+3. **Send the test email, which is what verifies it.**
+
+   The test sends one real message from the domain to your own sign-in address.
+   If your relay accepts it, the domain becomes verified and usable. If the relay
+   refuses the sender, the domain stays unverified and the relay's refusal is
+   shown verbatim, which is almost always a missing SendAs right or a sender map
+   that does not cover the address.
+
+4. **Choose the addresses.**
+
+   Set the local part for each stream you care about. A stream you leave alone
+   keeps sending from `EMAIL_FROM`; there is no implicit fallback between
+   streams, so what you configure is exactly what changes.
+
+</Steps>
+
+If your relay later stops accepting the sender — a SendAs right is revoked, say —
+the message is not lost: it goes out from `EMAIL_FROM` instead, and the refusal
+appears on the domain so you can fix it.
+
+## The DNS wizard
+
+Set `EMAIL_DOMAINS_PROVIDER=resend` when your Breeze server sends through Resend
+and you want Breeze to create the domain, show the records to publish, and check
+them for you. This is what hosted Breeze runs.
+
+<Steps>
+
+1. **Use a key that can manage domains.**
+
+   ```bash
+   EMAIL_DOMAINS_PROVIDER=resend
+   EMAIL_DOMAINS_RESEND_API_KEY=re_...
+   EMAIL_DOMAINS_REGION=us-east-1
+   ```
+
+   It must be a `full_access` key. A sending-only key can send mail but cannot
+   create or check a domain, and Breeze will say so in the settings tab rather
+   than failing every attempt. One account for both the platform sender and
+   partner domains is fine on a self-hosted server — see the trade-off below.
+
+2. **Add the domain in Partner Settings.**
+
+   Breeze creates it at the provider and shows the DKIM, SPF and return-path
+   records to publish, each with the exact name that has to resolve.
+
+3. **Publish the records and wait.**
+
+   Breeze re-checks on its own — every two minutes at first, then less often —
+   and you can force a check from the tab. DNS changes can take up to 72 hours to
+   become visible.
+
+</Steps>
+
+**A domain that is already verified in your Resend account is adopted, not
+recreated.** It shows as verified immediately, and Breeze will never delete it —
+removing it from Breeze drops the local record and leaves your provider account
+untouched. That matters because the domain you are most likely to add is the one
+your `EMAIL_FROM` already uses.
+
+## Environment variables
+
+Every one of these is optional, and none is ever required by an upgrade.
+Validation only ever complains about a contradiction you introduced — `resend`
+with no key, or `fake` in production.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EMAIL_DOMAINS_PROVIDER` | unset | `resend`, `static` or `fake`. Unset means the feature is off: the settings tab is hidden and the routes answer 404. `fake` is a deterministic test double, refused in production |
+| `EMAIL_DOMAINS_STATIC_ALLOWED` | empty | `static` only. Comma-separated `domain` or `domain:partner-slug`. Your statement that this server's relay may send as these domains |
+| `EMAIL_DOMAINS_RESEND_API_KEY` | — | `resend` only, required. A `full_access` key; a sending-only key cannot manage domains |
+| `EMAIL_DOMAINS_RESEND_SENDING_KEY` | falls back to the key above | Optional sending-only key of the same account, so the send path never holds the management key |
+| `EMAIL_DOMAINS_REGION` | `us-east-1` | Region for newly created domains: `us-east-1`, `eu-west-1`, `sa-east-1`, `ap-northeast-1` |
+| `EMAIL_DOMAINS_MAX_PER_PARTNER` | `3` | How many sending domains one partner may hold |
+| `EMAIL_DOMAINS_DAILY_SEND_CAP` | unlimited when self-hosted | Messages per partner per UTC day on the custom-domain lane. `0` is unlimited. Over the cap, mail goes out from `EMAIL_FROM` as it would today |
+| `EMAIL_DOMAINS_PARTNER_ALLOWLIST` | empty | Comma-separated partner ids. Empty means every eligible partner |
+| `EMAIL_DOMAINS_DENYLIST` | empty | Extra domains nobody on this server may add |
+| `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | Delivery-webhook signing secret. Unset leaves the endpoint inert, which is the right setting behind NAT or a VPN |
+
+## Mapping the variables into your containers
+
+If you run the compose file that ships with Breeze, the upgrade brings the
+mapping with it and there is nothing to do. If you maintain your own compose
+file, a value in `.env` alone is inert — Compose only interpolates what the
+service block names. Add these to the environment of both your `api` service and,
+if you run one, your `worker` service:
+
+```yaml
+  EMAIL_DOMAINS_PROVIDER: ${EMAIL_DOMAINS_PROVIDER:-}
+  EMAIL_DOMAINS_STATIC_ALLOWED: ${EMAIL_DOMAINS_STATIC_ALLOWED:-}
+  EMAIL_DOMAINS_RESEND_API_KEY: ${EMAIL_DOMAINS_RESEND_API_KEY:-}
+  EMAIL_DOMAINS_RESEND_SENDING_KEY: ${EMAIL_DOMAINS_RESEND_SENDING_KEY:-}
+  EMAIL_DOMAINS_REGION: ${EMAIL_DOMAINS_REGION:-}
+  EMAIL_DOMAINS_MAX_PER_PARTNER: ${EMAIL_DOMAINS_MAX_PER_PARTNER:-}
+  EMAIL_DOMAINS_DAILY_SEND_CAP: ${EMAIL_DOMAINS_DAILY_SEND_CAP:-}
+  EMAIL_DOMAINS_PARTNER_ALLOWLIST: ${EMAIL_DOMAINS_PARTNER_ALLOWLIST:-}
+  EMAIL_DOMAINS_DENYLIST: ${EMAIL_DOMAINS_DENYLIST:-}
+  EMAIL_DOMAINS_WEBHOOK_SECRET: ${EMAIL_DOMAINS_WEBHOOK_SECRET:-}
+```
+
+The domain worker runs wherever your background jobs run, so if you have split
+the worker into its own container the same block has to reach it too.
+
+## What sharing one Resend account trades away
+
+Hosted Breeze keeps partner-domain mail in a **separate** Resend account from the
+mail that carries password resets and security notices, and refuses to start if
+the two keys match. Self-hosted, you may point
+`EMAIL_DOMAINS_RESEND_API_KEY` at the same account as `RESEND_API_KEY`, and
+Breeze logs one informational line when you do.
+
+What you give up is isolation of reputation. Resend enforces its bounce and spam
+limits **account-wide**: if mail from a partner's domain draws enough complaints
+to pause the account, it pauses password resets and account-recovery mail with
+it. On a single-partner server that is usually an acceptable trade, since it is
+all your own mail either way. On a server with several partners it is not — one
+partner's list hygiene can lock everyone else out of their own account. Use a
+second Resend account there.
+
+## What your technicians will see
+
+The **Sender Addresses** tab lives in Partner Settings, under Communications,
+next to Ticketing. Three things on it are worth explaining once.
+
+**A dedicated subdomain is better than the root domain.** Both work, and the tab
+says so, but `mail.acme.com` keeps the sending reputation of Breeze mail separate
+from the rest of the company's mail; a root domain already verified with the
+email provider somewhere else cannot be added at all, because Breeze never takes
+a domain away from another account; and some mail filters flag an outside sender
+that uses the recipient's own domain even when DKIM passes, which matters most
+for internal teams whose customers are colleagues.
+
+**The DNS records are shown with the exact name that has to resolve.** DKIM lives
+under `resend._domainkey`, and SPF and the return path under `send`, so none of
+them collide with the mail the domain already handles. The most common reason a
+domain never verifies is pasting the short label where the provider wanted the
+full name, which is why both are on screen.
+
+**Replies do not always go where the From address does.** Ticket email sets
+Reply-To to the Breeze inbound address, so a customer's reply lands back on the
+ticket. Quotes and invoices set Reply-To to the partner's billing email. Portal
+invitations, password resets and scheduled reports set no Reply-To at all, so a
+reply goes to the address chosen in the tab. Make each address a real mailbox or
+an alias: people and auto-responders answer the From address regardless of what
+Reply-To says. On a server with no inbound address configured at all, that is
+true of ticket email too, and the tab warns about it.
+
+## Related
+
+- [Environment Variables](/deploy/environment/)
+- [Inbound email-to-ticket](/deploy/environment/#inbound-email-to-ticket-mailgun)

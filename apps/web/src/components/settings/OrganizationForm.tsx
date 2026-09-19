@@ -53,6 +53,10 @@ type OrganizationFormProps = {
   defaultValues?: Partial<OrganizationFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  /** Classes on the `<form>`. Defaults to a standalone card; a host that is
+   *  already a card (the add-organization dialog) passes flat padding instead
+   *  so the form never renders as a card inside a card. */
+  className?: string;
 };
 
 const typeOptions = [
@@ -75,7 +79,8 @@ export default function OrganizationForm({
   onCancel,
   defaultValues,
   submitLabel,
-  loading
+  loading,
+  className = 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'
 }: OrganizationFormProps) {
   const { t } = useTranslation('settings');
   const organizationSchema = useMemo(() => createOrganizationSchema(t), [t]);
@@ -114,7 +119,7 @@ export default function OrganizationForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+      className={className}
     >
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
@@ -145,6 +150,7 @@ export default function OrganizationForm({
           <input
             id="organization-slug"
             placeholder={t('organizationForm.placeholders.slug')}
+            aria-describedby="organization-slug-help"
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...slugField}
             onChange={event => {
@@ -153,6 +159,9 @@ export default function OrganizationForm({
               slugField.onChange(event);
             }}
           />
+          <p id="organization-slug-help" className="text-xs text-muted-foreground">
+            {t('organizationForm.help.slug')}
+          </p>
           {errors.slug && <p className="text-sm text-destructive">{errors.slug.message}</p>}
         </div>
 

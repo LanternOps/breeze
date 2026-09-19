@@ -7,7 +7,7 @@
     },
     "loading": "Automatisierung wird geladen...",
     "breadcrumb": {
-      "automations": "Automatisierungen",
+      "automations": "Aufträge",
       "new": "Neue Automatisierung",
       "edit": "Automatisierung bearbeiten"
     },
@@ -106,7 +106,8 @@
       "sendNotification": "Benachrichtigung senden",
       "createAlert": "Benachrichtigung erstellen",
       "executeCommand": "Befehl ausführen",
-      "deploySoftware": "Software bereitstellen"
+      "deploySoftware": "Software bereitstellen",
+      "aiTriage": "KI-Triage"
     },
     "severity": {
       "critical": "Kritisch",
@@ -133,7 +134,8 @@
       "saveAutomation": "Automatisierung speichern",
       "copyUrl": "URL kopieren",
       "addCondition": "Bedingung hinzufügen",
-      "addAction": "Aktion hinzufügen"
+      "addAction": "Aktion hinzufügen",
+      "removeAction": "Aktion entfernen"
     },
     "scope": {
       "title": "Umfang",
@@ -204,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Erhöhte Rechte",
     "relativeTime": {
       "justNow": "Gerade eben",
       "minutesAgo": "Vor {{count}}m",
@@ -341,8 +344,8 @@
       "delete": "Die Automatisierung konnte nicht gelöscht werden"
     },
     "loading": "Automatisierungen werden geladen...",
-    "title": "Automatisierungen",
-    "description": "Erstellen und verwalten Sie automatisierte Workflows.",
+    "title": "Aufträge",
+    "description": "Geplante, manuelle, Webhook- und ereignisgesteuerte Automatisierungen.",
     "actions": {
       "new": "Neue Automatisierung",
       "deleting": "Löschen..."
@@ -351,6 +354,14 @@
       "title": "Automatisierung löschen",
       "confirmPrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "confirmSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "tabs": {
+      "ariaLabel": "Auftragstypen",
+      "all": "Alle",
+      "scheduled": "Geplant",
+      "on-demand": "Manuell",
+      "webhooks": "Webhooks",
+      "event-rules": "Ereignisregeln"
     }
   },
   "complianceDashboard": {
@@ -1332,6 +1343,11 @@
       "confirmSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
     },
     "library": {
+      "target": "Importieren in",
+      "allOrgs": "Alle Organisationen (partnerweit)",
+      "chooseOrg": "Organisation auswählen",
+      "partnerPermission": "Sie können Skripte nicht für alle Organisationen importieren. Wählen Sie stattdessen eine Organisation aus.",
+      "importSuccess": "„{{name}}“ wurde importiert",
       "title": "Systemskriptbibliothek",
       "description": "Importieren Sie Skripte in Ihre Organisation",
       "searchPlaceholder": "Systemskripte suchen...",
@@ -1370,12 +1386,21 @@
     "modeSkip": "Überspringen",
     "modeRename": "Mit neuem Namen importieren",
     "modeNewVersion": "Als neue Version des vorhandenen Skripts hinzufügen",
+    "tagLegacy": "Als Legacy-Import kennzeichnen",
+    "tagLegacyHint": "Fügt das Tag „legacy-import“ hinzu, damit ein Fleet Design nachvollziehen kann, wofür diese Skripte gedacht waren.",
     "partnerWide": "Für alle Organisationen verfügbar machen (partnerweit)",
     "importCommit": "{{count}} Skripte importieren",
     "resultSummary": "{{imported}} importiert, {{renamed}} umbenannt, {{versioned}} versioniert, {{skipped}} übersprungen, {{failed}} fehlgeschlagen",
     "scriptCount": "{{count}} Skripte im Bundle",
     "statusInvalid": "Ungültig",
-    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
+    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren.",
+    "importDoneTitle": "Import abgeschlossen",
+    "importDoneNothing": "Es wurde nichts importiert",
+    "importDoneOpen": "Skript öffnen",
+    "resultActionImported": "Importiert",
+    "resultActionRenamed": "Umbenannt von {{name}}",
+    "resultActionVersioned": "Als neue Version hinzugefügt",
+    "resultOpen": "Öffnen"
   },
   "testRunner": {
     "title": "Testlauf",
@@ -1412,5 +1437,33 @@
       "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf.",
       "pollFailed": "Ergebnis konnte nicht gelesen werden — der Lauf wurde möglicherweise gelöscht oder Ihr Zugriff hat sich geändert."
     }
+  },
+  "provenance": {
+    "origin": "Herkunft",
+    "originHuman": "Mensch",
+    "originAiProposal": "KI-Vorschlag",
+    "originImported": "Importiert",
+    "originSystem": "Integriert",
+    "reviewed": "Geprüft",
+    "editedSinceReview": "Seit der Prüfung bearbeitet",
+    "notReviewed": "Nicht geprüft",
+    "notReviewedDetail": "KI-erstellt und von einer Person freigegeben, aber für diese Version wurde keine Modellprüfung durchgeführt.",
+    "provenanceTitle": "Nachweis",
+    "reviewSummary": "Zusammenfassung der Prüfung",
+    "approvedBy": "Freigegeben von",
+    "evidenceErased": "Prüfnachweis gelöscht",
+    "allOrigins": "Alle Herkünfte"
+  },
+  "scriptProposalDetail": {
+    "loading": "Wird geladen …",
+    "loadError": "Dieser Vorschlag konnte nicht geladen werden.",
+    "evidenceErased": "Die Prüfnachweise dieses Vorschlags wurden gelöscht (die Quellorganisation wurde zusammengeführt oder die Aufbewahrungsfrist ist abgelaufen). Die daraus resultierende Skriptausführung ist weiterhin im Geräteverlauf sichtbar.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Risikostufe",
+    "reviewSummaryLabel": "Prüfzusammenfassung",
+    "riskLow": "Niedrig",
+    "riskMedium": "Mittel",
+    "riskHigh": "Hoch",
+    "riskCritical": "Kritisch"
   }
 }

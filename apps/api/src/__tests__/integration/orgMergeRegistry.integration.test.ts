@@ -212,6 +212,34 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
     'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
+  // AI script proposals (2026-10-16-100100): RAISEs 42501 iff any content /
+  // identity column changes, org_id included. Lifecycle columns (status,
+  // decision_note, intent_id, …) stay writable — which is exactly what the
+  // table's `custom` executor touches (fenceScriptProposals); see
+  // CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID below.
+  'script_proposals.script_proposals_immutable_trg':
+    'RAISEs 42501 iff org_id (or any other content/identity column) changes; lifecycle columns writable',
+  // Append-only review evidence: unconditional RAISE (55000) on UPDATE, same
+  // retention-GUC-only bypass as the audit tables. Table is leave-for-erasure.
+  'script_proposal_reviews.script_proposal_reviews_block_update':
+    'unconditional append-only RAISE (55000) on UPDATE',
+};
+
+/**
+ * `custom` executors whose BOTH halves are proven never to write `org_id`,
+ * so a blocking trigger on their table cannot abort the merge. The default
+ * assumption for `custom` is "ends in buildRepoint()"; an entry here needs
+ * (a) the executor pair to touch only non-org columns and (b) a live-DB
+ * merge test that drives executeOrgMerge over a loser row and asserts the
+ * row's org_id is unchanged afterwards.
+ */
+const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>> = {
+  // fenceScriptProposals sets status/decision_note in the resolve phase;
+  // moveScriptProposals is a documented no-op. Proven by
+  // scriptProposalsLifecycle.integration.test.ts ("an org merge expires live
+  // proposals in the loser and leaves terminal ones alone": org_id stays with
+  // the loser for both fenced and terminal rows).
+  script_proposals: 'fence (status/decision_note only) + no-op move — orgMergeCustomExecutors.ts',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
@@ -262,6 +290,18 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // is still loser-owned) does not abort.
   'device_custom_field_values.device_custom_field_values_coherent':
     'merge fence: permits the repoint while the definition is still loser-owned, gated on same-partner status=\'merging\'',
+  // Cancels pending/queued CIS remediation actions for the moving device
+  // (2026-10-20-140000-cancel-cis-remediation-on-device-org-move.sql). It
+  // carries its own merge fence: `WHERE o.status::text = 'merging'` short-
+  // circuits to `RETURN NEW` before the cancellation UPDATE ever runs, so
+  // during a merge (which repoints devices.org_id set-based for the loser)
+  // it never touches cis_remediation_actions at all — same fence pattern as
+  // custom_field_definitions_no_shadow and device_custom_field_values_
+  // coherent above. Outside a merge it only ever writes
+  // cis_remediation_actions, never devices.org_id itself, and always
+  // `RETURN NEW` unconditionally — it neither RAISEs nor reverts the repoint.
+  'devices.breeze_cancel_cis_remediation_before_device_org_move':
+    'merge fence short-circuits during org merge; otherwise only cancels remediation rows and always RETURN NEW, never blocking or reverting the org_id write',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',
@@ -571,6 +611,7 @@ describe('Org merge policy registry contract', () => {
     const violations = blockingTables
       .filter((table) => {
         const kind = policies.get(table)?.kind;
+        if (kind === 'custom' && table in CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID) return false;
         return kind !== undefined && !NON_MUTATING.has(kind);
       })
       .map((table) => {

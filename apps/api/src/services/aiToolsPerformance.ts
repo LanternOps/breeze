@@ -15,7 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds, deviceScopeCondition } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -24,6 +24,7 @@ import {
   normalizeStartupItems,
   resolveStartupItem,
 } from './startupItems';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 type MetricPoint = {
@@ -74,6 +75,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -88,12 +92,6 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 function computeStats(values: number[]): { min: number; max: number; avg: number; current: number } {
@@ -397,6 +395,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // Site is an app-layer authz axis only (RLS does not cover it) — join
       // devices and narrow by siteId for a site-restricted caller.
       if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
+      // W04 (#5715): the device-LESS analysis run's frozen set — it has no site
+      // axis, so the narrowing above does nothing for it.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // The per-device fold runs in Postgres, not here. Selecting raw rollup
       // rows materialized (org devices) x (buckets in window) — a 168h window
@@ -512,6 +514,18 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const deviceId = input.deviceId as string | undefined;
       const idleThresholdMinutes = Math.min(Math.max(1, Number(input.idleThresholdMinutes) || 15), 1440);
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
+      // Site authority is app-layer only. A defined ceiling constrains even
+      // the fleet form (no deviceId); a defined-empty one denies everything.
+      const allowedSiteIds = auth.allowedSiteIds;
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({
+          idleThresholdMinutes,
+          totalActiveSessions: 0,
+          totalDevicesWithSessions: 0,
+          devices: [],
+          note: SITE_SCOPE_EMPTY_NOTE,
+        });
+      }
 
       if (deviceId) {
         const access = await verifyDeviceAccess(deviceId, auth);
@@ -522,6 +536,13 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(deviceSessions.orgId);
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086): the fleet form (no deviceId) is otherwise
+      // org-wide, so a device-bound run reads sibling devices' sessions. It is
+      // independent of the site ceiling above — a device-less analysis run has
+      // `allowedDeviceIds` and no `allowedSiteIds` at all.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({
@@ -620,6 +641,17 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const username = input.username as string | undefined;
       const daysBack = Math.min(Math.max(1, Number(input.daysBack) || 30), 365);
       const limit = Math.min(Math.max(1, Number(input.limit) || 200), 500);
+      // Apply the current device's site before ordering/LIMIT so a hidden
+      // newest session cannot starve an older visible result.
+      const allowedSiteIds = auth.allowedSiteIds;
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({
+          daysBack,
+          totalSessions: 0,
+          message: 'No session data found for the selected filters.',
+          note: SITE_SCOPE_EMPTY_NOTE,
+        });
+      }
 
       if (deviceId) {
         const access = await verifyDeviceAccess(deviceId, auth);
@@ -632,6 +664,11 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (username) conditions.push(eq(deviceSessions.username, username));
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086) — see get_active_users above; the site axis
+      // alone does not constrain a device-less analysis run.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({
@@ -747,9 +784,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       let collectionFailed = false;
       let freshBootRecord: ReturnType<typeof parseCollectorBootMetricsFromCommandResult> = null;
       if (triggerCollection && device.status === 'online') {
-        const { executeCommand } = await getCommandQueue();
         try {
-          const commandResult = await executeCommand(deviceId, 'collect_boot_performance', {}, {
+          const commandResult = await aiExecuteCommand(auth, 'analyze_boot_performance', deviceId, 'collect_boot_performance', {}, {
             userId: auth.user.id,
             timeoutMs: 15000,
           });
@@ -947,8 +983,9 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // an error in this case.
 
       // Send command to agent
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(
+      const result = await aiExecuteCommand(
+        auth,
+        'manage_startup_items',
         deviceId,
         'manage_startup_item',
         { itemName: item.name, itemType: item.type, itemPath: item.path, itemId: item.itemId, action, reason },

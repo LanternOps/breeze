@@ -93,6 +93,22 @@ vi.mock('../services/aiCostTracker', () => ({
   updateBudget: vi.fn(),
 }));
 
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: vi.fn(async () => ({
+    kind: 'unlimited',
+    reservationId: '66666666-6666-4666-8666-666666666666',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(async () => ({
+    kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({
+    kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+}));
+
 vi.mock('../services/streamingSessionManager', () => ({
   streamingSessionManager: {
     getOrCreate: vi.fn(),
@@ -263,6 +279,11 @@ describe('AI routes', () => {
         sanitizedContent: 'hello there',
         systemPrompt: 'sp',
         maxBudgetUsd: undefined,
+        resolved: {
+          source: 'platform',
+          apiKey: 'platform-key',
+          model: 'claude-sonnet-4-5-20250929',
+        },
       } as any);
     }
 
@@ -292,8 +313,8 @@ describe('AI routes', () => {
 
     it('409s untouched when the session is busy for a non-approval reason', async () => {
       mockPreflightOk();
-      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
-      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+      const activeSession = makeActiveSession();
+      vi.mocked(streamingSessionManager.get).mockReturnValue(activeSession);
       vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('not_blocked_on_approvals');
 
       const res = await postMessage();
@@ -308,11 +329,11 @@ describe('AI routes', () => {
     it('proceeds with the message when the blocked turn settles and concludes', async () => {
       mockPreflightOk();
       const activeSession = makeActiveSession();
+      vi.mocked(streamingSessionManager.get)
+        .mockReturnValueOnce(activeSession)
+        .mockReturnValueOnce(undefined);
       vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
-      // Busy on first check; free after the settled turn concluded.
-      vi.mocked(streamingSessionManager.tryTransitionToProcessing)
-        .mockReturnValueOnce(false)
-        .mockReturnValueOnce(true);
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
       vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('concluded');
       vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
 
@@ -327,8 +348,7 @@ describe('AI routes', () => {
 
     it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {
       mockPreflightOk();
-      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
-      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+      vi.mocked(streamingSessionManager.get).mockReturnValue(makeActiveSession());
       vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('still_processing');
 
       const res = await postMessage();
@@ -337,7 +357,7 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.error).toMatch(/wrapping up the previous turn/);
       // Short-circuit: no second transition attempt once settling failed.
-      expect(vi.mocked(streamingSessionManager.tryTransitionToProcessing)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(streamingSessionManager.tryTransitionToProcessing)).not.toHaveBeenCalled();
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
   });

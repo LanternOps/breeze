@@ -135,6 +135,7 @@ import {
   deleteSchedule,
   effectiveSchedule,
   listSchedules,
+  loadEnabledBaselineCadences,
   resolveEffectiveSchedulesForPartner,
   updateSchedule,
 } from './scheduleService';
@@ -153,6 +154,7 @@ const CRON = '0 6 * * *';
 /** Monday 07:00 — literal minute/hour, `*` day-of-month and month, one
  *  day-of-week. The only shape `isWeeklyLiteralCron` accepts. */
 const NARRATIVE_CRON = '0 7 * * 1';
+const DESIGN_CRON = '0 6 1 * *';
 const RUN_ID = '00000000-0000-4000-8000-00000000000a';
 const AI_AGENT_PRINCIPAL = { kind: 'ai_agent', agentId: AGENT_ID, runId: RUN_ID } as const;
 
@@ -285,19 +287,19 @@ describe('effectiveSchedule', () => {
       name: 'no override passes the baseline through',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
       override: null,
-      expected: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
+      expected: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents'), actMode: false },
     },
     {
       name: 'a disabled baseline cannot be re-enabled by the override',
       baseline: { enabled: false, sweepKinds: kinds('disk_pressure') },
       override: { enabled: true, sweepKinds: kinds('disk_pressure') },
-      expected: { enabled: false, sweepKinds: kinds('disk_pressure') },
+      expected: { enabled: false, sweepKinds: kinds('disk_pressure'), actMode: false },
     },
     {
       name: 'a disabled override disables an enabled baseline',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure') },
       override: { enabled: false, sweepKinds: kinds('disk_pressure') },
-      expected: { enabled: false, sweepKinds: kinds('disk_pressure') },
+      expected: { enabled: false, sweepKinds: kinds('disk_pressure'), actMode: false },
     },
     {
       name: 'kinds are intersected, never unioned',
@@ -305,13 +307,13 @@ describe('effectiveSchedule', () => {
       // 'service_down' is NOT in the baseline: a stale override may name it,
       // and it must never widen what the org actually sweeps.
       override: { enabled: true, sweepKinds: kinds('stale_agents', 'service_down') },
-      expected: { enabled: true, sweepKinds: kinds('stale_agents') },
+      expected: { enabled: true, sweepKinds: kinds('stale_agents'), actMode: false },
     },
     {
       name: 'an empty override kind list sweeps nothing',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
       override: { enabled: true, sweepKinds: [] as AiSweepKind[] },
-      expected: { enabled: true, sweepKinds: [] as AiSweepKind[] },
+      expected: { enabled: true, sweepKinds: [] as AiSweepKind[], actMode: false },
     },
   ])('$name', ({ baseline, override, expected }) => {
     expect(effectiveSchedule(baseline, override)).toEqual(expected);
@@ -322,6 +324,88 @@ describe('effectiveSchedule', () => {
     const result = effectiveSchedule(baseline, null);
     result.sweepKinds.push('service_down' as AiSweepKind);
     expect(baseline.sweepKinds).toEqual(kinds('disk_pressure'));
+  });
+});
+
+// #4442 W04 — act mode is TIGHTEN-ONLY in both directions and three-valued:
+// a partner baseline arms it (`true`), an org override may only DISARM
+// (`false`) or stay silent (`null`/absent = inherit). An override can never
+// arm what the partner did not, and `null` on a baseline is "not armed", not
+// "unknown". Every unresolved combination resolves to FALSE — this is the
+// brake on Tier-3 unattended execution, so it fails closed.
+describe('effectiveSchedule actMode (tighten-only)', () => {
+  const kinds = (...k: string[]) => k as AiSweepKind[];
+  const cases: Array<[boolean | null, boolean | null | undefined, boolean]> = [
+    [true, undefined, true],
+    [true, null, true],
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [null, true, false],
+    [null, undefined, false],
+    [false, undefined, false],
+    [null, false, false],
+  ];
+  it.each(cases)('baseline=%s override=%s -> %s', (baselineActMode, overrideActMode, want) => {
+    const baseline = { enabled: true, sweepKinds: kinds('disk_pressure'), actMode: baselineActMode };
+    const override = overrideActMode === undefined
+      ? null
+      : { enabled: true, sweepKinds: kinds('disk_pressure'), actMode: overrideActMode };
+    expect(effectiveSchedule(baseline, override).actMode).toBe(want);
+  });
+
+  it('is false when neither side mentions actMode at all (absent = not armed)', () => {
+    expect(effectiveSchedule(
+      { enabled: true, sweepKinds: kinds('disk_pressure') },
+      { enabled: true, sweepKinds: kinds('disk_pressure') },
+    ).actMode).toBe(false);
+  });
+});
+
+describe('actMode write rules', () => {
+  it('a partner baseline may arm act mode', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ actMode: true });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { actMode: true });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: true });
+  });
+
+  it('a partner admin without full org access cannot arm act mode', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await expect(
+      updateSchedule(partnerAuth({ partnerOrgAccess: 'selected' }), BASELINE_ID, { actMode: true }),
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('an org override may DISARM act mode', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+    dbState.updateReturning = overrideRow({ actMode: false });
+
+    await updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: false });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: false });
+  });
+
+  it('an org override may clear its disarm back to inherit (null)', async () => {
+    dbState.scheduleRows = [[overrideRow({ actMode: false })]];
+    dbState.updateReturning = overrideRow({ actMode: null });
+
+    await updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: null });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: null });
+  });
+
+  it('an org override CANNOT arm act mode — rejected, never silently coerced', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+
+    await expect(
+      updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: true }),
+    ).rejects.toMatchObject({ code: 'act_mode_org_cannot_arm' });
+    expect(dbState.updatedValues).toBeNull();
   });
 });
 
@@ -386,6 +470,27 @@ describe('createSchedule — partner baseline', () => {
 
   it("rejects a non-triage agent with agent_kind_not_triage", async () => {
     dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+
+    await expect(createSchedule(partnerAuth(), input)).rejects.toMatchObject({
+      code: 'agent_kind_not_triage',
+    });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  // Fleet Designer (W01) — the mirror-image checks for assertPartnerWideScheduledAgent's
+  // kind branch: a `design` schedule requires a `designer` agent, and a `designer`
+  // agent cannot be targeted by a `sweep`/`narrative` schedule.
+  it('rejects a design create against a partner-wide triage agent with agent_kind_not_designer', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'triage' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...input, kind: 'design' as const, cron: DESIGN_CRON, sweepKinds: [] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'agent_kind_not_designer' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it('rejects a sweep create against a partner-wide designer agent with agent_kind_not_triage', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
 
     await expect(createSchedule(partnerAuth(), input)).rejects.toMatchObject({
       code: 'agent_kind_not_triage',
@@ -487,6 +592,93 @@ describe('createSchedule — partner baseline', () => {
       await expect(
         createSchedule(partnerAuth(), { ...narrativeInput, cron }),
       ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  const designInput = { ...input, kind: 'design' as const, cron: DESIGN_CRON, sweepKinds: [] as AiSweepKind[] };
+
+  it('inserts a design baseline with no sweep kinds on a monthly cron', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+    dbState.insertReturning = baselineRow({ kind: 'design', sweepKinds: [], cron: DESIGN_CRON });
+
+    await createSchedule(partnerAuth(), designInput);
+
+    expect(dbState.inserted).toMatchObject({
+      kind: 'design',
+      sweepKinds: [],
+      cron: DESIGN_CRON,
+      partnerId: PARTNER_ID,
+      orgId: null,
+    });
+  });
+
+  it('rejects a design baseline that carries sweep kinds (kinds_not_empty)', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...designInput, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it.each(['0 7 * * 1', '0 6 29 * *'])(
+    'rejects a design baseline on the non-monthly-or-rarer cron %s (invalid_cron_for_kind)',
+    async (cron) => {
+      dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+
+      await expect(
+        createSchedule(partnerAuth(), { ...designInput, cron }),
+      ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  // AI patch agent (W01) — a `patch` schedule needs a `patch` agent, sweeps
+  // nothing, and fires at most once a day.
+  const patchInput = { ...input, kind: 'patch' as const, cron: '0 2 * * *', sweepKinds: [] as AiSweepKind[] };
+
+  it('inserts a patch baseline with no sweep kinds on a daily cron', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    dbState.insertReturning = baselineRow({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *' });
+
+    await createSchedule(partnerAuth(), patchInput);
+
+    expect(dbState.inserted).toMatchObject({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *', partnerId: PARTNER_ID, orgId: null });
+  });
+
+  it.each(['triage', 'designer', 'helpdesk'])(
+    'rejects a patch create against a partner-wide %s agent with agent_kind_not_patch',
+    async (kind) => {
+      dbState.agentRows = [[agentRow({ kind })]];
+
+      await expect(createSchedule(partnerAuth(), patchInput)).rejects.toMatchObject({ code: 'agent_kind_not_patch' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  it('keeps sweep/narrative on triage and design on designer when the target is a patch agent', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    await expect(createSchedule(partnerAuth(), input)).rejects.toMatchObject({ code: 'agent_kind_not_triage' });
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    await expect(createSchedule(partnerAuth(), designInput)).rejects.toMatchObject({ code: 'agent_kind_not_designer' });
+  });
+
+  it('rejects a patch baseline that carries sweep kinds (kinds_not_empty)', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...patchInput, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it.each(['0 * * * *', '0 2,14 * * *', '0,30 2 * * *'])(
+    'rejects a patch baseline on the sub-daily cron %s (invalid_cron_for_kind)',
+    async (cron) => {
+      dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+
+      await expect(createSchedule(partnerAuth(), { ...patchInput, cron })).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
       expect(dbState.inserted).toBeNull();
     },
   );
@@ -892,6 +1084,24 @@ describe('updateSchedule', () => {
     expect(dbState.updatedValues).toBeNull();
   });
 
+  it('refuses a sub-daily cron on a patch baseline and accepts a daily one', async () => {
+    const patchBaseline = (over: Record<string, unknown> = {}) => baselineRow({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *', ...over });
+    dbState.scheduleRows = [[patchBaseline()]];
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { cron: '*/15 * * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron' });
+    dbState.scheduleRows = [[patchBaseline()]];
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { cron: '0 2,14 * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+    expect(dbState.updatedValues).toBeNull();
+
+    dbState.scheduleRows = [[patchBaseline()]];
+    dbState.updateReturning = patchBaseline({ cron: '30 3 * * *' });
+    const row = await updateSchedule(partnerAuth(), BASELINE_ID, { cron: '30 3 * * *' });
+    expect(row.cron).toBe('30 3 * * *');
+  });
+
   it('does NOT raise kinds_empty for an empty list on a narrative baseline', async () => {
     // `kinds_empty` is a SWEEP-only rule ("a baseline that sweeps nothing is
     // just a disabled schedule"). A narrative baseline sweeps nothing BY
@@ -958,6 +1168,7 @@ describe('listSchedules', () => {
     expect(rows[0]?.effective).toEqual({
       enabled: true,
       sweepKinds: ['disk_pressure', 'stale_agents', 'failed_backups'],
+      actMode: false,
     });
   });
 
@@ -967,7 +1178,7 @@ describe('listSchedules', () => {
     const rows = await listSchedules(partnerAuth(), { orgId: ORG_ID });
 
     expect(rows[0]?.override).toEqual({ id: OVERRIDE_ID, enabled: true, sweepKinds: ['disk_pressure'] });
-    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'] });
+    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'], actMode: false });
   });
 
   it('denies a partner caller asking for an org it cannot access', async () => {
@@ -987,7 +1198,7 @@ describe('listSchedules', () => {
     // reach one of them.
     expect(rows[0]?.lastRunSummary).toBeNull();
     expect(rows[0]?.override).toEqual({ id: OVERRIDE_ID, enabled: true, sweepKinds: ['disk_pressure'] });
-    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'] });
+    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'], actMode: false });
   });
 
   it('reads the partner baselines for an org caller through the partner-axis escape', async () => {
@@ -1064,7 +1275,11 @@ describe('tenancy pins (compiled SQL)', () => {
     expect(agents.sql).toContain('"partner_id"');
     expect(agents.sql).toContain('"kind"');
     expect(agents.sql).toContain('"disabled_at" is null');
-    expect(agents.params).toEqual([PARTNER_ID, 'triage']);
+    // AI patch agent (W01): a closed list of SCHEDULABLE agent kinds (never
+    // "any kind") — before W01 this was `'triage'` alone, which hid every
+    // design and patch baseline from an org token. `helpdesk` has no
+    // schedule kind and stays out.
+    expect(agents.params).toEqual([PARTNER_ID, 'triage', 'designer', 'patch']);
 
     // Inside the escape the app predicate is the ONLY filter, so it must carry
     // the partner AND the agent allowlist, not just `org_id IS NULL`.
@@ -1192,5 +1407,61 @@ describe('resolveEffectiveSchedulesForPartner', () => {
 
     const { withSystemDbAccessContext } = await import('../../db');
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+// AI patch agent W01 (#5747), Task 10 — the agents LIST route's
+// next-occurrence column. One batched read for the whole page, on the same
+// two-branch tenancy posture `listSchedules` uses.
+describe('loadEnabledBaselineCadences', () => {
+  it('returns nothing, and issues no query, for an empty agent list', async () => {
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), []);
+    expect(rows).toEqual([]);
+    expect(dbState.reads).toHaveLength(0);
+  });
+
+  it("reads a partner caller's baselines under its OWN RLS context", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    // The fixture store ignores the column projection and hands back whole
+    // rows, so this asserts the three fields the caller reads, not the shape
+    // the real query narrows to.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agentId: AGENT_ID, cron: CRON, timezone: 'Europe/Berlin' });
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    expect(read?.system).toBe(false);
+  });
+
+  it("reads an org caller's partner baselines through the partner-axis escape", async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    dbState.scheduleRows = [[baselineRow({ kind: 'patch' })]];
+
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+
+    expect(rows).toHaveLength(1);
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    // Org-scoped RLS is blind to partner-axis rows (#2822) — without the
+    // escape the card silently shows "—" for every partner-wide agent.
+    expect(read?.system).toBe(true);
+  });
+
+  it('pins the read to the listed agents, to baselines, and to enabled rows', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    const sql = dialect.sqlToQuery(read?.where as SQL);
+    expect(sql.sql).toContain('"org_id" is null');
+    expect(sql.sql).toContain('"enabled"');
+    expect(sql.sql).toContain('"agent_id" in');
+  });
+
+  it('returns nothing for an org whose partner has no schedulable partner-wide agent', async () => {
+    dbState.agentRows = [[]];
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+    expect(rows).toEqual([]);
   });
 });

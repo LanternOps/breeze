@@ -21,11 +21,11 @@ func TestNormalizeConfigDefaults(t *testing.T) {
 	if len(cfg.PortRanges) == 0 {
 		t.Fatal("PortRanges should have defaults")
 	}
-	if len(cfg.SNMPCommunities) == 0 {
-		t.Fatal("SNMPCommunities should have defaults")
+	if len(cfg.SNMPCredentials) == 0 {
+		t.Fatal("SNMPCredentials should default to the public community when nothing is configured")
 	}
-	if cfg.SNMPCommunities[0] != "public" {
-		t.Fatalf("SNMPCommunities[0] = %q, want %q", cfg.SNMPCommunities[0], "public")
+	if cfg.SNMPCredentials[0].Community != "public" || cfg.SNMPCredentials[0].Version != "v2c" {
+		t.Fatalf("SNMPCredentials[0] = %+v, want v2c/public", cfg.SNMPCredentials[0])
 	}
 }
 
@@ -111,7 +111,7 @@ func TestScanSNMPUsesAllTargetsWhenPingFindsAliveSubset(t *testing.T) {
 	}
 
 	var snmpTargets []string
-	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+	discoverSNMP = func(targets []net.IP, creds []SNMPCredential, timeout time.Duration, workers int) map[string]*SNMPInfo {
 		for _, target := range targets {
 			snmpTargets = append(snmpTargets, target.String())
 		}
@@ -169,7 +169,7 @@ func TestScanSNMPProbesAllTargetsWithoutPing(t *testing.T) {
 	readARPCache = func() map[string]string { return map[string]string{} }
 
 	var snmpTargets []string
-	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+	discoverSNMP = func(targets []net.IP, creds []SNMPCredential, timeout time.Duration, workers int) map[string]*SNMPInfo {
 		for _, target := range targets {
 			snmpTargets = append(snmpTargets, target.String())
 		}
@@ -219,7 +219,7 @@ func TestScanPortsUseAliveSubsetWhileSNMPUsesAllTargets(t *testing.T) {
 	}
 
 	var snmpTargets []string
-	discoverSNMP = func(targets []net.IP, communities []string, timeout time.Duration, workers int) map[string]*SNMPInfo {
+	discoverSNMP = func(targets []net.IP, creds []SNMPCredential, timeout time.Duration, workers int) map[string]*SNMPInfo {
 		for _, target := range targets {
 			snmpTargets = append(snmpTargets, target.String())
 		}

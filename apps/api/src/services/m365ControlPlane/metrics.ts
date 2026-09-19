@@ -6,12 +6,18 @@ import { Counter, type Registry } from 'prom-client';
 
 export const M365_CUSTOMER_GRAPH_READ_EVENTS = [
   'm365.customer_graph_read.consent_initiated',
+  // Position is load-bearing: metrics.test.ts pins the whole ordered array and
+  // later waves append at the END, so an out-of-order insert reddens both.
+  'm365.customer_graph_read.upgrade_consent_initiated',
   'm365.customer_graph_read.admin_consent_returned',
   'm365.customer_graph_read.tenant_binding_verified',
   'm365.customer_graph_read.verification_failed',
   'm365.customer_graph_read.grant_drift_detected',
   'm365.customer_graph_read.retested',
   'm365.customer_graph_read.disconnected',
+  // On-demand tenant sync requested by a technician (spec §5.2). Outcome is
+  // always 'initiated' — the run's own outcome is the sync worker's event.
+  'm365.customer_graph_read.sync_requested',
 ] as const;
 
 export type M365CustomerGraphReadEvent = typeof M365_CUSTOMER_GRAPH_READ_EVENTS[number];

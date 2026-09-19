@@ -64,6 +64,13 @@ describe('pngAspectFromDataUrl', () => {
 });
 
 describe('loadReportBrandingForOrg', () => {
+  it('passes hex brand colours through and drops anything that is not hex', async () => {
+    selectMock.mockReturnValue(selectChain([{ partnerName: 'Olive MSP', partnerSettings: { branding: { primaryColor: '#7a1d18', secondaryColor: 'orange' } } }]));
+    const branding = await loadReportBrandingForOrg(ORG_ID);
+    expect(branding.primaryColor).toBe('#7a1d18');
+    expect(branding.accentColor).toBeNull();
+  });
+
   it('uploaded PNG logo: name + logoDataUrl + logoAspect all resolve', async () => {
     selectMock.mockReturnValueOnce(
       selectChain([
@@ -71,7 +78,7 @@ describe('loadReportBrandingForOrg', () => {
       ]),
     );
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5 });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
   it('external https logo URL: name resolves, logo degrades to null (server cannot format-verify it)', async () => {
@@ -81,7 +88,7 @@ describe('loadReportBrandingForOrg', () => {
       ]),
     );
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
   it('org has no partner: all-null branding', async () => {

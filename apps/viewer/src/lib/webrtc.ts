@@ -3,6 +3,7 @@
  * Uses H264 video track from the agent's pion peer connection.
  */
 
+import { classifyAnswerPoll } from './answerPoll';
 import { apiFetch } from './api';
 
 /**
@@ -450,13 +451,18 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
 
     if (resp.ok) {
       const data = await resp.json();
-      // A terminal failure takes precedence over an answer from an earlier
+      // SEC-038 W06: a terminal failure, a pending/confirmed teardown, or an
+      // ended status all take precedence over an answer from an earlier
       // attempt on this session. Never reconnect using stale signaling data.
-      if (data.status === 'failed') {
-        throw new AgentSessionError(data.errorMessage || 'Remote desktop failed to start on agent');
+      const verdict = classifyAnswerPoll(data);
+      if (verdict.kind === 'failed') {
+        throw new AgentSessionError(verdict.message || 'Remote desktop failed to start on agent');
       }
-      if (data.webrtcAnswer) {
-        return data.webrtcAnswer;
+      if (verdict.kind === 'ended') {
+        throw new SessionEndedError();
+      }
+      if (verdict.kind === 'answer') {
+        return verdict.answer;
       }
     } else if (isSessionEndedResponse(resp.status)) {
       // Session ended/revoked server-side mid-poll — stop immediately so the

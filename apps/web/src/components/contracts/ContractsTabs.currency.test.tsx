@@ -6,9 +6,15 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 // The sibling tabs are not under test here — stub them so mounting the shell
 // doesn't drag their own fetch graphs in.
-vi.mock('./ContractsList', () => ({ ContractsList: () => <div data-testid="stub-contracts-list" /> }));
-vi.mock('./TemplatesTab', () => ({ default: () => <div data-testid="stub-templates-tab" /> }));
-vi.mock('./DocumentsTab', () => ({ default: () => <div data-testid="stub-documents-tab" /> }));
+// W03: the list is the default view and carries the currency-mismatch banner;
+// this suite is about the REPORT, so the banner's own link is stubbed alongside it.
+vi.mock('./ContractsList', () => ({
+  ContractsList: () => (
+    <div data-testid="stub-contracts-list">
+      <a href="#tab=currency-mismatches" data-testid="contracts-currency-mismatch-open">Review them</a>
+    </div>
+  ),
+}));
 
 const contractsApi = vi.hoisted(() => ({ listContractCurrencyMismatches: vi.fn() }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
@@ -38,9 +44,11 @@ const CANCELLED = {
   activeChangeEligible: false, ineligibleReason: 'STATUS_NOT_ACTIVE' as const,
 };
 
+// W03: there is no tab bar any more — the report is reached by the banner link
+// on the list, which sets the hash ContractsTabs already listens on.
 async function openTab() {
+  window.location.hash = 'tab=currency-mismatches';
   render(<ContractsTabs />);
-  fireEvent.click(screen.getByTestId('contracts-tab-currency-mismatches'));
   await screen.findByTestId('currency-mismatches-tab');
 }
 
@@ -53,13 +61,19 @@ describe('ContractsTabs — currency mismatch report tab (#3778)', () => {
     );
   });
 
-  it('defaults to the contracts list and only mounts the report when selected', async () => {
+  it('defaults to the contracts list and only mounts the report when the banner link is followed', async () => {
     render(<ContractsTabs />);
     expect(screen.getByTestId('stub-contracts-list')).toBeTruthy();
     expect(screen.queryByTestId('currency-mismatches-tab')).toBeNull();
     expect(contractsApi.listContractCurrencyMismatches).not.toHaveBeenCalled();
+    // No tab bar in the default state (spec §6).
+    expect(screen.queryByTestId('contracts-tab-contracts')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('contracts-tab-currency-mismatches'));
+    // jsdom does not run a hashchange on an <a href="#…"> click, so drive the
+    // hash the way the browser would and let ContractsTabs' listener react.
+    fireEvent.click(screen.getByTestId('contracts-currency-mismatch-open'));
+    window.location.hash = 'tab=currency-mismatches';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
     await screen.findByTestId('currency-mismatches-tab');
     expect(window.location.hash).toContain('tab=currency-mismatches');
     expect(screen.queryByTestId('stub-contracts-list')).toBeNull();

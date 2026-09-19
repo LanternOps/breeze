@@ -77,4 +77,11 @@ describe('ticket_comments origin-tracking columns', () => {
     expect(cols.agentRunId).toBeDefined();
     expect(cols.agentRunId.notNull).toBe(false);
   });
+
+  it('carries proposed_by_run_id for human-posted, AI-authored text (#4211)', () => {
+    const cols = getTableColumns(ticketComments);
+    expect(cols.proposedByRunId).toBeDefined();
+    expect(cols.proposedByRunId.name).toBe('proposed_by_run_id');
+    expect(cols.proposedByRunId.notNull).toBe(false);
+  });
 });

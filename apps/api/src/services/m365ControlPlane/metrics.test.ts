@@ -24,15 +24,18 @@ describe('M365 customer Graph read observability', () => {
     setM365CustomerGraphReadMetricsRecorder(null);
   });
 
-  it('exposes exactly the seven fixed lifecycle events and a bounded outcome enum', () => {
+  it('exposes exactly the nine fixed lifecycle events and a bounded outcome enum', () => {
     expect(M365_CUSTOMER_GRAPH_READ_EVENTS).toEqual([
       'm365.customer_graph_read.consent_initiated',
+      'm365.customer_graph_read.upgrade_consent_initiated',
       'm365.customer_graph_read.admin_consent_returned',
       'm365.customer_graph_read.tenant_binding_verified',
       'm365.customer_graph_read.verification_failed',
       'm365.customer_graph_read.grant_drift_detected',
       'm365.customer_graph_read.retested',
       'm365.customer_graph_read.disconnected',
+      // W05, appended last.
+      'm365.customer_graph_read.sync_requested',
     ]);
     expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
       .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);

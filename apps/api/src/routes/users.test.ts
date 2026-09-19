@@ -46,6 +46,7 @@ const {
   enforceExistingFactorStepUpMock,
   userIsMfaProtectedMock,
   getEffectiveMfaPolicyMock,
+  getScopeSecuritySettingsMock,
   requestPendingEmailChangeMock,
   isPasswordAuthDisabledBySsoMock,
   hasSatisfiedMfaMock,
@@ -72,8 +73,12 @@ const {
   getEffectiveMfaPolicyMock: vi.fn().mockResolvedValue({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
   }),
+  // #5690: default no partner/org security settings configured (falls back to
+  // the 14-day grace default). Tests override to exercise a configured window.
+  getScopeSecuritySettingsMock: vi.fn().mockResolvedValue(undefined),
   // SR2-17: default the pending-email service succeeds and returns a raw token.
   requestPendingEmailChangeMock: vi.fn().mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 }),
   // Default: org does NOT enforce SSO.
@@ -256,9 +261,17 @@ vi.mock('./auth/helpers', async (importOriginal) => {
   };
 });
 
-vi.mock('../services/mfaPolicy', () => ({
-  getEffectiveMfaPolicy: getEffectiveMfaPolicyMock
-}));
+vi.mock('../services/mfaPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/mfaPolicy')>();
+  return {
+    ...actual,
+    // combineMfaPolicyFacts stays the REAL (pure) implementation — the
+    // #5690 MFA status column reuses it so it can never disagree with live
+    // enforcement about whether a user is actually gated right now.
+    getEffectiveMfaPolicy: getEffectiveMfaPolicyMock,
+    getScopeSecuritySettings: getScopeSecuritySettingsMock,
+  };
+});
 
 vi.mock('../services/pendingEmail', () => ({
   requestPendingEmailChange: requestPendingEmailChangeMock
@@ -303,7 +316,7 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { inArray } from 'drizzle-orm';
-import { users, userPasskeys } from '../db/schema';
+import { users, userPasskeys, organizations } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
@@ -363,8 +376,10 @@ describe('user routes', () => {
     getEffectiveMfaPolicyMock.mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
     });
+    getScopeSecuritySettingsMock.mockResolvedValue(undefined);
     requestPendingEmailChangeMock.mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 });
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
     hasSatisfiedMfaMock.mockReturnValue(true);
@@ -465,6 +480,160 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    // #5690 — Admin → Users MFA status column: enrolled / pending / overdue /
+    // not_required, derived from mfaProtected + roleForceMfa + the persisted
+    // grace-grant columns, without any DB write from this GET.
+    describe('mfaStatus column (#5690)', () => {
+      const OVERDUE = '33333333-3333-3333-3333-333333333333';
+      const PENDING = '44444444-4444-4444-4444-444444444444';
+      const NOT_REQUIRED = '55555555-5555-5555-5555-555555555555';
+
+      it('reports enrolled for an mfa-protected user regardless of role force', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: MEMBER, email: 'user@example.com', name: 'Partner User', status: 'active',
+            mfaEnabled: true, mfaEpoch: 2, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'enrolled', mfaEnrollmentDeadline: null });
+      });
+
+      it('reports pending with the deadline date for a role-forced user inside an active grace window', async () => {
+        vi.stubEnv('MFA_FORCE_FOR_PARTNER_ADMIN', 'true');
+        const grantedAt = new Date('2026-10-01T00:00:00Z');
+        const deadline = new Date('2026-10-15T00:00:00Z');
+        vi.setSystemTime(new Date('2026-10-10T00:00:00Z'));
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: PENDING, email: 'pending@example.com', name: 'Pending User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: deadline, mfaEnrollmentGraceGrantedAt: grantedAt,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'pending', mfaEnrollmentDeadline: deadline.toISOString() });
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      });
+
+      it('reports overdue once the grace deadline has passed', async () => {
+        vi.stubEnv('MFA_FORCE_FOR_PARTNER_ADMIN', 'true');
+        const grantedAt = new Date('2026-09-01T00:00:00Z');
+        const deadline = new Date('2026-09-15T00:00:00Z');
+        vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: OVERDUE, email: 'overdue@example.com', name: 'Overdue User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: deadline, mfaEnrollmentGraceGrantedAt: grantedAt,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'overdue', mfaEnrollmentDeadline: null });
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      });
+
+      it('reports not_required for a user whose role does not force MFA and no settings require it', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: NOT_REQUIRED, email: 'plain@example.com', name: 'Plain User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Tech', roleForceMfa: false, orgAccess: 'none', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'not_required', mfaEnrollmentDeadline: null });
+      });
+
+      it('reports overdue (never pending) once settings-level requireMfa also applies, even mid role-grace-window', async () => {
+        vi.stubEnv('MFA_FORCE_FOR_PARTNER_ADMIN', 'true');
+        getScopeSecuritySettingsMock.mockResolvedValueOnce({ requireMfa: true });
+        const grantedAt = new Date('2026-10-01T00:00:00Z');
+        const deadline = new Date('2026-10-15T00:00:00Z');
+        vi.setSystemTime(new Date('2026-10-10T00:00:00Z'));
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: PENDING, email: 'pending@example.com', name: 'Pending User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: deadline, mfaEnrollmentGraceGrantedAt: grantedAt,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        // settingsRequireMfa short-circuits the grace window (mfaPolicy.ts:
+        // grace only postpones the ROLE axis when it's the ONLY reason required).
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'overdue', mfaEnrollmentDeadline: null });
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      });
+
+      it('reports not_required (never overdue) for a role-forced user when the kill switch is off (MFA_FORCE_FOR_PARTNER_ADMIN unset)', async () => {
+        // No vi.stubEnv here — mfaForcePartnerAdmin() defaults to false, which
+        // suppresses the ROLE axis entirely (mfaPolicy.ts: killSwitchOff).
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: OVERDUE, email: 'killswitch@example.com', name: 'Kill Switch User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'not_required', mfaEnrollmentDeadline: null });
+      });
+
+      it('org scope: reports overdue immediately for a role-forced, previously-enrolled user (mfa_epoch !== 1) with no persisted deadline', async () => {
+        // Closes the #5690 review gap: the org-scope branch (different select
+        // shape — siteIds/deviceGroupIds, orgId not partnerId) had no mfaStatus
+        // coverage at all, and mfa_epoch !== 1 (ever held a factor) must show
+        // overdue immediately rather than a preview window.
+        vi.stubEnv('MFA_FORCE_FOR_PARTNER_ADMIN', 'true');
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: null,
+            orgId: 'org-123',
+            user: { id: 'user-123', email: 'test@example.com' }
+          });
+          return next();
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: OVERDUE, email: 'org-overdue@example.com', name: 'Org Overdue', status: 'active',
+            mfaEnabled: false, mfaEpoch: 3, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, siteIds: null, deviceGroupIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'overdue', mfaEnrollmentDeadline: null });
+        expect(getScopeSecuritySettingsMock).toHaveBeenCalledWith({ scope: 'organization', orgId: 'org-123', partnerId: null });
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      });
     });
   });
 
@@ -603,6 +772,12 @@ describe('user routes', () => {
               where: vi.fn().mockResolvedValue([])
             })
           })
+        } as any)
+        // Partner-org ownership probe for the selected list (Finding 2).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: '33333333-3333-3333-3333-333333333333' }])
+          })
         } as any);
 
       const txSelect = vi
@@ -663,6 +838,40 @@ describe('user routes', () => {
       expect(body.email).toBe('invitee@example.com');
       expect(body.status).toBe('invited');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('rejects a selected-org invite naming an organization outside the caller partner before any write', async () => {
+      const MINE = '33333333-3333-3333-3333-333333333333';
+      const THEIRS = '66666666-6666-6666-6666-666666666666';
+      // Selects before the transaction, in order: scoped role, parent role,
+      // partner-wide gate membership, then the NEW partner-org ownership probe
+      // (returns only the org that belongs to partner-123).
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: MINE }]) }) } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'selected',
+          orgIds: [MINE, THEIRS]
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/organization/i);
+      // The foreign id must never reach partner_users.org_ids: no transaction opened.
+      expect(db.transaction).not.toHaveBeenCalled();
+      // The probe is scoped to the caller's partner, not a bare id lookup.
+      expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, [MINE, THEIRS]);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(organizations.partnerId, 'partner-123');
     });
 
     it('should require orgIds when orgAccess is selected', async () => {
@@ -1641,6 +1850,29 @@ describe('user routes', () => {
       );
     });
 
+    // #5306 — an OPEN grace window makes policy.required false everywhere else,
+    // but this gate must still refuse: a session stolen before enrollment would
+    // otherwise get 14 days in which to repoint the recovery address.
+    it('SR2-18 + #5306: an unenrolled user inside the MFA grace window still cannot move the recovery address', async () => {
+      orgScopeAuth();
+      mockSelf({ email: 'old@example.com', passwordHash: 'hash' });
+      mockUpdate(updatedRow());
+      getEffectiveMfaPolicyMock.mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: { deadline: new Date(Date.now() + 10 * 86_400_000).toISOString() },
+        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'active' as const }
+      });
+      userIsMfaProtectedMock.mockResolvedValue(false);
+
+      const res = await patchMe({ email: 'new@example.com', currentPassword: 'pw' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'mfa_enrollment_required' });
+      expect(requestPendingEmailChangeMock).not.toHaveBeenCalled();
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
     it('SR2-18: a forced-enrollment user (policy required, unenrolled) cannot move the recovery address', async () => {
       orgScopeAuth();
       mockSelf({ email: 'old@example.com', passwordHash: 'hash' });
@@ -1648,7 +1880,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
       userIsMfaProtectedMock.mockResolvedValue(false);
 
@@ -1668,7 +1901,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
 
       const res = await patchMe({ email: 'new@example.com' });

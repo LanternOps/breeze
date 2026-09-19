@@ -98,6 +98,23 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'automation-agent-run-terminal',
+    // #5290 — an ai_triage action reports `queued` with the child run's id, so
+    // the child's own terminal event is what closes the action. Without this
+    // the parent run aggregated to `completed` on successful enqueue and the
+    // monitor episode recorded a remediation that had not run.
+    //
+    // Lazy import for the same reason as the subscribers above: keep
+    // automationActionResults' transitive closure out of module-eval time.
+    eventTypes: ['ai.agent.run.completed', 'ai.agent.run.failed', 'ai.agent.run.skipped'],
+    handler: async (event: BreezeEvent) => {
+      const { handleAgentRunTerminalForAutomation } = await import('./automationTerminalEvidence');
+      return handleAgentRunTerminalForAutomation(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
     id: 'webhook-delivery',
     eventTypes: '*',
     handler: handleWebhookFanoutEvent,
@@ -130,6 +147,20 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
       if (event.type === 'ticket.commented') return handleTicketCommentedEvent(event);
       if (event.type === 'ticket.status_changed') return handleTicketStatusChangedEvent(event);
       return handleTicketCreatedEvent(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
+    id: 'deliverable-status',
+    // Service deliverables W02 (#5573 spec §6). Lazy for the same reason as
+    // every ticket subscriber above: workerEntrypointClosure.contract.test.ts
+    // constrains what this module may pull into the worker boot closure
+    // statically (serviceDeliverableService reaches ticketService).
+    eventTypes: ['ticket.status_changed'],
+    handler: async (event: BreezeEvent) => {
+      const { handleDeliverableTicketStatusChanged } = await import('./deliverableStatusSubscriber');
+      return handleDeliverableTicketStatusChanged(event);
     },
     retry: { attempts: 5, backoffMs: 10_000 },
   });

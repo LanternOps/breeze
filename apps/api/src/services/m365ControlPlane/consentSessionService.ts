@@ -4,9 +4,12 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   m365ConsentSessions,
   type M365ConsentPhase,
+  type M365ConsentPurpose,
   type M365ConsentSessionRow,
   type NewM365ConsentSessionRow,
 } from '../../db/schema';
+
+export type { M365ConsentPurpose };
 
 const CONSENT_SESSION_TTL_MS = 10 * 60_000;
 const RANDOM_VALUE_BYTES = 32;
@@ -27,6 +30,12 @@ export interface ConsentSessionOwnerInput {
   consentAttemptId: string;
   userId: string;
   profile: M365ConsentSessionProfile;
+  /**
+   * Which flow this session belongs to. Omitted means `initial`: the
+   * pending-consent → verifying path. `upgrade` marks a manifest bump on a
+   * connection that stays executable throughout (spec §2.2).
+   */
+  purpose?: M365ConsentPurpose;
 }
 
 export interface ConsentSessionAttemptInput {
@@ -81,6 +90,7 @@ async function insertConsentSessionInTransaction(
       ...input,
       stateHash: sha256Hex(rawState),
       profile: input.profile,
+      purpose: input.purpose ?? 'initial',
       expiresAt,
     }).onConflictDoNothing({
       target: m365ConsentSessions.stateHash,
@@ -154,6 +164,7 @@ export async function insertPreparedIdentityVerificationSessionInTransaction(
     ...input,
     stateHash: sha256Hex(prepared.rawState),
     profile: input.profile,
+    purpose: input.purpose ?? 'initial',
     phase: 'identity_verification',
     tenantHintHash: prepared.tenantHintHash,
     nonce: prepared.nonce,
@@ -219,4 +230,66 @@ export async function deleteConsentSessionsForAttempt(
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() => deleteConsentSessionsForAttemptInTransaction(input)),
   );
+}
+
+export interface ConsentSessionPurposeLookup {
+  rawState: string;
+  phase: M365ConsentPhase;
+  connectionId: string;
+  consentAttemptId: string;
+  profile: M365ConsentSessionProfile;
+}
+
+/**
+ * Reads which flow a live consent session belongs to WITHOUT consuming it.
+ *
+ * The callback must know this before it can decide which connection statuses
+ * are legal for the callback it is servicing — an upgrade session expects an
+ * `active`/`degraded` connection, a first-time session expects
+ * `pending-consent`/`verifying`. The authoritative consume happens afterwards
+ * and re-checks state hash, phase, expiry, connection, org, profile and
+ * attempt, so this lookup routes and never authorizes. Deliberately not scoped
+ * by org: the org id is not known until the attempt is loaded, and state_hash
+ * is unique.
+ */
+export async function readConsentSessionPurpose(
+  input: ConsentSessionPurposeLookup,
+): Promise<M365ConsentPurpose | null> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.select({ purpose: m365ConsentSessions.purpose })
+      .from(m365ConsentSessions)
+      .where(and(
+        eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
+        eq(m365ConsentSessions.phase, input.phase),
+        gt(m365ConsentSessions.expiresAt, sql`now()`),
+        eq(m365ConsentSessions.connectionId, input.connectionId),
+        eq(m365ConsentSessions.profile, input.profile),
+        eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
+      ))
+      .limit(1);
+    return rows[0]?.purpose ?? null;
+  }));
+}
+
+/**
+ * Deletes every consent session of a connection, whatever attempt it belongs
+ * to. Needed before any write that rotates `consent_attempt_id`: the composite
+ * FK `m365_consent_sessions_connection_identity_fkey` has ON DELETE CASCADE
+ * but NO ON UPDATE CASCADE, so rotating the parent while a session lives
+ * raises 23503 rather than cascading. Before upgrade consent existed, an
+ * executable connection never carried a live session and no caller needed
+ * this — see connectionService.retestConnection.
+ */
+export async function deleteConsentSessionsForConnection(input: {
+  connectionId: string;
+  orgId: string;
+  profile: M365ConsentSessionProfile;
+}): Promise<void> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await db.delete(m365ConsentSessions).where(and(
+      eq(m365ConsentSessions.connectionId, input.connectionId),
+      eq(m365ConsentSessions.orgId, input.orgId),
+      eq(m365ConsentSessions.profile, input.profile),
+    ));
+  }));
 }

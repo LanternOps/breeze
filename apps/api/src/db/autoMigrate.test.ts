@@ -888,6 +888,42 @@ describe('core migration ordering', () => {
   });
 });
 
+describe('AI origin attribution migration (#5022 W01)', () => {
+  it('sorts after the portal lifecycle flag migration it was authored on top of', () => {
+    const files = listMigrationFilenames();
+
+    expect(files).toContain('2026-10-16-182100-ai-origin-attribution.sql');
+    // Relative order against the newest migration on main when this file was
+    // authored — NOT absolute-last, so a later migration landing anywhere
+    // else does not redden this test (see the sibling "device removal
+    // retention" test above for the same pattern).
+    expect(files.indexOf('2026-10-16-182100-ai-origin-attribution.sql')).toBeGreaterThan(
+      files.indexOf('2026-10-16-181500-portal-lifecycle-flag.sql'),
+    );
+  });
+});
+
+describe('report_run_deliveries migration (#4248 W03)', () => {
+  const FILE = '2026-10-16-183300-report-run-deliveries.sql';
+
+  it('sorts after the newest migration on main when it was authored', () => {
+    const files = listMigrationFilenames();
+    expect(files).toContain(FILE);
+    expect(files.indexOf(FILE)).toBeGreaterThan(
+      files.indexOf('2026-10-16-182600-ticket-comment-proposal-note-uq.sql'),
+    );
+  });
+
+  it('is DDL-only: no DML, hence no breeze.scope election and no baseline entry', () => {
+    const sqlText = readFileSync(path.join(MIGRATIONS_DIR, FILE), 'utf8');
+    const withoutComments = sqlText.replace(/--[^\n]*/g, '');
+    expect(withoutComments).not.toMatch(/\b(INSERT|UPDATE|DELETE|MERGE)\b\s+(INTO|FROM|\w+\s+SET)/i);
+    expect(withoutComments).not.toContain("set_config('breeze.scope'");
+    // The FK is the reason no ASSOCIATED_SYSTEM_SCOPED_TABLES entry exists.
+    expect(withoutComments).toMatch(/REFERENCES public\.report_runs\(id\) ON DELETE CASCADE/);
+  });
+});
+
 describe('Wave 3 durable live authorization expansion', () => {
   it('maps the user permission epoch as a non-null bigint defaulting to zero', () => {
     const column = getTableConfig(users).columns.find((candidate) => candidate.name === 'permissions_epoch');

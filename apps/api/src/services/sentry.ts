@@ -59,6 +59,15 @@ const ALLOWED_TAG_NAMES = new Set([
   'scope',
   'org_id',
   'partner_id',
+  'stripe_reconcile_stage',
+  // SEC-150: which phase of Checkout-session revocation produced the alert —
+  // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
+  // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid
+  // after we asked for it to die). A closed four-value set of string literals
+  // written at fixed call sites in stripeSessionRevocation.ts; it carries no
+  // tenant, invoice or session identifier. Without the allowlist entry the
+  // scrubber drops it and the alerts arrive indistinguishable from each other.
+  'stripe_revocation_stage',
   // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
   // call site (`cas_label`) and the state the row was already in
   // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by
@@ -291,6 +300,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
+  // SEC-142/143: WHICH reservation TTL the expiry sweep fired on. A closed
+  // two-literal union produced by the sweep's own arithmetic (`active_ttl` /
+  // `indeterminate_ttl`) — no org, reservation or amount can reach it; those go
+  // only to the console lines, which are not scrubbed. Allowlisted because
+  // `scrubEvent` deletes `message`, and the two cases need different responses:
+  // `active_ttl` means dispatches are dying before they settle, while
+  // `indeterminate_ttl` means the provider's outcome never became known.
+  'ai_budget_expiry_reason',
   // #4143: which CONTAINER produced the event. Since the api/worker role split
   // (#4086) a droplet in split mode runs two processes off the same image,
   // same DSN, same release — so an event from the worker was indistinguishable
@@ -361,6 +378,11 @@ const ALLOWED_TAG_NAMES = new Set([
   'invoice_payment_id',
   'accounting_connection_id',
   'accounting_audit_resource_id',
+  // #6082: `accounting_entity_id` is `SyncMappedEntityInput['breezeEntityId']`
+  // (accountingSyncWorker.ts's `sync-mapping` terminal-failure path) — the same
+  // record-scoped opaque UUID precedent as `invoice_id`/`accounting_mapping_id`
+  // above, never free text, length-capped by `isBoundedTagValue`.
+  'accounting_entity_id',
   // Closed sets by construction, each written as a string literal or read off a
   // typed union at the call site; none carries a tenant, device or host id:
   // `accounting_job_type` is the `AccountingSyncJobData['type']` union
@@ -402,6 +424,19 @@ const ALLOWED_TAG_NAMES = new Set([
   // a type-level guarantee: never build a key from tenant or user data. Carries
   // no tenant, device, or host id.
   'i18n_key',
+  // PR #5695 review finding 1: `outcomeForFailure`'s `sentryWorthy` flag was
+  // computed in run.ts and then dropped at the call site — every genuinely
+  // unexpected Graph failure (graph_response_invalid, graph_request_timeout,
+  // graph_transport_failed, graph_license_required, graph_not_found,
+  // graph_response_too_large, the refusal codes) degraded silently to
+  // `last_status='error'` with no alert. `m365_sync_domain` is the closed
+  // `M365SyncDomain` union and `m365_sync_failure_code` is the closed
+  // `M365SyncCallFailureCode` union — both string-literal unions from
+  // services/m365Sync/types.ts / m365ControlPlane/readActionService.ts, never
+  // interpolated. `org_id` (already allowlisted above) scopes the alert to a
+  // tenant; neither new tag carries a vault ref, credential, or tenant secret.
+  'm365_sync_domain',
+  'm365_sync_failure_code',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

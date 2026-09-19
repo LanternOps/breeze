@@ -873,7 +873,7 @@ export default function EnrollmentKeyManager() {
                   <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                     {t('enrollmentKeys.noSitesForOrg')}{' '}
                     <a
-                      href="/settings/organizations"
+                      href="/organizations"
                       className="font-medium underline hover:no-underline"
                     >
                       {t('enrollmentKeys.createASite')}

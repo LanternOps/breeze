@@ -5,8 +5,20 @@ import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
+
+/**
+ * Settings for the seeded dev/e2e "Default Partner". New partners default to
+ * `security.requireMfa = true` (spec
+ * docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md
+ * D2), but seeded admins sign in without a factor and e2e pins
+ * MFA_FORCE_FOR_PARTNER_ADMIN=false, so the seeded partner opts OUT explicitly.
+ * Pinned by db/seed.test.ts — do not "simplify" this back to the bare helper.
+ */
+export const DEV_SEED_DEFAULT_PARTNER_SETTINGS: Record<string, unknown> =
+  applyNewPartnerDefaultSettings({ security: { requireMfa: false } });
 
 const DEV_BOOTSTRAP_ADMIN_EMAIL = 'admin@breeze.local';
 const DEV_BOOTSTRAP_ADMIN_PASSWORD = 'BreezeAdmin123!';
@@ -178,6 +190,14 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'contracts', action: 'write', description: 'Create/edit/delete draft contracts and lines' },
   { resource: 'contracts', action: 'manage', description: 'Activate/pause/resume/cancel contracts and generate invoices' },
 
+  // Organization documents (service deliverables W03)
+  { resource: 'documents', action: 'read', description: 'View the organization document library and download documents' },
+  { resource: 'documents', action: 'write', description: 'Upload, replace, edit, and delete organization documents' },
+
+  // Agreement templates + signed agreements (agreements vocabulary & IA split, W02).
+  { resource: 'agreements', action: 'read', description: 'View agreement templates and signed agreements' },
+  { resource: 'agreements', action: 'write', description: 'Create, edit, publish and archive agreement templates; link signed agreements' },
+
   // Quotes / Proposals (billing program)
   { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
   { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
@@ -234,6 +254,19 @@ export const DEFAULT_PERMISSIONS = [
     description: 'View AI agent policies' },
   { resource: 'ai_agents', action: 'write',
     description: 'Create, edit and disable AI agent policies' },
+
+  // Tool sources (BYO MCP/OpenAPI tool catalog, #5215/#5216, spec 2026-09-07 §5):
+  // managing the registrations is an admin task; calling the tools they expose
+  // is gated separately so a technician can use read-only external tools
+  // without being able to register a new egress destination.
+  { resource: 'tool_sources', action: 'read',
+    description: 'View external tool sources' },
+  { resource: 'tool_sources', action: 'write',
+    description: 'Manage external tool sources' },
+  { resource: 'external_tools', action: 'use',
+    description: 'Call Tier 1 (read-only) external tools from AI' },
+  { resource: 'external_tools', action: 'write',
+    description: 'Call Tier 2/3 (mutating) external tools from AI' },
 
   // Action intents / durable approvals
   { resource: 'approvals', action: 'decide',
@@ -304,7 +337,11 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'reports:read', 'reports:write',
       'sites:read',
       'topology:read',
-      'organizations:read'
+      'organizations:read',
+      // Tier 1 (read-only) external tools only (#5216).
+      'external_tools:use',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {
@@ -326,25 +363,27 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
   {
     name: 'Partner Billing',
     scope: 'partner' as const,
-    description: 'Full access to product catalog, quotes, invoices, and contracts',
+    description: 'Full access to product catalog, quotes, invoices, contracts, and agreements',
     forceMfa: false,
     permissions: [
       'catalog:read', 'catalog:write', 'catalog:delete',
       'quotes:read', 'quotes:write', 'quotes:send',
       'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
-      'contracts:read', 'contracts:write', 'contracts:manage'
+      'contracts:read', 'contracts:write', 'contracts:manage',
+      'agreements:read', 'agreements:write'
     ]
   },
   {
     name: 'Partner Billing Viewer',
     scope: 'partner' as const,
-    description: 'Read-only access to product catalog, quotes, invoices, and contracts',
+    description: 'Read-only access to product catalog, quotes, invoices, contracts, and agreements',
     forceMfa: false,
     permissions: [
       'catalog:read',
       'quotes:read',
       'invoices:read', 'invoices:export',
-      'contracts:read'
+      'contracts:read',
+      'agreements:read'
     ]
   },
   {
@@ -372,6 +411,11 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // org_access='all' (canManagePartnerWidePolicies), so this grant cannot
       // reach across orgs.
       'ai_agents:read', 'ai_agents:write',
+      // External tool sources (#5216): an org admin registers sources for their
+      // own org. A PARTNER-WIDE source additionally requires partner scope with
+      // org_access='all' (canManagePartnerWidePolicies).
+      'tool_sources:read', 'tool_sources:write',
+      'external_tools:use', 'external_tools:write',
       'approvals:decide',
       'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
@@ -393,7 +437,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // grant is inert for an org-scoped token until that boundary is
       // crossed deliberately.
       'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
-      'connected_apps:read', 'connected_apps:manage'
+      'connected_apps:read', 'connected_apps:manage',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {
@@ -412,7 +458,12 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'remote:access',
       // Read-only: a technician writing a script needs to know which variable
       // keys exist, but not to create or rotate them.
-      'variables:read'
+      'variables:read',
+      // Tier 1 (read-only) external tools only (#5216); registering a source
+      // and calling mutating external tools stay admin actions.
+      'external_tools:use',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {
@@ -871,17 +922,43 @@ export async function seedScripts() {
       continue;
     }
 
-    await db.insert(scripts).values({
-      name: scriptDef.name,
-      description: scriptDef.description,
-      category: scriptDef.category,
-      osTypes: scriptDef.osTypes,
-      language: scriptDef.language,
-      content: scriptDef.content,
-      timeoutSeconds: scriptDef.timeoutSeconds,
-      runAs: scriptDef.runAs,
-      isSystem: true,
-      orgId: null // System scripts have no org
+    // The row and its v1 version are one unit of work (#5622). Seeding the
+    // `scripts` row alone left a HEADLESS script: `headScriptVersion()` returns
+    // null for it forever, and `script_versions` is append-only so it could not
+    // be repaired afterwards. Same shape as services/systemScriptLibrary.ts —
+    // insert at version 0, let cutScriptVersion move it to 1 and snapshot it;
+    // 0 is never observable outside this transaction.
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(scripts)
+        .values({
+          name: scriptDef.name,
+          description: scriptDef.description,
+          category: scriptDef.category,
+          osTypes: scriptDef.osTypes,
+          language: scriptDef.language,
+          content: scriptDef.content,
+          timeoutSeconds: scriptDef.timeoutSeconds,
+          runAs: scriptDef.runAs,
+          isSystem: true,
+          orgId: null, // System scripts have no org
+          version: 0,
+          // Matches what the 2026-10-16-100000 backfill stamps on an is_system
+          // row in production (`CASE WHEN s.is_system THEN 'system' ...`), so a
+          // dev stack and a migrated prod DB agree on these same scripts.
+          origin: 'system',
+        })
+        .returning({ id: scripts.id });
+
+      if (!created) {
+        throw new Error(`system script "${scriptDef.name}" insert returned no row`);
+      }
+
+      // No user on the seed path, so createdBy is honestly null.
+      await cutScriptVersion(tx, {
+        scriptId: created.id,
+        provenance: { origin: 'system', changelog: 'Seeded system script', createdBy: null },
+      });
     });
     console.log('  Created script:', scriptDef.name);
   }
@@ -1198,7 +1275,9 @@ export async function seedDefaultAdmin() {
           plan: 'enterprise',
           // #4520: keep the seeded dev partner on the same inbound opt-out
           // default real partners get, so local behaviour matches production.
-          settings: applyNewPartnerDefaultSettings()
+          // Spec 2026-09-18 D2: but NOT the requireMfa default — see the
+          // constant's doc comment.
+          settings: DEV_SEED_DEFAULT_PARTNER_SETTINGS
         })
         .returning();
       await seedSystemTicketStatuses(tx, newPartner!.id);
@@ -1300,6 +1379,11 @@ export async function seedDefaultAdmin() {
       name: admin.name,
       passwordHash,
       status: 'active',
+      // Dev/E2E seed only: pre-verify the bootstrap admin's email so dev/E2E
+      // flows that require a verified recipient (e.g. sending-domain test
+      // sends) aren't blocked on a manual verification step for a seeded
+      // account. Production signup paths are untouched.
+      emailVerifiedAt: new Date(),
       preferences: { bootstrapSetupRequired: true },
     })
     .returning();

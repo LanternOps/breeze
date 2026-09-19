@@ -42,6 +42,9 @@
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
       "grantsVerifiedAt": "Permissões verificadas"
     },
+    "upgrade": {
+      "banner": "Novas permissões do Microsoft 365 são necessárias para Acesso Condicional, Pontuação de Segurança e visibilidade de funções de administrador. Um administrador global precisa aprová-las."
+    },
     "actions": {
       "connect": "Conectar",
       "reconsent": "Conceder novamente",
@@ -53,7 +56,32 @@
       "retestSucceeded": "O novo teste da conexão foi concluído.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
-      "disconnectSucceeded": "A conexão do Breeze foi desconectada."
+      "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
+      "approveNewPermissions": "Aprovar novas permissões",
+      "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões.",
+      "syncNow": "Sincronizar agora",
+      "syncFailed": "Não foi possível solicitar a sincronização do locatário.",
+      "syncSucceeded": "Sincronização do locatário solicitada."
+    },
+    "sync": {
+      "lastSynced": "Última sincronização {{relative}}",
+      "counts": "{{users}} usuários · {{devices}} dispositivos",
+      "never": "Ainda não sincronizado",
+      "chips": {
+        "partial": "{{domain}}: parcial",
+        "needsConsent": "{{domain}}: precisa de consentimento",
+        "throttled": "{{domain}}: limitado",
+        "error": "{{domain}}: erro",
+        "unlicensed": "A atividade de entrada exige o Entra ID P1"
+      },
+      "domains": {
+        "users": "Usuários",
+        "signin_activity": "Atividade de entrada",
+        "intune_devices": "Dispositivos do Intune",
+        "ca_policies": "Acesso Condicional",
+        "skus": "Licenças",
+        "secure_score": "Pontuação de segurança"
+      }
     },
     "errors": {
       "consent_expired": "A sessão de consentimento expirou. Inicie o consentimento novamente.",
@@ -746,6 +774,15 @@
     "syncedWithTaxVariance": "Sincronizado com diferença de imposto"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Operações pendentes do QuickBooks",
+    "owedLoadError": "Não foi possível carregar as operações pendentes. Recarregue a página para tentar novamente.",
+    "owedCount": "Operações pendentes: {{total}}",
+    "owedEmpty": "Nenhuma operação pendente",
+    "owedDelete": "Excluir pagamento",
+    "owedPush": "Enviar pagamento",
+    "owedViewInvoice": "Ver fatura",
+    "owedInvoiceUnavailable": "Fatura indisponível",
+    "owedAge": "Tempo de espera: {{minutes}} min",
     "quickbooksConnected": "QuickBooks conectados.",
     "quickbooksConnectionFailedPleaseTryAgain": "A conexão do QuickBooks falhou. Por favor, tente novamente.",
     "failedToStartTheQuickBooksConnection": "Falha ao iniciar a conexão do QuickBooks.",
@@ -874,7 +911,11 @@
     "couldNotRefresh": "Não foi possível atualizar os dados da conta Stripe.",
     "notCached": "Moeda ainda não armazenada em cache — atualize para buscá-la no Stripe.",
     "staleCache": "Não foi possível acessar o Stripe — exibindo os últimos detalhes da conta em cache.",
-    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá."
+    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá.",
+    "reconciliationError": "A reconciliação de estornos de pagamento não está em execução: {{reason}} Substitua a chave Stripe por uma que possa ler Eventos.",
+    "revocationCredentialUnavailable": "Não foi possível cancelar {{count}} link(s) de pagamento on-line porque a chave do Stripe que os criou não está mais disponível. Esses links ainda podem ser pagáveis no Stripe — cancele-os no seu painel do Stripe e reemita as faturas.",
+    "revocationChargedRepair": "{{count}} link(s) de pagamento on-line foram pagos depois que o Breeze pediu ao Stripe para cancelá-los. O dinheiro é real — concilie esses pagamentos (e reembolse se a fatura já tiver sido quitada de outra forma).",
+    "revocationBlocked": "Não foi possível cancelar {{count}} link(s) de pagamento on-line — o Stripe recusou a solicitação com a chave cadastrada. Salve uma chave do Stripe válida para tentar novamente, ou cancele os links no seu painel do Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",

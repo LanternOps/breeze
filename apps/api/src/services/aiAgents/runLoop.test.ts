@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
@@ -20,6 +20,12 @@ const SITE_ID = '00000000-0000-4000-8000-0000000000c7';
 const USER_A = '00000000-0000-4000-8000-0000000000c8';
 const USER_B = '00000000-0000-4000-8000-0000000000c9';
 const INTENT_ID = '00000000-0000-4000-8000-0000000000d1';
+const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000d2';
+// Distinct from the `TICKET_ID` scoped locally inside the ticket-context
+// describe block further down — this one is used by the top-level
+// "stamps the run cause" it.each (act mode), which needs a ticket id
+// without pulling in that block's `ticket`/`ticketComments` fixtures.
+const ACT_TRIGGER_TICKET_ID = '00000000-0000-4000-8000-0000000000d3';
 
 interface Hooks {
   getAuth?: () => unknown;
@@ -343,12 +349,20 @@ const recordSessionlessSdkUsage = vi.hoisted(() =>
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
 
+const reserveAiBudget = vi.hoisted(() => vi.fn());
+const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+vi.mock('../aiBudgetReservations', () => ({
+  reserveAiBudget,
+  markAiBudgetReservationIndeterminate,
+}));
+
 // checkToolPermission must NEVER be reachable from an agent run. Spying through
 // the real module would require mocking it; instead the contract is asserted by
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
 import {
-  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
+  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun,
+  PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
@@ -418,6 +432,10 @@ function seedRows(options: {
    *  DB column default. */
   profile?: AiAgentRunProfile;
   correlationGroupId?: string | null;
+  /** Review fix (PR #5780) — undefined (default) means no schedule, i.e.
+   *  every existing test is unaffected. Pass a schedule id to exercise a
+   *  schedule-triggered run's `triggerRefId` stamping. */
+  scheduleId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -433,6 +451,7 @@ function seedRows(options: {
     alertId,
     ticketId,
     anomalyIncidentId,
+    scheduleId: options.scheduleId === undefined ? null : options.scheduleId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: options.triggerKind ?? 'alert',
@@ -498,7 +517,11 @@ function compiledParams(cond: SQL | undefined): unknown[] {
 }
 
 const yielded: unknown[] = [];
-const preVerdicts: Array<{ allowed: boolean; error?: string }> = [];
+const preVerdicts: Array<{
+  allowed: boolean;
+  error?: string;
+  context?: { runTargets?: readonly string[]; stagedBytesRemaining?: number };
+}> = [];
 const closeMock = vi.fn();
 let lastQueryOptions: Record<string, unknown> | undefined;
 
@@ -559,8 +582,31 @@ function finalTransition(): { from: unknown; to: string; patch: Record<string, u
   return { from: last[1], to: last[2] as string, patch: (last[3] ?? {}) as Record<string, unknown> };
 }
 
+// The run loop resolves its agent's CURRENT policy at most once per
+// RESOURCE_SCOPE_RECHECK_TTL_MS, so "how many times did a run re-resolve" is a
+// function of wall-clock time. Freezing it makes every test in this file
+// deterministic (no expiry unless a test asks for one) and lets the narrowing
+// tests below step over the TTL boundary without global fake timers, which the
+// SDK-generator harness does not survive.
+let scopeRecheckNow = 0;
+
+/**
+ * Advance the scope-recheck clock past the TTL exactly once, at the moment the
+ * SDK is asked for its turn — i.e. AFTER the start gate and BEFORE the first
+ * tool call. Call it after `scriptQuery`, which it wraps.
+ */
+function expireScopeRecheckTtlBeforeFirstToolCall(): void {
+  const scripted = queryMock.getMockImplementation()!;
+  queryMock.mockImplementation((params) => {
+    scopeRecheckNow += 10_000;
+    return scripted(params);
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  scopeRecheckNow = 0;
+  __setResourceScopeRecheckClockForTests(() => scopeRecheckNow);
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.lastRow = {};
@@ -571,6 +617,16 @@ beforeEach(() => {
   preVerdicts.length = 0;
   lastQueryOptions = undefined;
   transitionRunStatus.mockResolvedValue(true);
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '00000000-0000-4000-8000-0000000000e1',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '00000000-0000-4000-8000-0000000000e1',
+  });
   let execCounter = 0;
   createAgentRunSession.mockResolvedValue('session-1');
   startToolExecution.mockImplementation(async () => `exec-${++execCounter}`);
@@ -604,9 +660,48 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+afterAll(() => {
+  __setResourceScopeRecheckClockForTests(null);
+});
+
 // ---------------------------------------------------------------------------
 
 describe('executeAgentRun', () => {
+  it('caps provider dispatch to the durable org reservation', async () => {
+    seedRows();
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '00000000-0000-4000-8000-0000000000e1',
+      reservedCostCents: 5,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+    expect(recordSessionlessSdkUsage).toHaveBeenCalledWith(
+      ORG_ID,
+      expect.any(Object),
+      'platform',
+      '00000000-0000-4000-8000-0000000000e1',
+    );
+  });
+
+  it('does not create an SDK query when durable org admission denies the run', async () => {
+    seedRows();
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()?.to).toBe('failed');
+    expect(finalTransition()?.patch.errorCode).toBe('org_budget_exceeded');
+  });
+
   it('CAS queued->running, executes a read tool, completes with cost and summary', async () => {
     seedRows();
     scriptQuery({
@@ -617,7 +712,18 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(transitionRunStatus.mock.calls[0]!.slice(0, 3)).toEqual([RUN_ID, 'queued', 'running']);
-    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    // The REAL wiring (runLoop.ts's `runTargets: run.deviceId ? [run.deviceId]
+    // : []` call-site expression, not just the type) — this run seeds
+    // deviceId: DEVICE_ID (seedRows' default), so export_dataset's
+    // device-outside-run-targets refusal has something real to refuse
+    // against. A regression here (e.g. the line reverted to always `[]`)
+    // would silently widen every device-scoped run's export to the whole
+    // org and nothing else in this suite would catch it.
+    expect(preVerdicts[0]!.context).toMatchObject({
+      runTargets: [DEVICE_ID],
+      stagedBytesRemaining: expect.any(Number),
+    });
 
     const final = finalTransition()!;
     expect(final.from).toBe('running');
@@ -766,7 +872,7 @@ describe('executeAgentRun', () => {
       // startToolExecution/allowedPending machinery a plain 'allow' uses.
       expect(startToolExecution).toHaveBeenCalledTimes(1);
       expect(createActionIntent).not.toHaveBeenCalled();
-      expect(preVerdicts[0]).toEqual({ allowed: true });
+      expect(preVerdicts[0]).toMatchObject({ allowed: true });
       expect(verifyActExecution).toHaveBeenCalledTimes(1);
 
       const final = finalTransition()!;
@@ -791,6 +897,33 @@ describe('executeAgentRun', () => {
       const [watchRun, watchOutcome] = scheduleFixWatch.mock.calls[0]!;
       expect(watchRun).toMatchObject({ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, alertId: ALERT_ID, modeAtStart: 'act' });
       expect((watchOutcome as AgentRunOutcome).executedActions).toHaveLength(1);
+    });
+
+    // Review fix (PR #5780) — extended from `['alert', 'manual']` to also
+    // cover `schedule` (refId = `run.scheduleId`) and `ticket` (refId =
+    // `run.ticketId`), matching `stampRunCause`'s full branch set
+    // (runLoop.ts:2446-2448).
+    it.each([
+      ['alert', ALERT_ID],
+      ['manual', undefined],
+      ['schedule', SCHEDULE_ID],
+      ['ticket', ACT_TRIGGER_TICKET_ID],
+    ] as const)('stamps the run cause on %s act executions', async (triggerKind, expectedRefId) => {
+      seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
+        modeAtStart: 'act',
+        triggerKind,
+        alertId: triggerKind === 'alert' ? ALERT_ID : null,
+        scheduleId: triggerKind === 'schedule' ? SCHEDULE_ID : null,
+        ticketId: triggerKind === 'ticket' ? ACT_TRIGGER_TICKET_ID : null,
+      });
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({ ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } } }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted.' });
+      await executeAgentRun(RUN_ID);
+      const action = (finalTransition()!.patch.outcome as AgentRunOutcome).executedActions[0];
+      expect(action?.triggerKind).toBe(triggerKind);
+      expect(action?.triggerRefId).toBe(expectedRefId);
     });
 
     it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
@@ -1304,6 +1437,171 @@ describe('executeAgentRun', () => {
 
       expect(finalTransition()!.to).toBe('completed');
     });
+  });
+
+  // #6096 D1 — resource scope bounds WHICH DEVICE a run may touch, never which
+  // tools it may call. A site / tag / group filter is the ordinary MSP
+  // configuration; a read-only tool fence on it silently stripped remediation
+  // from every scoped agent. The device boundary is carried by the run's
+  // exact-device allowlist (`agentAuthContext` pins `allowedDeviceIds` to the
+  // run device and ~30 aiTools* helpers enforce it), plus the start-gate and
+  // per-tool recheck of the RUN DEVICE against the scope.
+  it('a resource-scoped run still dispatches a remediation tool', async () => {
+    const scoped = policy({ mode: 'act', toolAllowlist: ['manage_services'] });
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped, modeAtStart: 'act' });
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    for (let i = 0; i < 4; i++) deviceRows.push([{ siteId: SITE_ID, tags: [] }]);
+    revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+      ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+    }));
+    verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'Restarted the spooler service.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    expect(startToolExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('resource scope does not narrow the profile tool allowlist or the MCP registry', async () => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    for (let i = 0; i < 4; i++) deviceRows.push([{ siteId: SITE_ID, tags: [] }]);
+    scriptQuery({ toolCalls: [{ tool: 'get_invite_funnel', input: {} }] });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    // Identical to the unscoped full-profile negative control below: the
+    // profile allowlist decides exposure, scope does not touch it.
+    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toBeUndefined();
+  });
+
+  it('a newly scoped org-wide queued run is skipped before invoking the model', async () => {
+    seedRows({ deviceId: null });
+    const narrowed = policy();
+    narrowed.triggers.siteIds = [SITE_ID];
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(narrowed));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await executeAgentRun(RUN_ID);
+    expect(queryMock).not.toHaveBeenCalled();
+    // A clean scope mismatch reports what admission reports, not a revocation.
+    expect(finalTransition()!.patch.errorCode).toBe('trigger_filter_mismatch');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('resource scope'),
+      expect.objectContaining({ runId: RUN_ID, deviceId: null }),
+    );
+  });
+
+  it('an UNVERIFIABLE resource scope skips under its own error code, not the mismatch code', async () => {
+    // #6096 D3: a failed policy resolution is an infrastructure failure. Fail
+    // closed, but never report it as "the operator's filter did not match".
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    // No device rows are queued beyond the one `loadRunContext` consumes, so
+    // the scope check's own device lookup throws.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('resource_scope_unverifiable');
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('could not verify'),
+      expect.objectContaining({ runId: RUN_ID }),
+    );
+  });
+
+  it('logs the tool name when a per-tool scope recheck throws, and denies the call', async () => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    // Exactly enough device rows for the start gate (snapshot + current), so
+    // the first PER-TOOL recheck runs the queue dry and throws.
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    deviceRows.push([{ siteId: SITE_ID, tags: [] }], [{ siteId: SITE_ID, tags: [] }]);
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(preVerdicts[0]).toMatchObject({
+      allowed: false, error: expect.stringContaining('resource scope'),
+    });
+    expect(error).toHaveBeenCalledWith(
+      '[aiAgentRunLoop] resource scope recheck failed',
+      expect.objectContaining({ runId: RUN_ID, toolName: 'query_devices' }),
+    );
+  });
+
+  it('keeps the original scope when live policy removes its restriction', async () => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ deviceId: null, effective: scoped });
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(policy()));
+    await executeAgentRun(RUN_ID);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('skipped');
+  });
+
+  it('denies the next tool when resource scope is narrowed during a run', async () => {
+    // The run is org-wide (no device); the edit adds a site filter, which no
+    // device-less run can satisfy. Narrowing MUST reach an in-flight run.
+    seedRows({ deviceId: null });
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    resolveEffectiveAgentSystem
+      .mockResolvedValueOnce(snapshot(policy()))
+      .mockResolvedValue(snapshot(scoped));
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    expireScopeRecheckTtlBeforeFirstToolCall();
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed: false, error: expect.stringContaining('resource scope') });
+    expect(startToolExecution).not.toHaveBeenCalled();
+    // Once for the start gate (shared with `isStoppedBeforeStart`), once for
+    // the tool call that crossed the TTL — never twice in the same gate.
+    expect(resolveEffectiveAgentSystem).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves the current policy ONCE for the whole start gate and an unscoped run', async () => {
+    // `resolveEffectiveAgentSystem` is four queries and a system transaction.
+    // An unscoped run must not pay it per tool call, and the gate must not pay
+    // it twice back to back (`isStoppedBeforeStart` already resolved it).
+    seedRows();
+    scriptQuery({
+      toolCalls: [
+        { tool: 'query_devices', input: {} },
+        { tool: 'get_device_details', input: { deviceId: DEVICE_ID } },
+      ],
+    });
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts.map((verdict) => verdict.allowed)).toEqual([true, true]);
+    expect(resolveEffectiveAgentSystem).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT deny a tool call when the live policy flips to mode off mid-run', async () => {
+    // The loop runs on the run's immutable snapshot; `isStoppedBeforeStart`
+    // owns enabled/mode/identity and decides only WHETHER to start. Enforcing
+    // them per tool call would hard-deny the next call of a remediation
+    // already in flight — a half-applied change, which is worse than either
+    // finishing or never starting.
+    seedRows();
+    resolveEffectiveAgentSystem
+      .mockResolvedValueOnce(snapshot(policy()))
+      .mockResolvedValue(snapshot(policy({ mode: 'off', enabled: false })));
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    expireScopeRecheckTtlBeforeFirstToolCall();
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    expect(finalTransition()!.to).toBe('completed');
   });
 
   it('policy revoked between admission and start => skipped, no SDK call', async () => {
@@ -2058,7 +2356,7 @@ describe('executeAgentRun', () => {
 
     // The gate still allowed the call — the ledger write is observability
     // only, never authorization.
-    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
     expect(completeToolExecution).not.toHaveBeenCalled();
 
     const final = finalTransition()!;
@@ -2267,7 +2565,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
 
   it('pre-hook allows submit_alert_verdict on a verdict run and denies it on a full run', async () => {
     const pre = createAgentRunPreToolUse(preArgs('verdict') as never);
-    expect(await pre('submit_alert_verdict', validVerdict)).toEqual({ allowed: true });
+    expect(await pre('submit_alert_verdict', validVerdict)).toMatchObject({ allowed: true });
 
     const preFull = createAgentRunPreToolUse(preArgs('full') as never);
     expect((await preFull('submit_alert_verdict', validVerdict)).allowed).toBe(false);

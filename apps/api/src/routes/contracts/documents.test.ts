@@ -218,4 +218,40 @@ describe('contract document routes', () => {
     expect(res.status).toBe(400);
     expect(svc.linkContractDocument).not.toHaveBeenCalled();
   });
+  it.each([['all'], ['linked'], ['unlinked']])('GET /?linked=%s forwards the filter to the service', async (linked) => {
+    (svc.listContractDocuments as any).mockResolvedValue([LIST_ROW]);
+    const res = await app().request(`${BASE}?linked=${linked}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.listContractDocuments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ linked }),
+    );
+  });
+
+  it('GET /?linked=bogus is a 400 and never reaches the service', async () => {
+    const res = await app().request(`${BASE}?linked=bogus`, { method: 'GET' });
+    expect(res.status).toBe(400);
+    expect(svc.listContractDocuments).not.toHaveBeenCalled();
+  });
+
+  // Back-compat pin (decision 3): an omitted `linked` still means "unlinked",
+  // so the pre-Agreements DocumentsTab caller behaves identically. The
+  // Agreements page opts INTO the full inventory with linked=all.
+  it('GET / with no linked param defaults to unlinked', async () => {
+    (svc.listContractDocuments as any).mockResolvedValue([LIST_ROW]);
+    await app().request(BASE, { method: 'GET' });
+    expect(svc.listContractDocuments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ linked: 'unlinked' }),
+    );
+  });
+
+  it('GET /?orgId=… scopes the list to one organization (org-record embed)', async () => {
+    (svc.listContractDocuments as any).mockResolvedValue([LIST_ROW]);
+    await app().request(`${BASE}?orgId=${ORG_ID}&linked=all`, { method: 'GET' });
+    expect(svc.listContractDocuments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: ORG_ID, linked: 'all' }),
+    );
+  });
 });

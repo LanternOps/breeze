@@ -13,6 +13,7 @@ import type { PartnerStatus } from '../db/schema/orgs';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { applyNewPartnerDefaultSettings } from './partnerDefaultSettings';
 import { seedSystemTicketStatuses } from './ticketConfigService';
+import { ensureBuiltInMonitorsForPartner } from './monitors/builtInMonitors';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 
 export interface CreatePartnerInput {
@@ -195,6 +196,10 @@ export async function createPartner(
 
     // Seed the six system ticket statuses for this partner.
     await seedSystemTicketStatuses(tx, newPartner.id);
+
+    // Built-in CPU / memory / disk monitors + the partner-level policy that
+    // applies them to every device (services/monitors/builtInMonitors.ts).
+    await ensureBuiltInMonitorsForPartner(newPartner.id, { createdBy: newUser.id, exec: tx });
 
     // Default site.
     const [newSite] = await tx

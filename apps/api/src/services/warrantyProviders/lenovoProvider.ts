@@ -77,7 +77,7 @@ function toDateOnly(value: string | undefined | null): string {
   return isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10);
 }
 
-function summarize(entitlements: WarrantyEntitlement[]): WarrantyLookupResult {
+function summarize(entitlements: WarrantyEntitlement[], shipDate?: string | null): WarrantyLookupResult {
   if (entitlements.length === 0) return notFound();
   const startDates = entitlements.map((e) => e.startDate).filter(Boolean).sort();
   const endDates = entitlements.map((e) => e.endDate).filter(Boolean).sort().reverse();
@@ -86,6 +86,7 @@ function summarize(entitlements: WarrantyEntitlement[]): WarrantyLookupResult {
     entitlements,
     warrantyStartDate: startDates[0] ?? null,
     warrantyEndDate: endDates[0] ?? null,
+    shipDate: shipDate || null,
   };
 }
 
@@ -122,6 +123,7 @@ interface OfficialResponse {
   Serial?: string;
   Product?: string;
   InWarranty?: boolean;
+  Shipped?: string;
   Warranty?: OfficialWarranty[];
   Contract?: OfficialContract[];
   // Error envelope. The docs say error codes arrive "in the response object"
@@ -195,7 +197,7 @@ function parseOfficial(body: unknown, serial: string): WarrantyLookupResult {
         endDate: toDateOnly(c.End),
       })),
   ];
-  return summarize(entitlements);
+  return summarize(entitlements, toDateOnly(record.Shipped));
 }
 
 class OfficialAuthError extends Error {}
@@ -242,6 +244,7 @@ interface PcsupportResponse {
   code?: number;
   msg?: { desc?: string | null };
   data?: {
+    machineInfo?: { shipDate?: string | null };
     baseWarranties?: PcsupportWarranty[];
     upgradeWarranties?: PcsupportWarranty[];
     contractWarranties?: PcsupportWarranty[];
@@ -271,7 +274,7 @@ function parsePcsupport(body: unknown): WarrantyLookupResult {
     startDate: toDateOnly(w.startDate),
     endDate: toDateOnly(w.endDate),
   }));
-  return summarize(entitlements);
+  return summarize(entitlements, toDateOnly(envelope.data?.machineInfo?.shipDate));
 }
 
 /** Throws on transport/HTTP failure and on unexpected envelopes. */

@@ -4,9 +4,11 @@ import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks,
+  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
 } from '../../db/schema';
+import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
 /**
@@ -98,6 +100,44 @@ type ResolverResult =
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
+/**
+ * Thrown ONLY by the proposal branch of the run_script resolver.
+ *
+ * The rest of this module is total by construction — every unresolvable case
+ * returns a sentinel, and intentService stores a NULL digest that both release
+ * paths treat as "nothing to check". For an AI-authored script that fail-open
+ * is unacceptable (spec §4.5), so this is the one case that aborts intent
+ * creation instead.
+ */
+export class EffectDigestUnresolvableError extends Error {
+  constructor(public readonly resolver: string, public readonly detail: string) {
+    super(`effect digest for ${resolver} could not be resolved: ${detail}`);
+    this.name = 'EffectDigestUnresolvableError';
+  }
+}
+
+/**
+ * Pinned material for a proposal-backed run. Lifecycle state is deliberately
+ * absent: release checks status/expiry/supersession/intent_id separately and
+ * fails with `proposal_not_runnable`, so an ordinary state change must not
+ * masquerade as `content_changed`.
+ */
+function runScriptProposalDigestMaterial(
+  proposal: ScriptProposalRow,
+  args: Record<string, unknown>,
+): string {
+  const deviceIds = Array.isArray(args.deviceIds) ? [...(args.deviceIds as string[])].sort() : [];
+  return JSON.stringify({
+    proposalId: proposal.id,
+    contentDigest: proposal.contentDigest,
+    language: proposal.language,
+    runAs: proposal.runAs,
+    timeoutSeconds: proposal.timeoutSeconds,
+    deviceIds,
+    scannerVersion: proposal.scannerVersion,
+  });
+}
+
 const MISSING_ARG: ResolverResult = { kind: 'missing_arg' };
 const TARGET_ABSENT: ResolverResult = { kind: 'target_absent' };
 const material = (value: string | Buffer): ResolverResult => ({ kind: 'material', material: value });
@@ -162,6 +202,21 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // correctly mismatches against the digest pinned at creation (the release
   // fails closed instead of trying to run a deleted script).
   run_script: async (args, database) => {
+    // AI script authoring (spec §4.5): a proposal-backed run pins the
+    // proposal's immutable material, and an unresolvable proposal ABORTS
+    // creation rather than storing a fail-open NULL digest.
+    if (typeof args.proposalId === 'string' && args.proposalId.length > 0) {
+      const [proposal] = await database
+        .select().from(scriptProposals).where(eq(scriptProposals.id, args.proposalId)).limit(1);
+      if (!proposal) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', `proposal ${args.proposalId} not found`);
+      }
+      const deviceIds = Array.isArray(args.deviceIds) ? (args.deviceIds as string[]) : [];
+      if (deviceIds.length === 0) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', 'deviceIds is required');
+      }
+      return { kind: 'material', material: runScriptProposalDigestMaterial(proposal, args) };
+    }
     const built = await buildRunScriptSnapshot(args, database);
     if (built.kind === 'missing_arg') return MISSING_ARG;
     if (built.kind === 'target_absent') return TARGET_ABSENT;
@@ -375,6 +430,47 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       featureType: link.featureType,
       featurePolicyId: link.featurePolicyId,
       inlineSettings: link.inlineSettings,
+    }));
+  },
+
+  // manage_patches:install (Tier 3, SUPERVISED) — AI patch agent W02 (#5748).
+  // The pinned content is the ELIGIBILITY VERDICT for (deviceId, patchIds…)
+  // under the device's CURRENT org, ring and policy — never the `patches`
+  // catalog row: `patches` is a GLOBAL vendor catalog re-synced on a schedule,
+  // so hashing its `updated_at` would fail closed on routine syncs — the exact
+  // trap recorded for `manage_patches:rollback` in
+  // effectDigestCoverage.contract.test.ts. A patch that was deferred,
+  // category-blocked, superseded, un-approved, or whose device changed ring or
+  // org between approval and release therefore changes the digest and the
+  // worker refuses the release with `content_changed`. `resolvedAt` is
+  // deliberately NOT part of the material (it moves on every recompute).
+  //
+  // The org comes off the device row read through the caller's `database`,
+  // never off the tool input (an intent's arguments carry no orgId, and if
+  // they did, the approver's org is what `revalidateRelease` checks — this
+  // pin is about the CONTENT). `resolvePatchInstallEligibility` reads through
+  // the ambient `db`, which every call site of this module (creation
+  // transaction, release worker, inline chat release) runs system-scoped —
+  // the same caller obligation the run_script resolver's `opts.database`
+  // carries.
+  'manage_patches:install': async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds : null;
+    const deviceId = deviceIds?.length === 1 && typeof deviceIds[0] === 'string' ? deviceIds[0] : null;
+    const patchIds = Array.isArray(args.patchIds) ? args.patchIds.filter((p): p is string => typeof p === 'string') : [];
+    if (!deviceId || patchIds.length === 0) return MISSING_ARG;
+    const [device] = await database
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return TARGET_ABSENT;
+    const verdict = await resolvePatchInstallEligibility({ deviceId, orgId: device.orgId, patchIds });
+    return material(JSON.stringify({
+      v: 1,
+      orgId: device.orgId,
+      ringId: verdict.ringId,
+      eligible: verdict.eligible.map((e) => e.patchId).sort(),
+      ineligible: verdict.ineligible.map((e) => `${e.patchId}:${e.reason}`).sort(),
     }));
   },
 

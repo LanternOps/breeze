@@ -30,6 +30,11 @@ var identityMutatedPaths = map[string]bool{
 // phase's expected artifacts exist, fstab references only UUIDs actually on
 // the rebuilt disk, then flushes and releases the target.
 func validate(ctx context.Context, r *run) error {
+	// 0. System state (#5412): an expected apply that never happened is a
+	// named validation failure, whatever the files look like.
+	if r.opts.ExpectSystemState && !r.result.StateApplied {
+		return errors.New("system state not applied: snapshot advertises system state but the restore phase did not apply it")
+	}
 	// 1. Sample checksums of restored files.
 	var withSum []backup.SnapshotFile
 	if r.manifest != nil {
@@ -39,6 +44,9 @@ func validate(ctx context.Context, r *run) error {
 			}
 			if r.opts.Identity == IdentityNew && identityMutatedPaths[f.SourcePath] {
 				continue
+			}
+			if r.failedFiles[f.SourcePath] {
+				continue // known partial-restore failure, already a warning
 			}
 			withSum = append(withSum, f)
 		}

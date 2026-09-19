@@ -460,6 +460,11 @@
       "discardFailed": "Could not discard the AI draft.",
       "discarded": "Draft discarded"
     },
+    "aiProposal": {
+      "postAsNote": "Post as private note",
+      "posted": "Posted as a private note",
+      "postFailed": "Could not post the note"
+    },
     "resolve": {
       "noteLabel": "Resolution note (visible to requester)",
       "submit": "Resolve ticket"

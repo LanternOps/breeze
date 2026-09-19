@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 // Canonicalize NODE_ENV before any module reads it (some routes/services gate
 // on `NODE_ENV === 'production'` at import time). Must stay directly after
 // dotenv so .env is loaded first. See #917 (L-6).
@@ -26,6 +27,7 @@ import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
+import { monitorDefinitionRoutes } from './routes/monitorDefinitions';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
@@ -39,6 +41,7 @@ import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -52,6 +55,12 @@ import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
 import { orgArchiveRoutes } from './routes/orgArchive';
 import { orgSummaryRoutes } from './routes/orgSummary';
+import { orgAccountReadinessRoutes } from './routes/orgAccountReadiness';
+import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
+import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
+import { orgDocumentRoutes } from './routes/orgDocuments';
+import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -94,6 +103,8 @@ import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked'
 import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
+import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -120,6 +131,7 @@ import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
+import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -136,9 +148,15 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
+import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
+import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
+import { aiArtifactRoutes } from './routes/aiArtifacts';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { fleetDesignRoutes } from './routes/fleetDesign';
+import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
@@ -149,6 +167,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
+import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -174,6 +193,7 @@ import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
+import { toolSourcesRoutes } from './routes/toolSources';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -197,8 +217,11 @@ import {
   getDbPoolHealthMinTimeouts,
   getDbPoolHealthWindowMs,
   startDbPoolHealthMonitor,
+  startWedgedBackendMonitor,
+  stopWedgedBackendMonitor,
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
+import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -227,11 +250,13 @@ import { getWebhookWorker } from './workers/webhookDelivery';
 import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
+import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
@@ -239,16 +264,19 @@ import {
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
-import { drainAuditRetryQueue } from './services/auditService';
+import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/auditService';
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
@@ -728,7 +756,8 @@ api.use('*', async (c, next) => {
 });
 
 api.use('*', async (c, next) => {
-  await next();
+  const auditWritten = await runWithAuditRequestTracking(next);
+  if (auditWritten) return;
 
   const method = c.req.method.toUpperCase();
   if (!isMutatingMethod(method)) {
@@ -793,6 +822,10 @@ api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
+// #5289 — monitor DEFINITIONS (the authored object the alert rules above get
+// compiled from). Deliberately NOT '/monitors': that path is already the
+// network-monitor API (routes/monitors.ts).
+api.route('/monitor-definitions', monitorDefinitionRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 // M365 mailbox OAuth + connection routes. Mounted as its OWN top-level router
 // (NOT under ticketsRoutes) and BEFORE /tickets so its literal /tickets/mailbox/*
@@ -835,6 +868,12 @@ api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
 api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', orgAccountReadinessRoutes); // GET /orgs/account-readiness — Organizations board bulk read (#5721 W01)
+api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
+api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
+api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -885,6 +924,13 @@ api.route('/webhooks', stripeWebhookRoutes);
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
+// Resend delivery webhook for partner sending domains (W06) — no session auth,
+// Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
+// is unset. partnerGuard passes through (no Authorization header); the route
+// reads the raw body itself via c.req.text(), so no body-consuming middleware may
+// sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
+// auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', resendWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -930,6 +976,10 @@ api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
+// Second sub-router at the same prefix (ten prefixes here already are). The
+// probe lives in its own module so routes/discovery.ts does not grow past 2,247
+// lines; no path overlaps, so mount order is immaterial.
+api.route('/discovery', discoveryAssetProbeRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -944,6 +994,9 @@ api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+// Metric history in its own module (routes/monitoring.ts is already 1,071
+// lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
+api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
@@ -958,6 +1011,12 @@ api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
+// W04 (#5612): the partner CEILING for the unattended script lane.
+api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+// W03 (partner sending domains). MUST stay above the catch-all `/partner`
+// mount below, the same ordering `/partner/trust` relies on — Hono matches in
+// registration order, so a later specific mount is never reached.
+api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -980,9 +1039,29 @@ api.route('/ai/provider', aiProviderRoutes);
 // '/schedules' as an agent id (#4189).
 api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Fleet Designer (W01, #5651) — trigger/list/detail for `designer`-kind runs.
+// Distinct path prefix from '/ai/agents', so registration order relative to
+// it doesn't matter the way '/ai/agents/schedules' does.
+api.route('/ai/fleet-design', fleetDesignRoutes);
+// AI patch agent W01 (#5747): "Run now" for a patch plan. Same reasoning as
+// the line above — its own prefix, so registration order is irrelevant.
+api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// W03 (#5612): more specific than '/ai', so it must be registered first — same
+// reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
+// registration order.
+api.route('/ai/script-proposals', aiScriptProposalRoutes);
+// W04 (#5612): GET/PUT /ai/script-policy + POST /ai/script-lane/reset —
+// registered ahead of '/ai' so the literal paths never fall into a sibling
+// param route.
+api.route('/ai', aiScriptPolicyRoutes);
+// BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
+// the per-run artifact LIST lives inside aiAgentsRoutes itself (see
+// routes/aiAgents.ts, above its /runs/:runId), so no second router shares
+// that prefix.
+api.route('/ai/artifacts', aiArtifactRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1023,6 +1102,9 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
+// when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
+api.route('/tool-sources', toolSourcesRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
@@ -1109,8 +1191,17 @@ async function initializeWorkers(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
+
+  // #5381: the runner and the sweep scheduler log "initialized" whether or
+  // not the kill switch is set, which reads as "the subsystem is up" when it
+  // is in fact inert. One unambiguous line per process, next to the readiness
+  // declaration that already knows the flag. Imported from `subsystemState`
+  // (env-only) rather than `skipVisibility` (which pulls in Redis) — see that
+  // module's header for why a boot module's import graph has to stay thin.
+  logAiAgentsSubsystemState('api', AI_AGENTS_ENABLED);
 
   if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');
@@ -1274,6 +1365,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // which would report `database-unreachable` about a process that is simply
   // shutting down.
   stopDbPoolHealthMonitor();
+  stopWedgedBackendMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1358,6 +1450,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       name: 'queues',
       tasks: [
         shutdownEventDispatcher,
+        // Execution plane W05: the chat run bridge owns its own per-org ioredis
+        // subscribers. A leaked one keeps the process alive past SIGTERM, which
+        // is how a rolling deploy turns into a stuck pod.
+        shutdownChatRunBridge,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
@@ -1563,10 +1659,36 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
+    );
+  }
+
   await initializeDatabaseForStartup({
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
   });
+  // Migrations may have changed role_permissions (W02 seeded agreements:* and
+  // back-filled it onto every role holding the equivalent contracts grant), and
+  // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
+  // (services/permissions.ts:36-37). A warm replica in a rolling deploy would
+  // otherwise serve pre-migration grants — a 403 on a surface the operator can
+  // see they have access to — until the TTL expired. Calling this with no
+  // userId bumps the shared Redis version key, so every replica invalidates at
+  // once rather than each aging out independently.
+  await clearPermissionCache();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
@@ -1638,6 +1760,7 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to ensure system script library:', err);
   }
 
+
   try {
     await runWithSystemDbAccess(async () => {
       const seeded = await seedDefaultAuditBaselines();
@@ -1660,12 +1783,29 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to backfill C2C connection secrets:', err);
   }
 
+  // AI patch agent W01 (#5747, #5382): partner-wide patch agents enabled
+  // before the default-cadence hook shipped have no schedule and never run.
+  // Idempotent (per-agent advisory lock + existing-row check) and manages its
+  // own system DB context, so it is safe on every boot and every replica.
+  try {
+    await backfillDefaultPatchSchedules();
+  } catch (err) {
+    console.error('[startup] Failed to backfill default patch schedules:', err);
+  }
+
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  //
+  // #6098: deliberately NOT wrapped in runWithSystemDbAccess. syncBinaries()
+  // does GitHub release/manifest fetches (BINARY_SOURCE=github, and as a
+  // local-mode fallback) — wrapping the whole call in a system DB context
+  // held a pooled connection idle-in-transaction across that network phase
+  // for the entire boot (verified: 2.7s hold, the #1105 safeFetch tripwire
+  // fired x10). syncBinaries() and everything it calls now open their own
+  // short withSystemDbAccessContext around only their DB reads/writes, so no
+  // ambient context is needed — or wanted — here.
   const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
-    await runWithSystemDbAccess(async () => {
-      await syncBinaries();
-    });
+    await syncBinaries();
   } catch (err) {
     if (binarySource === 'local') {
       console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);
@@ -1711,6 +1851,23 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Built-in CPU / memory / disk monitors for partners created before the
+  // feature shipped. Detached and AFTER the listener is up: hundreds of
+  // partners × ~40 queries each must never delay /health. One-time per partner
+  // (partners.settings marker), each partner its own transaction; opt out with
+  // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
+  void ensureBuiltInMonitorsForAllPartners()
+    .then((result) => {
+      if (result.provisioned > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to provision built-in monitors:', err);
+    });
 
   // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
   // loads `jobs/aiAgentRunner` for a process that runs global workers, so an

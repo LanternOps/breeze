@@ -199,4 +199,68 @@ describe('DeviceActivityFeed', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Collapse activity' }));
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
+
+  it('shows an AI chip and a proposal link for an AI-authored script run', async () => {
+    mockFeed([
+      {
+        id: 'e-ai-1',
+        action: 'ai.script.executed',
+        message: 'AI script run sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: '2026-09-11T00:00:00Z',
+        actor: { type: 'user', name: 'Jane Tech', email: 'jane@example.com' },
+        details: { proposalId: 'proposal-1' },
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByText(/AI script run sent/i)).toBeTruthy());
+
+    expect(screen.getByText('AI')).toBeTruthy();
+    const link = screen.getByRole('link', { name: /view proposal/i });
+    expect(link.getAttribute('href')).toBe('/ai-script-proposals/proposal-1');
+  });
+
+  it('requests the ai.command. prefix so AI commands reach the Overview feed (#5022 W02)', async () => {
+    mockFeed([]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const eventsCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/events'));
+    expect(eventsCall).toBeDefined();
+    const url = decodeURIComponent(String(eventsCall![0]));
+    expect(url).toContain('ai.command.');
+  });
+
+  it('renders an ai.command.executed row with the AI initiator chip (#5022 W02)', async () => {
+    mockFeed([
+      {
+        id: 'a1',
+        action: 'ai.command.executed',
+        message: 'AI command sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: new Date().toISOString(),
+        actor: { type: 'ai_agent', name: 'AI Agent' },
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    expect(await screen.findByText('AI')).toBeInTheDocument();
+  });
+
+  it('renders no proposal link when details.proposalId is absent', async () => {
+    mockFeed([
+      {
+        id: 'e-ai-2',
+        action: 'ai.script.executed',
+        message: 'AI script run sent — host-1',
+        result: 'dispatched',
+        initiatedBy: 'ai',
+        timestamp: '2026-09-11T00:00:00Z',
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByText(/AI script run sent/i)).toBeTruthy());
+
+    expect(screen.queryByRole('link', { name: /view proposal/i })).toBeNull();
+  });
 });

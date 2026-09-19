@@ -17,7 +17,11 @@ const h = vi.hoisted(() => {
     selectQueue: [] as unknown[][],
     selectWheres: [] as unknown[],
     inserts: [] as Array<{ table: unknown; values: unknown }>,
-    updates: [] as Array<{ table: unknown; values: unknown }>
+    updates: [] as Array<{ table: unknown; values: unknown }>,
+    // cutScriptVersion calls, recorded rather than executed: the real helper
+    // needs a live `SELECT ... FOR UPDATE`, and its behaviour is proven by
+    // services/scriptVersions.test.ts plus the live-DB bundle RLS suite.
+    cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>
   };
   function chain(get: () => unknown) {
     const c: Record<string, unknown> = {};
@@ -35,8 +39,19 @@ const h = vi.hoisted(() => {
   return { state, chain };
 });
 
+vi.mock('../scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.state.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  })
+}));
+
 vi.mock('../../db', () => ({
   db: {
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const { db } = await import('../../db');
+      return fn(db);
+    }),
     select: vi.fn(() => h.chain(() => h.state.selectQueue.shift() ?? [])),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
@@ -63,6 +78,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn()
 }));
 
+import { db } from '../../db';
 import { scripts, scriptTags, scriptToTags, scriptVersions } from '../../db/schema';
 import { exportBundle, importBundle, previewBundle, type BundleAuth } from './index';
 import {
@@ -104,6 +120,7 @@ beforeEach(() => {
   h.state.selectWheres = [];
   h.state.inserts = [];
   h.state.updates = [];
+  h.state.cuts = [];
 });
 
 /**
@@ -373,7 +390,7 @@ describe('importBundle', () => {
     }
   });
 
-  it('new-version mode appends the previous content to scriptVersions and bumps the version', async () => {
+  it('new-version mode cuts an imported-origin AFTER-image and leaves the bump to cutScriptVersion', async () => {
     const bundle = validBundle([{ ...baseEntry, content: 'new content' }]);
     h.state.selectQueue.push([
       {
@@ -393,18 +410,22 @@ describe('importBundle', () => {
     });
     expect('error' in result).toBe(false);
 
-    const versionInsert = h.state.inserts.find((i) => i.table === scriptVersions);
-    expect(versionInsert).toBeDefined();
-    const snapshot = versionInsert!.values as Record<string, unknown>;
-    expect(snapshot.scriptId).toBe(SCRIPT_ID);
-    expect(snapshot.version).toBe(4);
-    expect(snapshot.content).toBe('old content');
+    // W01a: the importer no longer writes script_versions itself — it hands
+    // the after-image cut to cutScriptVersion, which snapshots the row the
+    // update just wrote and owns scripts.version.
+    expect(h.state.inserts.find((i) => i.table === scriptVersions)).toBeUndefined();
+    expect(h.state.cuts).toHaveLength(1);
+    expect(h.state.cuts[0]!.scriptId).toBe(SCRIPT_ID);
+    expect(h.state.cuts[0]!.provenance).toMatchObject({
+      origin: 'imported',
+      changelog: `Imported from bundle "${baseEntry.name}"`
+    });
 
     const update = h.state.updates.find((u) => u.table === scripts);
     expect(update).toBeDefined();
     const set = update!.values as Record<string, unknown>;
     expect(set.content).toBe('new content');
-    expect(set.version).toBe(5);
+    expect(set).not.toHaveProperty('version');
     if ('versioned' in result) expect(result.versioned).toBe(1);
   });
 
@@ -493,6 +514,129 @@ describe('importBundle', () => {
     const linkInsert = h.state.inserts.find((i) => i.table === scriptToTags);
     expect(linkInsert).toBeDefined();
     expect((linkInsert!.values as unknown[]).length).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Fleet Designer W04 (#5654): import-wide tags (`legacy-import` discovery).
+  // -------------------------------------------------------------------------
+  describe('import-wide tags', () => {
+    function tagNamesInserted(): string[] {
+      const insert = h.state.inserts.find((i) => i.table === scriptTags);
+      return insert ? (insert.values as Array<{ name: string }>).map((t) => t.name) : [];
+    }
+    function linkedTagIds(): string[] {
+      return h.state.inserts
+        .filter((i) => i.table === scriptToTags)
+        .flatMap((i) => (i.values as Array<{ tagId: string }>).map((l) => l.tagId));
+    }
+
+    it('links the import-wide tag on a newly imported entry', async () => {
+      h.state.selectQueue.push([], [], []); // no org conflict, no partner-wide conflict, tag missing
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      expect(tagNamesInserted()).toEqual(['legacy-import']);
+      expect(linkedTagIds()).toHaveLength(1);
+    });
+
+    it('links the import-wide tag on a renamed entry', async () => {
+      h.state.selectQueue.push(
+        [{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'old' }], // conflict
+        [], // free-name candidates: (2) free
+        [{ id: TAG_ID, name: 'legacy-import' }], // tag already exists in scope
+      );
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'rename', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      if ('renamed' in result) expect(result.renamed).toBe(1);
+      expect(tagNamesInserted()).toEqual([]); // reused, not re-created
+      expect(linkedTagIds()).toEqual([TAG_ID]);
+    });
+
+    it('links the import-wide tag on a new-version entry', async () => {
+      h.state.selectQueue.push(
+        [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: 'old content', description: 'd', category: null, parameters: null, exitCodeSeverityMapping: null }],
+        [{ id: TAG_ID, name: 'legacy-import' }], // ensureTagIds
+        [], // linkTags: existing links on the script → none
+      );
+      const result = await importBundle(makeAuth(), validBundle([{ ...baseEntry, content: 'new content' }]), {
+        mode: 'new-version', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      if ('versioned' in result) expect(result.versioned).toBe(1);
+      expect(linkedTagIds()).toEqual([TAG_ID]);
+    });
+
+    it('does not double-link when the entry already carries the tag (case-insensitive)', async () => {
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: ['Legacy-Import', 'printing'] }]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      const names = tagNamesInserted();
+      expect(names.map((n) => n.toLowerCase()).filter((n) => n === 'legacy-import')).toHaveLength(1);
+      expect(names).toContain('printing');
+      expect(linkedTagIds()).toHaveLength(2);
+    });
+
+    it('keeps the import-wide tag when the entry is already at the per-script tag cap', async () => {
+      const entryTags = Array.from({ length: 20 }, (_, i) => `t${i}`);
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: entryTags }]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      const names = tagNamesInserted();
+      expect(names).toHaveLength(20);
+      expect(names[0]).toBe('legacy-import');
+    });
+
+    it('without import-wide tags, entry tags behave exactly as before', async () => {
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: ['printing'] }]), { mode: 'skip', availability: 'org' });
+      expect(tagNamesInserted()).toEqual(['printing']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Fleet Designer W04 (#5654): an internal caller (apply step 4) states the
+  // version provenance instead of the importer's default 'imported'.
+  // -------------------------------------------------------------------------
+  describe('provenance override', () => {
+    it('stamps the caller-supplied provenance on the created row and its v1 version', async () => {
+      const approvedAt = new Date('2026-09-13T00:00:00.000Z');
+      h.state.selectQueue.push([], []);
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'rename', availability: 'org',
+        provenanceFor: (_entry, index) => ({ origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt, changelog: `Fleet Design item ${index}` }),
+      });
+      expect('error' in result).toBe(false);
+      const values = h.state.inserts.find((i) => i.table === scripts)!.values as Record<string, unknown>;
+      expect(values.origin).toBe('ai_proposal');
+      expect(values.originProposalId).toBeNull();
+      expect(h.state.cuts).toHaveLength(1);
+      expect(h.state.cuts[0]!.provenance).toMatchObject({
+        origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt, changelog: 'Fleet Design item 0', createdBy: 'user-123',
+      });
+      expect(h.state.cuts[0]!.provenance).not.toHaveProperty('proposalId');
+    });
+
+    it('never lets the override acknowledge a STRICT pattern — the created script still fails closed', async () => {
+      h.state.selectQueue.push([], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\X' -Name A -Value 1" }]), {
+        mode: 'rename', availability: 'org',
+        provenanceFor: () => ({ origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt: new Date(), changelog: 'x' }),
+      });
+      const values = h.state.inserts.find((i) => i.table === scripts)!.values as Record<string, unknown>;
+      expect(values.acknowledgedSecurityPatterns).toEqual([]);
+      expect(values.securityAcknowledgedBy).toBeNull();
+    });
+
+    it('without the override, a bundle import stays origin imported', async () => {
+      h.state.selectQueue.push([], []);
+      await importBundle(makeAuth(), validBundle([baseEntry]), { mode: 'rename', availability: 'org' });
+      expect(h.state.cuts[0]!.provenance).toMatchObject({ origin: 'imported' });
+    });
   });
 
   it('rejects a system-scope import with no orgId instead of creating tenantless orphan rows', async () => {
@@ -1144,5 +1288,33 @@ describe('exportBundle', () => {
     const bundle = await exportBundle(makeAuth(), [SCRIPT_ID]);
     const parsed = scriptBundleSchema.safeParse(bundle);
     expect(parsed.success).toBe(true);
+  });
+});
+
+
+describe('explicit import transaction', () => {
+  it.each(['rename', 'new-version'] as const)('routes %s SQL through the supplied transaction', async (mode) => {
+    const tx = {
+      select: vi.fn(vi.mocked(db.select).getMockImplementation()),
+      insert: vi.fn(vi.mocked(db.insert).getMockImplementation()),
+      update: vi.fn(vi.mocked(db.update).getMockImplementation()),
+      transaction: vi.fn(),
+    };
+    tx.transaction.mockImplementation(async (fn) => fn(tx));
+    h.state.selectQueue.push([{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'old' }]);
+    if (mode === 'rename') h.state.selectQueue.push([]); // available suffixed name
+    h.state.selectQueue.push([]); // new tag
+    if (mode === 'new-version') h.state.selectQueue.push([]); // existing tag links
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode, availability: 'org', tags: ['fleet-design'],
+    }, tx as unknown as NonNullable<Parameters<typeof importBundle>[3]>);
+    expect(result).toMatchObject({ errors: [], [mode === 'rename' ? 'renamed' : 'versioned']: 1 });
+    expect(tx.select).toHaveBeenCalled();
+    expect(tx.insert).toHaveBeenCalled();
+    expect(tx.transaction).toHaveBeenCalledOnce();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });

@@ -31,6 +31,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts',
+  documents: 'Organization Documents',
+  agreements: 'Agreements',
   sso: 'Single Sign-On',
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
@@ -40,7 +42,11 @@ const RESOURCE_LABELS: Record<string, string> = {
   variables: 'Variables',
   pam: 'Privileged Access',
   accounting: 'Accounting',
-  workspace: 'Workspace'
+  workspace: 'Workspace',
+  // Tool catalog (#5216): registering external MCP tool sources, and calling
+  // the tools they expose from AI surfaces.
+  tool_sources: 'External Tool Sources',
+  external_tools: 'External Tools'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -63,7 +69,8 @@ const ACTION_LABELS: Record<string, string> = {
   create: 'Create',
   approve: 'Approve',
   manage_policy: 'Manage policy',
-  credentials: 'Manage Credentials'
+  credentials: 'Manage Credentials',
+  use: 'Use'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

@@ -10,6 +10,7 @@ import {
   type PendingApproval,
   type PendingPlan,
   type ActivePlan,
+  type ChatRunState,
 } from './processStreamEvent';
 
 interface SearchResult {
@@ -28,7 +29,15 @@ interface M365Connection {
 interface AiState {
   isOpen: boolean;
   sessionId: string | null;
+  /**
+   * Org the current session is anchored to, as reported by the API (#5684).
+   * Null when unknown — a session restored from localStorage only carries its
+   * id until `loadSession` resolves the rest.
+   */
+  sessionOrgId: string | null;
   messages: AiMessage[];
+  /** Analysis runs launched from this conversation, keyed by run id (W05). */
+  chatRuns: Record<string, ChatRunState>;
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
@@ -83,12 +92,61 @@ interface AiState {
   setSelectedM365Connection: (connectionId: string | null) => void;
 }
 
+/**
+ * True when an open session belongs to a different org than the device page the
+ * chat is now sitting on (#5684).
+ *
+ * Both sides must be known: a device page context with no `orgId` (an older
+ * caller) and a session with no recorded org both mean "cannot tell", and the
+ * session is left alone rather than dropped on a guess.
+ */
+function pageContextOrgMismatch(
+  ctx: AiPageContext | null,
+  sessionOrgId: string | null,
+): boolean {
+  return (
+    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+  );
+}
+
+/**
+ * Session-scoped state to wipe when the chat rebinds to another tenant — the
+ * next message then creates a session anchored to the device's org (#5593).
+ */
+const CLEARED_SESSION = {
+  sessionId: null,
+  sessionOrgId: null,
+  messages: [] as AiMessage[],
+  isFlagged: false,
+  flagReason: null,
+  boundM365ConnectionId: null,
+  pendingApproval: null,
+  pendingPlan: null,
+  activePlan: null,
+  // A response still streaming for the old tenant is abandoned by the ownership
+  // check in `sendMessage`; without clearing these the indicator would spin and
+  // `sendMessage`'s `isStreaming` guard would silently refuse the next message.
+  isStreaming: false,
+  isInterrupting: false,
+  isPaused: false,
+} as const;
+
+/**
+ * Identifies the stream `sendMessage` currently owns. A rebind (or any later
+ * send) supersedes an in-flight one: the superseded reader must stop appending
+ * into the store, or another tenant's assistant output lands in the new chat
+ * (#5684).
+ */
+let activeStreamToken = 0;
+
 export const useAiStore = create<AiState>()(
   persist(
     (set, get) => ({
   isOpen: false,
   sessionId: null,
+  sessionOrgId: null,
   messages: [],
+  chatRuns: {},
   isStreaming: false,
   isLoading: false,
   error: null,
@@ -123,7 +181,12 @@ export const useAiStore = create<AiState>()(
   close: () => set({ isOpen: false }),
   clearError: () => set({ error: null }),
 
-  setPageContext: (ctx) => set({ pageContext: ctx }),
+  setPageContext: (ctx) =>
+    set((s) =>
+      pageContextOrgMismatch(ctx, s.sessionOrgId)
+        ? { pageContext: ctx, ...CLEARED_SESSION }
+        : { pageContext: ctx },
+    ),
 
   createSession: async (opts) => {
     set({ isLoading: true, error: null });
@@ -145,6 +208,7 @@ export const useAiStore = create<AiState>()(
       const data = await res.json();
       set({
         sessionId: data.id,
+        sessionOrgId: data.orgId ?? null,
         messages: [],
         isLoading: false,
         isFlagged: false,
@@ -164,7 +228,7 @@ export const useAiStore = create<AiState>()(
   // device-scoped session, and — when an initial message is supplied — auto-sends it
   // so the tech gets an answer without retyping the context.
   startDeviceTask: async (deviceId, ctx, initialMessage) => {
-    set({ pageContext: ctx, sessionId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
+    set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
     await get().createSession({ deviceId });
     // Only send if the session was actually created — createSession leaves
     // sessionId null and sets `error` on failure; sending then would be session-less.
@@ -179,7 +243,7 @@ export const useAiStore = create<AiState>()(
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) {
         if (res.status === 404) {
-          set({ sessionId: null, messages: [], isLoading: false });
+          set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         } else {
           set({ error: 'Failed to load session', isLoading: false });
         }
@@ -187,7 +251,16 @@ export const useAiStore = create<AiState>()(
       }
       const data = await res.json();
       if (data.session?.status !== 'active') {
-        set({ sessionId: null, messages: [], isLoading: false });
+        set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
+        return;
+      }
+
+      // Only the session id survives a reload, so the org arrives here — this is
+      // where a persisted Org A session opened on an Org B device page is
+      // caught and dropped (#5684).
+      const restoredOrgId: string | null = data.session.orgId ?? null;
+      if (pageContextOrgMismatch(get().pageContext, restoredOrgId)) {
+        set({ ...CLEARED_SESSION, isLoading: false });
         return;
       }
 
@@ -195,6 +268,7 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        sessionOrgId: restoredOrgId,
         messages,
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
@@ -204,6 +278,7 @@ export const useAiStore = create<AiState>()(
     } catch (err) {
       set({
         sessionId: null,
+        sessionOrgId: null,
         messages: [],
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
@@ -255,6 +330,10 @@ export const useAiStore = create<AiState>()(
       pendingApproval: null
     }));
 
+    const streamToken = ++activeStreamToken;
+    /** False once this stream has been superseded — by a rebind, or a newer send. */
+    const ownsStream = () => activeStreamToken === streamToken && get().sessionId === currentSessionId;
+
     try {
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
@@ -286,6 +365,13 @@ export const useAiStore = create<AiState>()(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // The chat can rebind to another org mid-response (#5684). Drop the
+        // rest of this stream rather than replay it into whatever session is
+        // live now — its content belongs to the previous tenant.
+        if (!ownsStream()) {
+          await reader.cancel().catch(() => undefined);
+          return;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -298,6 +384,7 @@ export const useAiStore = create<AiState>()(
 
             try {
               const event = JSON.parse(jsonStr) as AiStreamEvent;
+              if (!ownsStream()) break;
               currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
             } catch (parseErr) {
               console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
@@ -306,13 +393,15 @@ export const useAiStore = create<AiState>()(
         }
       }
     } catch (err) {
+      // A superseded stream must not raise an error on the session that
+      // replaced it — its failure is no longer anything the user can act on.
+      if (!ownsStream()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to send message',
         isStreaming: false
       });
     } finally {
-      const state = get();
-      if (state.isStreaming) {
+      if (activeStreamToken === streamToken && get().isStreaming) {
         set({ isStreaming: false });
       }
     }
@@ -428,7 +517,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, messages: [], boundM365ConnectionId: null });
+      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null });
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });
@@ -488,6 +577,10 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        // An explicit pick from the history panel is authoritative — it is not
+        // dropped on an org mismatch, but the org is recorded so a later page
+        // navigation can rebind (#5684).
+        sessionOrgId: data.session?.orgId ?? null,
         messages,
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
@@ -560,6 +653,7 @@ export const useAiStore = create<AiState>()(
       name: 'breeze-ai-chat',
       partialize: (state) => ({
         sessionId: state.sessionId,
+        sessionOrgId: state.sessionOrgId,
       }),
     }
   )

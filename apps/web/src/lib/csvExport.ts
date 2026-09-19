@@ -5,8 +5,11 @@
  */
 export {
   neutralizeSpreadsheetFormula,
+  csvCellToString,
   escapeCsvCell,
   escapeTsvCell,
+  csvRow,
+  tsvRow,
   toCsv,
   rowsToCsv,
   rowsToTsv,

@@ -15,7 +15,8 @@ import { useTranslation } from "react-i18next";
 // intentBacked / selfApprovalRequestId). Redeclaring it here meant both
 // copies had to be edited in lockstep. Type-only import — no runtime edge to
 // the store, so no cycle.
-import type { PendingApproval } from "@/stores/processStreamEvent";
+import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
+import AiRunCard from "./AiRunCard";
 
 interface Message {
   id: string;
@@ -62,6 +63,13 @@ interface AiChatMessagesProps {
   onSendQuickAction?: (prompt: string) => void;
   /** Inline intent decide succeeded — drop the card (the SSE stream carries the outcome). */
   onIntentDecided?: () => void;
+  /**
+   * Execution plane W05 — analysis runs launched from this conversation, keyed
+   * by run id. Defaulted to `{}` so every existing caller and test harness
+   * keeps compiling; the run card polls regardless and treats this as a live
+   * upgrade, so an empty map degrades to "poll only", never to a blank card.
+   */
+  chatRuns?: Record<string, ChatRunState>;
 }
 
 export default function AiChatMessages({
@@ -78,6 +86,7 @@ export default function AiChatMessages({
   onPauseAi,
   onSendQuickAction,
   onIntentDecided,
+  chatRuns = {},
 }: AiChatMessagesProps) {
   const { t } = useTranslation("ai");
   const quickActions = [
@@ -296,6 +305,45 @@ export default function AiChatMessages({
         }
 
         if (msg.role === "tool_result") {
+          // Execution plane W05 (spec §5.5): the launch tool's result is a run
+          // id, not content, so it renders as a run card rather than a
+          // tool-output panel. `toolName` is present on a replayed history row
+          // and on the live event alike.
+          //
+          // `workspace_launch_analysis` is fully deregistered (#6086) — no
+          // tool declaration, no handler — so this branch is DEAD for any
+          // session started after that change: nothing can produce a
+          // `tool_result` with this name going forward. It is retained
+          // specifically to replay chat history from sessions recorded before
+          // #6086 shipped, which still contain rows with this toolName.
+          if (msg.toolName === "workspace_launch_analysis") {
+            const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
+            if (output?.runId) {
+              return (
+                <AiRunCard
+                  key={msg.id}
+                  runId={output.runId}
+                  initialStatus={(output.status as "queued" | "running") ?? "queued"}
+                  run={chatRuns[output.runId]}
+                />
+              );
+            }
+          }
+          // #5612 W05: a script released by the unattended lane never had an
+          // approval card, so rendering it through AiToolCallCard's generic
+          // tool-output chrome would misdescribe it as an executed tool call.
+          // A small inline note instead — just enough to say what happened.
+          if (msg.toolName === "unattended_release") {
+            return (
+              <p
+                key={msg.id}
+                className="text-xs italic text-muted-foreground"
+                data-testid="ai-unattended-release-note"
+              >
+                {t("aiChatMessages.unattendedRelease")}
+              </p>
+            );
+          }
           return (
             <AiToolCallCard
               key={msg.id}
@@ -326,6 +374,7 @@ export default function AiChatMessages({
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
           selfApprovalRequestId={pendingApproval.selfApprovalRequestId}
+          approvalScope={pendingApproval.approvalScope}
           intentExpiresAt={pendingApproval.intentExpiresAt}
           scriptRunContext={pendingApproval.scriptRunContext}
           onIntentDecided={onIntentDecided}

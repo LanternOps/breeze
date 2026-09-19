@@ -27,6 +27,7 @@ import postgres, { type Sql } from 'postgres';
 import Redis, { type RedisOptions } from 'ioredis';
 import * as schema from '../../db/schema';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
+import { REDIS_CLIENT_BASE_OPTIONS } from '../../services/redis';
 
 // Load test environment variables
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -137,6 +138,7 @@ export async function setupIntegrationTests() {
 
   // Create Redis connection
   testRedis = new Redis(REDIS_URL, {
+    ...REDIS_CLIENT_BASE_OPTIONS,
     maxRetriesPerRequest: 3,
     retryStrategy: (times) => Math.min(times * 100, 3000)
   } as RedisOptions);

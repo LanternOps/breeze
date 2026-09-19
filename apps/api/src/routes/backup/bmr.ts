@@ -6,6 +6,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   backupSnapshots,
+  bareMetalRecoveries,
   devices,
   recoveryBootMediaArtifacts,
   recoveryMediaArtifacts,
@@ -15,9 +16,14 @@ import {
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
-import { enqueueRecoveryBootMediaBuild } from '../../jobs/recoveryBootMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
-import { getGithubReleasePageUrl } from '../../services/binarySource';
+import {
+  getBinarySource,
+  getGithubReleaseArtifactManifestUrl,
+  getGithubReleasePageUrl,
+  getGithubReleaseVersion,
+} from '../../services/binarySource';
+import { lookupReleaseManifestAssetForDisplay } from '../../services/releaseArtifactManifest';
 import {
   BMR_BOOTSTRAP_VERSION,
   BMR_MIN_HELPER_VERSION,
@@ -34,13 +40,6 @@ import {
   toIsoString,
 } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
-import {
-  createRecoveryBootMediaRequest,
-  getRecoveryBootMediaArtifact,
-  getRecoveryBootMediaDownloadTarget,
-  listRecoveryBootMediaArtifacts,
-  toRecoveryBootMediaSigningDetails,
-} from '../../services/recoveryBootMediaService';
 import {
   getRecoveryMediaArtifact,
   getRecoveryMediaDownloadTarget,
@@ -61,8 +60,6 @@ import {
 import { captureRecoveryAuthorizationSubject } from '../../services/recoveryAuthorizationSubject';
 import {
   bmrAuthenticateSchema,
-  bmrBootMediaCreateSchema,
-  bmrBootMediaListSchema,
   bmrCompleteSchema,
   bmrCreateTokenSchema,
   bmrMediaCreateSchema,
@@ -119,7 +116,7 @@ function getSessionStatus(row: {
   return 'pending';
 }
 
-function toTokenSummary(row: {
+export function toTokenSummary(row: {
   id: string;
   deviceId: string;
   // Nullable since 2026-10-15-140004 (D17): a recovery token outlives its
@@ -257,54 +254,6 @@ function toMediaResponse(row: {
   };
 }
 
-function toBootMediaResponse(row: {
-  id: string;
-  tokenId: string;
-  snapshotId: string;
-  bundleArtifactId: string;
-  platform: string;
-  architecture: string;
-  mediaType: string;
-  status: string;
-  checksumSha256: string | null;
-  signatureFormat?: string | null;
-  signingKeyId?: string | null;
-  signedAt?: Date | null;
-  metadata: unknown;
-  createdAt: Date;
-  completedAt: Date | null;
-  tokenStatus?: string | null;
-}) {
-  const effectiveStatus =
-    row.tokenStatus === 'revoked' || row.tokenStatus === 'expired' || row.tokenStatus === 'used'
-      ? 'expired'
-      : row.status;
-  const signing = toRecoveryBootMediaSigningDetails(row);
-  return {
-    id: row.id,
-    tokenId: row.tokenId,
-    snapshotId: row.snapshotId,
-    bundleArtifactId: row.bundleArtifactId,
-    platform: row.platform,
-    architecture: row.architecture,
-    mediaType: row.mediaType,
-    status: effectiveStatus,
-    checksumSha256: row.checksumSha256,
-    signatureFormat: signing.signatureFormat,
-    signingKeyId: signing.signingKeyId,
-    signedAt: signing.signedAt,
-    publicKey: signing.publicKey,
-    publicKeyPath: signing.publicKeyPath,
-    metadata: asRecord(row.metadata),
-    createdAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    downloadPath:
-      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/download` : null,
-    signatureDownloadPath:
-      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/signature` : null,
-  };
-}
-
 function toDownloadStreamResponse(
   target: {
     stream: NodeJS.ReadableStream & { destroy(): void };
@@ -355,15 +304,15 @@ async function expireTokenArtifacts(orgId: string) {
 // `runOutsideDbContext` wrap: these routes have no ambient context in
 // production, but the wrap keeps this helper safe to reuse even if that ever
 // changes.
-function runInRecoveryOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+export function runInRecoveryOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() =>
     withDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId] }, fn)
   );
 }
 
-async function enforcePublicRateLimit(
+export async function enforcePublicRateLimit(
   c: any,
-  action: 'authenticate' | 'complete',
+  action: 'authenticate' | 'complete' | 'exchange',
   limit: number
 ) {
   const ip = getTrustedClientIp(c);
@@ -375,9 +324,9 @@ async function enforcePublicRateLimit(
   return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
 }
 
-async function enforceTokenRateLimit(
+export async function enforceTokenRateLimit(
   c: any,
-  action: 'authenticate' | 'download',
+  action: 'authenticate' | 'download' | 'exchange' | 'progress',
   tokenHash: string,
   limit: number,
   windowSeconds: number
@@ -772,6 +721,10 @@ bmrRoutes.post(
       }
 
       const subject = await captureRecoveryAuthorizationSubject(auth, orgId, 'media');
+      // #5411: a rebuild must not carry the previous attempt's failure
+      // metadata forward — `error` is dropped here so a rebuilt row never
+      // shows a stale error next to a fresh pending/ready status.
+      const { error: _staleError, ...metadataWithoutError } = asRecord(existing.metadata);
       const reset = await db.transaction(async (tx) => {
         const [row] = await tx.update(recoveryMediaArtifacts).set({
           status: 'pending',
@@ -783,7 +736,7 @@ bmrRoutes.post(
           signingKeyId: null,
           signedAt: null,
           metadata: {
-            ...asRecord(existing.metadata),
+            ...metadataWithoutError,
             restartedAt: new Date().toISOString(),
           },
           completedAt: null,
@@ -949,10 +902,22 @@ bmrRoutes.get(
   }
 );
 
+// Recovery media catalog (W04b): the per-token ISO builder above (POST
+// /bmr/boot-media, GET /bmr/boot-media/:id, /download, /signature, and the
+// service module that packaged them) is retired. Booting recovery media no
+// longer requires building anything per-recovery: breeze-recovery-linux-
+// {amd64,arm64}.iso is built once per release, signed by the release
+// manifest, and served like any other component binary through
+// registerComponentDownloadRoute (routes/agents/download.ts,
+// /download/recovery-iso/linux/:arch). This route just advertises what's
+// available. recovery_boot_media_artifacts (the table) is intentionally
+// kept for one more release — see resilienceSiteAuthorization.ts's
+// boot_media_artifact lineage, still resolved for legacy DR plan configs.
+const RECOVERY_MEDIA_ARCHITECTURES = ['amd64', 'arm64'] as const;
+
 bmrRoutes.get(
   '/bmr/boot-media',
   requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('query', bmrBootMediaListSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -960,203 +925,29 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    const query = c.req.valid('query');
-    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
-    if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
-      return c.json({ data: [], pagination: { limit: query.limit, offset: query.offset, count: 0 } });
-    }
-    await expireTokenArtifacts(orgId);
-    const rows = await listRecoveryBootMediaArtifacts(orgId, { ...query, authorizedDeviceIds });
-    return c.json({
-      data: rows.map(toBootMediaResponse),
-      pagination: {
-        limit: query.limit,
-        offset: query.offset,
-        count: rows.length,
-      },
-    });
-  }
-);
+    const version = getGithubReleaseVersion();
+    const manifestUrl = getGithubReleaseArtifactManifestUrl();
+    const useManifest = getBinarySource() === 'github';
 
-bmrRoutes.post(
-  '/bmr/boot-media',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
-  requireMfa(),
-  zValidator('json', bmrBootMediaCreateSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
+    const data = await Promise.all(
+      RECOVERY_MEDIA_ARCHITECTURES.map(async (arch) => {
+        const filename = `breeze-recovery-linux-${arch}.iso`;
+        const manifestEntry = useManifest
+          ? await lookupReleaseManifestAssetForDisplay(filename, manifestUrl)
+          : null;
+        return {
+          platform: 'linux' as const,
+          arch,
+          version,
+          filename,
+          downloadUrl: `/api/v1/agents/download/recovery-iso/linux/${arch}`,
+          sha256: manifestEntry?.sha256 ?? null,
+          size: manifestEntry?.size ?? null,
+        };
+      })
+    );
 
-    const payload = c.req.valid('json');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'recovery_token', id: payload.tokenId, role: 'source' },
-      { kind: 'recovery_token', id: payload.tokenId, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-
-    const [token] = await db
-      .select()
-      .from(recoveryTokens)
-      .where(and(eq(recoveryTokens.id, payload.tokenId), eq(recoveryTokens.orgId, orgId)))
-      .limit(1);
-
-    if (!token) {
-      return c.json({ error: 'Recovery token not found' }, 404);
-    }
-    if (token.status !== 'active') {
-      return c.json({ error: `Recovery token is ${token.status}` }, 409);
-    }
-
-    let row;
-    try {
-      row = await createRecoveryBootMediaRequest({
-        orgId,
-        tokenId: token.id,
-        auth,
-        createdBy: auth.user?.id ?? null,
-        bundleArtifactId: payload.bundleArtifactId ?? null,
-      });
-    } catch (error) {
-      return c.json(
-        { error: error instanceof Error ? error.message : 'Failed to create boot media request' },
-        409
-      );
-    }
-
-    const responseStatus =
-      row.status === 'pending' || row.status === 'building' ? 202 : row.status === 'ready_signed' ? 200 : 202;
-    if (row.status === 'pending') {
-      await enqueueRecoveryBootMediaBuild(row.id);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.create',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: row.id,
-      details: {
-        tokenId: token.id,
-        snapshotId: token.snapshotId,
-        platform: row.platform,
-        architecture: row.architecture,
-        mediaType: row.mediaType,
-      },
-    });
-
-    return c.json(toBootMediaResponse({ ...row, tokenStatus: token.status }), responseStatus);
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'read');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const row = await getRecoveryBootMediaArtifact(orgId, id);
-    if (!row) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    return c.json(toBootMediaResponse(row));
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id/download',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const target = await getRecoveryBootMediaDownloadTarget(orgId, id);
-    if (!target) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    if (target.unavailable) {
-      return c.json({ error: 'Recovery boot media artifact is no longer available' }, 410);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.download',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: id,
-    });
-
-    if (target.type === 'redirect') {
-      return c.redirect(target.url, 302);
-    }
-
-    return toDownloadStreamResponse(target, 'application/x-iso9660-image');
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id/signature',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const target = await getRecoveryBootMediaDownloadTarget(orgId, id, 'signature');
-    if (!target) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    if (target.unavailable) {
-      return c.json({ error: 'Recovery boot media signature is not available' }, 410);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.signature.download',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: id,
-    });
-
-    if (target.type === 'redirect') {
-      return c.redirect(target.url, 302);
-    }
-
-    return toDownloadStreamResponse(target, 'application/octet-stream');
+    return c.json({ data });
   }
 );
 
@@ -1323,20 +1114,29 @@ bmrPublicRoutes.post(
         .where(eq(devices.id, row.deviceId))
         .limit(1);
 
-      const authenticatedAt = row.authenticatedAt ?? row.usedAt ?? new Date();
+      // Every successful authenticate call (re)starts the download session
+      // window: the recovery download route only serves objects until
+      // authenticated_at + RECOVERY_DOWNLOAD_SESSION_TTL and tells the client
+      // to "Re-authenticate to continue" past that. Before this, a re-auth
+      // kept the ORIGINAL authenticated_at, so the window never moved; a
+      // 105k-file bare-metal rebuild on real hardware (W04b KIT proof,
+      // 2026-09-12) ran past the hour, every download 401'd, the console's
+      // per-file re-authenticate calls then burned BMR_AUTHENTICATE_TOKEN_LIMIT
+      // and the run was dead. Sliding is bounded by the token's own
+      // expires_at (24 h for exchange-minted tokens) and by the per-token
+      // authenticate rate limit above.
+      const authenticatedAt = new Date();
       const nextStatus = row.status === 'active' || (row.status === 'used' && !row.completedAt)
         ? 'authenticated'
         : row.status;
 
-      if (row.status !== nextStatus || !row.authenticatedAt) {
-        await db
-          .update(recoveryTokens)
-          .set({
-            status: nextStatus,
-            authenticatedAt,
-          })
-          .where(eq(recoveryTokens.id, row.id));
-      }
+      await db
+        .update(recoveryTokens)
+        .set({
+          status: nextStatus,
+          authenticatedAt,
+        })
+        .where(eq(recoveryTokens.id, row.id));
 
       const clientIp = getTrustedClientIp(c, 'unknown');
       const redis = getRedis();
@@ -1380,64 +1180,95 @@ bmrPublicRoutes.post(
         result: 'success',
       });
 
-      return c.json(
-        buildAuthenticatedBootstrapPayload({
-          tokenId: row.id,
-          deviceId: row.deviceId,
-          // snapshot.id (not row.snapshotId) — TS can't narrow row.snapshotId
-          // from the `!snapshot` guard above, but by construction they're the
-          // same value: resolveSnapshotProviderConfig looked snapshot up BY
-          // row.snapshotId, so a non-null `snapshot` proves it was non-null.
-          // snapshot.id is properly typed non-null (backup_snapshots' PK).
-          snapshotId: snapshot.id,
-          restoreType: row.restoreType,
-          targetConfig: row.targetConfig,
-          authenticatedAt,
-          device: device
-            ? {
-                id: device.id,
-                hostname: device.hostname,
-                displayName: device.displayName ?? null,
-                osType: device.osType,
-                architecture: device.architecture,
-              }
-            : null,
-          snapshot: {
-            id: snapshot.id,
-            orgId: snapshot.orgId,
-            jobId: snapshot.jobId,
-            deviceId: snapshot.deviceId,
-            configId: snapshot.configId ?? null,
-            snapshotId: snapshot.snapshotId,
-            label: snapshot.label,
-            location: snapshot.location,
-            timestamp: toIsoString(snapshot.timestamp),
-            size: snapshot.size,
-            fileCount: snapshot.fileCount,
-            hardwareProfile: snapshot.hardwareProfile,
-            systemStateManifest: snapshot.systemStateManifest,
-            backupType: snapshot.backupType,
-            isIncremental: snapshot.isIncremental,
-            metadata: asRecord(snapshot.metadata),
-          },
-          providerType: resolvedSnapshot?.providerType,
-          config: config
-            ? {
-                id: config.id,
-                orgId: config.orgId,
-                name: config.name,
-                type: config.type,
-                provider: config.provider,
-                providerConfig: config.providerConfig,
-                schedule: config.schedule ?? null,
-                retention: config.retention ?? null,
-                isActive: config.isActive,
-              }
-            : null,
-          requestUrl: c.req.url,
-          tokenExpiresAt: row.expiresAt,
+      // Bare-metal recovery W04a: when this token was minted by
+      // POST /bmr/recover/exchange, echo the (nonce-less) recovery binding
+      // on bootstrap.recovery so a re-authenticating helper can see the
+      // recovery id/identity. This is deliberately the LAST db call before
+      // the payload is built, so it never shifts the position of any
+      // earlier select() in bmr.test.ts's mocked call sequence — every
+      // existing authenticate test leaves it unmocked and gets the harness
+      // default empty result, i.e. no `recovery` field. The nonce itself is
+      // NEVER returned here: it only ever exists in plaintext for the
+      // single exchange response that generated it, and is never
+      // persisted — only its hash is stored on the recovery row — so there
+      // is no plaintext left for a later authenticate call to leak.
+      const [recoveryBinding] = await db
+        .select({
+          id: bareMetalRecoveries.id,
+          identity: bareMetalRecoveries.identity,
+          deviceId: bareMetalRecoveries.deviceId,
+          snapshotId: bareMetalRecoveries.snapshotId,
         })
-      );
+        .from(bareMetalRecoveries)
+        .where(eq(bareMetalRecoveries.recoveryTokenId, row.id))
+        .limit(1);
+
+      const authenticatedPayload = buildAuthenticatedBootstrapPayload({
+        tokenId: row.id,
+        deviceId: row.deviceId,
+        // snapshot.id (not row.snapshotId) — TS can't narrow row.snapshotId
+        // from the `!snapshot` guard above, but by construction they're the
+        // same value: resolveSnapshotProviderConfig looked snapshot up BY
+        // row.snapshotId, so a non-null `snapshot` proves it was non-null.
+        // snapshot.id is properly typed non-null (backup_snapshots' PK).
+        snapshotId: snapshot.id,
+        restoreType: row.restoreType,
+        targetConfig: row.targetConfig,
+        authenticatedAt,
+        device: device
+          ? {
+              id: device.id,
+              hostname: device.hostname,
+              displayName: device.displayName ?? null,
+              osType: device.osType,
+              architecture: device.architecture,
+            }
+          : null,
+        snapshot: {
+          id: snapshot.id,
+          orgId: snapshot.orgId,
+          jobId: snapshot.jobId,
+          deviceId: snapshot.deviceId,
+          configId: snapshot.configId ?? null,
+          snapshotId: snapshot.snapshotId,
+          label: snapshot.label,
+          location: snapshot.location,
+          timestamp: toIsoString(snapshot.timestamp),
+          size: snapshot.size,
+          fileCount: snapshot.fileCount,
+          hardwareProfile: snapshot.hardwareProfile,
+          systemStateManifest: snapshot.systemStateManifest,
+          backupType: snapshot.backupType,
+          isIncremental: snapshot.isIncremental,
+          metadata: asRecord(snapshot.metadata),
+        },
+        providerType: resolvedSnapshot?.providerType,
+        config: config
+          ? {
+              id: config.id,
+              orgId: config.orgId,
+              name: config.name,
+              type: config.type,
+              provider: config.provider,
+              providerConfig: config.providerConfig,
+              schedule: config.schedule ?? null,
+              retention: config.retention ?? null,
+              isActive: config.isActive,
+            }
+          : null,
+        requestUrl: c.req.url,
+        tokenExpiresAt: row.expiresAt,
+        recovery: recoveryBinding
+          ? {
+              id: recoveryBinding.id,
+              identity: recoveryBinding.identity as 'original' | 'new',
+              deviceId: recoveryBinding.deviceId,
+              snapshotId: recoveryBinding.snapshotId,
+            }
+          : null,
+      });
+
+      return c.json(authenticatedPayload);
     });
   }
 );

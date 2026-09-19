@@ -9,7 +9,8 @@
  * `agent_logs` is a hot agent-write table, so this used to be the worst kind of
  * sweeper: a single unbounded DELETE holding a pooled connection (and row locks
  * on a table the agent path is inserting into) for the whole statement (#4343).
- * Pruning rides `agent_logs_timestamp_idx`.
+ * Pruning rides `agent_logs_created_at_idx`. The agent-reported `timestamp`
+ * remains event evidence and must never extend or shorten the receipt-time TTL.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
@@ -49,6 +50,20 @@ interface RetentionJobData {
   maxBatches?: number;
 }
 
+async function pruneAgentLogsByReceiptTime(input: {
+  cutoff: string;
+  batchSize: number;
+  maxBatches: number;
+}) {
+  return pruneInCtidBatches({
+    table: 'agent_logs',
+    where: sql`"created_at" < ${input.cutoff}`,
+    batchSize: input.batchSize,
+    maxBatches: input.maxBatches,
+    label: 'agentLogRetention.prune',
+  });
+}
+
 export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
@@ -62,12 +77,10 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
       // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
       const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-      const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
-        table: 'agent_logs',
-        where: sql`"timestamp" < ${cutoff}`,
+      const { deleted: deletedCount, batches, hasMore } = await pruneAgentLogsByReceiptTime({
+        cutoff,
         batchSize,
         maxBatches,
-        label: 'agentLogRetention.prune',
       });
 
       const durationMs = Date.now() - startTime;
@@ -140,4 +153,5 @@ export const __testOnly = {
   DEFAULT_RETENTION_DAYS,
   BATCH_SIZE,
   MAX_BATCHES,
+  pruneAgentLogsByReceiptTime,
 };

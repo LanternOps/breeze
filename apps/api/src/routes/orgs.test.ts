@@ -142,9 +142,29 @@ vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
     otherCommandsCancelled: 0
   }),
   abortOrganizationOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 }),
-  abortPartnerOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 })
+  // #3996 — the drain-ending status write is composed INTO the abort's own
+  // transaction, so these doubles must RUN the callback they are handed; a
+  // canned return value would leave every status route without its org/partner
+  // row. The real ordering guarantee (lock, then write, then cancel) lives in
+  // services/tenantOffboarding.test.ts and the integration suite.
+  abortOrganizationOffboardingAroundStatusChange: vi.fn(
+    async (_orgId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  ),
+  abortPartnerOffboardingAroundStatusChange: vi.fn(
+    async (_partnerId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  )
 }));
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -341,7 +361,8 @@ import {
 } from '../services/tenantLifecycle';
 import {
   abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
@@ -614,7 +635,10 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
+        });
       });
 
       it('adds the default alongside caller-supplied settings without clobbering them', async () => {
@@ -635,7 +659,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(201);
         expect(captured[0]?.settings).toEqual({
-          security: { ipAllowlist: ['10.0.0.0/8'] },
+          security: { ipAllowlist: ['10.0.0.0/8'], requireMfa: true },
           ticketing: { inbound: { unknownSenderMode: 'triage', enabled: false } }
         });
       });
@@ -654,7 +678,10 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: true } } });
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: true } },
+          security: { requireMfa: true }
+        });
       });
 
       it('still folds the legacy allowedMfaMethods alias while applying the default', async () => {
@@ -672,7 +699,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(201);
         expect(captured[0]?.settings).toEqual({
-          security: { allowedMethods: { totp: true } },
+          security: { allowedMethods: { totp: true }, requireMfa: true },
           ticketing: { inbound: { enabled: false } }
         });
       });
@@ -692,10 +719,48 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(201);
-        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
-        expect(await res.json()).toMatchObject({
-          settings: { ticketing: { inbound: { enabled: false } } }
+        expect(captured[0]?.settings).toEqual({
+          ticketing: { inbound: { enabled: false } },
+          security: { requireMfa: true }
         });
+        expect(await res.json()).toMatchObject({
+          settings: { ticketing: { inbound: { enabled: false } }, security: { requireMfa: true } }
+        });
+      });
+
+      // Spec D1: a platform admin creating a partner for a customer that has
+      // opted out passes requireMfa:false explicitly and it must win.
+      it('preserves an explicit security.requireMfa=false from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { requireMfa: false } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { requireMfa: false },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      it('echoes security.requireMfa=true in the 201 body when the caller omitted it', async () => {
+        captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(await res.json()).toMatchObject({ settings: { security: { requireMfa: true } } });
       });
     });
   });
@@ -775,6 +840,9 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #3996 — a name-only patch ends no drain: no tenant-row lock, no
+      // device enumeration. See the org-side twin of this assertion.
+      expect(abortPartnerOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
 
     it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
@@ -988,7 +1056,14 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      // #3996 — the cancel must be composed INTO the status write's
+      // transaction, not issued after it. Asserting the composed entry point
+      // (and that the bare post-flip abort is NOT used) is what stops the old
+      // two-step shape being reintroduced.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -1008,7 +1083,10 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -1910,6 +1988,15 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — the hard delete flips status to `churned`, which is not a
+      // draining status either, so this route composes its status write into
+      // the abort exactly like the PATCH path. Without this assertion a
+      // revert of THIS handler to a bare `db.update(...)` — reopening the
+      // commit-then-cancel window on the delete path only — stays green.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -2901,19 +2988,62 @@ describe('org routes', () => {
         partnerId: 'partner-123',
         accessibleOrgIds: [orgId]
       });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org' }])
+      // Two DISTINCT selects now: the org lookup, then the partner default tax
+      // rate. Staged with mockReturnValueOnce rather than one shared
+      // mockReturnValue so the test cannot pass by a single mock silently
+      // answering a second, different query.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null }])
+            })
+          })
+        } as any);
 
       const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe(orgId);
+      expect(body.partnerDefaultTaxRate).toBeNull();
+    });
+
+    it('includes the partner default tax rate', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: '0.07250' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.partnerDefaultTaxRate).toBe('0.07250');
     });
 
     it('should return 404 when organization not found', async () => {
@@ -3661,7 +3791,13 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      // #3996 — see the partner cases: composed with the status write, and
+      // the bare post-flip abort must be gone.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -3682,7 +3818,11 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -4382,6 +4522,11 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated by system');
+      // #3996 — a name-only patch ends no drain, so it must NOT take the
+      // tenant-row/command-row locks. A gate widened to every PATCH would
+      // otherwise put a FOR UPDATE and a full device enumeration on renames,
+      // and a pass-through mock looks identical whether it ran or not.
+      expect(abortOrganizationOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
   });
 
@@ -4403,6 +4548,12 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — see the partner delete: `churned` ends the drain, so the
+      // cancel belongs in the same transaction as the status write.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -7133,4 +7284,30 @@ describe('org status is not manually settable to lifecycle states', () => {
       expect(r.error!.issues.some(i => i.path[0] === 'status')).toBe(true);
     });
   }
+});
+
+// Execution plane W05 (#5716, spec §8) — the per-org consent switch for
+// sandboxed analysis.
+describe('aiExternalProcessing consent flag', () => {
+  it('is accepted on UPDATE', () => {
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: true }).success).toBe(true);
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: false }).success).toBe(true);
+  });
+
+  it('rejects a non-boolean rather than coercing it', () => {
+    // A consent flag that accepts the string "false" and stores `true` is the
+    // worst possible failure mode for this particular field.
+    const r = updateOrganizationSchema.safeParse({ aiExternalProcessing: 'true' });
+    expect(r.success).toBe(false);
+  });
+
+  it('is NOT settable at CREATE — an org is never born already consenting', () => {
+    const r = createOrganizationSchema.safeParse({
+      name: 'X', slug: 'x', aiExternalProcessing: true,
+    });
+    // Either the field is stripped or the parse fails; what must never happen is
+    // a created org carrying consent nobody granted.
+    expect(r.success ? (r.data as Record<string, unknown>).aiExternalProcessing : undefined)
+      .toBeUndefined();
+  });
 });

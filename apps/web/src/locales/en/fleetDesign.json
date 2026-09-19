@@ -1,0 +1,173 @@
+{
+  "page": {
+    "title": "Fleet Design",
+    "description": "An AI-authored design for this organization's fleet: what each device is for, what to watch, and what changed.",
+    "orgLabel": "Organization",
+    "selectOrgPlaceholder": "No organizations available",
+    "siteLabel": "Site (optional)",
+    "allSites": "All sites",
+    "startButton": "Start a Fleet Design",
+    "startError": "Could not start a Fleet Design run.",
+    "startSuccess": "Fleet Design run started.",
+    "empty": "No Fleet Designs yet for this organization.",
+    "loadError": "Failed to load Fleet Designs.",
+    "detailLoadError": "Failed to load this Fleet Design.",
+    "loadingDesign": "Loading design…",
+    "downloadPdf": "Download PDF",
+    "downloadFailed": "Failed to download the PDF.",
+    "reviewApply": "Review & Apply",
+    "listColumns": {
+      "generated": "Generated",
+      "functions": "Functions",
+      "watches": "Watches",
+      "rules": "Rules",
+      "applied": "Applied"
+    },
+    "startSkipped": {
+      "modeOff": "The designer agent is turned off for this organization.",
+      "killSwitchOff": "AI agents are turned off platform-wide right now.",
+      "agentDisabled": "The designer agent is disabled for this organization.",
+      "noEffectiveAgent": "No designer agent is configured for this organization.",
+      "orgBudgetExceeded": "This organization's AI budget has been used up for this period.",
+      "agentDailyBudgetExceeded": "The designer agent's daily budget has been used up.",
+      "maxConcurrentDesignRuns": "A Fleet Design run is already in progress for this organization.",
+      "designRate": "This organization has reached its Fleet Design run limit for now.",
+      "duplicate": "A matching Fleet Design run was already requested.",
+      "generic": "The run was not started ({{reason}}).",
+      "noDesignerAgent": "No Fleet Designer agent exists yet for this organization's partner."
+    },
+    "fileAsDocument": "File as document",
+    "fileAsDocumentSuccess": "Design filed in the document library.",
+    "fileAsDocumentError": "Could not file the design as a document.",
+    "designerSetup": {
+      "status": {
+        "missing": "No Fleet Designer agent exists yet.",
+        "off": "The Fleet Designer agent is turned off.",
+        "disabled": "The Fleet Designer agent is disabled.",
+        "killSwitchOff": "AI agents are turned off platform-wide right now."
+      },
+      "enableHint": "Enable it here. The designer only reads your fleet and writes a design; it never changes a device.",
+      "askPartnerAdmin": "Ask a partner administrator to enable the Fleet Designer agent under Settings → AI Agents.",
+      "killSwitchHint": "This is a platform setting; nothing on this page can change it.",
+      "enableButton": "Enable Fleet Designer",
+      "enableSuccess": "Fleet Designer enabled.",
+      "enableError": "Could not enable Fleet Designer.",
+      "errors": {
+        "partnerScopeRequired": "Only a partner administrator can enable the Fleet Designer agent.",
+        "partnerAdminRequired": "Only a partner administrator can enable the Fleet Designer agent.",
+        "killSwitchOff": "AI agents are turned off platform-wide right now.",
+        "agentKindExists": "A designer agent already exists. Refresh and try again.",
+        "actPrerequisitesNotMet": "The designer agent needs a recipient before it can run. Add one under Settings → AI Agents.",
+        "invalidRecipients": "Your account could not be set as the designer's recipient. Add one under Settings → AI Agents."
+      }
+    }
+  },
+  "sections": {
+    "found": "What was found",
+    "functions": "What each device is for",
+    "monitoring": "What to watch, and why",
+    "retired": "What is not carried forward",
+    "automation": "Automation",
+    "legacy": "Legacy script inventory",
+    "baseline": "Baseline and precursors",
+    "unsure": "What the designer is unsure about"
+  },
+  "items": {
+    "none": "Nothing here.",
+    "applied": "Applied",
+    "findingCount": "{{title}} — {{count}} devices",
+    "functionMeta": "{{count}} devices · {{pct}}% confidence",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "automation": {
+    "showContent": "Show script content"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Bucket",
+      "coveredBy": "Covered by",
+      "intent": "Intent",
+      "notes": "Notes"
+    },
+    "bucket": {
+      "obsolete": "Obsolete",
+      "covered": "Covered",
+      "needed": "Needed"
+    }
+  },
+  "drawer": {
+    "title": "Apply Fleet Design",
+    "loadingPreview": "Checking what this will do…",
+    "nothingSelected": "Select at least one item to apply.",
+    "creates": "Creates",
+    "createsScripts": "Creates scripts",
+    "scriptRenamed": "a script with this name exists — the new one gets a numbered suffix",
+    "scriptsNote": "Created in this organization's script library, tagged fleet-design. Nothing runs until someone runs it; rollback removes the tag and keeps the script.",
+    "watchAndRuleCount": "{{watches}} watches, {{rules}} rules",
+    "retires": "Retires",
+    "displaces": "Displaces",
+    "displacesCount": "{{count}} devices",
+    "acceptDisplacement": "Accept displacement",
+    "roleCorrections": "Role corrections",
+    "billingWarning": "Role changes can affect billing.",
+    "alreadyApplied": "Already applied",
+    "blockers": "Blockers",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "applyingCloseBlocked": "Applying — please wait for this to finish.",
+    "rollingBackCloseBlocked": "Rolling back — please wait for this to finish."
+  },
+  "result": {
+    "applied": "Applied {{count}} item(s).",
+    "skipped": "Skipped {{count}} item(s) already applied.",
+    "partial": "Partially applied — failed at step {{step}}: {{reason}}",
+    "rollback": "Roll back what was applied",
+    "rollbackDone": "Rolled back {{count}} item(s).",
+    "rollbackRefused": "Some items could not be rolled back:",
+    "close": "Close"
+  },
+  "errors": {
+    "genericPreview": "Failed to preview this Fleet Design.",
+    "genericApply": "Failed to apply this Fleet Design.",
+    "genericRollback": "Failed to roll back this Fleet Design.",
+    "blocked": "This design cannot be applied yet — resolve the blockers and try again.",
+    "site_restricted": "Site-restricted accounts cannot apply or roll back a Fleet Design.",
+    "no_designer_agent": "No designer agent is configured for this organization.",
+    "not_found": "This Fleet Design could not be found.",
+    "scripts_write_required": "Creating scripts needs the Scripts write permission. Deselect the proposed scripts, or ask an administrator."
+  },
+  "drift": {
+    "banner": "Drift since the design applied on {{date}}: {{missing}} missing, {{extra}} extra, {{changed}} changed.",
+    "deviceCount_one": "{{count}} device",
+    "deviceCount_other": "{{count}} devices",
+    "rows": {
+      "missing": "Missing",
+      "extra": "Extra",
+      "changed": "Changed"
+    },
+    "columns": {
+      "drift": "Drift",
+      "kind": "Kind",
+      "item": "Item",
+      "scope": "Function / policy",
+      "detail": "Detail"
+    }
+  },
+  "evidence": {
+    "notMeasured": "Not measured",
+    "org": "Organization",
+    "devices": "Devices",
+    "software": "Software inventory",
+    "services": "System services",
+    "network": "Network evidence",
+    "posture": "Security posture",
+    "health": "Fleet health",
+    "configuration": "Configuration",
+    "automation": "Automation evidence",
+    "logs": "Event logs",
+    "counts": "Activity counts",
+    "precursors": "Early warning indicators",
+    "drift": "Drift since the approved design"
+  }
+}

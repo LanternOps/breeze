@@ -53,7 +53,7 @@ const TICKETS = 'a[href="/tickets"]';
 const TIMESHEETS = 'a[href="/timesheet"]';
 const INVOICES = 'a[href="/billing/invoices"]';
 const CONTRACTS = 'a[href="/contracts"]';
-const ORGANIZATIONS = 'a[href="/settings/organizations"]';
+const ORGANIZATIONS = 'a[href="/organizations"]';
 const REPORTS = 'a[href="/reports"]';
 
 beforeEach(() => {

@@ -24,6 +24,7 @@ import {
 import { db } from '../db';
 import { scripts } from '../db/schema';
 import { clearedScriptSecurityAcknowledgementColumns } from './scriptSecurityAcknowledgement';
+import { cutScriptVersion } from './scriptVersions';
 
 export type SystemLibraryScriptDefinition = {
   name: string;
@@ -298,25 +299,48 @@ export async function ensureSystemLibraryScripts(): Promise<{
         runAs: scripts.runAs,
         version: scripts.version,
         deletedAt: scripts.deletedAt,
+        origin: scripts.origin,
       })
       .from(scripts)
       .where(and(eq(scripts.name, def.name), eq(scripts.isSystem, true)))
       .limit(1);
 
     if (!existing) {
-      await db.insert(scripts).values({
-        orgId: null,
-        partnerId: null,
-        name: def.name,
-        description: def.description,
-        category: def.category,
-        osTypes: def.osTypes,
-        language: def.language,
-        content: def.content,
-        parameters,
-        timeoutSeconds: def.timeoutSeconds,
-        runAs: def.runAs,
-        isSystem: true,
+      await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(scripts)
+          .values({
+            orgId: null,
+            partnerId: null,
+            name: def.name,
+            description: def.description,
+            category: def.category,
+            osTypes: def.osTypes,
+            language: def.language,
+            content: def.content,
+            parameters,
+            timeoutSeconds: def.timeoutSeconds,
+            runAs: def.runAs,
+            isSystem: true,
+            // cutScriptVersion moves it to 1 below.
+            version: 0,
+            // #5671: without this it falls through to the schema default
+            // ('human'), contradicting the origin='system' cutScriptVersion
+            // writes onto the version row in the same transaction below.
+            origin: 'system',
+          })
+          .returning({ id: scripts.id });
+
+        if (!created) {
+          throw new Error(`system library script "${def.name}" insert returned no row`);
+        }
+
+        // No user on the boot path — index.ts wraps this in
+        // runWithSystemDbAccess, so createdBy is honestly null.
+        await cutScriptVersion(tx, {
+          scriptId: created.id,
+          provenance: { origin: 'system', changelog: 'Shipped system library definition', createdBy: null },
+        });
       });
       result.created += 1;
       continue;
@@ -335,6 +359,11 @@ export async function ensureSystemLibraryScripts(): Promise<{
     // no reason on the next API boot.
     const contentChanged = existing.content !== def.content;
 
+    // #5948: a row inserted before #5671 shipped is permanently stuck at the
+    // schema default ('human') unless the sync corrects it here — nothing
+    // else ever revisits `origin` on an existing system script.
+    const originStale = existing.origin !== 'system';
+
     const unchanged =
       existing.content === def.content &&
       existing.description === def.description &&
@@ -345,12 +374,28 @@ export async function ensureSystemLibraryScripts(): Promise<{
       JSON.stringify(existing.osTypes) === JSON.stringify(def.osTypes) &&
       scriptParameterDefinitionsEqual(existing.parameters ?? [], parameters);
 
-    if (unchanged) {
+    if (unchanged && !originStale) {
       result.unchanged += 1;
       continue;
     }
 
-    await db
+    if (unchanged && originStale) {
+      // The shipped definition itself did not change — only `origin` needs
+      // correcting. Patch it directly rather than going through the full
+      // update + cutScriptVersion path below: cutScriptVersion always bumps
+      // `version`, and bumping it for a definition that is byte-for-byte
+      // unchanged would skip a number and break UNIQUE-backed history for no
+      // real content change.
+      await db
+        .update(scripts)
+        .set({ origin: 'system', updatedAt: new Date() })
+        .where(eq(scripts.id, existing.id));
+      result.updated += 1;
+      continue;
+    }
+
+    await db.transaction(async (tx) => {
+    await tx
       .update(scripts)
       .set({
         description: def.description,
@@ -361,6 +406,11 @@ export async function ensureSystemLibraryScripts(): Promise<{
         parameters,
         timeoutSeconds: def.timeoutSeconds,
         runAs: def.runAs,
+        // #5948: the update path must correct a stale `origin` on any content
+        // update too — not just when the definition is otherwise unchanged —
+        // since an update here means the row is about to get a fresh
+        // origin='system' version row from cutScriptVersion below anyway.
+        origin: 'system',
         // #5129 — when the library sync replaces `content` from a shipped
         // definition there is no human in the loop, so any acknowledgement the
         // row carried is revoked rather than inherited by the new body. Only a
@@ -373,10 +423,21 @@ export async function ensureSystemLibraryScripts(): Promise<{
         // also fires for a metadata-only diff (a timeout or description tweak)
         // where the reviewed body is untouched and the approval must stand.
         ...(contentChanged ? clearedScriptSecurityAcknowledgementColumns() : {}),
-        version: existing.version + 1,
+        // `version` is NOT set here — cutScriptVersion owns the bump, and a
+        // second bump would skip a number and break UNIQUE-backed history.
         updatedAt: new Date(),
       })
       .where(eq(scripts.id, existing.id));
+
+      await cutScriptVersion(tx, {
+        scriptId: existing.id,
+        provenance: {
+          origin: 'system',
+          changelog: 'Shipped system library definition updated',
+          createdBy: null,
+        },
+      });
+    });
     result.updated += 1;
   }
 

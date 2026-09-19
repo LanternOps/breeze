@@ -1,0 +1,37 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { DocumentLibrary } from '../../components/portal/DocumentLibrary';
+import { PageHeader, ErrorNotice } from '../../components/portal/ui';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getDocuments(buildServerApiConfig(Astro.request));
+
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+---
+
+<PortalLayout title="Documents">
+  {response.data ? (
+    <DocumentLibrary client:load documents={response.data} />
+  ) : (
+    <div data-testid="portal-documents-error">
+      <PageHeader
+        title="Documents"
+        lede="The documents your IT team has shared with you."
+      />
+      {/* The transport error is ours to read, not the customer's: they can
+          act on "ask your IT team", never on a connection string. */}
+      <ErrorNotice>
+        We couldn't load your documents just now. Your IT team can help.
+      </ErrorNotice>
+    </div>
+  )}
+</PortalLayout>

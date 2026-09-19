@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import {
+  PORTAL_CHROME_ACCENT_DEFAULT,
+  PORTAL_CHROME_ACCENT_KEYS,
+  PORTAL_CHROME_ACCENTS,
+  isPortalChromeAccent,
+  type PortalChromeAccent,
+} from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -10,15 +17,20 @@ type PortalSettings = {
   enableAssetCheckout: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
+  enableDevices: boolean;
   enableDashboard: boolean;
   enableSecurity: boolean;
   enableBackups: boolean;
   enableReports: boolean;
   enableSupportUsage: boolean;
+  enableService: boolean;
+  enableDocuments: boolean;
+  enableLifecycle: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
+  chromeAccent: PortalChromeAccent;
 };
 
 type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset';
@@ -47,17 +59,26 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
 ];
 
 type VisibilityToggleKey =
+  | 'enableDevices'
   | 'enableDashboard'
   | 'enableSecurity'
   | 'enableBackups'
   | 'enableReports'
-  | 'enableSupportUsage';
+  | 'enableSupportUsage'
+  | 'enableService'
+  | 'enableDocuments'
+  | 'enableLifecycle';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
   labelKey: string;
   descriptionKey: string;
 }> = [
+  {
+    key: 'enableDevices',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.description',
+  },
   {
     key: 'enableDashboard',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDashboard.label',
@@ -82,6 +103,21 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableSupportUsage',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.description',
+  },
+  {
+    key: 'enableService',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.description',
+  },
+  {
+    key: 'enableDocuments',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.description',
+  },
+  {
+    key: 'enableLifecycle',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.description',
   },
 ];
 
@@ -108,7 +144,17 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
         return;
       }
       if (!res.ok) throw new Error(`portal settings load failed: ${res.status}`);
-      setDraft((await res.json()).data ?? null);
+      const data = (await res.json()).data ?? null;
+      setDraft(
+        data
+          ? {
+              ...data,
+              chromeAccent: isPortalChromeAccent(data.chromeAccent)
+                ? data.chromeAccent
+                : PORTAL_CHROME_ACCENT_DEFAULT,
+            }
+          : null
+      );
     } catch (err) {
       console.warn('[OrgPortalSettingsEditor] load failed', err);
       setLoadError(true);
@@ -125,11 +171,15 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
   };
 
   const enableAllVisibility = () => update({
+    enableDevices: true,
     enableDashboard: true,
     enableSecurity: true,
     enableBackups: true,
     enableReports: true,
     enableSupportUsage: true,
+    enableService: true,
+    enableDocuments: true,
+    enableLifecycle: true,
   });
 
   const save = useCallback(async () => {
@@ -144,15 +194,21 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableAssetCheckout: draft.enableAssetCheckout,
             enableSelfService: draft.enableSelfService,
             enablePasswordReset: draft.enablePasswordReset,
+            enableDevices: draft.enableDevices,
             enableDashboard: draft.enableDashboard,
             enableSecurity: draft.enableSecurity,
             enableBackups: draft.enableBackups,
             enableReports: draft.enableReports,
             enableSupportUsage: draft.enableSupportUsage,
+            enableService: draft.enableService,
+            enableDocuments: draft.enableDocuments,
+            enableLifecycle: draft.enableLifecycle,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
-            footerText: draft.footerText?.trim() || null
+            footerText: draft.footerText?.trim() || null,
+            chromeAccent:
+              draft.chromeAccent === PORTAL_CHROME_ACCENT_DEFAULT ? null : draft.chromeAccent
           })
         }),
         errorFallback: t('orgPortalSettingsEditor.errors.save'),
@@ -259,6 +315,47 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               </span>
             </label>
           ))}
+        </div>
+      </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
+        <h2 className="text-lg font-semibold">{t('orgPortalSettingsEditor.accent.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {t('orgPortalSettingsEditor.accent.description')}
+        </p>
+        <div
+          role="radiogroup"
+          aria-label={t('orgPortalSettingsEditor.accent.title')}
+          className="mt-4 flex flex-wrap gap-4"
+          data-testid="org-portal-accent-group"
+        >
+          {PORTAL_CHROME_ACCENT_KEYS.map((key) => {
+            const spec = PORTAL_CHROME_ACCENTS[key];
+            const selected = draft.chromeAccent === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={t(/* i18n-dynamic */ `orgPortalSettingsEditor.accent.options.${key}`)}
+                onClick={() => update({ chromeAccent: key })}
+                className={`flex flex-col items-center gap-1.5 rounded-md p-1.5 text-center focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+                  selected ? 'ring-2 ring-primary' : ''
+                }`}
+                data-testid={`org-portal-accent-${key}`}
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-8 w-8 rounded-full border"
+                  style={{ backgroundColor: `hsl(${spec.light.primary})` }}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {t(/* i18n-dynamic */ `orgPortalSettingsEditor.accent.options.${key}`)}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </section>
 

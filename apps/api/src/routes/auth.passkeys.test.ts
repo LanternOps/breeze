@@ -69,6 +69,7 @@ vi.mock('../services', () => {
       partnerId: identity.partnerId,
       scope: identity.scope,
       mfa: identity.mfa,
+      mfa_src: identity.mfaSrc,
       aep: epochs.authEpoch,
       mep: epochs.mfaEpoch,
       mdid: identity.mobileDeviceId,
@@ -145,7 +146,7 @@ vi.mock('../services', () => {
   wasRefreshTokenJtiRecentlyRotated: vi.fn().mockResolvedValue(false),
   rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
   getFamilyForJti: vi.fn().mockResolvedValue(null),
-  revokeFamily: vi.fn().mockResolvedValue(undefined),
+  revokeFamily: vi.fn().mockResolvedValue({ redis: 'confirmed', database: 'confirmed' }),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   mintRefreshTokenFamily,
@@ -285,6 +286,10 @@ vi.mock('../services/ipAllowlist', () => ({
 // rename PATCH route) still take priority by pushing onto the queue first.
 const DEFAULT_EPOCH_ROW = [{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }];
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const dbMock: any = {
     select: vi.fn(() => dbState.makeSelectChain(dbState.selectQueue.shift() ?? [])),
@@ -436,6 +441,7 @@ import {
   bindIssuedUserSession,
   cancelAuthIssuance,
   completeAdditionalMfaFactorEnrollment,
+  completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
   createTokenPair,
   finishAuthIssuance,
@@ -536,7 +542,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     dbState.selectQueue = [];
     dbState.updateSets = [];
@@ -768,7 +775,13 @@ describe('passkey MFA auth routes', () => {
       expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
     });
 
-    it('register/options returns the opaque 400 for a passwordless account with an invalid/expired grant', async () => {
+    // #4050: the 400 STATUS stays uniform with every sibling rejection (that
+    // is the half of the opacity rule that still matters); only the BODY is
+    // distinguishable now. Reaching this branch already required the account
+    // to be passwordless, which the `enrollment_proof_required` branch
+    // discloses anyway, so nothing new leaks — see
+    // ENROLLMENT_GRANT_EXPIRED_CODE in ./auth/helpers.
+    it('register/options returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant', async () => {
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
       vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
@@ -781,9 +794,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
       expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
     });
@@ -809,9 +823,14 @@ describe('passkey MFA auth routes', () => {
         '11111111-1111-4111-8111-111111111111',
         expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
       );
+      // The passkey this call installs is what assures the replacement
+      // session, so the enrollment identity is factor-sourced (spec D6) — the
+      // real primitive rejects any other source.
+      const enrollInput = vi.mocked(completeInitialMfaEnrollment).mock.calls[0]?.[0] as any;
+      expect(enrollInput.identity).toMatchObject({ mfa: true, mfaSrc: 'factor' });
     });
 
-    it('register/verify returns the opaque 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+    it('register/verify returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
@@ -828,9 +847,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
     });
   });
@@ -1020,7 +1040,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
@@ -1120,7 +1140,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -1221,7 +1242,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true }),
+      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true, mfa_src: 'factor' }),
       expect.objectContaining({ refreshFam: 'family-passkey' }),
     );
     expect(await res.json()).toMatchObject({
@@ -1405,7 +1426,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: true,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
     });
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
@@ -2011,7 +2033,7 @@ describe('passkey MFA auth routes', () => {
           orgId: 'org-5',
           partnerId: 'partner-2',
           scope: 'organization',
-          token: { sid: 'session-123', mfa: true, aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
+          token: { sid: 'session-123', mfa: true, mfa_src: 'factor', aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
         });
         return next();
       }) as never);
@@ -2038,6 +2060,8 @@ describe('passkey MFA auth routes', () => {
         partnerId: 'partner-2',
         scope: 'organization',
         mfa: true,
+        // Carried verbatim from the caller's signed token, never recomputed.
+        mfaSrc: 'factor',
         mobileDeviceId: 'signed-device-1',
       });
       expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
@@ -2089,6 +2113,10 @@ describe('passkey MFA auth routes', () => {
       expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
       const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
       expect(input).toMatchObject({ userId: 'user-123', revokeReason: 'passkey-delete' });
+      // This caller's token predates the claim, so the re-mint carries none —
+      // absent stays absent, it is never recomputed into a source.
+      expect(input.identity).toMatchObject({ mfa: true });
+      expect(input.identity.mfaSrc).toBeUndefined();
       expect(input.recoveryCodes).toBeUndefined();
       expect(input.recoveryCodeHashes).toBeUndefined();
     });

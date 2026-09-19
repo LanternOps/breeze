@@ -364,3 +364,114 @@ describe('Graph-read executor client', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+const SYNC_RESULT = {
+  success: true as const,
+  kind: 'sync' as const,
+  items: [{ id: TENANT_ID, lastSuccessfulSignInAt: null }],
+  truncated: false,
+  fetchedAt: '2026-09-08T00:00:00.000Z',
+  sources: { signInActivity: 'ok' as const },
+};
+
+function syncInput() {
+  return {
+    correlationId: CORRELATION_ID,
+    tenantId: TENANT_ID,
+    action: { type: 'm365.sync.signin_activity' as const },
+  };
+}
+
+async function syncClient(fetchMock: typeof globalThis.fetch) {
+  const { privateJwk } = await signingFixture();
+  return createGraphReadExecutorClient({
+    executorUrl: 'https://executor.internal.example.test',
+    executorAudience: 'm365-graph-read-executor',
+    signingPrivateJwk: privateJwk,
+    signingKid: 'api-key-1',
+    fetch: fetchMock,
+  });
+}
+
+describe('Graph-read executor client — sync-action', () => {
+  it('signs the sync-action operation, hits /v1/sync-action, and parses the result', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const token = String(new Headers(init?.headers).get('authorization')).slice('Bearer '.length);
+      expect(JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString()).operation).toBe('sync-action');
+      return new Response(JSON.stringify(SYNC_RESULT), { headers: { 'content-type': 'application/json' } });
+    });
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput())).resolves.toEqual(SYNC_RESULT);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://executor.internal.example.test/v1/sync-action');
+  });
+
+  it('returns a typed sync_capacity failure on 503 rather than executor_unavailable', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'sync_capacity', code: 'sync_capacity', retryAfterSeconds: 30 }),
+      { status: 503, headers: { 'content-type': 'application/json', 'retry-after': '30' } },
+    ));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput()))
+      .resolves.toEqual({ success: false, code: 'sync_capacity', retryAfterSeconds: 30 });
+  });
+
+  it('returns a typed graph_throttled failure carrying retryAfterSeconds', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ success: false, code: 'graph_throttled', retryAfterSeconds: 45 }),
+      { headers: { 'content-type': 'application/json' } },
+    ));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput()))
+      .resolves.toEqual({ success: false, code: 'graph_throttled', retryAfterSeconds: 45 });
+  });
+
+  it('returns continuation_invalid so the caller can restart the walk', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ success: false, code: 'continuation_invalid' }),
+      { headers: { 'content-type': 'application/json' } },
+    ));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput()))
+      .resolves.toEqual({ success: false, code: 'continuation_invalid' });
+  });
+
+  it('still THROWS executor_unavailable for a 504, a wrong content type, and a bad body', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"sync_timeout"}', { status: 504, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(SYNC_RESULT), { headers: { 'content-type': 'text/html' } }))
+      .mockResolvedValueOnce(new Response('{"success":true,"kind":"collection","items":[]}', { headers: { 'content-type': 'application/json' } }));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    for (let i = 0; i < 3; i += 1) {
+      await expect(client.syncAction(syncInput())).rejects.toBeInstanceOf(GraphReadExecutorClientError);
+    }
+  });
+
+  it('refuses an interactive action id without calling the executor', async () => {
+    const fetchMock = vi.fn();
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction({
+      correlationId: CORRELATION_ID, tenantId: TENANT_ID, action: { type: 'm365.org.get' },
+    } as never)).rejects.toBeInstanceOf(GraphReadExecutorClientError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('gives sync-action its own 130 s timeout, not the client-wide one', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Response(JSON.stringify(SYNC_RESULT), { headers: { 'content-type': 'application/json' } });
+    });
+    const { privateJwk } = await signingFixture();
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+      timeoutMs: 10,   // the interactive timeout must NOT apply here
+    });
+    await expect(client.syncAction(syncInput())).resolves.toEqual(SYNC_RESULT);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0]!.aborted).toBe(false);
+  });
+});

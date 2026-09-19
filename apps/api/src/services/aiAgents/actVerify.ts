@@ -30,6 +30,7 @@ import {
 import { alerts } from '../../db/schema/alerts';
 import type { ActAssetPin } from './actRevalidation';
 import type { ActTarget } from './actManifest';
+import type { AiOriginRef } from '@breeze/shared';
 
 /**
  * Short system context for this module's own DB writes. Deliberately NOT used
@@ -88,6 +89,17 @@ export interface VerifyActExecutionArgs {
   run: { id: string; orgId: string; agentId: string; deviceId: string };
   /** Attribution only — same `auth.user.id` the tool dispatch itself used. */
   agentUserId: string;
+}
+
+/**
+ * The act/verify lane's AI origin (#5022 W01).
+ *
+ * Returns `{}` — not a fabricated origin — when the caller is the `*ForTask`
+ * shim, which synthesises `run.id = ''` because a proposal verification has no
+ * agent run behind it. An empty `agentRunId` would be a pointer to nothing.
+ */
+function runAiOrigin(run: VerifyActExecutionArgs['run']): { aiOrigin?: AiOriginRef } {
+  return run.id ? { aiOrigin: { kind: 'ai_agent', agentRunId: run.id } } : {};
 }
 
 /** Parses a CommandResult-shaped tool output (`{status, exitCode, stdout, ...}`). */
@@ -162,6 +174,13 @@ async function verifyServiceRunning(
       // #5264: the run's org is the tenant this verification was authorized
       // under. A device that has since moved must not be read from here.
       expectedOrgId: run.orgId,
+      // #5022 W01: the verify lane never enters `executeTool`, so it is
+      // reached only by the AuthContext carrier -- which this helper does not
+      // receive. The run id IS the origin, so derive it here rather than
+      // threading an AuthContext through every verifier. `run.id` is `''` on
+      // the *ForTask shim (a proposal verification has no agent run), and an
+      // empty agentRunId would be a pointer to nothing, so omit it there.
+      ...runAiOrigin(run),
     });
 
   if (result.status !== 'completed') {
@@ -194,6 +213,50 @@ async function verifyServiceRunning(
   return { verification: 'failed', detail: match ? `service status is "${match.status}"` : 'service not found in read-back' };
 }
 
+/**
+ * W03 (#5612): the script-proposal `process_absent { name }` claim. Same
+ * independent `list_processes` read as the pid-pinned act-lane check below,
+ * matched by NAME (case-insensitive, `.exe` tolerant) because a proposal
+ * names a process it expects to be gone, not a pid it observed. Same
+ * conservative rule: an unparseable read-back is inconclusive, never a pass.
+ */
+export async function verifyProcessAbsentByNameForTask(
+  target: { processName: string },
+  device: { deviceId: string; orgId: string },
+  agentUserId: string,
+  /**
+   * #5022 W01 — who DECIDED this verification read, when an AI surface did.
+   * Optional because the proposal-verification caller
+   * (`services/scriptProposals/verify.ts`) has no run id: the verification is
+   * attached to a PROPOSAL, not to an agent run.
+   */
+  aiOrigin?: AiOriginRef,
+): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  const result = await executeCommandWithSystemPrecheck(
+    device.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
+      userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
+      expectedOrgId: device.orgId,
+      ...(aiOrigin ? { aiOrigin } : {}),
+    });
+  if (result.status !== 'completed') {
+    return { verification: 'inconclusive', detail: `process list read did not complete (${result.status})` };
+  }
+  const parsed = parseCommandResult(result.stdout ?? '');
+  if (!parsed || !Array.isArray(parsed.processes)) {
+    return { verification: 'inconclusive', detail: 'process list read-back was not parseable' };
+  }
+  const normalize = (name: string) => name.trim().toLowerCase().replace(/\.exe$/, '');
+  const wanted = normalize(target.processName);
+  const stillPresent = (parsed.processes as unknown[]).some((p) =>
+    typeof p === 'object' && p !== null
+    && typeof (p as { name?: unknown }).name === 'string'
+    && normalize((p as { name: string }).name) === wanted);
+  return stillPresent
+    ? { verification: 'failed', detail: `process "${target.processName}" is still present` }
+    : { verification: 'passed' };
+}
+
 async function verifyProcessAbsent(
   target: Extract<ActTarget, { kind: 'process' }>,
   run: VerifyActExecutionArgs['run'],
@@ -206,6 +269,8 @@ async function verifyProcessAbsent(
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
       // #5264 — see `verifyServiceRunning`.
       expectedOrgId: run.orgId,
+      // #5022 W01 — see `verifyServiceRunning`.
+      ...runAiOrigin(run),
     });
 
   if (result.status !== 'completed') {

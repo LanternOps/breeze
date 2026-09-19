@@ -9,6 +9,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('./stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -109,6 +125,7 @@ describe('invoiceService site-axis guard', () => {
   });
 
   it('recordPayment denies a payment on an out-of-site invoice (SITE_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]);
     await expect(
       svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, restricted)

@@ -16,14 +16,17 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: {
     VAULT_SYNC: 'vault_sync',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerVaultTools } from './aiToolsVault';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -58,6 +61,31 @@ function createQueryChain(rows: any[] = []) {
   return chain;
 }
 
+/**
+ * Real drizzle objects are used in this file (no schema stub), so read the
+ * predicate's column names and bound values off `queryChunks` directly.
+ * Walking only queryChunks keeps this from matching unrelated metadata and
+ * quietly passing against unfixed code.
+ */
+function predicateParts(
+  node: unknown,
+  acc: { columns: string[]; values: unknown[] } = { columns: [], values: [] },
+): { columns: string[]; values: unknown[] } {
+  if (node === null || typeof node !== 'object') return acc;
+  const record = node as Record<string, unknown>;
+  if (typeof record.name === 'string' && record.table !== undefined) {
+    acc.columns.push(record.name);
+    return acc;
+  }
+  if ('encoder' in record && 'value' in record) {
+    acc.values.push(record.value);
+    return acc;
+  }
+  const chunks = record.queryChunks;
+  if (Array.isArray(chunks)) for (const chunk of chunks) predicateParts(chunk, acc);
+  return acc;
+}
+
 function createInsertChain(rows: any[] = []) {
   const chain: any = {};
   chain.values = vi.fn(() => chain);
@@ -89,7 +117,7 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -115,6 +143,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -167,10 +196,10 @@ function prepareHandlerMocks(toolName: string) {
       ]);
       break;
     case 'trigger_vault_sync':
-      mockSelectSequence([[{ id: VAULT_ID, deviceId: DEVICE_ID, isActive: true }]]);
+      mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, isActive: true }]]);
       break;
     case 'configure_vault':
-      mockSelectSequence([[{ id: VAULT_ID }]]);
+      mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }]]);
       mockUpdateSequence([[{ id: VAULT_ID, vaultPath: '/vaults/updated', vaultType: 'local' }]]);
       break;
     default:
@@ -244,6 +273,61 @@ describe('aiToolsVault handlers', () => {
     await toolMap.get('query_vaults')!.handler({}, auth);
 
     expect(auth.orgCondition).toHaveBeenCalled();
+  });
+
+  it('pins AI vault sync dispatch to the selected vault organization', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
+
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_vault_sync',
+      DEVICE_ID,
+      'vault_sync',
+      expect.objectContaining({ vaultId: VAULT_ID }),
+      expect.objectContaining({ userId: 'user-1', expectedOrgId: ORG_ID }),
+    );
+  });
+
+  it('binds both AI sync status writes to (id, orgId, deviceId), not id alone', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    const updateChains: any[] = [];
+    vi.mocked(db.update).mockImplementation(() => {
+      const chain = createUpdateChain([]);
+      updateChains.push(chain);
+      return chain as any;
+    });
+    // Force the failure branch so BOTH the pending and the failed write run.
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ command: null, error: 'Device not found' } as any);
+
+    await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
+
+    expect(updateChains).toHaveLength(2);
+    for (const chain of updateChains) {
+      const { columns, values } = predicateParts(chain.where.mock.calls[0]![0]);
+      expect(columns).toEqual(expect.arrayContaining(['id', 'org_id', 'device_id']));
+      expect(values).toEqual(expect.arrayContaining([VAULT_ID, ORG_ID, DEVICE_ID]));
+    }
+  });
+
+  it('binds the AI configure_vault update to (id, orgId, deviceId), not id alone', async () => {
+    prepareHandlerMocks('configure_vault');
+    const updateChains: any[] = [];
+    vi.mocked(db.update).mockImplementation(() => {
+      const chain = createUpdateChain([{ id: VAULT_ID, vaultPath: '/vaults/updated' }]);
+      updateChains.push(chain);
+      return chain as any;
+    });
+
+    await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' },
+      makeAuth(),
+    );
+
+    expect(updateChains).toHaveLength(1);
+    const { columns, values } = predicateParts(updateChains[0].where.mock.calls[0]![0]);
+    expect(columns).toEqual(expect.arrayContaining(['id', 'org_id', 'device_id']));
+    expect(values).toEqual(expect.arrayContaining([VAULT_ID, ORG_ID, DEVICE_ID]));
   });
 
   it('safeHandler returns error JSON when the handler throws', async () => {

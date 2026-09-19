@@ -20,7 +20,12 @@ vi.mock('../db/schema', () => ({
 }));
 
 // ticketConfigService reads ticketStatusEnum from portal.ts directly.
-vi.mock('../db/schema/portal', () => ({
+// Spread the real module and override only the enum this suite reads: other
+// schema modules (db/schema/tickets, and through it the deliverable tables)
+// import real pgEnum builders from here at module-eval time, so a
+// replace-everything mock breaks them.
+vi.mock('../db/schema/portal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/schema/portal')>()),
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
 }));
 
@@ -30,6 +35,10 @@ const idFor = (table: any): string => {
   return `${t}-id`;
 };
 
+vi.mock('./monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const makeTx = () => {
     // Chainable insert mock that records the values and returns a
@@ -243,6 +252,23 @@ describe('createPartner', () => {
     const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
     expect(partnerCall.values.settings).toMatchObject({
       ticketing: { inbound: { enabled: false } },
+    });
+  });
+
+  // Spec: docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md (D1)
+  it('writes settings.security.requireMfa=true for new partners (signup path)', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+      status: 'active',
+    });
+
+    const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+    expect(partnerCall.values.settings).toMatchObject({
+      security: { requireMfa: true },
     });
   });
 

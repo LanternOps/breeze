@@ -137,6 +137,49 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// SEC-038 start fence. Checked before ANY side effect — before leases,
+	// before the consent prompt, before capture — so a superseded or
+	// post-terminal start cannot spawn a helper, show a banner, or take a
+	// lease on its way to being refused.
+	fenceInput, genErr := parseDesktopStartGeneration(cmd.Payload)
+	if genErr != nil {
+		// Fail closed: a generation we cannot compare is one we cannot honour.
+		log.Warn("refusing start_desktop with a malformed start generation",
+			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
+		return tools.NewErrorResult(
+			desktopStartFenceError(desktopFenceReasonMalformed, genErr.Error()),
+			time.Since(start).Milliseconds())
+	}
+	fenceInput.CommandID = cmd.ID
+	decision := h.desktopStartFence.admitStart(sessionID, fenceInput)
+	if decision.NeedsSync {
+		// W05: the fence has no in-process record of this session — fresh
+		// install, a lost or corrupt state file, an evicted entry, or simply
+		// the first start since this agent started. The payload alone cannot
+		// be ordered against a terminal the endpoint may have forgotten, so
+		// ask the control plane what it currently believes and decide on that.
+		// Bounded, once per session, and fail-closed on no answer.
+		if !h.syncDesktopFence(sessionID) {
+			return tools.NewErrorResult(
+				desktopStartFenceError(desktopFenceReasonUnsynced,
+					"the control plane did not confirm this session's generation"),
+				time.Since(start).Milliseconds())
+		}
+		decision = h.desktopStartFence.admitStart(sessionID, fenceInput)
+	}
+	if !decision.Admitted {
+		log.Warn("refusing start_desktop at the desktop start fence",
+			"sessionId", sessionID,
+			"commandId", cmd.ID,
+			"reason", string(decision.Reason),
+			"generation", fenceInput.Generation,
+			"highWater", decision.HighWater,
+		)
+		return tools.NewErrorResult(
+			desktopStartFenceError(decision.Reason, ""),
+			time.Since(start).Milliseconds())
+	}
+
 	// Parse optional ICE servers from payload
 	var iceServers []desktop.ICEServerConfig
 	if raw, ok := cmd.Payload["iceServers"].([]interface{}); ok {
@@ -260,6 +303,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// display itself). Never gate Linux on the latched-at-boot headless flag.
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
+		// A start is admitted long before it streams: consent, helper spawn
+		// and capture setup all happen after the fence decision, and a stop
+		// arriving inside that window finds nothing to stop. Re-check the
+		// tombstone now that the session exists, and tear it down if one
+		// landed meanwhile.
+		if result.Status == "completed" && h.desktopSessionTerminalAfterStart(sessionID) {
+			return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
+		}
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt, targetSession)
 			result = withConsentGranted(result, prompt)
@@ -287,6 +338,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		h.releaseDesktopLeases(sessionID)
 		h.takeDesktopTarget(sessionID)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	// Same post-start tombstone re-check as the helper path above.
+	if h.desktopSessionTerminalAfterStart(sessionID) {
+		return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
 	}
 	if onDemand {
 		// Not reachable in production (on-demand implies a Windows service, which
@@ -395,6 +450,28 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
+	// SEC-038 terminal tombstone. Installed FIRST, and unconditionally —
+	// including when no session is running under this id. A stop can overtake
+	// the start it was meant to cancel, and before this the unknown-session
+	// stop was a silent no-op that let the late start run. A malformed
+	// terminalGeneration does not block the tombstone: the stop is still an
+	// unambiguous terminal decision, only its generation is unusable.
+	stopInput, genErr := parseDesktopTerminalGeneration(cmd.Payload)
+	if genErr != nil {
+		// Log-only, deliberately. The defect cannot be reported in the command
+		// result: desktopCommandResultSchema (apps/api/src/routes/agentWs.ts)
+		// is .strict(), so an extra key would make the API drop the whole stop
+		// confirmation as malformed — and W03's pending -> confirmed phase
+		// transition is driven by exactly that confirmation. Surfacing it needs
+		// an allowed field on the server side first; tracked with W03/W05.
+		// A malformed generation is in any case only reachable from a buggy or
+		// tampered server, and it never weakens the fence: the tombstone below
+		// is installed regardless.
+		log.Warn("stop_desktop carried a malformed terminal generation; tombstoning anyway",
+			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
+	}
+	h.desktopStartFence.noteStop(sessionID, stopInput)
+
 	// Drop any on-demand helper leases first: the lease is what keeps the
 	// helper alive, and it must be released even if the stop below fails.
 	// No-op in always-on mode / when nothing was leased.
@@ -408,7 +485,12 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// populated by the helper start path, so this is safe on every platform.
 	if h.sessionBroker != nil {
 		if session := h.desktopOwnerSession(sessionID); session != nil {
+			// Forward the terminal generation so the helper's own fence
+			// records the same tombstone this one just installed.
 			req := ipc.DesktopStopRequest{SessionID: sessionID}
+			if stopInput.HasGeneration {
+				req.TerminalGeneration = strconv.FormatInt(stopInput.Generation, 10)
+			}
 			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
 			if err != nil {
 				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())

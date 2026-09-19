@@ -134,6 +134,13 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // `satisfies` target links it to that union so a value here can never be one
 // that matches no grant type.
 //
+// #5601: `approval_decide` is excluded for the same structural reason. It is
+// the credential that clears the four_eyes sole-operator L3 passkey gate; it
+// may be minted ONLY by `decideApprovalRequest`, after a real approver-device
+// ceremony it verified itself. Letting a client request one here would turn an
+// ordinary TOTP/SMS step-up into a bypass of that gate — i.e. the L3 passkey
+// requirement could be satisfied without a passkey.
+//
 // #4018: `enroll_first_factor` is excluded BY THE COMPILER, not by convention.
 // That grant is the sole output of the SSO re-auth callback, which mints it
 // only after a forced IdP round-trip proves identity for a PASSWORDLESS
@@ -152,7 +159,12 @@ const STEP_UP_OPERATIONS = [
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',
-] as const satisfies readonly Exclude<StepUpOperation, 'enroll_first_factor'>[];
+  'device_move_org',
+  'ai_script_lane_grant',
+] as const satisfies readonly Exclude<
+  StepUpOperation,
+  'enroll_first_factor' | 'approval_decide'
+>[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
@@ -172,11 +184,30 @@ export const maintenanceStepUpResource = z.object({
   reason: z.string().trim().min(3).max(500),
   durationHours: z.number().int().min(1).max(MAINTENANCE_MAX_DURATION_HOURS),
 });
+// Device move-org step-up (spec 2026-09-18 D2): the move binding. Mirrors
+// moveOrgSchema (routes/devices/schemas.ts) plus the path param. A value the
+// device route would accept but this schema would not (or vice versa) is a
+// grant a technician can mint and never spend, or spend for more than they
+// proved. acceptCurrencyMismatch stays optional on both sides; the digest
+// normalises its absence to false.
+export const moveOrgStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+  targetOrgId: z.string().uuid(),
+  targetSiteId: z.string().uuid(),
+  acceptCurrencyMismatch: z.boolean().optional(),
+});
 // Coarse pre-filter only. The AUTHORITY on "does this resource match this
 // operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
 // re-parses under the operation's own schema — a union member alone would
 // happily accept a rollback-shaped body under operation:'device_maintenance'.
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource]);
+// AI script authoring W04 (#5612): the unattended-lane grant / reset binding.
+// One org, one value — mirrors scriptLanePolicyResourceDigest exactly.
+export const scriptLaneStepUpResource = z.object({
+  orgId: z.string().uuid(),
+  unattendedEnabled: z.boolean(),
+  reset: z.boolean().optional(),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

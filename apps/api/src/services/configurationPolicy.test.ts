@@ -595,6 +595,204 @@ describe('addFeatureLink — alert_rule inlineSettings service-layer validation'
 
     expect(normalizedRowValues[0].conditions).toEqual([{ type: 'offline', durationMinutes: 10 }]);
   });
+
+  // #5650 W03: rationale threads from the item payload into the
+  // config_policy_alert_rules insert row (decomposeInlineSettings), and back
+  // out again via assembleInlineSettings — see listFeatureLinks coverage below.
+  it('persists rationale on the config_policy_alert_rules insert row', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [
+        {
+          name: 'High CPU',
+          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+          rationale: 'because sustained CPU pressure predicts device slowdown tickets',
+        },
+      ],
+    });
+
+    expect(normalizedRowValues[0].rationale).toBe(
+      'because sustained CPU pressure predicts device slowdown tickets'
+    );
+  });
+
+  it('stores a null rationale when the item omits it', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [
+        {
+          name: 'High CPU',
+          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+        },
+      ],
+    });
+
+    expect(normalizedRowValues[0].rationale).toBeNull();
+  });
+});
+
+// #5650 W03: assembleInlineSettings round-trip coverage for rationale on both
+// alert_rule items and monitoring watches.
+describe('assembleInlineSettings — rationale round-trip (#5650 W03)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('alert_rule: returns the stored rationale on each item', async () => {
+    const link = {
+      id: 'link-ar',
+      configPolicyId: 'policy-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: { items: [] },
+    };
+
+    function selectOrderByRows(rows: unknown[]) {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => Promise.resolve(rows));
+      return chain;
+    }
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(
+        selectOrderByRows([
+          {
+            name: 'High CPU',
+            severity: 'medium',
+            conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+            cooldownMinutes: 5,
+            autoResolve: false,
+            autoResolveConditions: null,
+            titleTemplate: '{{ruleName}} triggered on {{deviceName}}',
+            messageTemplate: '{{ruleName}} condition met',
+            escalationPolicyId: null,
+            notificationChannelIds: null,
+            sortOrder: 0,
+            rationale: 'because sustained CPU pressure predicts device slowdown tickets',
+          },
+        ]) as any
+      );
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as Record<string, unknown>;
+    const items = settings.items as Array<Record<string, unknown>>;
+
+    expect(items[0]?.rationale).toBe(
+      'because sustained CPU pressure predicts device slowdown tickets'
+    );
+  });
+
+  it('monitoring: returns the stored rationale on each watch', async () => {
+    const link = {
+      id: 'link-mon',
+      configPolicyId: 'policy-1',
+      featureType: 'monitoring',
+      featurePolicyId: null,
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    };
+
+    function selectOrderByRows(rows: unknown[]) {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => Promise.resolve(rows));
+      return chain;
+    }
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(
+        selectLimitRows([{ id: 'settings-1', featureLinkId: 'link-mon', checkIntervalSeconds: 60 }]) as any
+      ) // config_policy_monitoring_settings
+      .mockReturnValueOnce(
+        selectOrderByRows([
+          {
+            watchType: 'service',
+            name: 'MSSQLSERVER',
+            displayName: null,
+            enabled: true,
+            alertOnStop: true,
+            alertAfterConsecutiveFailures: 2,
+            alertSeverity: 'high',
+            cpuThresholdPercent: null,
+            memoryThresholdMb: null,
+            thresholdDurationSeconds: 60,
+            autoRestart: false,
+            maxRestartAttempts: 3,
+            restartCooldownSeconds: 300,
+            sortOrder: 0,
+            rationale: 'why this service is watched',
+          },
+        ]) as any
+      );
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as Record<string, unknown>;
+    const watches = settings.watches as Array<Record<string, unknown>>;
+
+    expect(watches[0]?.rationale).toBe('why this service is watched');
+  });
 });
 
 // ============================================================
@@ -788,6 +986,106 @@ describe('monitoring decompose/assemble — no longer owns alert rules', () => {
     // Exactly 3 inserts: feature link, monitoring settings, monitoring watches.
     expect(insertCallCount()).toBe(3);
     expect(insertedTables).not.toContain(configPolicyAlertRules);
+  });
+
+  it('monitoring decompose persists rationale on the config_policy_monitoring_watches insert row', async () => {
+    let watchRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => {
+        insertCall += 1;
+        if (insertCall === 1) {
+          return {
+            values: vi.fn((v: any) => ({
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-mon',
+                      configPolicyId: 'policy-1',
+                      featureType: 'monitoring',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            })),
+          };
+        }
+        if (insertCall === 2) {
+          return {
+            values: vi.fn(() => ({
+              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
+            })),
+          };
+        }
+        return {
+          values: vi.fn((v: any) => {
+            watchRowValues = v;
+            return Promise.resolve([]);
+          }),
+        };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'monitoring', null, {
+      checkIntervalSeconds: 60,
+      watches: [{ watchType: 'service', name: 'MSSQLSERVER', rationale: 'why this service is watched' }],
+    });
+
+    expect(watchRowValues[0].rationale).toBe('why this service is watched');
+  });
+
+  it('monitoring decompose stores a null rationale when the watch omits it', async () => {
+    let watchRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => {
+        insertCall += 1;
+        if (insertCall === 1) {
+          return {
+            values: vi.fn((v: any) => ({
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-mon',
+                      configPolicyId: 'policy-1',
+                      featureType: 'monitoring',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            })),
+          };
+        }
+        if (insertCall === 2) {
+          return {
+            values: vi.fn(() => ({
+              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
+            })),
+          };
+        }
+        return {
+          values: vi.fn((v: any) => {
+            watchRowValues = v;
+            return Promise.resolve([]);
+          }),
+        };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'monitoring', null, {
+      checkIntervalSeconds: 60,
+      watches: [{ watchType: 'service', name: 'MSSQLSERVER' }],
+    });
+
+    expect(watchRowValues[0].rationale).toBeNull();
   });
 
   it('monitoring decompose rejects legacy non-empty alertRules payloads', async () => {

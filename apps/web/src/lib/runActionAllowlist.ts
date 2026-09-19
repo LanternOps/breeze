@@ -39,4 +39,16 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // inline error banner + the row updating in place, but the fetchWithAuth
   // mutations are not yet routed through runAction.
   'apps/web/src/components/software/SoftwareVersionManager.tsx',
+  // ComplianceDashboard.tsx: handleFormSubmit (policy create/update — the
+  // handler that arms autoInstall, #5505 W04) IS migrated to runAction.
+  // handleConfirmDelete / handleCheckCompliance / handleRemediate remain on
+  // bare fetchWithAuth — out of that wave's scope. Not yet moved into
+  // TARGET_GLOBS: doing so would flag those three untouched handlers.
+  'apps/web/src/components/software/ComplianceDashboard.tsx',
+  // ReportsList.tsx: handleGenerate (2026-09-16 pre-release sweep — "Generate
+  // now" 200'd with no toast and the row kept reading "Last Generated: Never"
+  // until reload) IS migrated to runAction. handleDelete remains on bare
+  // fetchWithAuth — out of that fix's scope. Not yet moved into TARGET_GLOBS:
+  // doing so would flag that untouched handler.
+  'apps/web/src/components/reports/ReportsList.tsx',
 ];

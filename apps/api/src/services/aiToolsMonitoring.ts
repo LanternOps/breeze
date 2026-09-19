@@ -16,7 +16,13 @@ import { deviceChangeLog, discoveredAssets } from '../db/schema';
 import { eq, and, desc, gte, lte, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { loadReachability } from './assetReachabilityLoader';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -112,6 +118,21 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         conditions.push(inArray(discoveredAssets.siteId, allowedSites!));
       }
 
+      // Exact-device axis (#6086). A monitor's device is its linked asset's
+      // `linkedDeviceId`; scoped by site alone, a device-bound agent run saw
+      // every sibling device's monitors — and the device-LESS analysis shape
+      // (allowedDeviceIds, no allowedSiteIds) skipped the site branch above
+      // entirely. Independent of the site flag for exactly that reason.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      const deviceRestricted = frozenDeviceIds !== null;
+      if (deviceRestricted) {
+        if (frozenDeviceIds!.length === 0) {
+          return JSON.stringify({ monitors: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(deviceScopeCondition(auth, discoveredAssets.linkedDeviceId)!);
+      }
+      const joinAssets = siteRestricted || deviceRestricted;
+
       const selection = {
         id: networkMonitors.id,
         name: networkMonitors.name,
@@ -123,11 +144,13 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         lastResponseMs: networkMonitors.lastResponseMs,
         consecutiveFailures: networkMonitors.consecutiveFailures,
         pollingInterval: networkMonitors.pollingInterval,
+        assetId: networkMonitors.assetId,
       };
 
       // Unrestricted callers take the exact pre-existing query (no join).
-      const rows = siteRestricted
-        ? await db.select(selection).from(networkMonitors)
+      const scopedRows = joinAssets
+        ? await db.select({ ...selection, assetDeviceId: discoveredAssets.linkedDeviceId })
+          .from(networkMonitors)
           .leftJoin(discoveredAssets, eq(networkMonitors.assetId, discoveredAssets.id))
           .where(and(...conditions))
           .orderBy(desc(networkMonitors.updatedAt))
@@ -137,7 +160,33 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(networkMonitors.updatedAt))
           .limit(limit);
 
-      return JSON.stringify({ monitors: rows, showing: rows.length });
+      // Post-fetch counterpart of the SQL narrowing: makes the guard observable
+      // and fails CLOSED on a monitor whose asset has no linked device — an
+      // unattributable monitor is not this run's device (mirrors the
+      // fail-closed assetless handling on the site axis). `assetDeviceId` is an
+      // authorization column only, so it is dropped from the tool's output.
+      type MonitorRow = { [K in keyof typeof selection]: (typeof selection)[K]['_']['data'] };
+      const rows = (scopedRows as Array<MonitorRow & { assetDeviceId?: string | null }>)
+        .filter((r) => !deviceRestricted
+          || (typeof r.assetDeviceId === 'string' && frozenDeviceIds!.includes(r.assetDeviceId)))
+        .map(({ assetDeviceId: _assetDeviceId, ...rest }): MonitorRow => rest as MonitorRow);
+
+      // W01 (spec §4.4): never phrase a monitor's verdict as the DEVICE's
+      // state. A failing HTTP check on a reachable host is a TLS problem, not
+      // an outage, and the agent used to have no way to tell them apart.
+      const assetIds = rows.map((r) => r.assetId).filter((id): id is string => Boolean(id));
+      const reachabilityByAsset = await loadReachability(assetIds);
+
+      return JSON.stringify({
+        monitors: rows.map((row) => {
+          const r = row.assetId ? reachabilityByAsset.get(row.assetId) : undefined;
+          return {
+            ...row,
+            assetReachability: r ? { state: r.state, source: r.source, observedAt: r.observedAt } : null,
+          };
+        }),
+        showing: rows.length,
+      });
     }),
   });
 
@@ -181,16 +230,33 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
        * Unrestricted callers (canAccessSite undefined) always pass.
        */
       async function assertMonitorSiteAccess(
-        monitor: { id: string; assetId: string | null; orgId: string },
+        monitor: { id: string; assetId: string | null; orgId: string | null },
       ): Promise<boolean> {
-        if (!auth.canAccessSite) return true; // unrestricted caller
+        // #5291 W04 — `network_monitors.org_id` is nullable now (org XOR
+        // partner). A partner-wide row is always a compiled artefact of a
+        // `network_check` monitor definition: it has no org axis to authorize
+        // on and is owned by the compiler, so this org-axis AI surface refuses
+        // it outright rather than falling through to the unrestricted-caller
+        // short-circuit below. Read and edit it through the monitor editor.
+        if (monitor.orgId === null) return false;
+        // Exact-device axis (#6086): a device-bound run may only reach the
+        // monitor bound to ITS device. Checked alongside the site axis because
+        // the device-LESS analysis shape has no site axis to check.
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        if (!auth.canAccessSite && !frozenDeviceIds) return true; // unrestricted caller
         if (!monitor.assetId) return false;   // no asset → fail-closed
         const [asset] = await db
-          .select({ siteId: discoveredAssets.siteId })
+          .select({ siteId: discoveredAssets.siteId, linkedDeviceId: discoveredAssets.linkedDeviceId })
           .from(discoveredAssets)
           .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
           .limit(1);
-        return typeof asset?.siteId === 'string' && auth.canAccessSite(asset.siteId);
+        if (!asset) return false;
+        if (frozenDeviceIds
+          && (typeof asset.linkedDeviceId !== 'string' || !frozenDeviceIds.includes(asset.linkedDeviceId))) {
+          return false;
+        }
+        if (!auth.canAccessSite) return true; // device axis satisfied, no site axis
+        return typeof asset.siteId === 'string' && auth.canAccessSite(asset.siteId);
       }
 
       if (action === 'get') {
@@ -299,6 +365,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
         }
 
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.target === 'string') updates.target = input.target;
@@ -324,6 +399,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Site-axis gate — deny same as "not found" (no oracle).
         if (!(await assertMonitorSiteAccess(existing))) {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
+
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
         }
 
         // Cascade delete handles results and alert rules via FK onDelete: 'cascade'
@@ -459,6 +543,12 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           conditions.push(inArray(serviceProcessCheckResults.deviceId, allowed));
         }
 
+        // Exact-device axis, applied independently of the site axis: a
+        // device-LESS analysis run carries `allowedDeviceIds` with NO
+        // `allowedSiteIds`, so the branch above no-ops for it (#6086).
+        const resultsDeviceCondition = deviceScopeCondition(auth, serviceProcessCheckResults.deviceId);
+        if (resultsDeviceCondition) conditions.push(resultsDeviceCondition);
+
         const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
 
         const results = await db
@@ -508,6 +598,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Source 1: Distinct service names from device change log
         const changeLogConditions: SQL[] = [eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')];
         if (siteAllowedDeviceIds) changeLogConditions.push(inArray(deviceChangeLog.deviceId, siteAllowedDeviceIds));
+        // Exact-device axis, applied independently of the site axis (#6086).
+        const changeLogDeviceCondition = deviceScopeCondition(auth, deviceChangeLog.deviceId);
+        if (changeLogDeviceCondition) changeLogConditions.push(changeLogDeviceCondition);
         let changeLogNames: { subject: string }[] = [];
         try {
           changeLogNames = await db
@@ -527,6 +620,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Source 2: Distinct service/process names from check results
         const checkNameConditions: SQL[] = [eq(serviceProcessCheckResults.orgId, orgId)];
         if (siteAllowedDeviceIds) checkNameConditions.push(inArray(serviceProcessCheckResults.deviceId, siteAllowedDeviceIds));
+        // Exact-device axis, applied independently of the site axis (#6086).
+        const checkNameDeviceCondition = deviceScopeCondition(auth, serviceProcessCheckResults.deviceId);
+        if (checkNameDeviceCondition) checkNameConditions.push(checkNameDeviceCondition);
         let checkNames: { name: string; watchType: string }[] = [];
         try {
           checkNames = await db

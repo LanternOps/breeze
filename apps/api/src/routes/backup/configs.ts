@@ -10,7 +10,8 @@ import { createGuardedS3Client } from '../../services/guardedS3Client';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db } from '../../db';
-import { backupConfigs } from '../../db/schema';
+import { backupConfigs, backupSnapshots } from '../../db/schema';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
@@ -468,6 +469,20 @@ configsRoutes.patch(
       return c.json({ error: 'Config not found' }, 404);
     }
 
+    const warnings: string[] = [];
+    const priorIdentity = normalizeStorageIdentity(current.provider, (current.providerConfig ?? {}) as Record<string, unknown>);
+    const nextIdentity = normalizeStorageIdentity(row.provider, (row.providerConfig ?? {}) as Record<string, unknown>);
+    if (priorIdentity !== nextIdentity) {
+      const [existingSnapshot] = await db
+        .select({ id: backupSnapshots.id })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.configId, configId))
+        .limit(1);
+      if (existingSnapshot) {
+        warnings.push('storage_identity_changed');
+      }
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'backup.config.update',
@@ -477,7 +492,9 @@ configsRoutes.patch(
       details: { changedFields: Object.keys(payload) },
     });
 
-    return c.json(toConfigResponse(row));
+    // Always present (possibly empty) -- a stable response shape, per
+    // coordinator decision, rather than an optional field callers must guard.
+    return c.json({ ...toConfigResponse(row), warnings });
   }
 );
 

@@ -253,7 +253,7 @@ describe('audit log routes', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toContain('text/csv');
       const body = await res.text();
-      expect(body).toContain('id,timestamp,');
+      expect(body).toContain('"id","timestamp",');
     });
 
     it('neutralizes spreadsheet formulas in CSV cells', async () => {
@@ -427,7 +427,7 @@ describe('audit log routes', () => {
 
       expect(res.status).toBe(200);
       const csv = await res.text();
-      expect(csv.split('\n')[0]).toBe('id,action');
+      expect(csv.split('\n')[0]).toBe('"id","action"');
       expect(csv).not.toContain('do-not-export');
       expect(writeRouteAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -441,6 +441,62 @@ describe('audit log routes', () => {
           })
         })
       );
+    });
+  });
+  describe('GET /audit-logs/reports/security-events', () => {
+    it('counts agent.source.ip.changed as a security event', async () => {
+      const row = {
+        log: {
+          id: 'audit-ip-1',
+          timestamp: new Date('2026-05-02T12:00:00Z'),
+          actorId: '11111111-1111-1111-1111-111111111111',
+          actorEmail: null,
+          actorType: 'agent',
+          action: 'agent.source.ip.changed',
+          resourceType: 'device',
+          resourceId: '22222222-2222-2222-2222-222222222222',
+          resourceName: 'host-1',
+          result: 'success',
+          ipAddress: '203.0.113.9',
+          userAgent: null,
+          initiatedBy: 'agent',
+          details: { previousIp: '198.51.100.4' }
+        },
+        userName: null,
+        deviceHostname: 'host-1',
+        deviceDisplayName: null,
+        deviceSiteId: null
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
+                })
+              })
+            })
+          })
+        })
+      } as never);
+
+      const res = await app.request('/audit-logs/reports/security-events');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.totalEvents).toBe(1);
+      expect(body.byAction).toContainEqual(
+        expect.objectContaining({ action: 'agent.source.ip.changed', count: 1 })
+      );
+      expect(body.recentEvents[0].action).toBe('agent.source.ip.changed');
+      // The action is a security event, but it must not inflate the
+      // login/permission counters, which are computed independently.
+      expect(body.loginAttempts).toBe(0);
+      expect(body.failedLogins).toBe(0);
+      expect(body.permissionChanges).toBe(0);
     });
   });
 });

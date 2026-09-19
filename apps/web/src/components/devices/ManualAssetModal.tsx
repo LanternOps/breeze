@@ -59,6 +59,7 @@ type FormState = {
   serialNumber: string;
   assetTag: string;
   location: string;
+  purchaseDate: string;
   assignedContactId: string;
   assignedContactLabel: string;
   tags: string;
@@ -75,6 +76,7 @@ const emptyForm = (orgId: string): FormState => ({
   serialNumber: '',
   assetTag: '',
   location: '',
+  purchaseDate: '',
   assignedContactId: '',
   assignedContactLabel: '',
   tags: '',
@@ -131,6 +133,7 @@ export default function ManualAssetModal({
         serialNumber: existing.serialNumber ?? '',
         assetTag: existing.assetTag ?? '',
         location: existing.location ?? '',
+        purchaseDate: existing.purchaseDate ?? '',
         assignedContactId: existing.assignedContactId ?? '',
         assignedContactLabel: '',
         tags: (existing.tags ?? []).join(', '),
@@ -212,6 +215,7 @@ export default function ManualAssetModal({
       serialNumber: form.serialNumber.trim() || null,
       assetTag: form.assetTag.trim() || null,
       location: form.location.trim() || null,
+      purchaseDate: form.purchaseDate || null,
       assignedContactId: form.assignedContactId || null,
       notes: form.notes.trim() || null,
       tags,
@@ -541,6 +545,17 @@ export default function ManualAssetModal({
               data-testid="manual-asset-tag"
               value={form.assetTag}
               onChange={(e) => setForm((f) => ({ ...f, assetTag: e.target.value }))}
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">{t('manualAssetModal.fields.purchaseDate')}</label>
+            <input
+              type="date"
+              data-testid="manual-asset-purchase-date"
+              value={form.purchaseDate}
+              onChange={(e) => setForm((f) => ({ ...f, purchaseDate: e.target.value }))}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>

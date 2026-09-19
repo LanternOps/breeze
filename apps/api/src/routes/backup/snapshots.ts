@@ -225,6 +225,9 @@ snapshotsRoutes.get(
     if (query.configId) {
       conditions.push(eq(backupSnapshots.configId, query.configId));
     }
+    if (query.bareMetalRestorable !== undefined) {
+      conditions.push(eq(backupSnapshots.bareMetalRestorable, query.bareMetalRestorable));
+    }
 
     const rows = await db
       .select()

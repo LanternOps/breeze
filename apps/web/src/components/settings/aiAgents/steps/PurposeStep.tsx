@@ -70,6 +70,7 @@ export default function PurposeStep({
       <ModeChoice
         mode={draft.mode}
         onChange={(mode) => patch({ mode })}
+        kind={draft.kind}
         actSupported={actSupported}
         enteringActMode={enteringActMode}
         actAck={actAck}
@@ -98,7 +99,14 @@ export default function PurposeStep({
                 role="radio"
                 aria-checked={selected}
                 disabled={taken}
-                onClick={() => patch({ kind })}
+                // Fleet Designer (W01, #6214): the designer kind has no shadow
+                // mode (`allowedModesForKind`), and for a read-only kind `act`
+                // means "produce designs" — so picking designer lands the
+                // draft on act (the only mode in which it does anything)
+                // rather than on off, which sent every first-time operator
+                // back to the Fleet Design page to find the agent "turned
+                // off". Off stays the fallback when act is not offered.
+                onClick={() => patch(kind === 'designer' ? { kind, mode: actSupported ? 'act' : 'off' } : { kind })}
                 className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   selected ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'bg-background hover:border-primary/50 hover:bg-muted/40'
                 }`}

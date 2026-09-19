@@ -52,7 +52,6 @@ import {
   createConfigPolicy,
   deleteConfigPolicy,
   getConfigPolicy,
-  getParentLinkFeatureTypes,
   listEligibleParentPolicies,
   InvalidParentPolicyError,
   PolicyHasChildrenError,
@@ -899,41 +898,13 @@ describe('config policy inheritance — effective-links view (live DB)', () => {
 // ============================================================
 
 /**
- * Both of these are exercised elsewhere only against mocks, and both depend on
- * the caller's own RLS context resolving a PARTNER-WIDE parent through the
- * `*_partner_wide_select` branch. If that branch ever stops applying, a mock
- * test keeps passing while the real behaviour degrades silently — the MFA gate
- * stops firing and the editor stops showing inherited state.
+ * Exercised elsewhere only against mocks, and dependent on the caller's own RLS
+ * context resolving a PARTNER-WIDE parent through the `*_partner_wide_select`
+ * branch. If that branch ever stops applying, a mock test keeps passing while
+ * the real behaviour degrades silently and the editor stops showing inherited
+ * state.
  */
 describe('config policy inheritance — RLS-dependent reads (live DB)', () => {
-  it('getParentLinkFeatureTypes sees a PARTNER-WIDE parent\'s gated link from an ORG session', async () => {
-    const t = await seedTenancy();
-    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
-    await seedLink(parent.id, 'event_log');
-    await withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
-      INSERT INTO config_policy_feature_links (config_policy_id, feature_type)
-      VALUES (${parent.id}::uuid, 'maintenance')
-    `));
-
-    const types = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
-      getParentLinkFeatureTypes(parent.id));
-
-    // This is what the create-time MFA gate keys on. An empty array here would
-    // silently skip the gate.
-    expect(types.sort()).toEqual(['event_log', 'maintenance']);
-  });
-
-  it('getParentLinkFeatureTypes returns nothing for ANOTHER partner\'s baseline', async () => {
-    const t = await seedTenancy();
-    const foreign = await seedPolicy({ partnerId: t.p2, name: 'Other MSP baseline' });
-    await seedLink(foreign.id, 'event_log');
-
-    const types = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
-      getParentLinkFeatureTypes(foreign.id));
-
-    expect(types).toEqual([]);
-  });
-
   it('getConfigPolicy embeds a PARTNER-WIDE parent for an ORG caller, with its links', async () => {
     const t = await seedTenancy();
     const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });

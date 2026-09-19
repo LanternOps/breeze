@@ -81,7 +81,14 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
   // automation_action_results and device_software_inventory_state
   // intentionally KEEP UPDATE and DELETE granted (ordinary mutable state) —
   // only TRUNCATE is revoked.
-  it.each(['automation_action_results', 'device_software_inventory_state'])(
+  it.each([
+    'automation_action_results',
+    'device_software_inventory_state',
+    // SEC-142/143: ordinary mutable accounting state (settle/expire both
+    // UPDATE it, org erasure DELETEs it), so only TRUNCATE is revoked —
+    // ensureAppRole.ts revokes it from breeze_app AND PUBLIC.
+    'ai_budget_reservations',
+  ])(
     'breeze_app keeps UPDATE/DELETE but has no TRUNCATE on %s',
     async (table) => {
       const p = await tablePrivileges(table);

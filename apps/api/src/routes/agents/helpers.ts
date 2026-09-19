@@ -54,7 +54,13 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import {
+  resolvePatchConfigForDevice,
+  buildRoleOsFilterConditions,
+  matchesRoleOsFilter,
+} from '../../services/featureConfigResolver';
+import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
@@ -63,6 +69,9 @@ import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secr
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
+import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
+import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
   normalizeAgentUpdatePolicy,
@@ -1781,7 +1790,12 @@ const LEVEL_PRIORITY: Record<string, number> = {
 async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -1824,6 +1838,8 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       retentionDays: configPolicyEventLogSettings.retentionDays,
       maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
       collectCategories: configPolicyEventLogSettings.collectCategories,
@@ -1842,18 +1858,24 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return EVENT_LOG_DEFAULTS;
   return {
     retentionDays: winner.retentionDays,
@@ -2033,10 +2055,199 @@ export interface MonitoringConfigUpdate {
   watches: MonitoringWatchConfig[];
 }
 
+/**
+ * The defaults `config_policy_monitoring_watches` itself carries, so a
+ * monitor-derived watch and a policy-tab watch for the same service are
+ * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ */
+const MONITOR_WATCH_DEFAULTS = {
+  maxRestartAttempts: 3,
+  restartCooldownSeconds: 300,
+  alertAfterConsecutiveFailures: 2,
+} as const;
+
+/** `check_interval_seconds` when monitors deliver watches but no policy resolved. */
+const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
+
+/**
+ * Service/process watches derived from the device's EFFECTIVE MONITOR SET
+ * (#5287 W04). W02 made `service` and `process` monitors first-class authoring
+ * objects but nothing delivered them; this is that delivery.
+ *
+ * Runs in the CALLER'S OWN DB CONTEXT. `monitor_definitions_partner_wide_select`
+ * (W02) is what lets a partner-wide monitor's definition be read on the agent
+ * path, because middleware/agentAuth sets `breeze.current_partner_id`. Wrapping
+ * this in a system context would be the forbidden request-path escalation
+ * (#2417) and would double-hold a pooled connection (#1105).
+ *
+ * Discriminated so a device that vanished mid-request (raced a delete/org
+ * move) is never folded into "resolved with zero monitor-derived watches" —
+ * see the `resolveDeviceMonitoringSettings` caller (#5677).
+ */
+type MonitorDerivedWatchesResult =
+  | { kind: 'device_missing' }
+  | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
+
+async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDerivedWatchesResult> {
+  const resolution = await resolveMonitorsForDevice(deviceId);
+  if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
+  const effective = resolution.monitors;
+  const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledIds.length === 0) return { kind: 'resolved', watches: [] };
+
+  const definitions = await db
+    .select({
+      id: monitorDefinitions.id,
+      kind: monitorDefinitions.kind,
+      condition: monitorDefinitions.condition,
+      responses: monitorDefinitions.responses,
+    })
+    .from(monitorDefinitions)
+    .where(and(
+      inArray(monitorDefinitions.id, enabledIds),
+      eq(monitorDefinitions.enabled, true),
+      inArray(monitorDefinitions.kind, ['service', 'process']),
+    ));
+
+  const overridesById = new Map(effective.map((m) => [m.monitorId, m.overrides]));
+  const watches: MonitoringWatchConfig[] = [];
+
+  for (const def of definitions) {
+    const spec = MONITOR_KIND_SPECS[def.kind];
+    if (!spec) continue;
+    let condition: Record<string, unknown>;
+    try {
+      condition = applyOverrides(spec, def.condition, overridesById.get(def.id) ?? null);
+    } catch (err) {
+      // An out-of-range override is an authoring bug on ONE monitor. Dropping
+      // that monitor is right; failing the whole heartbeat block would strand
+      // every other watch on the device. But it is NOT transient — it recurs on
+      // every heartbeat forever — so it must be visible: without this log the
+      // watch simply vanishes from the device's config with nothing anywhere
+      // to explain it. Mirrors monitorScriptWorker's handling of the same throw.
+      console.error('[monitoring] dropping monitor with an invalid override', {
+        monitorId: def.id,
+        deviceId,
+        error: err,
+      });
+      captureException(err);
+      continue;
+    }
+
+    const name = def.kind === 'service'
+      ? (condition.serviceName as string | undefined)
+      : (condition.processName as string | undefined);
+    if (!name) continue;
+
+    watches.push({
+      watch_type: def.kind === 'service' ? 'service' : 'process',
+      name,
+      alert_on_stop: true,
+      alert_after_consecutive_failures:
+        (condition.consecutiveFailures as number | undefined) ?? MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      // Spec §Responses: an execute_command response of kind 'restart_service'
+      // supersedes the agent-side flag, so the restart still happens locally
+      // and offline. A free-text `command` is NOT sniffed for intent — the
+      // explicit discriminator is the contract.
+      auto_restart: (def.responses ?? []).some(
+        (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+      ),
+      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    });
+  }
+
+  return { kind: 'resolved', watches };
+}
+
+/**
+ * Union monitor-derived watches with the policy tab's, keyed on
+ * (watch_type, lower(name)). The MONITOR wins every field except:
+ *  - `auto_restart`, which is OR'd — never lowered, because it drives the
+ *    agent's own offline-capable restart; and
+ *  - the process thresholds, which fall back to the policy row, because a
+ *    `service`/`process` monitor authors none (that is `process_resource`).
+ */
+function unionMonitoringWatches(
+  monitorWatches: MonitoringWatchConfig[],
+  policyWatches: MonitoringWatchConfig[],
+): MonitoringWatchConfig[] {
+  const key = (w: MonitoringWatchConfig) => `${w.watch_type}:${w.name.toLowerCase()}`;
+  const merged = new Map<string, MonitoringWatchConfig>();
+
+  for (const w of monitorWatches) merged.set(key(w), { ...w });
+
+  for (const p of policyWatches) {
+    const k = key(p);
+    const existing = merged.get(k);
+    if (!existing) {
+      merged.set(k, { ...p });
+      continue;
+    }
+    existing.auto_restart = existing.auto_restart || p.auto_restart;
+    if (existing.cpu_threshold_percent == null && p.cpu_threshold_percent != null) {
+      existing.cpu_threshold_percent = p.cpu_threshold_percent;
+    }
+    if (existing.memory_threshold_mb == null && p.memory_threshold_mb != null) {
+      existing.memory_threshold_mb = p.memory_threshold_mb;
+    }
+    if (existing.threshold_duration_seconds == null && p.threshold_duration_seconds != null) {
+      existing.threshold_duration_seconds = p.threshold_duration_seconds;
+    }
+  }
+
+  return [...merged.values()];
+}
+
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // Monitors are the primary source and win the union (#5287 W04); the policy
+  // tab is read FIRST only so its query sequence is untouched by this change —
+  // helpers.partnerWidePolicies.test.ts pins that sequence and must stay green
+  // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
+  // shape; the union below is order-independent.
+  const policy = await resolvePolicyMonitoringSettings(deviceId);
+  const monitorResult = await resolveMonitorDerivedWatches(deviceId);
+
+  // A device that vanished between authentication and here (raced a
+  // delete/org move) must NOT be folded into "resolved with zero
+  // monitor-derived watches": unioning `[]` into a truthy (possibly also
+  // empty) policy result would produce the #2949 "stop watching" clear
+  // signal for monitors this device still legitimately has, purely because
+  // of the race — not because resolution actually found zero (#5677). Omit
+  // the monitoring update entirely this heartbeat instead, same as
+  // `resolvePolicyMonitoringSettings` already does when its own device
+  // lookup misses.
+  if (monitorResult.kind === 'device_missing') {
+    // Surface this: the device just authenticated the heartbeat that reached
+    // this code, so a vanish between then and here should be rare. Silently
+    // omitting the monitoring update is the right behavior (see above), but
+    // silent AND invisible would hide a real bug (e.g. a stale deviceId)
+    // behind "just a benign race" forever (#5677 review).
+    console.warn(`[monitoring] device vanished mid-resolution, omitting monitoring update for device ${deviceId}`);
+    return null;
+  }
+  const monitorWatches = monitorResult.watches;
+
+  // Null ONLY when both sources are empty AND no policy resolved. A policy that
+  // resolved with zero enabled watches still returns `watches: []` below — that
+  // is the #2949 "stop watching" signal.
+  if (!policy && monitorWatches.length === 0) return null;
+
+  return {
+    check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
+    watches: unionMonitoringWatches(monitorWatches, policy?.watches ?? []),
+  };
+}
+
+async function resolvePolicyMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -2088,6 +2299,8 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       settingsId: configPolicyMonitoringSettings.id,
       checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
@@ -2102,18 +2315,24 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  if (rows.length === 0) return null;
+  // Filter by deviceRole and osType using canonical predicate
+  const eligibleRows = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+
+  if (eligibleRows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return null;
 
   // 7. Load watches for the winning settings row
@@ -2860,6 +3079,38 @@ export interface PatchSourceSettings {
 export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
   const patch = await resolvePatchConfigForDevice(deviceId);
   return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
+}
+
+// ============================================
+// HP CMSL Warranty Collection Config (#5511 W02)
+// ============================================
+
+export interface WarrantySettings {
+  /**
+   * When true the (Windows-only) agent may collect HP warranty data on the
+   * device via HP's CMSL. False explicitly tells the agent to stop — so
+   * unassigning the policy, or a nearer policy replacing the link without an
+   * hpCmsl block, cleanly revokes collection.
+   */
+  hpCmslEnabled: boolean;
+}
+
+/**
+ * Resolves the warranty feature link for the device and surfaces the HP CMSL
+ * collection flag for the heartbeat config push. A device with no warranty
+ * policy assigned resolves to `false`, which the agent treats as "stop
+ * collecting". The caller (heartbeat) omits the block entirely on a resolver
+ * error so a transient failure never revokes collection fleet-wide — which is
+ * why this function deliberately does NOT catch.
+ *
+ * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
+ * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
+ * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
+ * Collection never runs on an acceptance we cannot point at.
+ */
+export async function buildWarrantyConfigUpdate(deviceId: string): Promise<WarrantySettings> {
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================

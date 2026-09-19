@@ -13,7 +13,6 @@ import {
   deviceCommands,
   devices,
   hypervVms,
-  recoveryBootMediaArtifacts,
   recoveryMediaArtifacts,
   recoveryTokens,
   restoreJobs,
@@ -25,7 +24,6 @@ const executeCommandMock = vi.hoisted(() => vi.fn());
 const queueCommandMock = vi.hoisted(() => vi.fn());
 const queueStopMock = vi.hoisted(() => vi.fn());
 const enqueueMediaMock = vi.hoisted(() => vi.fn());
-const enqueueBootMediaMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../middleware/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../middleware/auth')>();
@@ -50,10 +48,6 @@ vi.mock('../../services/commandQueue', async (importOriginal) => {
 
 vi.mock('../../jobs/recoveryMediaWorker', () => ({
   enqueueRecoveryMediaBuild: enqueueMediaMock,
-}));
-
-vi.mock('../../jobs/recoveryBootMediaWorker', () => ({
-  enqueueRecoveryBootMediaBuild: enqueueBootMediaMock,
 }));
 
 import { restoreRoutes } from '../../routes/backup/restore';
@@ -83,8 +77,6 @@ type Fixture = {
   tokenB: string;
   mediaA: string;
   mediaB: string;
-  bootMediaA: string;
-  bootMediaB: string;
 };
 
 type MountedRouteCase = {
@@ -223,14 +215,6 @@ async function seedFixture(): Promise<Fixture> {
   const [mediaA, mediaB, mediaTargetB] = insertedMedia;
   if (!mediaA || !mediaB || !mediaTargetB) throw new Error('media fixture insert failed');
 
-  const insertedBootMedia = await testDb.insert(recoveryBootMediaArtifacts).values([
-    { orgId: org.id, tokenId: tokenA.id, snapshotId: snapshotA.id, bundleArtifactId: mediaA.id, platform: 'linux', architecture: 'amd64', mediaType: 'iso', status: 'ready_signed' },
-    { orgId: org.id, tokenId: tokenB.id, snapshotId: snapshotB.id, bundleArtifactId: mediaB.id, platform: 'linux', architecture: 'amd64', mediaType: 'iso', status: 'ready_signed' },
-    { orgId: org.id, tokenId: tokenTargetB.id, snapshotId: snapshotA.id, bundleArtifactId: mediaTargetB.id, platform: 'linux', architecture: 'amd64', mediaType: 'iso', status: 'ready_signed' },
-  ]).returning({ id: recoveryBootMediaArtifacts.id });
-  const [bootMediaA, bootMediaB] = insertedBootMedia;
-  if (!bootMediaA || !bootMediaB) throw new Error('boot media fixture insert failed');
-
   return {
     orgId: org.id,
     siteA: siteA.id,
@@ -249,8 +233,6 @@ async function seedFixture(): Promise<Fixture> {
     tokenB: tokenB.id,
     mediaA: mediaA.id,
     mediaB: mediaB.id,
-    bootMediaA: bootMediaA.id,
-    bootMediaB: bootMediaB.id,
   };
 }
 
@@ -261,12 +243,11 @@ async function sideEffectSnapshot(orgId: string) {
   const [commandCount] = await testDb.select({ value: count() }).from(deviceCommands);
   const [tokenCount] = await testDb.select({ value: count() }).from(recoveryTokens).where(eq(recoveryTokens.orgId, orgId));
   const [mediaCount] = await testDb.select({ value: count() }).from(recoveryMediaArtifacts).where(eq(recoveryMediaArtifacts.orgId, orgId));
-  const [bootCount] = await testDb.select({ value: count() }).from(recoveryBootMediaArtifacts).where(eq(recoveryBootMediaArtifacts.orgId, orgId));
   const snapshotState = await testDb
     .select({ id: backupSnapshots.id, legalHold: backupSnapshots.legalHold, isImmutable: backupSnapshots.isImmutable })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.orgId, orgId));
-  return { restoreCount, backupCount, commandCount, tokenCount, mediaCount, bootCount, snapshotState };
+  return { restoreCount, backupCount, commandCount, tokenCount, mediaCount, snapshotState };
 }
 
 function deniedRouteCases(f: Fixture): MountedRouteCase[] {
@@ -306,10 +287,6 @@ function deniedRouteCases(f: Fixture): MountedRouteCase[] {
     { name: 'BMR media by ID', method: 'GET', path: `/bmr/media/${f.mediaB}` },
     { name: 'BMR media download', method: 'GET', path: `/bmr/media/${f.mediaB}/download` },
     { name: 'BMR media signature', method: 'GET', path: `/bmr/media/${f.mediaB}/signature` },
-    { name: 'BMR boot media create', method: 'POST', path: '/bmr/boot-media', body: { tokenId: f.tokenB } },
-    { name: 'BMR boot media by ID', method: 'GET', path: `/bmr/boot-media/${f.bootMediaB}` },
-    { name: 'BMR boot media download', method: 'GET', path: `/bmr/boot-media/${f.bootMediaB}/download` },
-    { name: 'BMR boot media signature', method: 'GET', path: `/bmr/boot-media/${f.bootMediaB}/signature` },
   ];
 }
 
@@ -334,7 +311,6 @@ describe('mounted recovery route site authorization against real PostgreSQL', ()
       expect(queueCommandMock, testCase.name).not.toHaveBeenCalled();
       expect(queueStopMock, testCase.name).not.toHaveBeenCalled();
       expect(enqueueMediaMock, testCase.name).not.toHaveBeenCalled();
-      expect(enqueueBootMediaMock, testCase.name).not.toHaveBeenCalled();
     }
   });
 
@@ -352,7 +328,6 @@ describe('mounted recovery route site authorization against real PostgreSQL', ()
       { name: 'snapshots', method: 'GET', path: '/snapshots', extractIds: (body) => body.data.map((row: any) => row.id), allowedIds: [f.snapshotA] },
       { name: 'BMR tokens', method: 'GET', path: '/bmr/tokens', extractIds: (body) => body.data.map((row: any) => row.id), allowedIds: [f.tokenA] },
       { name: 'BMR media', method: 'GET', path: '/bmr/media', extractIds: (body) => body.data.map((row: any) => row.id), allowedIds: [f.mediaA] },
-      { name: 'BMR boot media', method: 'GET', path: '/bmr/boot-media', extractIds: (body) => body.data.map((row: any) => row.id), allowedIds: [f.bootMediaA] },
     ];
 
     for (const testCase of listCases) {

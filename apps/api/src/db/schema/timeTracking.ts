@@ -53,7 +53,8 @@ export const timeEntries = pgTable('time_entries', {
   billingStatus: billingStatusEnum('billing_status').notNull().default('not_billed'),
   // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
   // Values enforced by CHECK time_entries_source_chk in SQL:
-  // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session'.
+  // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |
+  // 'ai_suggested' (#4177 — stamped by the intent release path only).
   source: varchar('source', { length: 24 }).notNull().default('manual'),
   isApproved: boolean('is_approved').notNull().default(false),
   approvedBy: uuid('approved_by').references(() => users.id),

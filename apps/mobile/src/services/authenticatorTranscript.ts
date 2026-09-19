@@ -112,3 +112,56 @@ export async function registrationTranscriptB64(
 ): Promise<string> {
   return sha256Base64(registrationTranscriptPreimage(input));
 }
+
+/**
+ * Domain tag for the Android KEY-GENERATION challenge. Deliberately distinct
+ * from {@link TRANSCRIPT_DOMAIN} so the two digests can never be confused for
+ * one another. Must equal `ANDROID_KEYGEN_CHALLENGE_DOMAIN` in the API service.
+ */
+export const ANDROID_KEYGEN_CHALLENGE_DOMAIN = 'breeze.authenticator.mobile-register.keygen.v1';
+
+export interface AndroidKeyGenChallengeInput {
+  /** `attemptId` returned by POST /authenticator/devices/mobile/challenge. */
+  attemptId: string;
+  /** `challenge` returned by the same call (base64url, server-chosen). */
+  challenge: string;
+  /** The algorithm of the key about to be generated. */
+  publicKeyAlg: MobileKeyAlg;
+}
+
+/**
+ * The pre-image of the Android KeyStore attestation challenge.
+ *
+ * WHY THIS IS NOT THE TRANSCRIPT. `setAttestationChallenge` is a
+ * `KeyGenParameterSpec` property, so its value is fixed BEFORE the key exists —
+ * and {@link registrationTranscriptPreimage} embeds the key's own SPKI, which
+ * therefore cannot be known yet. Passing the transcript there is impossible,
+ * and passing the raw server challenge would leave the algorithm unbound. So
+ * the keygen challenge binds the attempt and the declared algorithm only; key
+ * identity is bound separately, server-side, by `verifyAndroid` comparing the
+ * attested leaf key against the registered SPKI.
+ *
+ * Pinned by `authenticatorTranscript.test.ts` against the same vector the API
+ * pins in `authenticatorAttestation.test.ts` (`androidKeyGenChallenge`).
+ */
+export function androidKeyGenChallengePreimage(input: AndroidKeyGenChallengeInput): string {
+  return [
+    ANDROID_KEYGEN_CHALLENGE_DOMAIN,
+    input.attemptId,
+    input.challenge,
+    input.publicKeyAlg,
+  ].join('\n');
+}
+
+/**
+ * `base64(SHA256(preimage))` — passed to the native module as
+ * `attestationChallengeB64`, which DECODES it and hands the 32 raw bytes to
+ * `setAttestationChallenge`. The leaf certificate then carries those bytes and
+ * the server compares them with `androidKeyGenChallenge(...)`.
+ */
+export async function androidKeyGenChallengeB64(
+  input: AndroidKeyGenChallengeInput,
+  sha256Base64: Sha256Base64 = expoSha256Base64,
+): Promise<string> {
+  return sha256Base64(androidKeyGenChallengePreimage(input));
+}

@@ -15,6 +15,8 @@ import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.com
 import { captureException } from './sentry';
 import { decryptCommandForDelivery, toAgentCommandFrame } from './sensitiveCommandPayload';
 
+import type { AiOriginRef } from '@breeze/shared';
+
 export type DispatchDeviceCommandInput = {
   deviceId: string;
   type: string;
@@ -22,18 +24,14 @@ export type DispatchDeviceCommandInput = {
   userId?: string;
   /** Explicit policy; omit to take the registry default for the type. */
   offlinePolicy?: OfflinePolicy;
-  /**
-   * True for callers that hard-rejected offline devices before #5128. The
-   * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag gates their switch to queueing;
-   * callers that already queued (scripts, software, generic routes) pass false.
-   */
-  previouslyRejected?: boolean;
   /** Defense-in-depth for callers running under a system context. */
   expectedOrgId?: string;
   /** Skip the socket push even when connected (watchdog-style consumers). */
   preferHeartbeat?: boolean;
   /** Reserve the command id up-front (#3409: the secret envelope's AAD binds it). */
   commandId?: string;
+  /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+  aiOrigin?: AiOriginRef;
 };
 
 export type DispatchDeviceCommandResult =
@@ -75,9 +73,7 @@ export async function dispatchDeviceCommand(
 ): Promise<DispatchDeviceCommandResult> {
   // Resolved first, so an unregistered command type fails loudly before any
   // device lookup or write happens.
-  const policy = resolveOfflinePolicy(input.type, input.offlinePolicy, {
-    previouslyRejected: input.previouslyRejected ?? false,
-  });
+  const policy = resolveOfflinePolicy(input.type, input.offlinePolicy);
 
   const [device] = await db.select().from(devices).where(eq(devices.id, input.deviceId)).limit(1);
   if (!device) return { ok: false, code: 'device_not_found', error: 'Device not found' };
@@ -127,6 +123,7 @@ export async function dispatchDeviceCommand(
     ...(input.commandId ? { commandId: input.commandId } : {}),
     deliverBy,
     submittedOrgId: device.orgId,
+    ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
   });
 
   if (!online) return { ok: true, command, delivery: 'queued_offline', deliverBy };

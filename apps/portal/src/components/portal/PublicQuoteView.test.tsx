@@ -168,3 +168,38 @@ describe('PublicQuoteView accept validation', () => {
     expect(acceptSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('PublicQuoteView — cover page', () => {
+  afterEach(cleanup);
+  it('opens with the cover when the quote enables one: title, prepared for, prepared by, image', () => {
+    render(
+      <PublicQuoteView
+        token="public-token"
+        initial={{
+          ...DETAIL,
+          quote: {
+            ...DETAIL.quote,
+            coverPage: { enabled: true, title: 'Office Network Refresh Proposal', coverImageId: 'img-1', preparedForName: 'Acme Co', showPreparedBy: true },
+          },
+        }}
+      />,
+    );
+    const cover = screen.getByTestId('doc-cover');
+    expect(cover).toHaveTextContent('Office Network Refresh Proposal');
+    expect(cover).toHaveTextContent('Prepared for');
+    expect(cover).toHaveTextContent('Acme Co');
+    expect(cover).toHaveTextContent('Prepared by');
+    expect(cover).toHaveTextContent('Lantern IT');
+    expect(cover.querySelector('img')?.getAttribute('src')).toContain('img-1');
+    // One H1 on the page: the cover title. The header's number steps down.
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Office Network Refresh Proposal');
+    // Prepared-for is not repeated under the header.
+    expect(screen.getAllByText('Prepared for')).toHaveLength(1);
+  });
+
+  it('renders no cover when the quote has none or it is switched off', () => {
+    render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, quote: { ...DETAIL.quote, coverPage: { enabled: false, title: 'x', coverImageId: null, preparedForName: null, showPreparedBy: true } } }} />);
+    expect(screen.queryByTestId('doc-cover')).toBeNull();
+  });
+});

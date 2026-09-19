@@ -78,6 +78,13 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // /recover/authenticate and /recover/complete keep the shared budget plus
   // their tighter per-route limiters.
   { prefix: '/api/v1/backup/bmr/recover/download', name: 'bmrrecover', limit: 12_000 },
+  // Partner sending-domain delivery events (W06). One provider egress IP
+  // delivers every partner's bounces, complaints and deliveries, so on the
+  // shared 300/min per-IP budget a busy partner lane would throttle dashboard
+  // traffic that happens to share an egress address — and vice versa. The
+  // route carries its own 600/min limiter and rejects anything unsigned, so
+  // this bucket only needs to stay out of runaway territory.
+  { prefix: '/api/v1/webhooks/email-provider/', name: 'emaildomainswebhook', limit: 1200 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

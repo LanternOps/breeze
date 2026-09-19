@@ -1,0 +1,236 @@
+{
+  "section": {
+    "title": "Hizmet çıktıları",
+    "empty": "Henüz çıktı yok. Bu müşteriye borçlu olunan düzenli raporları ve gözden geçirmeleri ekleyin."
+  },
+  "table": {
+    "name": "Çıktı",
+    "cadence": "Sıklık",
+    "nextDue": "Sonraki son tarih",
+    "lastDelivered": "Son teslim",
+    "status": "Durum",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Aylık",
+    "quarterly": "Üç aylık",
+    "semiannual": "Altı aylık",
+    "annual": "Yıllık",
+    "one_time": "Tek seferlik"
+  },
+  "status": {
+    "on_track": "Planda",
+    "due_soon": "Yakında dolacak",
+    "late": "Gecikmiş",
+    "missed": "Kaçırıldı",
+    "inactive": "Pasif"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Planlandı",
+      "open": "Açık",
+      "awaiting_evidence": "Kanıt bekleniyor",
+      "delivered": "Teslim edildi",
+      "missed": "Kaçırıldı",
+      "waived": "Muaf tutuldu"
+    }
+  },
+  "actions": {
+    "add": "Çıktı ekle",
+    "edit": "Düzenle",
+    "deactivate": "Devre dışı bırak",
+    "deliver": "Teslim edildi olarak işaretle",
+    "waive": "Muaf tut",
+    "reopen": "Yeniden aç",
+    "reschedule": "Yeniden planla",
+    "addEvidence": "Kanıt ekle",
+    "removeEvidence": "Kanıtı kaldır",
+    "save": "Kaydet",
+    "cancel": "İptal"
+  },
+  "form": {
+    "name": "Ad",
+    "description": "Açıklama",
+    "contract": "Sözleşme",
+    "noContract": "Bir sözleşmeye bağlı değil",
+    "contractsUnavailable": "Bu kuruluşun sözleşmeleri yüklenemedi. Kaydetmeden önce sayfayı yenileyin.",
+    "cadence": "Sıklık",
+    "anchorDueDate": "İlk son tarih",
+    "effectiveFrom": "Geçerlilik başlangıcı",
+    "effectiveUntil": "Geçerlilik bitişi",
+    "leadDays": "Hazırlık süresi (gün)",
+    "graceDays": "Ek süre (gün)",
+    "artifactRequired": "Teslim edildi olarak işaretlemeden önce kanıt gerekir",
+    "completionMode": {
+      "label": "Tamamlama",
+      "explicit": "Bir teknisyen tarafından teslim edildi olarak işaretlenir",
+      "on_ticket_resolve": "Bağlı bilet çözüldüğünde teslim edilmiş sayılır"
+    },
+    "autoEvidenceReport": "Rapor çalıştırmalarını kanıt olarak ekle",
+    "autoEvidenceNone": "Yok",
+    "autoEvidenceHelp": "Kanıt, vade gününde oluşturulur ve tekrarlama teslim edildiğinde müşteriye görünür hale gelir.",
+    "autoEvidenceEmpty": "Henüz kullanılabilir yönetilen kanıt raporu türü yok.",
+    "owner": "Sorumlu",
+    "ticketCategory": "Bilet kategorisi",
+    "portalVisible": "Müşteri portalında göster",
+    "sortOrder": "Sıralama",
+    "instructions": "Dahili talimatlar",
+    "instructionsHint": "Dahili — müşteriye asla gösterilmez.",
+    "checklistTemplate": "Kontrol listesi şablonu",
+    "checklistTemplateNone": "Yok",
+    "checklistTemplateAllOrgs": "Tüm kuruluşlar",
+    "checklistTemplateManage": "Kontrol listesi şablonlarını yönet"
+  },
+  "drawer": {
+    "title": "Oluşumlar",
+    "empty_one": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır.",
+    "empty_other": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır.",
+    "emptyWithDate_one": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır ({{date}}).",
+    "emptyWithDate_other": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır ({{date}}).",
+    "evidence": "Kanıtlar",
+    "noEvidence": "Ekli kanıt yok",
+    "late": "Gecikmiş",
+    "rescheduledFrom": "{{date}} tarihinden yeniden planlandı",
+    "deliveryNote": "Teslim notu",
+    "waivedReason": "Muafiyet nedeni",
+    "newDueDate": "Yeni son tarih",
+    "uploadEvidence": "Kanıt olarak bir dosya yükle",
+    "uploadEvidenceHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar. Dosya bu kuruluşun belge kitaplığına kaydedilir.",
+    "evidenceDocument": "Belge",
+    "upload": "Yükle",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Kontrol listesini göster",
+    "hideChecklist": "Kontrol listesini gizle"
+  },
+  "evidence": {
+    "reportRun": "Rapor çalıştırması",
+    "document": "Belge",
+    "reportRunId": "Rapor çalıştırma kimliği"
+  },
+  "upcoming": {
+    "title": "Önümüzdeki 90 gün",
+    "empty": "Önümüzdeki 90 gün içinde son tarihi dolan bir şey yok."
+  },
+  "group": {
+    "noContract": "Sözleşme yok"
+  },
+  "errors": {
+    "evidenceRequired": "Bu oluşumu teslim edildi olarak işaretlemeden önce kanıt ekleyin.",
+    "duplicateName": "Bu kuruluş için aynı ada sahip bir çıktı zaten var.",
+    "loadFailed": "Çıktılar yüklenemedi.",
+    "saveFailed": "Çıktı kaydedilemedi.",
+    "actionFailed": "Oluşum güncellenemedi.",
+    "uploadFailed": "Kanıt dosyası yüklenemedi.",
+    "tooLarge": "Bu dosya 10 MB'tan büyük.",
+    "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları eklenebilir.",
+    "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin."
+  },
+  "confirm": {
+    "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",
+    "deleteKeyDate": "{{label}} önemli tarihi silinsin mi?"
+  },
+  "keyDates": {
+    "title": "Önemli tarihler",
+    "empty": "Kayıtlı önemli tarih yok.",
+    "add": "Önemli tarih ekle",
+    "label": "Etiket",
+    "kind": {
+      "label": "Tür",
+      "insurance_renewal": "Sigorta yenileme",
+      "vendor_contract_end": "Tedarikçi sözleşmesi bitişi",
+      "compliance_deadline": "Uyumluluk son tarihi",
+      "audit": "Denetim",
+      "other": "Diğer"
+    },
+    "date": "Tarih",
+    "recursAnnually": "Her yıl tekrarlanır",
+    "remindDaysBefore": "Hatırlat (kaç gün önce)",
+    "portalVisible": "Müşteri portalında göster",
+    "contractEnd": "Sözleşme bitişi",
+    "notes": "Notlar",
+    "owner": "Sorumlu",
+    "edit": "Önemli tarihi düzenle",
+    "delete": "Sil",
+    "errors": {
+      "loadFailed": "Önemli tarihler yüklenemedi.",
+      "saveFailed": "Önemli tarih kaydedilemedi."
+    },
+    "toast": {
+      "saved": "Önemli tarih kaydedildi",
+      "deleted": "Önemli tarih silindi"
+    }
+  },
+  "toast": {
+    "saved": "Çıktı kaydedildi",
+    "delivered": "Teslim edildi olarak işaretlendi",
+    "waived": "Oluşum muaf tutuldu",
+    "reopened": "Oluşum yeniden açıldı",
+    "rescheduled": "Oluşum yeniden planlandı",
+    "evidenceAdded": "Kanıt eklendi",
+    "evidenceRemoved": "Kanıt kaldırıldı",
+    "deactivated": "Çıktı devre dışı bırakıldı",
+    "evidenceUploaded": "Kanıt yüklendi"
+  },
+  "templates": {
+    "pageTitle": "Çıktı şablonları",
+    "pageDescription": "Bir hizmet katmanını bir kez tanımlayın ve herhangi bir müşteriye uygulayın. Ortak genelindeki şablon setleri, yönettiğiniz her kuruluş için kullanılabilir.",
+    "empty": "Henüz şablon seti yok.",
+    "allOrganizations": "Tüm kuruluşlar",
+    "actions": {
+      "newSet": "Yeni şablon seti",
+      "addItem": "Çıktı ekle",
+      "apply": "Şablon setini uygula",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "save": "Kaydet",
+      "cancel": "İptal"
+    },
+    "form": {
+      "name": "Set adı",
+      "description": "Açıklama",
+      "itemName": "Çıktı adı",
+      "cadence": "Sıklık",
+      "leadDays": "Son tarihten bu kadar gün önce aç",
+      "graceDays": "Son tarihten bu kadar gün sonra kaçırıldı olarak işaretle",
+      "artifactRequired": "Kanıt gerekli",
+      "completionMode": "Tamamlama",
+      "autoEvidenceReportType": "Kanıt raporu türü"
+    },
+    "ownerScope": {
+      "legend": "Bu set kimin için?",
+      "allOrganizations": "Tüm kuruluşlar (ortak genelinde)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
+    "apply": {
+      "title": "Şablon setini uygula",
+      "set": "Şablon seti",
+      "contract": "Sözleşme (isteğe bağlı)",
+      "noContract": "Sözleşme yok",
+      "effectiveFrom": "Geçerlilik başlangıcı",
+      "owner": "Sorumlu (isteğe bağlı)",
+      "submit": "Uygula",
+      "created_one": "{{count}} çıktı oluşturuldu",
+      "created_other": "{{count}} çıktı oluşturuldu",
+      "skipped": "Atlandı (zaten mevcut): {{names}}"
+    },
+    "errors": {
+      "collision": "Bu çıktılar hedefte zaten mevcut: {{names}}",
+      "duplicateSetName": "Bu adla bir şablon seti zaten var.",
+      "duplicateItemName": "Bu adla sette zaten bir öğe var.",
+      "partnerWideDenied": "Ortak genelindeki şablonları yönetmek, partner kuruluşuna tam erişim gerektirir.",
+      "loadFailed": "Şablon setleri yüklenemedi.",
+      "saveFailed": "Şablon seti kaydedilemedi.",
+      "deleteFailed": "Şablon seti silinemedi.",
+      "itemSaveFailed": "Çıktı kaydedilemedi.",
+      "itemDeleteFailed": "Çıktı kaldırılamadı.",
+      "applyFailed": "Şablon seti uygulanamadı."
+    },
+    "toast": {
+      "setSaved": "Şablon seti kaydedildi",
+      "setDeleted": "Şablon seti silindi",
+      "itemSaved": "Çıktı kaydedildi",
+      "itemDeleted": "Çıktı kaldırıldı",
+      "applied": "Şablon seti uygulandı"
+    }
+  }
+}

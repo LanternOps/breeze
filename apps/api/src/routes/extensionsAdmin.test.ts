@@ -3,10 +3,9 @@
 // of the stub, so the `isPlatformAdmin === true` gate is genuinely exercised.
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../middleware/auth')>()),
   authMiddleware: vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
-  requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
-  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
 }));
 
@@ -20,6 +19,7 @@ import { createExtensionsAdminRoutes, type ExtensionsAdminDeps } from './extensi
 import { ExtensionContributionRegistry, type StagedExtensionContributions } from '../extensions/contributionRegistry';
 import type { ExtensionStateRecord } from '../extensions/stateStore';
 import type { ExtensionHostDescriptor } from '../extensions/compatibility';
+import { createAuditLogAsync } from '../services/auditService';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -29,6 +29,11 @@ type FakeAuth = {
 const platformAdmin: FakeAuth = {
   user: { id: 'admin-1', email: 'admin@breeze.test', name: 'PA', isPlatformAdmin: true },
   token: { mfa: true },
+};
+
+const platformAdminNoMfa: FakeAuth = {
+  ...platformAdmin,
+  token: { mfa: false },
 };
 
 const nonAdmin: FakeAuth = {
@@ -154,23 +159,52 @@ beforeEach(() => {
 });
 
 describe('extensions admin authorization', () => {
-  it('requires platform admin for enable and disable', async () => {
-    const { app } = buildHarness({ auth: nonAdmin });
-    const res = await app.request('/api/v1/admin/extensions/demo/disable', { method: 'POST' });
+  it.each(['enable', 'disable'])('requires platform admin for %s', async (verb) => {
+    const { app, setEnabled } = buildHarness({ auth: nonAdmin });
+    const res = await app.request(`/api/v1/admin/extensions/demo/${verb}`, { method: 'POST' });
     expect(res.status).toBe(403);
+    expect(setEnabled).not.toHaveBeenCalled();
   });
 
   it('rejects an unauthenticated caller', async () => {
     const { app } = buildHarness({ auth: null });
     expect((await app.request('/api/v1/admin/extensions')).status).toBe(403);
-    expect(
-      (await app.request('/api/v1/admin/extensions/demo/enable', { method: 'POST' })).status,
-    ).toBe(403);
+    for (const verb of ['enable', 'disable']) {
+      expect(
+        (await app.request(`/api/v1/admin/extensions/demo/${verb}`, { method: 'POST' })).status,
+      ).toBe(403);
+    }
   });
 
-  it('does not mutate state when a non-admin attempts a disable', async () => {
-    const { app, setEnabled } = buildHarness({ auth: nonAdmin });
-    await app.request('/api/v1/admin/extensions/demo/disable', { method: 'POST' });
+  it.each([
+    { verb: 'enable', initiallyEnabled: false },
+    { verb: 'disable', initiallyEnabled: true },
+  ])('requires MFA before $verb reads or mutates extension state', async ({ verb, initiallyEnabled }) => {
+    const staged = snapshot({ enabled: initiallyEnabled });
+    const { app, setEnabled, storeCalls, registry } = buildHarness({
+      auth: platformAdminNoMfa,
+      registrySnapshots: [staged],
+      rows: [record({ enabled: initiallyEnabled })],
+    });
+
+    const res = await app.request(`/api/v1/admin/extensions/demo/${verb}`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(storeCalls).toEqual([]);
+    expect(setEnabled).not.toHaveBeenCalled();
+    expect(registry.get('demo')?.enabled).toBe(initiallyEnabled);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: `platform_admin.extensions.demo.${verb}`,
+      result: 'failure',
+    }));
+  });
+
+  it('keeps platform-admin list and doctor reads available without MFA', async () => {
+    const { app, setEnabled } = buildHarness({ auth: platformAdminNoMfa });
+
+    expect((await app.request('/api/v1/admin/extensions')).status).toBe(200);
+    expect((await app.request('/api/v1/admin/extensions/demo/doctor')).status).toBe(200);
     expect(setEnabled).not.toHaveBeenCalled();
   });
 });
@@ -256,6 +290,23 @@ describe('GET /:name/doctor', () => {
 });
 
 describe('POST enable / disable', () => {
+  it.each([
+    { verb: 'enable', expected: true, initiallyEnabled: false },
+    { verb: 'disable', expected: false, initiallyEnabled: true },
+  ])('allows an MFA-satisfied platform admin to $verb', async ({ verb, expected, initiallyEnabled }) => {
+    const { app, setEnabled, registry } = buildHarness({
+      rows: [record({ enabled: initiallyEnabled })],
+      registrySnapshots: [snapshot({ enabled: initiallyEnabled })],
+    });
+
+    const res = await app.request(`/api/v1/admin/extensions/demo/${verb}`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ name: 'demo', enabled: expected });
+    expect(setEnabled).toHaveBeenCalledExactlyOnceWith('demo', expected);
+    expect(registry.get('demo')?.enabled).toBe(expected);
+  });
+
   it('flips only the database enabled flag', async () => {
     const { app, setEnabled, storeCalls } = buildHarness({
       registrySnapshots: [snapshot()],

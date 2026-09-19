@@ -236,7 +236,35 @@
     {
       "pattern": "apps/api/src/routes/ai.ts",
       "docs": [
+        "features/ai.mdx",
+        "features/ai-script-authoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptProposals/**",
+      "docs": [
+        "features/ai-script-authoring.mdx",
+        "features/scripts.mdx",
         "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ai/scriptProposals.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptDispatch.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx",
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/scriptReviewerAutonomy.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx"
       ]
     },
     {
@@ -3885,6 +3913,204 @@
       "docs": [
         "agents/installation.mdx",
         "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/installer/breeze.wxs",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/rebuild/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/systemstate/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/layout/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx",
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/cmd/breeze-backup/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/release/verify-release-images.sh",
+      "docs": [
+        "deploy/production.mdx",
+        "getting-started/quickstart.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/ApproverDevicesSection.tsx",
+      "docs": [
+        "features/approval-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/src/navigation/approverBannerCopy.ts",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/src/navigation/ApprovalGate.tsx",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/serviceDeliverables.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/orgKeyDateService.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/plannedWorkTicket.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgDocuments.ts",
+      "docs": [
+        "features/portal.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgPortalSettings.ts",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/function.ts",
+      "docs": [
+        "features/devices.mdx",
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/fleetDesignReport.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/approvals/approvalDecideGrant.ts",
+      "docs": [
+        "features/approval-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mfaEnrollmentGrace.ts",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupGcKnobs.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "backup/storage.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptProposals/**",
+      "docs": [
+        "features/ai-script-authoring.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/hardwareLifecycleReport.ts",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/portal/src/components/lifecycle/**",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/identityAccessReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/vulnerabilityManagementReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/endpointManagementReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/threatDetectionReport.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgAccountReadiness.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/organizations/board/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/wedgedBackends.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/networkDevice/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/snmpOidSpecs.ts",
+      "docs": [
+        "features/discovery.mdx"
       ]
     }
   ]

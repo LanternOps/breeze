@@ -10,6 +10,7 @@ import { anomaliesRoutes } from './anomalies';
 import { groupsRoutes } from './groups';
 import { patchesRoutes } from './patches';
 import { scriptsRoutes } from './scripts';
+import { deviceAiOriginRoutes } from './aiOrigin';
 import { eventsRoutes } from './events';
 import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
@@ -30,6 +31,7 @@ import { manualRoutes } from './manual';
 import { customFieldValuesRoutes } from './customFieldValues';
 import { customFieldImportRoutes } from './customFieldImport';
 import { linksRoutes } from './links';
+import { functionRoutes } from './function';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
 import { optionsRoutes } from './options';
@@ -97,6 +99,10 @@ deviceRoutes.route('/', manualRoutes);
 // `/link-groups` paths must not be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', linksRoutes);
 
+// Device function (Fleet Designer W02, #5652): GET/PUT /:id/function. Session
+// auth via its own `.use('*', authMiddleware)`, like linksRoutes.
+deviceRoutes.route('/', functionRoutes);
+
 // Mount fleet stats BEFORE core routes — `GET /stats` is a static path that
 // must not be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', statsRoutes);
@@ -139,6 +145,11 @@ deviceRoutes.route('/', alertsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
+// #5022 W02: GET /:id/ai-origin, GET /:id/ai-activity. :id-prefixed, so
+// mounting order relative to coreRoutes is immaterial (only STATIC paths
+// need to precede coreRoutes' /:id matcher) — placed beside scriptsRoutes
+// since both surfaces read AI-dispatched script/command history.
+deviceRoutes.route('/', deviceAiOriginRoutes);
 deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);

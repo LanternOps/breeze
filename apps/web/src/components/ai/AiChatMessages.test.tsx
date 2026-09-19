@@ -338,3 +338,24 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(el.scrollTop).toBe(700);
   });
 });
+
+/**
+ * #5612 W04 — a lane-released run renders as an inline note, never through
+ * the generic tool-call card (which would misdescribe it as an executed tool).
+ */
+describe('unattended_release note (#5612 W04)', () => {
+  it('renders the note for a tool_result whose toolName is unattended_release', () => {
+    const { getByTestId } = renderWithMessages([
+      { id: '1', role: 'user', content: 'clear the temp files' },
+      { id: 'unattended-release-int-1', role: 'tool_result', content: '', toolName: 'unattended_release' } as never,
+    ]);
+    expect(getByTestId('ai-unattended-release-note')).toBeTruthy();
+  });
+
+  it('does NOT render the note for an ordinary tool_result', () => {
+    const { queryByTestId } = renderWithMessages([
+      { id: 'r1', role: 'tool_result', content: '{}', toolName: 'run_script' } as never,
+    ]);
+    expect(queryByTestId('ai-unattended-release-note')).toBeNull();
+  });
+});

@@ -1,7 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // #4442 W04: AiAgentSchedulesSection now reads the partner-wide capability
+  // off the auth store to gate the act-mode arm switch, so this mock has to
+  // carry it too. `undefined` user = the absent-means-capable default the
+  // component (and CustomFieldsPage) already assume; the server gates for real.
+  useAuthStore: (selector: (s: { user: undefined }) => unknown) => selector({ user: undefined }),
+}));
 
 // Partner scope comes from the JWT claims and the org context from the org
 // store — the same pair `useDefaultOwnerScope` reads (#1724 / #2126).
@@ -124,7 +131,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 
@@ -514,6 +521,25 @@ describe('AiAgentForm — renders the create flow\'s step components (#5063)', (
   });
 });
 
+// AI patch agent W01 (#5747) — the schedules section is gated on the STORED
+// agent kind, and `patch` is the third schedulable one.
+describe('AiAgentForm — schedules section gate', () => {
+  it('renders the schedules section for a patch agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner' }) });
+
+    expect(await screen.findByTestId('ai-agent-schedules')).toBeInTheDocument();
+  });
+
+  it('still hides it for a help desk agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'helpdesk', ownerScope: 'partner', triggers: { respectMaintenanceWindows: true } }) });
+
+    await screen.findByTestId('ai-agent-permissions');
+    expect(screen.queryByTestId('ai-agent-schedules')).toBeNull();
+  });
+});
+
 describe('AiAgentForm — alert severities', () => {
   it('offers alert severities to an alert-triage agent', async () => {
     mockEndpoints();
@@ -544,12 +570,52 @@ describe('AiAgentForm — alert severities', () => {
     expect(screen.queryByTestId('ai-agent-issues')).toBeNull();
   });
 
-  it('hides alert severities from a patching agent', async () => {
+  // AI patch agent W04 (#5750) — patch-classified alerts now route to the
+  // patch agent through the same `alertContext` admission path triage uses,
+  // so `patch` joined `ALERT_SEVERITY_KINDS` and the severity picker is live
+  // for it too (previously hidden — see the removed "hides..." test this
+  // replaces, wave W01-W03).
+  it('offers alert severities to a patching agent (ALERT_SEVERITY_KINDS since W04)', async () => {
     mockEndpoints();
-    renderForm({ agent: makeAgent({ kind: 'patch' }) });
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner' }) });
+
+    expect(await screen.findByTestId('ai-agent-severity-critical')).toBeInTheDocument();
+  });
+});
+
+// AI patch agent W04 (#5750), Task 6 — the alert-category trigger filter
+// (`triggers.alertCategories`) is patch-only, same shape-only gate as the
+// severity picker above.
+describe('AiAgentForm — alert categories', () => {
+  it('offers the alert-category trigger filter on a patch agent and omits it elsewhere', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner' }) });
+
+    expect(await screen.findByTestId('ai-agent-alert-categories')).toBeInTheDocument();
+  });
+
+  it('omits the alert-category trigger filter for a non-patch kind', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'triage' }) });
 
     await screen.findByTestId('ai-agent-permissions');
-    expect(screen.queryByTestId('ai-agent-severity-critical')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-alert-categories')).toBeNull();
+  });
+
+  it('parses a comma-separated list into a trimmed, de-duplicated set and sends it on save', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner', triggers: { alertSeverities: ['critical'], respectMaintenanceWindows: true } }) });
+
+    const input = await screen.findByTestId('ai-agent-alert-categories');
+    fireEvent.change(input, { target: { value: ' patching ,  patching, monitor ' } });
+
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+
+    const triggers = writeBody().triggers as Record<string, unknown>;
+    expect(triggers.alertCategories).toEqual(['patching', 'monitor']);
   });
 });
 

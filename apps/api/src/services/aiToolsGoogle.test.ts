@@ -738,3 +738,69 @@ describe('googleResetPasswordAction carrier', () => {
     expect(result).not.toHaveProperty('secrets');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Site ceiling on Google Workspace WRITE tools (review #6110)
+//
+// Every mutating google_* tool is gated on `organizations:write`. After the
+// permission remap a site-restricted holder of that permission could run
+// org-wide identity actions — suspend, password reset, license changes, group
+// membership, mail delegation — through chat. These act on the WHOLE Google
+// tenant; there is nothing site-shaped to narrow, so they fail closed exactly
+// as every other org-wide governance object does.
+// ────────────────────────────────────────────────────────────────────────────
+describe('google write tools — site ceiling', () => {
+  beforeEach(() => { vi.clearAllMocks(); armConnection(); });
+
+  /** Organization-scope principal carrying a site ceiling. */
+  const siteRestricted = { scope: 'organization', orgId: 'org-A', allowedSiteIds: ['site-1'] } as any;
+  /** Device-bound AI run: an exact-device ceiling with no site axis. */
+  const deviceBound = { scope: 'organization', orgId: 'org-A', allowedDeviceIds: ['dev-1'] } as any;
+  const unrestricted = { scope: 'organization', orgId: 'org-A' } as any;
+
+  const writeTools: Array<[string, (a: any) => Promise<unknown>]> = [
+    ['google_suspend_user', (a) => googleSuspendUserHandler({ userEmail: 'u@x.com', reason: 'r' }, a, SESSION)],
+    ['google_reset_password', (a) => googleResetPasswordHandler({ userEmail: 'u@x.com', reason: 'r' }, a, SESSION)],
+    ['google_signout', (a) => googleSignOutHandler({ userEmail: 'u@x.com', reason: 'r' }, a, SESSION)],
+    ['google_set_forwarding', (a) => googleSetForwardingHandler({ userEmail: 'u@x.com', forwardTo: 'b@x.com', reason: 'r' }, a, SESSION)],
+    ['google_update_user', (a) => googleUpdateUserHandler({ userEmail: 'u@x.com', reason: 'r', givenName: 'A' }, a, SESSION)],
+    ['google_add_to_group', (a) => googleAddToGroupHandler({ userEmail: 'u@x.com', groupEmail: 'g@x.com', reason: 'r' }, a, SESSION)],
+    ['google_assign_license', (a) => googleAssignLicenseHandler({ userEmail: 'u@x.com', skuId: 's', productId: 'p', reason: 'r' }, a, SESSION)],
+    ['google_offboard_user', (a) => googleOffboardUserHandler({ userEmail: 'u@x.com', reason: 'r' }, a, SESSION)],
+    ['google_wipe_mobile_device', (a) => googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'r' }, a, SESSION)],
+  ];
+
+  function llmText(result: unknown): string {
+    return typeof result === 'string' ? result : (result as { llmText: string }).llmText;
+  }
+
+  it.each(writeTools)('%s denies a site-restricted caller before touching Google', async (_name, run) => {
+    const out = llmText(await run(siteRestricted));
+    expect(out).toContain('Site-restricted');
+    expect(client.getDirectoryClient).not.toHaveBeenCalled();
+    expect(helpers.loadGoogleConnection).not.toHaveBeenCalled();
+  });
+
+  it.each(writeTools)('%s denies a device-bound run', async (_name, run) => {
+    const out = llmText(await run(deviceBound));
+    expect(out).toContain('Site-restricted');
+    expect(client.getDirectoryClient).not.toHaveBeenCalled();
+  });
+
+  it('an unrestricted caller still reaches Google (no over-blocking)', async () => {
+    const update = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ users: { update } });
+    const out = await googleSuspendUserHandler({ userEmail: 'u@x.com', reason: 'r' }, unrestricted, SESSION);
+    expect(out).toContain('Suspended');
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('READS stay available to a site-restricted caller', async () => {
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: vi.fn().mockResolvedValue({ data: { primaryEmail: 'u@x.com', suspended: false } }) },
+    });
+    const out = await googleLookupUserHandler({ userEmail: 'u@x.com' }, siteRestricted, SESSION);
+    expect(out).toContain('Google Workspace user profile');
+    expect(out).not.toContain('Site-restricted');
+  });
+});

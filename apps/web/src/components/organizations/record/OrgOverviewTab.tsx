@@ -5,6 +5,7 @@ import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
+import OrgKeyDatesCard from './OrgKeyDatesCard';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
 import type { ServiceManagementMode } from './orgRecordTabs';
 
@@ -313,6 +314,7 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
             </ul>
           )}
         </section>
+        <OrgKeyDatesCard orgId={orgId} orgFetch={orgFetch} />
       </div>
     </div>
   );

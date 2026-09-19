@@ -24,6 +24,10 @@ type runState struct {
 	Plan       *Plan          `json:"plan"`
 	Completed  map[Phase]bool `json:"completed"`
 	UpdatedAt  time.Time      `json:"updatedAt"`
+	// StateApplied records that a completed restore phase applied the
+	// snapshot's system state, so a resumed run (which skips restore) can
+	// still satisfy Options.ExpectSystemState in validate (#5412).
+	StateApplied bool `json:"stateApplied,omitempty"`
 }
 
 // run carries one Run call's working state across its phase functions.
@@ -53,6 +57,10 @@ type run struct {
 	layout       *layout.Manifest
 	manifest     *backup.Snapshot
 	warnings     []string
+	// failedFiles are source paths the restore phase could not place (only
+	// populated under AllowPartialRestore); validate must not sample them —
+	// they were already reported as a warning.
+	failedFiles map[string]bool
 }
 
 func targetKey(t Target) string {
@@ -147,6 +155,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	r.result.DurationMs = time.Since(start).Milliseconds()
 	if !opts.DryRun {
 		_ = os.Remove(r.statePath)
+		_ = os.RemoveAll(restoreWorkRoot(opts.StateDir))
 	}
 	return r.result, nil
 }
@@ -184,6 +193,9 @@ func (r *run) loadState() {
 		}
 		r.state = &s
 		r.result.Plan = s.Plan
+		if s.Completed[PhaseRestore] {
+			r.result.StateApplied = s.StateApplied
+		}
 		// r.disk is deliberately NOT restored from persisted state: a
 		// TargetImage's loop device does not survive across Run() calls
 		// (teardown always detaches it, even on failure — see teardown's

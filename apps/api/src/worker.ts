@@ -71,10 +71,9 @@
  *   4. DB reachability probe, then `waitForMigrationParity()` — NEVER
  *      `autoMigrate()`. A worker-role process never applies migrations. Then
  *      `initializeDatabaseForStartup({ autoMigrateEnabled: false, production })`
- *      — with migrations disabled this runs ONLY `assertRequestDatabaseRoleSafe()`,
- *      the same production role check index.ts performs, so a worker-role
- *      process can never serve tenant-scoped queries through a SUPERUSER/
- *      BYPASSRLS pool.
+ *      — with migrations disabled this only verifies the request role, the same
+ *      unconditional check index.ts performs, so a worker-role process can
+ *      never serve tenant-scoped queries through a SUPERUSER/BYPASSRLS pool.
  *   5. Redis mandatory — exit non-zero if unreachable (no limp mode).
  *   6. Extension runtime in `mode: 'worker'` (parity-check-never-apply,
  *      publish tenancy, stage, validate, seed state, activate registry; no
@@ -90,11 +89,14 @@
  *      then the phases run (drain → workers → queues → eventbus → redis → db →
  *      sentry), mirroring index.ts's Part A semantics.
  */
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { resolveReadinessTiming } from './config/readinessConfig';
 import { validateConfig } from './config/validate';
@@ -449,7 +451,10 @@ export async function bootWorker(): Promise<void> {
     getDbPoolHealthWindowMs,
     startDbPoolHealthMonitor,
     stopDbPoolHealthMonitor,
+    startWedgedBackendMonitor,
+    stopWedgedBackendMonitor,
   } = await import('./db/dbPoolHealthMonitor');
+  const { getWedgedBackendMinAgeMs } = await import('./db/wedgedBackends');
   // Registers the role-agnostic runtime series onto the shared registry and
   // binds the CONNECT_TIMEOUT counter recorder. Dynamic because its graph
   // reaches `db/dbPoolHealthMonitor` -> `postgres`; the health server above is
@@ -474,6 +479,23 @@ export async function bootWorker(): Promise<void> {
       `[worker][db-pool-health] Watchdog started (interval ${dbPoolHealthIntervalMs}ms, `
       + `window ${getDbPoolHealthWindowMs()}ms, probe threshold `
       + `${getDbPoolHealthMinTimeouts()} CONNECT_TIMEOUT(s) per window)`,
+    );
+  }
+
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[worker][db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[worker][db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
     );
   }
 
@@ -525,12 +547,13 @@ export async function bootWorker(): Promise<void> {
   }
   migrationParityAchieved = true;
 
-  // Production DB-role verification. `autoMigrateEnabled: false` means this
-  // call runs ONLY `assertRequestDatabaseRoleSafe()` (rejects a request pool
-  // running as SUPERUSER/BYPASSRLS) — a worker-role process never migrates,
-  // but it still must never serve tenant-scoped queries through a role that
-  // bypasses RLS. Mirrors index.ts's `initializeDatabaseForStartup` call and
-  // its `NODE_ENV === 'production'` gate.
+  // DB-role verification. `autoMigrateEnabled: false` means this call only
+  // verifies the request role (rejects a request pool running as
+  // SUPERUSER/BYPASSRLS) — a worker-role process never migrates, but it still
+  // must never serve tenant-scoped queries through a role that bypasses RLS.
+  // Mirrors index.ts's `initializeDatabaseForStartup` call. The verification
+  // runs in every environment; `production` only decides whether the
+  // BREEZE_ALLOW_UNSAFE_DB_ROLE break-glass opt-out may be honoured.
   try {
     await (await import('./db/databaseStartup')).initializeDatabaseForStartup({
       autoMigrateEnabled: false,
@@ -579,8 +602,17 @@ export async function bootWorker(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
+
+  // #5381: the runner and the sweep scheduler log "initialized" whether or
+  // not the kill switch is set, which reads as "the subsystem is up" when it
+  // is in fact inert. One unambiguous line per process, next to the readiness
+  // declaration that already knows the flag. Imported from `subsystemState`
+  // (env-only) rather than `skipVisibility` (which pulls in Redis) — see that
+  // module's header for why a boot module's import graph has to stay thin.
+  logAiAgentsSubsystemState('worker', AI_AGENTS_ENABLED);
 
   await startRegisteredWorkers('worker', {
     onResult: (name, ok, error) => {
@@ -643,6 +675,7 @@ export async function bootWorker(): Promise<void> {
     // `database-unreachable` about a process that is simply shutting down).
     stopEventLoopMonitor();
     stopDbPoolHealthMonitor();
+    stopWedgedBackendMonitor();
 
     if (auditRetryInterval) {
       clearInterval(auditRetryInterval);

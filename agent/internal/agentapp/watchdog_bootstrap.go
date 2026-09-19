@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
 
 // watchdogBinaryName returns the filename for the watchdog binary on the given GOOS.
@@ -29,6 +31,25 @@ func watchdogDownloadURL(version, goos, goarch string) string {
 	}
 	return fmt.Sprintf("%s/v%s/breeze-watchdog-%s-%s%s",
 		firstInstallReleaseBase(), version, goos, goarch, ext)
+}
+
+// watchdogManualDownloadURL returns the URL an operator should fetch the
+// watchdog from by hand when the automatic bootstrap failed.
+//
+// A hosted build must NOT be sent to the public GitHub release: it carries only
+// self-host-edition watchdogs, which a hosted agent refuses by policy — so
+// following that hint reproduces #5899 by hand and looks like a second, unrelated
+// failure. The hosted answer is the control plane's own watchdog download route.
+func watchdogManualDownloadURL(version, goos, goarch, serverURL string) string {
+	if hostpolicy.Enforced() {
+		if base, err := resolveFirstInstallServerURL(serverURL); err == nil {
+			return fmt.Sprintf("%s/api/v1/agents/download/watchdog/%s/%s", base, goos, goarch)
+		}
+		// Multi-region build with no persisted server URL: name the route, not a
+		// host we would have to guess.
+		return fmt.Sprintf("/api/v1/agents/download/watchdog/%s/%s on your Breeze server", goos, goarch)
+	}
+	return watchdogDownloadURL(version, goos, goarch)
 }
 
 // isDevBuildVersion reports whether version names a locally built agent rather
@@ -61,6 +82,12 @@ type bootstrapOptions struct {
 	version   string // agent version (main.version), e.g. "0.62.24" or "dev"
 	goos      string // runtime.GOOS
 	goarch    string // runtime.GOARCH
+
+	// serverURL is the persisted control-plane URL, when this host has already
+	// enrolled. Hosted builds stage the watchdog from there instead of the
+	// public GitHub release (#5899); empty is normal and expected, because
+	// `service install` runs before `enroll` in every install lane.
+	serverURL string
 
 	// urlOverride, if non-empty, replaces the full download URL. Test-only.
 	urlOverride string
@@ -97,6 +124,7 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 		assetURL: assetURL, manifestURL: opts.manifestURLOverride,
 		signatureURL: opts.signatureURLOverride, destPath: watchdogPath,
 		client: opts.clientOverride, trustKeys: opts.trustKeysOverride,
+		serverURL: opts.serverURL,
 	}
 	protectedSibling := protectedPackagedSibling
 	if opts.protectedSiblingOverride != nil {

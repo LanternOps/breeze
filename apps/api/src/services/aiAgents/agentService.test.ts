@@ -21,6 +21,8 @@ const state = vi.hoisted(() => ({
   setManagedAutomationEnabled: vi.fn(),
   syncManagedAutomation: vi.fn(),
   validateAuthorizationKeys: vi.fn(),
+  ensureDefaultPatchSchedule: vi.fn(async () => ({ created: true })),
+  transactions: 0,
 }));
 
 const schema = vi.hoisted(() => ({
@@ -45,6 +47,12 @@ vi.mock('../../db/schema', () => ({ aiAgents: schema.aiAgents }));
 
 vi.mock('../../db', () => ({
   db: {
+    // AI patch agent W01: the default-schedule hook runs in a SAVEPOINT
+    // (`db.transaction(tx => …)`); the fake hands the callback a sentinel tx.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      state.transactions += 1;
+      return fn({ tx: true });
+    }),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn((condition: unknown) => {
@@ -126,6 +134,7 @@ vi.mock('./managedAutomation', () => ({
 }));
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
+vi.mock('./scheduleService', () => ({ ensureDefaultPatchSchedule: state.ensureDefaultPatchSchedule }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
 // NOT mocked on purpose. Stubbing isSupportedAgentMode made the "rejects the
 // DB-legal act mode" test assert the STUB's opinion — adding 'act' (the wave-4
@@ -152,6 +161,7 @@ import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
   InvalidSupervisedActionKeysError,
+  ModeNotAllowedForKindError,
   SupervisedKeysGrantOnlyError,
   UnsupportedAgentModeError,
   assertOrgRowSupervisedKeysGrantOnly,
@@ -515,6 +525,19 @@ describe('agent mutations', () => {
     expect(state.publish).not.toHaveBeenCalled();
   });
 
+  // AI patch agent W04 (#5750): `triggers.alertCategories: null` on a PATCH
+  // clears a stored filter (deletes the key) instead of storing a null.
+  it('clears triggers.alertCategories when the patch sends null, leaving every sibling alone', async () => {
+    state.currentRow = { ...storedRow, triggers: { ...storedRow.triggers, alertCategories: ['patching'] } };
+    state.returnedRow = state.currentRow;
+
+    await updateAgent(auth(), 'a1', { triggers: { alertCategories: null } } as never);
+
+    const triggers = (state.updatedValues as { triggers: Record<string, unknown> }).triggers;
+    expect(triggers).not.toHaveProperty('alertCategories');
+    expect(triggers).toMatchObject(storedRow.triggers);
+  });
+
   it('deep-merges every nested patch object so stored siblings survive', async () => {
     state.currentRow = storedRow;
     state.returnedRow = storedRow;
@@ -577,6 +600,15 @@ describe('agent mutations', () => {
     expect(state.updatedValues).toBeNull();
   });
 
+  it('rejects shadow mode for a designer agent with ModeNotAllowedForKindError (Fleet Designer W01)', async () => {
+    state.currentRow = { ...storedRow, kind: 'designer' };
+
+    await expect(updateAgent(auth(), 'a1', { mode: 'shadow' } as never))
+      .rejects.toBeInstanceOf(ModeNotAllowedForKindError);
+    expect(state.updatedValues).toBeNull();
+  });
+
+
   describe('act-mode activation prerequisites (Task 6, #3826)', () => {
     it('accepts an update to act mode when the merged row already has a resolvable recipient and an act-eligible surface', async () => {
       const actReady = {
@@ -602,6 +634,26 @@ describe('agent mutations', () => {
       const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
       expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
       expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('a designer agent needs a recipient but no act-eligible surface — it only writes reports (Fleet Designer W01)', async () => {
+      const designer = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.currentRow = designer;
+      state.returnedRow = { ...designer, mode: 'act' };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(true);
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('a designer agent without a resolvable recipient is still refused act mode (Fleet Designer W01)', async () => {
+      state.currentRow = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(false);
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient']);
       expect(state.updatedValues).toBeNull();
     });
 
@@ -1109,5 +1161,52 @@ describe('assertOrgRowSupervisedKeysGrantOnly (spec §4.4)', () => {
 
   it('leaves partner rows alone (their keys are the ceiling, edited directly)', () => {
     expect(() => assertOrgRowSupervisedKeysGrantOnly(partner, [], ['manage_services:restart'])).not.toThrow();
+  });
+});
+
+// AI patch agent W01 (#5747, OD-9 A) — enabling a partner-wide patch agent
+// creates its default 02:00 schedule; a failure there never fails the enable.
+describe('default patch schedule on enable', () => {
+  beforeEach(() => {
+    state.ensureDefaultPatchSchedule.mockReset().mockResolvedValue({ created: true });
+    state.transactions = 0;
+  });
+
+  it('ensures the default schedule in a SAVEPOINT when a patch agent is created', async () => {
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await createAgent(auth(), { orgId: null, partnerId: 'p1' }, { ...createInput, kind: 'patch', enabled: true } as never);
+    expect(state.transactions).toBe(1);
+    expect(state.ensureDefaultPatchSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'patch', partnerId: 'p1', enabled: true }),
+      { tx: true },
+    );
+  });
+
+  it('never touches schedules for a non-patch agent', async () => {
+    state.returnedRow = { ...storedRow, kind: 'triage' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, kind: 'triage' } as never);
+    expect(state.ensureDefaultPatchSchedule).not.toHaveBeenCalled();
+    expect(state.transactions).toBe(0);
+  });
+
+  it('ensures it on the enabled false -> true transition of a patch agent, and not otherwise', async () => {
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await updateAgent(auth(), 'a1', { enabled: true });
+    expect(state.ensureDefaultPatchSchedule).toHaveBeenCalledTimes(1);
+
+    state.ensureDefaultPatchSchedule.mockClear();
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true, name: 'x' };
+    await updateAgent(auth(), 'a1', { name: 'x' });
+    expect(state.ensureDefaultPatchSchedule).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the enable when schedule creation throws', async () => {
+    state.ensureDefaultPatchSchedule.mockRejectedValue(new Error('boom'));
+    state.currentRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
+    await expect(updateAgent(auth(), 'a1', { enabled: true })).resolves.toMatchObject({ enabled: true });
+    expect(state.audit).toHaveBeenCalled();
   });
 });

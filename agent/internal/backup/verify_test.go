@@ -1,7 +1,9 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -150,6 +152,82 @@ func TestVerifyIntegrity_MissingFile(t *testing.T) {
 	}
 	if result.FilesFailed != 1 {
 		t.Errorf("expected 1 file failed, got %d", result.FilesFailed)
+	}
+}
+
+// TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails proves #5581's
+// verify-side policy: a Volatile manifest entry's size mismatch is a
+// warning, counted as verified, not a failure — while an ordinary
+// (non-Volatile) entry with the exact same kind of mismatch still fails,
+// proving this doesn't loosen verification generally.
+func TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
+	basePath := t.TempDir()
+	snapshotID := "snapshot-volatile"
+	prefix := path.Join("snapshots", snapshotID)
+	srcDir := t.TempDir()
+
+	volatileSrc := filepath.Join(srcDir, "volatile.log")
+	if err := os.WriteFile(volatileSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := providers.NewLocalProvider(basePath)
+	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
+	if err := provider.Upload(volatileSrc, volatileBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	staleSrc := filepath.Join(srcDir, "stale.txt")
+	if err := os.WriteFile(staleSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleBackupPath := path.Join(prefix, "files", "stale.txt.gz")
+	if err := provider.Upload(staleSrc, staleBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both objects are actually 10 bytes; the manifest declares a stale 5
+	// bytes for each, but only the volatile one carries Volatile: true.
+	manifest := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: volatileSrc, BackupPath: volatileBackupPath, Size: 5, Volatile: true},
+			{SourcePath: staleSrc, BackupPath: staleBackupPath, Size: 5},
+		},
+		Size: 10,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(basePath, prefix)
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := VerifyIntegrity(provider, snapshotID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesVerified != 1 {
+		t.Errorf("FilesVerified = %d, want 1 (the volatile entry counts as verified despite the mismatch)", result.FilesVerified)
+	}
+	if result.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1 (only the non-volatile mismatch)", result.FilesFailed)
+	}
+	if len(result.FailedFiles) != 1 || result.FailedFiles[0] != staleBackupPath {
+		t.Errorf("FailedFiles = %v, want only %q", result.FailedFiles, staleBackupPath)
+	}
+	foundVolatileWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, volatileBackupPath) && strings.Contains(w, "volatile") {
+			foundVolatileWarning = true
+		}
+	}
+	if !foundVolatileWarning {
+		t.Errorf("expected an advisory warning mentioning the volatile file, got %v", result.Warnings)
 	}
 }
 
@@ -415,5 +493,159 @@ func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
 	}
 	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+type cancelAfterDownloadProvider struct {
+	manifestKey string
+	manifest    []byte
+	files       map[string][]byte
+	cancelOn    string
+	cancel      context.CancelFunc
+	downloads   []string
+}
+
+func (p *cancelAfterDownloadProvider) Upload(localPath, remotePath string) error {
+	return nil
+}
+
+func (p *cancelAfterDownloadProvider) Download(remotePath, localPath string) error {
+	p.downloads = append(p.downloads, remotePath)
+
+	var data []byte
+	if remotePath == p.manifestKey {
+		data = p.manifest
+	} else {
+		var ok bool
+		data, ok = p.files[remotePath]
+		if !ok {
+			return os.ErrNotExist
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(localPath, data, 0o644); err != nil {
+		return err
+	}
+
+	if remotePath == p.cancelOn {
+		p.cancel()
+	}
+
+	return nil
+}
+
+func (p *cancelAfterDownloadProvider) List(prefix string) ([]string, error) {
+	return nil, nil
+}
+
+func (p *cancelAfterDownloadProvider) Delete(remotePath string) error {
+	return nil
+}
+
+func newCancelAfterFirstDownloadProvider(t *testing.T, snapshotID string) (
+	context.Context,
+	*cancelAfterDownloadProvider,
+	string,
+	string,
+) {
+	t.Helper()
+
+	firstPath := path.Join(snapshotRootDir, snapshotID, "files", "first.txt")
+	secondPath := path.Join(snapshotRootDir, snapshotID, "files", "second.txt")
+
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{
+				SourcePath: "/tmp/first.txt",
+				BackupPath: firstPath,
+				Size:       5,
+			},
+			{
+				SourcePath: "/tmp/second.txt",
+				BackupPath: secondPath,
+				Size:       6,
+			},
+		},
+		Size: 11,
+	}
+
+	manifest, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	provider := &cancelAfterDownloadProvider{
+		manifestKey: path.Join(snapshotRootDir, snapshotID, snapshotManifestKey),
+		manifest:    manifest,
+		files: map[string][]byte{
+			firstPath:  []byte("first"),
+			secondPath: []byte("second"),
+		},
+		cancelOn: firstPath,
+		cancel:   cancel,
+	}
+
+	return ctx, provider, firstPath, secondPath
+}
+
+func TestVerifyIntegrityContextStopsAfterCancellation(t *testing.T) {
+	ctx, provider, firstPath, secondPath :=
+		newCancelAfterFirstDownloadProvider(t, "verify-context-cancel")
+
+	_, err := VerifyIntegrityContext(ctx, provider, "verify-context-cancel")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("VerifyIntegrityContext error = %v, want context.Canceled", err)
+	}
+
+	if len(provider.downloads) != 2 {
+		t.Fatalf("downloads = %v, want manifest + first file only", provider.downloads)
+	}
+	if provider.downloads[1] != firstPath {
+		t.Fatalf("first file download = %q, want %q", provider.downloads[1], firstPath)
+	}
+	for _, got := range provider.downloads {
+		if got == secondPath {
+			t.Fatalf("second file was downloaded after cancellation: %v", provider.downloads)
+		}
+	}
+}
+
+func TestTestRestoreContextStopsAfterCancellation(t *testing.T) {
+	ctx, provider, firstPath, secondPath :=
+		newCancelAfterFirstDownloadProvider(t, "restore-context-cancel")
+
+	result, err := TestRestoreContext(
+		ctx,
+		provider,
+		"restore-context-cancel",
+		t.TempDir(),
+		nil,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TestRestoreContext error = %v, want context.Canceled", err)
+	}
+
+	if len(provider.downloads) != 2 {
+		t.Fatalf("downloads = %v, want manifest + first file only", provider.downloads)
+	}
+	if provider.downloads[1] != firstPath {
+		t.Fatalf("first file download = %q, want %q", provider.downloads[1], firstPath)
+	}
+	for _, got := range provider.downloads {
+		if got == secondPath {
+			t.Fatalf("second file was downloaded after cancellation: %v", provider.downloads)
+		}
+	}
+
+	if result.RestorePath != "" {
+		if _, statErr := os.Stat(result.RestorePath); !os.IsNotExist(statErr) {
+			t.Fatalf("restore path still exists after cancellation: %q", result.RestorePath)
+		}
 	}
 }

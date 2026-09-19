@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
@@ -109,7 +111,7 @@ Categories and tags travel by name and are created in the importing tenant when 
 </Steps>
 
 <Aside type="caution">
-  Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
+  Creating and updating scripts requires an MFA-assured session: if your organization or partner MFA policy requires MFA, or your account has a factor enrolled, the save action returns an error until the session has completed MFA. Accounts without an enrolled factor in a tenant that does not require MFA are admitted with a password alone.
 </Aside>
 
 ### Duplicating a script
@@ -121,6 +123,8 @@ This is the way to adapt a script from the system library without waiting for pe
 ### Version history and rollback
 
 When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
+
+Each script's detail page also shows a **Provenance panel**: whether it was written by a person, by the AI assistant (as a reviewed proposal), imported, or shipped as a system script, plus — for AI-authored scripts — the reviewer's summary, risk tier, and who approved it. The scripts list has a matching **Origin** column and filter, with a "Reviewed" / "Edited since review" badge; editing an AI-authored script by hand clears the review badge, since what was reviewed is no longer exactly what would run. See [AI Script Authoring & Review](/features/ai-script-authoring/).
 
 ---
 
@@ -430,6 +434,8 @@ Each variable has:
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
 
+Switching the variables list to **All Organizations** lists partner-wide variables only, with a column naming the organization each row belongs to — org-scoped variables aren't shown there; open a specific organization to see or manage those.
+
 ### Using variables in a script
 
 Reference a variable as `{{var.key}}`:
@@ -632,7 +638,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts. The partner-wide **Require MFA** setting (Settings → Partner → Security) is on by default for partners created after 2026-09-18, so users without an enrolled factor are routed to enrolment at sign-in.
 
 ### Viewing approval history
 
@@ -659,7 +665,7 @@ All script endpoints require authentication and the appropriate permission scope
 | POST | `/scripts/executions/:id/cancel` | `scripts:execute` | Cancel a pending, queued, or running execution |
 
 <Aside>
-  All write and execute endpoints require MFA verification. The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
+  All write and execute endpoints require an MFA-assured session (see [MFA enforcement](#mfa-enforcement)). The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
 </Aside>
 
 ---

@@ -460,6 +460,11 @@
       "discardFailed": "Impossible de rejeter le brouillon de l’IA.",
       "discarded": "Brouillon rejeté"
     },
+    "aiProposal": {
+      "postAsNote": "Publier comme note privée",
+      "posted": "Publié comme note privée",
+      "postFailed": "Impossible de publier la note"
+    },
     "resolve": {
       "noteLabel": "Note de résolution (visible pour le demandeur)",
       "submit": "Résoudre le billet"

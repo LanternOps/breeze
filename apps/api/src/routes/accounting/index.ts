@@ -3,9 +3,10 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections, invoices } from '../../db/schema';
+import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import {
   authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
 } from '../../middleware/auth';
@@ -39,7 +40,7 @@ import {
   type MappingEntityType,
 } from '../../services/accounting/accountingMappingService';
 import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
-import { enqueueAccountingInvoicePush } from '../../jobs/accountingSyncWorker';
+import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
@@ -252,6 +253,8 @@ function toMappingResponse(mapping: {
   syncStatus: string;
   lastSyncedAt: Date | null;
   lastError: string | null;
+  confidence: string;
+  proposedRemoteName: string | null;
 }) {
   return {
     breezeEntityType: mapping.breezeEntityType,
@@ -262,6 +265,8 @@ function toMappingResponse(mapping: {
     syncStatus: mapping.syncStatus,
     lastSyncedAt: mapping.lastSyncedAt,
     lastError: mapping.lastError,
+    confidence: mapping.confidence,
+    proposedRemoteName: mapping.proposedRemoteName,
   };
 }
 
@@ -759,6 +764,55 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   });
 });
 
+// Read from the outbox, not surviving payments: an owed delete must remain
+// visible after voidPayment removes its invoice_payments row.
+accountingRoutes.get('/:provider/owed-operations', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const invoiceMapping = alias(accountingEntityMappings, 'owed_invoice_mapping');
+  const rows = await db.select({
+    id: accountingEntityMappings.id,
+    pendingOp: accountingEntityMappings.pendingOp,
+    lastError: accountingEntityMappings.lastError,
+    pendingSince: sql<Date>`coalesce(${accountingEntityMappings.pendingSince}, ${accountingEntityMappings.createdAt})`.mapWith(accountingEntityMappings.createdAt),
+    invoiceId: invoices.id,
+    invoiceNumber: invoices.invoiceNumber,
+  }).from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+      eq(accountingConnections.provider, provider),
+    ))
+    .leftJoin(invoicePayments, eq(invoicePayments.id, accountingEntityMappings.breezeEntityId))
+    // Payment remote ids encode Payment/Invoice. This recovers the invoice
+    // after deletion; both mapping axes must match to avoid crossing realms.
+    .leftJoin(invoiceMapping, and(
+      eq(invoiceMapping.integrationId, accountingEntityMappings.integrationId),
+      eq(invoiceMapping.partnerId, accountingEntityMappings.partnerId),
+      eq(invoiceMapping.breezeEntityType, 'invoice'),
+      eq(invoiceMapping.remoteEntityId, sql`split_part(${accountingEntityMappings.remoteEntityId}, '/', 2)`),
+    ))
+    .leftJoin(invoices, and(
+      eq(invoices.id, sql`coalesce(${invoicePayments.invoiceId}, ${invoiceMapping.breezeEntityId})`),
+      eq(invoices.partnerId, partner.partnerId),
+    ))
+    .where(and(
+      eq(accountingEntityMappings.partnerId, partner.partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      isNotNull(accountingEntityMappings.pendingOp),
+    ))
+    .orderBy(asc(accountingEntityMappings.pendingSince), asc(accountingEntityMappings.id));
+  const now = Date.now();
+  return c.json({
+    count: rows.length,
+    data: rows.map((row) => ({
+      ...row,
+      ageSeconds: Math.max(0, Math.floor((now - row.pendingSince.getTime()) / 1000)),
+    })),
+  });
+});
+
 // List remote QuickBooks customers, annotated with whether each is already
 // imported. The route creates nothing in Breeze, so it needs no write-role
 // permission, but annotation still compares against every organization in the
@@ -1034,6 +1088,14 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
     }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
+  }
+
+  // saveMappingDecision has committed its short auth-scoped context. Redis
+  // runs outside that context; the stale-row sweep recovers a missed enqueue.
+  if (body.decision === 'confirmed' || body.decision === 'create_new') {
+    await runOutsideDbContext(() => enqueueAccountingMappingSync(
+      body.breezeEntityType, body.breezeEntityId, partner.partnerId,
+    ));
   }
 
   writeRouteAudit(c, {

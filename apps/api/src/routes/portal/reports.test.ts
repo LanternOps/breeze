@@ -6,7 +6,9 @@ const mocks = vi.hoisted(() => ({
   generateMock: vi.fn(),
   pdfMock: vi.fn(),
   csvMock: vi.fn(),
+  latestLifecycleMock: vi.fn(),
   reportsEnabled: false,
+  lifecycleEnabled: false,
 }));
 
 vi.mock('../../services/portal/reportsSelfService', async (load) => {
@@ -19,6 +21,7 @@ vi.mock('../../services/portal/reportsSelfService', async (load) => {
     generatePortalReport: mocks.generateMock,
     renderRunPdf: mocks.pdfMock,
     renderRunCsv: mocks.csvMock,
+    latestPortalHardwareLifecycleRun: mocks.latestLifecycleMock,
   };
 });
 
@@ -31,6 +34,13 @@ vi.mock('../../db', () => ({
             return {
               limit: vi.fn(() =>
                 Promise.resolve([{ enableReports: mocks.reportsEnabled }]),
+              ),
+            };
+          }
+          if ('enableLifecycle' in selection) {
+            return {
+              limit: vi.fn(() =>
+                Promise.resolve([{ enableLifecycle: mocks.lifecycleEnabled }]),
               ),
             };
           }
@@ -129,6 +139,35 @@ describe('portal report routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.reportsEnabled = false;
+    mocks.lifecycleEnabled = false;
+  });
+
+  it.each([{ name: 'Sam Lee', email: 'support@example.test' }, null])(
+    'returns the latest hardware lifecycle run and contact for the session org: %j', async (contact) => {
+    const payload = {
+      run: { id: RUN_ID, generatedAt: 'Sep 2, 2026, 6:00 PM' },
+      summary: { computers: { total: 12 } },
+      contact,
+    };
+    mocks.latestLifecycleMock.mockResolvedValue(payload);
+
+    const response = await isolatedApp().request('/reports/lifecycle/latest');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(payload);
+    expect(mocks.latestLifecycleMock).toHaveBeenCalledWith(ORG_ID, 'UTC');
+  });
+
+  it('404s with a typed code when no lifecycle run has been generated', async () => {
+    mocks.latestLifecycleMock.mockRejectedValue(new PortalReportNotFoundError());
+
+    const response = await isolatedApp().request('/reports/lifecycle/latest');
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: 'No hardware lifecycle report has been generated yet',
+      code: 'PORTAL_REPORT_NOT_GENERATED',
+    });
   });
 
   it('lists only the service result for the session org with private caching', async () => {
@@ -311,6 +350,7 @@ describe('real portal router auth and enableReports gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.reportsEnabled = false;
+    mocks.lifecycleEnabled = false;
   });
 
   it.each([
@@ -337,5 +377,81 @@ describe('real portal router auth and enableReports gate', () => {
     });
     expect(mocks.listMock).not.toHaveBeenCalled();
     expect(mocks.generateMock).not.toHaveBeenCalled();
+  });
+
+  // The lifecycle route carries BOTH gates. These cases exercise the real
+  // router, so they are what proves the second mount in routes/portal/index.ts
+  // actually attaches at the right prefix with the right flag — a bare
+  // middleware unit test cannot.
+  it('returns 401 for an unauthenticated lifecycle request', async () => {
+    const response = await portalRoutes.request('/reports/lifecycle/latest');
+
+    expect(response.status).toBe(401);
+    expect(mocks.latestLifecycleMock).not.toHaveBeenCalled();
+  });
+
+  it('returns PORTAL_REPORTS_DISABLED when enableReports is off, even with lifecycle on', async () => {
+    mocks.reportsEnabled = false;
+    mocks.lifecycleEnabled = true;
+
+    const response = await portalRoutes.request('/reports/lifecycle/latest', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'PORTAL_REPORTS_DISABLED',
+    });
+    expect(mocks.latestLifecycleMock).not.toHaveBeenCalled();
+  });
+
+  it('returns PORTAL_LIFECYCLE_DISABLED when reports are on but lifecycle is off', async () => {
+    mocks.reportsEnabled = true;
+    mocks.lifecycleEnabled = false;
+
+    const response = await portalRoutes.request('/reports/lifecycle/latest', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'PORTAL_LIFECYCLE_DISABLED',
+    });
+    expect(mocks.latestLifecycleMock).not.toHaveBeenCalled();
+  });
+
+  it('reaches the handler only when both flags are on', async () => {
+    mocks.reportsEnabled = true;
+    mocks.lifecycleEnabled = true;
+    mocks.latestLifecycleMock.mockResolvedValue({
+      run: { id: RUN_ID, generatedAt: 'Sep 2, 2026, 6:00 PM' },
+      summary: null,
+    });
+
+    const response = await portalRoutes.request('/reports/lifecycle/latest', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(mocks.latestLifecycleMock).toHaveBeenCalledWith(ORG_ID, 'UTC');
+  });
+
+  it('leaves the sibling /reports/runs path on the enableReports gate alone', async () => {
+    mocks.reportsEnabled = true;
+    mocks.lifecycleEnabled = false;
+    mocks.listMock.mockResolvedValue({
+      data: [],
+      pagination: { page: 1, limit: 20, total: 0 },
+      timezone: 'UTC',
+    });
+
+    const response = await portalRoutes.request('/reports/runs', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    // enableLifecycle is off, but this path must be unaffected by the narrower
+    // gate — only /reports/lifecycle/* takes the second one.
+    expect(response.status).toBe(200);
+    expect(mocks.listMock).toHaveBeenCalled();
   });
 });

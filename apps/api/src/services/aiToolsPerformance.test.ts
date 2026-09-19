@@ -8,6 +8,15 @@ vi.mock('../db', () => ({
   },
 }));
 
+// aiToolsPerformance.ts reaches the queue through the mandatory-origin
+// adapter; none of these tests exercise analyze_boot_performance's collection
+// trigger or manage_startup_items, so a bare stub keeps the (much heavier)
+// real commandQueue/dispatchDeviceCommand/scriptDispatch import graph out of
+// this suite.
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -15,6 +24,8 @@ import { registerPerformanceTools } from './aiToolsPerformance';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+/** Same org, same site as DEVICE — only the exact-device allowlist separates them. */
+const SIBLING_DEVICE_ID = '33333333-3333-4333-8333-333333333333';
 
 const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
 
@@ -32,6 +43,19 @@ function createChain(result: unknown = []) {
 
 function mockSelectOnce(result: unknown) {
   mockDb.select.mockImplementationOnce(() => createChain(result));
+}
+
+function captureSingleWhere(result: unknown = []) {
+  let captured: unknown;
+  mockDb.select.mockImplementationOnce(() => {
+    const chain = createChain(result);
+    chain.where = vi.fn((condition: unknown) => {
+      captured = condition;
+      return chain;
+    });
+    return chain;
+  });
+  return { capturedWhere: () => captured };
 }
 
 /**
@@ -195,6 +219,44 @@ describe('analyze_metrics AI tool', () => {
     expect(parsed.summary.cpu.current).toBe(40);
     expect(parsed.source).toBeUndefined();
     expect(mockDb.select).toHaveBeenCalledTimes(2);
+  });
+
+  // #6096 D5a. An agent run's auth pins BOTH axes: the run device's site and
+  // the run device itself. The site pin alone admits every sibling in that
+  // site, so the exact-device allowlist is the boundary that actually holds —
+  // and it must hold BEFORE the device read, not after.
+  describe('exact-device allowlist', () => {
+    function boundAuth(): AuthContext {
+      return {
+        ...makeAuth(),
+        allowedSiteIds: ['site-1'],
+        canAccessSite: () => true,
+        allowedDeviceIds: [DEVICE_ID],
+      } as AuthContext;
+    }
+
+    it('denies a same-site sibling device without reading it', async () => {
+      const result = await handlerFor('analyze_metrics')(
+        { deviceId: SIBLING_DEVICE_ID, hoursBack: 2, aggregation: 'raw' },
+        boundAuth()
+      );
+
+      expect(JSON.parse(result).error).toMatch(/not found or access denied/i);
+      expect(mockDb.select).not.toHaveBeenCalled();
+    });
+
+    it('proceeds for the run device itself', async () => {
+      mockSelectOnce([DEVICE]);
+      mockSelectOnce([rawMetric('2026-06-18T11:30:00.000Z', 40)]);
+
+      const result = await handlerFor('analyze_metrics')(
+        { deviceId: DEVICE_ID, hoursBack: 2, aggregation: 'raw' },
+        boundAuth()
+      );
+
+      expect(JSON.parse(result).error).toBeUndefined();
+      expect(mockDb.select).toHaveBeenCalledTimes(2);
+    });
   });
 });
 
@@ -416,6 +478,58 @@ describe('analyze_fleet_metrics AI tool', () => {
     const condition = capturedWhere() as SQL | undefined;
     expect(condition).toBeDefined();
     const rendered = new PgDialect().sqlToQuery(condition!);
+    expect(rendered.params).not.toContain('site-A');
+  });
+});
+
+describe('fleet user-session AI tools — site narrowing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function restrictedAuth(allowedSiteIds: string[] | null): AuthContext {
+    return {
+      ...makeAuth(),
+      allowedSiteIds,
+      canAccessSite: (siteId: string | null | undefined) => Array.isArray(allowedSiteIds)
+        && !!siteId
+        && allowedSiteIds.includes(siteId),
+    } as unknown as AuthContext;
+  }
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s returns an empty result for a defined-empty site ceiling without querying', async (tool, input) => {
+    const parsed = JSON.parse(await handlerFor(tool)(input, restrictedAuth([])));
+
+    expect(parsed.totalActiveSessions ?? parsed.totalSessions).toBe(0);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s pushes the current device site ceiling into SQL before LIMIT', async (tool, input) => {
+    const { capturedWhere } = captureSingleWhere([]);
+
+    await handlerFor(tool)(input, restrictedAuth(['site-A']));
+
+    const condition = capturedWhere() as SQL | undefined;
+    expect(condition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(condition!);
+    expect(rendered.params).toContain('site-A');
+  });
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s remains unrestricted when no site ceiling exists', async (tool, input) => {
+    const { capturedWhere } = captureSingleWhere([]);
+
+    await handlerFor(tool)(input, makeAuth());
+
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
     expect(rendered.params).not.toContain('site-A');
   });
 });

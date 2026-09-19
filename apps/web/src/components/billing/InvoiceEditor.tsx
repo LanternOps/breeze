@@ -846,7 +846,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             ) : (
               <p className="text-sm text-muted-foreground">
                 {t('invoiceEditor.billTo.noContact')}{' '}
-                <a href="/settings/organizations" className="underline hover:text-foreground">{t('invoiceEditor.billTo.addInSettings')}</a>.
+                <a href="/organizations" className="underline hover:text-foreground">{t('invoiceEditor.billTo.addInSettings')}</a>.
               </p>
             )}
           </div>

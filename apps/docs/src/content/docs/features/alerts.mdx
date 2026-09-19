@@ -9,6 +9,10 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Breeze has a built-in alert system that monitors your devices and notifies the right people when something goes wrong. Alerts are triggered by **rules** you define, routed through **notification channels** you configure, and managed from the **Alerts** page in the dashboard.
 
+<Aside type="tip">
+  If a condition also needs to run a script or another automated response when it fires, author it as a [Monitor](/features/monitors/) instead of a standalone alert rule plus a separately-wired automation -- a monitor bundles the condition, severity, delivery, and response into one object and deploys through Configuration Policies.
+</Aside>
+
 ## Viewing Alerts
 
 Open **Alerts** from the left sidebar to see all active alerts across your organization. The page has three main sections:

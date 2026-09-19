@@ -281,13 +281,19 @@ If a user has no active trusted device — or push delivery is disabled on the d
 
 Signing in to the mobile app also tries, silently, to register the phone as a **Breeze Authenticator** approver device -- the same registration that [Approval Security](/features/approval-security/) uses to decide the strongest assurance level (L1-L4) an approval from this phone can satisfy. No action from the user is needed when it succeeds.
 
-There are two possible outcomes, and which one happens is not under the user's control -- it depends on what the phone's hardware supports:
+There are two possible outcomes, and which one happens is not under the user's control -- it depends on what the phone's hardware supports and whether the app build can prove it:
 
-- **Hardware-attested.** On a phone with a Secure Enclave (iOS) or StrongBox/TEE (Android), the app generates a hardware-backed key and proves it with a platform attestation (App Attest on iOS, Play Integrity on Android). This device can satisfy up to **L4** -- the assurance floor for critical-risk approvals.
-- **Legacy, unattested.** On a phone without that hardware, the app instead registers a biometric-gated key with no attestation behind it. Breeze is honest about the difference: an unattested device is capped at **L2/L3**, and cannot approve anything requiring L4.
+- **Hardware-attested.** On a phone with a Secure Enclave (iOS) or StrongBox/TEE (Android), the app generates a hardware-backed key and proves it with a platform attestation -- Apple App Attest on iOS, Android Key Attestation on Android (Play Integrity is checked too, as a separate signal about the app and device, but it is Key Attestation that proves the key itself lives in hardware). This device can satisfy up to **L4** -- the assurance floor for critical-risk approvals.
+- **Legacy, unattested.** On a phone without that hardware -- or running an app build that predates attestation support -- the app instead registers a biometric-gated key with no attestation behind it. Breeze is honest about the difference: an unattested device is capped at **L2/L3**, and cannot approve anything requiring L4.
+
+The same **Hardware-attested** / **Not attested** distinction is shown per device in [Approval Security's device list](/features/approval-security/#enrolling-an-approver-device), so a technician (or their admin) can tell at a glance which of their approver devices can actually reach L4.
 
 <Aside type="caution">
   If a phone that supports attestation fails to complete it, Breeze does **not** silently fall back to registering it as legacy -- that would let the phone approve requests at an assurance level it hasn't actually earned. Instead, the app shows a banner: **"Approver setup didn't complete"** or **"Finish approver setup,"** explaining that approvals from this phone are recorded at the lowest assurance level until it's fixed. The one in-app remedy is signing out and back in, since registration needs a fresh one-time grant issued at login. If the banner names a hardware attestation failure specifically, signing in again will not change the outcome -- contact your administrator.
+</Aside>
+
+<Aside type="note">
+  Registration can also succeed but still land on the legacy, unattested basis -- most often because the phone is running an app build older than the one that added attestation. That phone is not broken and can still approve ordinary requests; it just cannot reach L4 yet. The app shows a banner for this too -- **"This phone can't approve critical actions yet"** -- and the fix is to update to the latest app version and sign out and back in, which re-runs registration on a build that can attest the key.
 </Aside>
 
 ### `approval_requests` table

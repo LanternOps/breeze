@@ -106,7 +106,10 @@ const securityActions = new Set([
   'policy.update',
   'policy.create',
   'policy.evaluate',
-  'automation.policy.evaluate'
+  'automation.policy.evaluate',
+  // Written by agentAuth when an agent token is presented from a new source IP —
+  // NAT/mobility churn, or a stolen token being replayed elsewhere.
+  'agent.source.ip.changed'
 ]);
 
 const complianceActions = new Set([
@@ -503,7 +506,7 @@ function toCsv(rows: DbRow[], options: { columns?: AuditExportColumn[]; includeD
     return csvRow(headers.map((header) => record[header]));
   });
 
-  return [headers.join(','), ...csvRows].join('\n');
+  return [csvRow(headers), ...csvRows].join('\n');
 }
 
 function summarizeUsers(rows: DbRow[]) {

@@ -19,13 +19,17 @@
  *    the real signup transaction.
  *
  * Constructing the required-policy condition:
- *   Role axis — `createPartner()` now stores force_mfa = true on the tenant
- *   Partner Admin row itself (RMM-QA-164). The role-axis test therefore
- *   exercises the REAL row with no trigger; the kill-switch control below
- *   proves those assertions depend on the stored flag being honoured
+ *   Role axis — `createPartner()` stores force_mfa = true on the tenant
+ *   Partner Admin row itself (RMM-QA-164): exercised on the REAL row.
+ *   Settings axis — since 2026-09-18 `createPartner()` also writes
+ *   `security.requireMfa = true` (applyNewPartnerDefaultSettings, spec
+ *   docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md):
+ *   ALSO exercised on the real row, no trigger.
+ *   The kill-switch control below is the only case that still needs a
+ *   BEFORE INSERT trigger — it must produce a tenant where NOTHING requires
+ *   MFA, which the real creation path can no longer mint, so it injects
+ *   `requireMfa:false` and turns the role force off
  *   (MFA_FORCE_FOR_PARTNER_ADMIN is read at call time, config/env.ts).
- *   Settings axis — a BEFORE INSERT trigger on partners still models a
- *   tenant whose security settings require MFA.
  *
  * ENABLE_2FA is set to 'true' before the dynamic imports on purpose: with
  * it off, login/verify short-circuit to mfa: true and every `mfa: false`
@@ -84,7 +88,7 @@ async function attachTrigger(name: string, table: string): Promise<void> {
 
 async function dropTriggers(): Promise<void> {
   const db = getTestDb();
-  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_partner_require_mfa ON partners'));
+  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_partner_no_require_mfa ON partners'));
 }
 
 function emailFor(companyName: string): string {
@@ -227,41 +231,53 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     // response must push them into enrollment.
     expect(body.user.mfaEnabled).toBe(false);
     expect(accessClaims.mfa).toBe(false);
+    expect(accessClaims.mfa_src).toBeUndefined();
     expect(body.mfaEnrollmentRequired).toBe(true);
     expect(body.enrollUrl).toBe('/auth/mfa/setup');
   });
 
-  it('does NOT mint mfa=true when the new partner settings require MFA (settings axis)', async () => {
-    await installTrigger(
-      'breeze_test_partner_require_mfa',
-      `NEW.settings := COALESCE(NEW.settings, '{}'::jsonb) || '{"security":{"requireMfa":true}}'::jsonb;`,
-    );
-    await attachTrigger('breeze_test_partner_require_mfa', 'partners');
-
+  it('stores security.requireMfa=true on the real createPartner row and does NOT mint mfa=true (settings axis, no trigger — spec 2026-09-18 D1)', async () => {
     const { status, body, accessClaims } = await parkAndVerify('RequireMfaCo');
     expect(status).toBe(200);
 
     const db = getTestDb();
     const rows = await db.execute(sql`
-      SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa
+      SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa,
+             settings -> 'ticketing' -> 'inbound' ->> 'enabled' AS inbound_enabled
       FROM partners WHERE id = ${body.partner.id}
     `);
     expect(rows[0]?.require_mfa).toBe('true');
+    // The other new-partner default still lands alongside it.
+    expect(rows[0]?.inbound_enabled).toBe('false');
 
     expect(accessClaims.mfa).toBe(false);
     expect(body.mfaEnrollmentRequired).toBe(true);
   });
 
-  it('still mints mfa=true with the kill switch off (control — proves the role-axis assertions depend on the stored flag being honoured)', async () => {
-    // After RMM-QA-164 every fresh tenant admin is forced, so "nothing requires
-    // MFA" can no longer be produced by createPartner. The documented relief
-    // valve is the only legitimate way to get there; mfaForcePartnerAdmin()
-    // reads the env at call time, so the override needs no re-import.
+  it('still mints mfa=true when NOTHING requires MFA (control — settings opted out by trigger + kill switch off)', async () => {
+    // Since 2026-09-18 the real creation path writes requireMfa=true, so a
+    // tenant where nothing requires MFA cannot be produced by createPartner
+    // alone. Invert the trigger: strip the settings axis, and turn the role
+    // axis off through the documented relief valve (mfaForcePartnerAdmin()
+    // reads the env at call time, so no re-import is needed). If this control
+    // ever mints mfa=false, the assertions above have stopped depending on the
+    // stored flags and are vacuous.
+    await installTrigger(
+      'breeze_test_partner_no_require_mfa',
+      `NEW.settings := COALESCE(NEW.settings, '{}'::jsonb) || '{"security":{"requireMfa":false}}'::jsonb;`,
+    );
+    await attachTrigger('breeze_test_partner_no_require_mfa', 'partners');
+
     const previous = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
     process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
     try {
       const { status, accessClaims, body } = await parkAndVerify('KillSwitchCo');
       expect(status).toBe(200);
+      const rows = await getTestDb().execute(sql`
+        SELECT settings -> 'security' ->> 'requireMfa' AS require_mfa
+        FROM partners WHERE id = ${body.partner.id}
+      `);
+      expect(rows[0]?.require_mfa).toBe('false');
       expect(accessClaims.mfa).toBe(true);
       expect(body.mfaEnrollmentRequired).toBe(false);
     } finally {

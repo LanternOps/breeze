@@ -35,10 +35,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, rollbackStepUpResource } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { maintenanceResourceDigest, mintStepUpGrant, passkeyRemovalResourceDigest, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
+import { maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -152,8 +152,19 @@ const mfaEnableWithStepUpSchema = mfaEnableSchema.extend({
   // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
   stepUpGrantId: z.string().optional()
 });
-const mfaDisableSchema = mfaVerifySchema.extend({
+// Exported so its shape (specifically the ssoReauthGrantId omission below) is
+// unit-testable without exercising the whole /mfa/disable handler — see
+// mfa.schemas.test.ts.
+export const mfaDisableSchema = mfaVerifySchema.extend({
   currentPassword: z.string().min(1).max(256)
+}).omit({
+  // #4050: mfaVerifySchema's ssoReauthGrantId exists for the passwordless-SSO
+  // enrollment-confirm case (see the comment on the field in ./schemas), but
+  // /mfa/disable requires currentPassword unconditionally above (not optional
+  // like the enable/setup-confirm schemas), so there is no passwordless path
+  // through this route for it to satisfy. Omit it explicitly rather than
+  // accept-and-silently-drop it.
+  ssoReauthGrantId: true,
 });
 
 export const mfaRoutes = new Hono();
@@ -181,6 +192,13 @@ mfaRoutes.get('/mfa/enrollment-options', authMiddleware, async (c) => {
   return c.json({
     allowedMethods: policy.allowedMethods,
     phoneConfigured: user.phoneVerified === true && Boolean(user.phoneNumber),
+    // #5306 — forced-enrollment discovery now also answers "how long have I
+    // got". `mfaGraceEndsAt` is non-null exactly while this user's enrolment
+    // grace window is open, and it is what the dashboard banner nudges from.
+    // `mfaEnrollmentRequired` is the live verdict for an unenrolled user, so a
+    // client can tell "must enrol now" from "must enrol by <date>".
+    mfaEnrollmentRequired: policy.required,
+    mfaGraceEndsAt: policy.pendingEnrollment?.deadline ?? null,
   });
 });
 
@@ -532,6 +550,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
+      mfaSrc: 'factor',
       // SR-001: bind to the mobile install id when present (MFA login path).
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     };
@@ -730,6 +749,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,
@@ -918,6 +938,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
         // `mfaSatisfied` in routes/auth/login.ts is vacuously true once
         // mfa_enabled is false and policy does not mandate a factor.)
         mfa: auth.token?.mfa === true,
+        mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
         // SR-001: this is a RE-MINT of an existing session, so the device binding
         // comes from the previously-signed `mdid` claim, never from the forgeable
         // request header — the same rule /auth/refresh follows. A bound mobile
@@ -1134,6 +1155,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,
@@ -1209,6 +1231,8 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 const RESOURCE_BOUND_OPERATIONS = {
   agent_rollback: rollbackStepUpResource,
   device_maintenance: maintenanceStepUpResource,
+  device_move_org: moveOrgStepUpResource,
+  ai_script_lane_grant: scriptLaneStepUpResource,
 } as const;
 
 mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
@@ -1219,7 +1243,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   const auth = c.get('auth');
   const body = c.req.valid('json');
   const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
-  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | undefined;
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | undefined;
   if (resourceSchema) {
     const parsedResource = resourceSchema.safeParse(body.resource);
     if (!parsedResource.success) {
@@ -1346,9 +1370,13 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
         ? rollbackResourceDigest(boundResource as z.infer<typeof rollbackStepUpResource>)
         : body.operation === 'device_maintenance'
           ? maintenanceResourceDigest(boundResource as z.infer<typeof maintenanceStepUpResource>)
-          : body.operation === 'delete_passkey'
-            ? passkeyRemovalResourceDigest(body.passkeyId!)
-            : '',
+          : body.operation === 'device_move_org'
+            ? moveOrgResourceDigest(boundResource as z.infer<typeof moveOrgStepUpResource>)
+            : body.operation === 'ai_script_lane_grant'
+              ? scriptLanePolicyResourceDigest(boundResource as z.infer<typeof scriptLaneStepUpResource>)
+              : body.operation === 'delete_passkey'
+                ? passkeyRemovalResourceDigest(body.passkeyId!)
+                : '',
   });
   if (!grantId) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
@@ -1446,6 +1474,7 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recover
         // recovery codes proves a password, not a factor. Enrollment can hard-code
         // `true` because it just installed the factor; this path cannot.
         mfa: auth.token?.mfa === true,
+        mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
         // SR-001: this is a RE-MINT of an existing session, so the device
         // binding comes from the previously-signed `mdid` claim, never from the
         // forgeable request header — the same rule /auth/refresh follows. A

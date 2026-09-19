@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.111.1",
-  "reviewedAt": "2026-09-09",
-  "notes": "v0.111.1 hotfix sweep: added the discovered_assets backfill lock-hierarchy crash-loop to deploy/upgrades.mdx as a new v0.111.1 section ahead of v0.111.0, with the danger callout, the fix-forward SQL copied from docs/release-notes/next-release-draft.md, and the recovery steps. No other doc surface affected."
+  "lastReviewedRef": "v0.114.0",
+  "reviewedAt": "2026-09-18",
+  "notes": "v0.114.0 release sync (docs/v0.114.0-technical-docs): four evidence report types identity_access_review/vulnerability_management/endpoint_management_review/threat_detection_review + scheduled auto-evidence (reports, contracts), Network Device Detail Page redesign — reachability header, Health/Reachability cards, Monitoring tab OID table + history, SNMPv1 fix (discovery), portal Devices visibility toggle fix + Hardware Lifecycle page (portal), AI budget editor moved to Org settings -> AI (ai), Variables All Organizations partner-only listing (scripts), Organizations account board (reference/organizations-and-sites), new DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS / DB_WEDGED_BACKEND_* / TOOL_SOURCES_* / WEBAUTHN_* / BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED env vars (environment), catalog_items.unit_price drop (upgrades), AI patch agent retry/escalate/reboot-planning (patch-management), Partner Admin MFA revocation fix (remote-access)."
 }

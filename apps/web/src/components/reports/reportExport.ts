@@ -1,10 +1,14 @@
-import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary } from '@breeze/shared';
+import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, FleetDesignReportSummary,
+  EndpointManagementSummary,
+  VulnerabilityManagementSummary,
+  IdentityAccessSummary,
+} from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
+import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv, rowsToTsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
+import { buildReportPdf, parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV + download helpers so existing importers of these
 // names from './reportExport' keep working; the canonical definitions now live
@@ -14,22 +18,6 @@ export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, downloadBlo
 // PostureSummary is single-sourced in @breeze/shared (also consumed by the API
 // generator that produces it); re-export so existing local importers still work.
 export type { PostureSummary } from '@breeze/shared';
-
-/** Convert an unknown cell value to a display string. */
-function cellToString(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  return String(value);
-}
-
-/** Extract column headers and string[][] body from raw row objects. */
-function extractTable(rows: unknown[]): { headers: string[]; body: string[][] } {
-  const headers = Object.keys(rows[0] as Record<string, unknown>);
-  const body = rows.map(row => {
-    const record = row as Record<string, unknown>;
-    return headers.map(h => cellToString(record[h]));
-  });
-  return { headers, body };
-}
 
 /** Return the browser's IANA timezone string. */
 export function getBrowserTimezone(): string {
@@ -52,9 +40,18 @@ export async function exportReport(
     reportType: string;
     timezone: string;
     /** Stored run snapshot consumed by the designed cover/body renderers
-     * (posture scorecard, executive summary, AI org narrative); the generic
-     * table path ignores it. */
-    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary;
+     * (posture scorecard, executive summary, AI org narrative, Fleet
+     * Design); the generic table path ignores it. */
+    // #5784 W03: widened so the staff/browser export path passes the DESIGNED
+    // summary through to buildReportPdf's endpoint-management arm. Without it
+    // the summary is dropped and the PDF silently degrades to the generic
+    // row table.
+    // #5784 W06. Further widened so the same path passes the DESIGNED identity
+    // summary — and its caveats — through to buildReportPdf's identity arm. A
+    // summary that does not typecheck here gets dropped at the call site, and
+    // the PDF silently falls through to the generic renderer, keeping the
+    // sign-in rows while losing every limit printed alongside them.
+    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };
@@ -68,24 +65,14 @@ export async function exportReport(
 
   if (format === 'csv') {
     if (rows.length === 0) throw new Error('No data to export');
-    const { headers, body } = extractTable(rows);
-    const csvContent = [
-      headers.join(','),
-      ...body.map(row =>
-        row.map(escapeCsvCell).join(',')
-      ),
-    ].join('\n');
+    const csvContent = rowsToCsv(rows);
     downloadBlob(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), `${baseFilename}.csv`);
     return;
   }
 
   if (format === 'excel') {
     if (rows.length === 0) throw new Error('No data to export');
-    const { headers, body } = extractTable(rows);
-    const tsvContent = [
-      headers.join('\t'),
-      ...body.map(row => row.map(escapeTsvCell).join('\t')),
-    ].join('\n');
+    const tsvContent = rowsToTsv(rows);
     downloadBlob(new Blob([tsvContent], { type: 'application/vnd.ms-excel' }), `${baseFilename}.xls`);
     return;
   }
@@ -154,13 +141,19 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
     if (!res.ok) return empty;
     const data = (await res.json()) as {
       name?: string;
-      settings?: { branding?: { logoUrl?: string } };
+      settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
     };
     const name = data.name ?? null;
+    const colors = {
+      primaryColor: parseHexColor(data.settings?.branding?.primaryColor) ? data.settings!.branding!.primaryColor! : null,
+      accentColor: parseHexColor(data.settings?.branding?.secondaryColor) ? data.settings!.branding!.secondaryColor! : null,
+      contactEmail: data.settings?.contact?.email?.trim() || null,
+      contactName: data.settings?.contact?.name?.trim() || null,
+    };
     const safeLogoUrl = sanitizeImageSrc(data.settings?.branding?.logoUrl ?? null);
-    if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null };
+    if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null, ...colors };
     const loaded = await loadImageAsPng(safeLogoUrl);
-    return { name, logoDataUrl: loaded?.dataUrl ?? null, logoAspect: loaded?.aspect ?? null };
+    return { name, logoDataUrl: loaded?.dataUrl ?? null, logoAspect: loaded?.aspect ?? null, ...colors };
   } catch {
     return empty;
   }

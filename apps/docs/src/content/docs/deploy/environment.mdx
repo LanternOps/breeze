@@ -29,8 +29,9 @@ All configuration is done through environment variables, defined in your `.env.p
 | `DATABASE_URL` | — | Auto | Full connection string (constructed from above in Docker) |
 | `DATABASE_URL_APP` | — | One of these three (prod) | Explicit connection string for the **unprivileged request role** (`breeze_app`). Preferred for direct (non-Compose) deployments and for `deploy/docker-compose.prod.yml` (managed Postgres), and **required** for multi-host / high-availability `DATABASE_URL` values, which cannot be derived automatically. **Leave it empty on the bundled root `docker-compose.yml`** — see the callout below. |
 | `BREEZE_APP_DB_PASSWORD` | — | One of these three (prod) | Password for the `breeze_app` role, used to derive its connection string from `DATABASE_URL`. |
+| `BREEZE_ALLOW_UNSAFE_DB_ROLE` | — | | Local development escape hatch. Set to `true` to start even when the request role is `SUPERUSER`/`BYPASSRLS`, printing a loud warning banner every boot. **Ignored when `NODE_ENV=production`**, and never appropriate for a deployment holding real data. |
 
-In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This check runs whenever `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. The API also **refuses to start if it detects it is running as a `SUPERUSER` or `BYPASSRLS` role** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
+In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This configuration requirement applies when `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. Separately, the API verifies the capabilities of the role its request pool actually connected as **on every startup, in every environment** — `NODE_ENV` does not switch that check off — and **refuses to start if that role is `SUPERUSER` or `BYPASSRLS`** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
 
 :::caution[Bundled Docker Compose: leave `DATABASE_URL_APP` empty]
 The bundled root `docker-compose.yml` rebuilds `DATABASE_URL` as
@@ -60,6 +61,22 @@ requires `POSTGRES_PASSWORD` anyway. Only set `DATABASE_URL_APP` explicitly when
 pointing at a database the api container can actually reach.
 :::
 
+### Database connection prologue and wedged-backend recovery
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS` | `15000` | | Timeout for the connection-setup work Breeze runs at the start of each request's database access (setting the row-level-security context). The request work that follows is never bounded by it. `0` disables the timeout; positive values below `1000` are clamped to `1000`. |
+| `DB_WEDGED_BACKEND_SCAN_DISABLED` | unset (scanning on) | | Set to disable the periodic scan that detects database connections stuck at session start. Detection only — it never terminates anything by itself. |
+| `DB_WEDGED_BACKEND_SCAN_INTERVAL_MS` | `300000` (5 min) | | How often the wedged-backend scan runs. |
+| `DB_WEDGED_BACKEND_MIN_AGE_MS` | `300000` (5 min) | | How long a backend must have been stuck before the scan reports it. |
+| `DB_WEDGED_BACKEND_RECLAIM_DISABLED` | unset (reclamation on) | | Set to detect wedged backends without terminating them. |
+| `DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS` | `60000` (1 min) | | Minimum time between reclamation passes. |
+| `DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS` | `4` | | Maximum number of wedged backends reclaimed in a single pass. |
+| `DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS` | `5000` | | Timeout for the reclamation connection itself. |
+| `DB_WEDGED_BACKEND_CONFIRM_DELAY_MS` | `250` | | Delay before confirming a backend is still wedged prior to reclaiming it — a backend is only reclaimed once two consecutive snapshots agree it hasn't moved. |
+
+Together, these detect and reclaim database connections stuck at session start (before they ever reach request work) — reclamation opens a fresh connection and signals the wedged one so its pool slot can reconnect, rather than leaving it to block a connection permanently. Defaults come from `.env.example`; leave them alone unless you're troubleshooting a specific incident.
+
 ## Redis
 
 | Variable | Default | Required | Description |
@@ -77,7 +94,7 @@ pointing at a database the api container can actually reach.
 | `PARTNER_API_CURSOR_SIGNING_KEY` | — | Yes (prod) | Dedicated key that signs the pagination cursors returned by the Partner Export API. Must be **canonical (standard) base64** — not base64url or hex — decoding to at least 32 bytes, and must not reuse `JWT_SECRET`. Generate: `openssl rand -base64 32`. **The API refuses to start in production without it.** |
 | `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
 | `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
-| `APP_ENCRYPTION_KEY_ID` | — | | Optional identifier for the active encryption key (letters, digits, `.`/`_`/`-`). Setting it enables versioned, context-bound ciphertext for newly stored secrets. **From v0.106.0 it is required whenever `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`, and the API refuses to start without it** — the write-action reveal path seals its temporary credential with key-bound ciphertext and fails closed, so the credential would be discarded and never revealable. Not present in the stock compose file: add it to `.env` **and** to the `api` service `environment:` block. |
+| `APP_ENCRYPTION_KEY_ID` | — | | Identifier for the active encryption key (letters, digits, `.`/`_`/`-`). Setting it enables versioned, context-bound ciphertext for newly stored secrets. **The API refuses to start without it** whenever `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true` (since v0.106.0 — the write-action reveal path seals its temporary credential with key-bound ciphertext and fails closed) **or `BREEZE_ROLE` is `api` or `worker`** (the [worker split](/deploy/worker-split/) encrypts commands relayed between the two processes). **From v0.113.0, every other deployment gets a boot-time warning instead of a refusal when it is unset, and saving integration credentials fails with `503`** until it is set: the Discord, Teams, Grafana, OpsGenie, PagerDuty, monitoring-webhook, ticketing and PSA settings pages seal each credential with key-bound ciphertext and refuse to fall back to unbound ciphertext. Existing installs whose `guided-setup.sh` run predates this key keep running otherwise; generate any `[A-Za-z0-9._-]+` identifier (changing it later does not rotate `APP_ENCRYPTION_KEY`). Not present in older compose files: add it to `.env` **and** to the `api` (and `worker`) service `environment:` block. |
 | `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |
 | `ENROLLMENT_KEY_PEPPER` | — | Yes | HMAC pepper for enrollment key hashing |
 | `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
@@ -97,6 +114,9 @@ pointing at a database the api container can actually reach.
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
+| `WEBAUTHN_RP_ID` | derived from `PUBLIC_APP_URL` | | Set only when the browser reaches the app on a different host than `PUBLIC_APP_URL` (for example `WEBAUTHN_RP_ID=localhost` on a local stack). Without a correct value, every passkey ceremony fails with "The RP ID ... is invalid for this domain." |
+| `WEBAUTHN_ORIGIN` | derived from `PUBLIC_APP_URL` | | Companion to `WEBAUTHN_RP_ID` — set together when passkeys are served from a non-default host. |
+| `WEBAUTHN_RP_NAME` | `Breeze RMM` | | Display name shown to the user during a passkey registration/sign-in ceremony. |
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
@@ -149,6 +169,11 @@ deployment env vars.
 | `MAILGUN_FROM` | `noreply@breeze.local` | Mailgun-specific sender address |
 | `SMTP_TIMEOUT_MS` | `30000` | How long an outbound SMTP send may take before it is abandoned. Applies to **all** outbound mail. Without a bound, a wedged mail host can hold a send open for nodemailer's ten-minute default |
 | `MAILGUN_TIMEOUT_MS` | `120000` | The same bound for the Mailgun HTTP transport |
+
+Sending customer-facing mail from a partner's own domain, rather than from
+`EMAIL_FROM`, is set up separately — see [Custom sender
+addresses](/deploy/custom-sender-addresses/) for the `EMAIL_DOMAINS_*` variables
+and the three ways to configure them.
 
 ## SMS (Twilio)
 
@@ -480,6 +505,7 @@ Full explanation of what each one is for: [Rollout Modes & Compatibility Switche
 | `REMOTE_WS_REDIS_TOPOLOGY` | `standalone-single-primary` | Attestation that Redis is a single primary with AOF on, `noeviction`, cluster disabled. Only accepted value. Sentinel/Cluster/HA Redis will freeze remote admission by design. |
 | `REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT` | — | Timestamp the last pre-upgrade ticket writer stopped. Used to compute the barrier-reopen deadline. |
 | `REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT` | — | Timestamp the last legacy viewer-token issuer stopped. Gates the move to `pre_upgrade`. |
+| `REMOTE_DESKTOP_FENCE_REQUIRED` | `false` | When `true`, remote desktop refuses to start (`503 agent_upgrade_required`) on any agent that has not declared the durable start/terminal fence capability (`desktopFenceProtocolVersion=1`). Leave `false` for one release after upgrading so agents can auto-update, then flip to `true`. |
 | `OAUTH_AUTH_EPOCH_ENFORCE_AFTER` | — | **Required when MCP OAuth is enabled in production/staging.** Absolute UTC timestamp ending the compatibility window for access tokens issued before the live-revocation release. Must be ≥1800s after new token writers start. Choose once; never extend on restart. |
 
 ## Security Enforcement (opt-in)
@@ -492,8 +518,11 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `AGENT_MTLS_BINDING_MODE` | `off` | `audit` counts certificate/device binding mismatches without denying; `enforce` denies them. Requires a validating proxy. Never inferred from `NODE_ENV`/`IS_HOSTED`/`CF_MTLS_*`. |
 | `MANAGED_SOFTWARE_POLICY_MODE` | `compat` | `enforce` requires an upgraded agent for every managed-software command, public destinations included. Check your not-yet-upgraded device count first — they are denied outright. |
 | `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `false` | Requires update manifests to carry a signing key ID. Not fleet-wide: older agent builds ignore the pushed value. Only enable once the missing-ID count has been zero for 7 consecutive days. |
-| `AUTH_BROWSER_TRANSITIONS_ENFORCED` | `false` | Phased rollout switch for a browser-session binding hardening mechanism that ties an issued session to a browser-generated binding value, so a stolen refresh token alone is not enough to move a session to a different browser. `true` requires every new session to carry the binding and disables legacy issuance. Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. |
-| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Extends the same binding to terminal/native sessions. Requires `AUTH_BROWSER_TRANSITIONS_ENFORCED=true` — the API refuses to boot if this is `true` while that one is not. |
+| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Enables the terminal/native logout-preparation flow described in [Cloudflare Access trust](/deploy/cloudflare-access-trust/). Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. It no longer depends on any other flag. |
+
+<Aside type="note" title="Removed in v0.112.0: `AUTH_BROWSER_TRANSITIONS_ENFORCED`">
+  Browser-session binding — tying an issued session to a browser-generated binding value so a stolen refresh token alone cannot move a session to another browser — is now **always enforced** on every sign-in path (password, SSO, Cloudflare Access, MFA, passkey, refresh, registration, invitation). The rollout switch is gone and is ignored if still present in `.env`; delete the line. There is no configuration that restores the unguarded issuance path. See the [v0.112.0 upgrade notes](/deploy/upgrades/#v01120--windows-msi-fix-security-remediations-bare-metal-recovery).
+</Aside>
 
 ## Feature Flags
 
@@ -511,7 +540,9 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
 | `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Enabling the flag does not by itself let an agent change anything: every agent starts in **Off**, and moving one to **Act** is a separate, MFA-confirmed opt-in per agent. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 | `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` for the policy-decide capability, which is **not yet generally available** — leave it off. When enabled it lets an agent authorise a supervised-scope action on its own policy decision instead of sending it to a human approver, and it is what allows an operation to be **promoted** to that status from the Graduation panel. Automatic **demotion** is not gated by this flag and is always on. An operation only ever goes live on the organization's own agent — a partner-wide list is a ceiling, not a grant, so grant each organization explicitly before enabling this. See [AI Agents → Graduation](/features/ai-agents/#graduation-feedback-loop). An unrecognised value stops the API at boot rather than silently reading as off. |
-| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | `true` | Fire-and-forget device actions (scripts, patch installs, patch scans, software installs, reboots, automations, …) issued against an offline device are queued and delivered on its next successful heartbeat, up to a per-action-type deadline. Most action types — including scripts, patch installs, and patch scans — get **7 days**; a narrower set of self-superseding actions (device inventory/config-sync commands, plus reboot/shutdown/scheduled-restart) get **24 hours** instead, since a week-old copy of one of those would be stale by the time it lands. Set `false` to go back to the pre-#5128 behavior of rejecting the action outright when the device is offline. This escape hatch is temporary and is removed in a later release, so treat `false` as a window to adjust your automations, not a permanent setting. |
+| `BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` (also requires `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`) that lets a sweep schedule opt into Act mode, so intents an AI sweep raises can reach the same policy-decide path as other agent actions. Off by default. |
+| `TOOL_SOURCES_ENABLED` | `false` | Enables external tool sources for AI Agents. Off by default; even when enabled, any tier-3 (destructive) external tool call still goes through the normal action-intent approval flow — this flag does not bypass approval. |
+| `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS` | `false` | Self-hosted only — refused when `IS_HOSTED=true`. Allows a tool source URL to resolve to a private, link-local, or loopback address. Leave off unless you specifically need a tool source on your internal network. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
 | `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
 | `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |
@@ -578,6 +609,12 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_BACKUP_SERVER_URL` | — | Instance-level backup control-plane URL, pushed to every agent through its config, enrollment response, and heartbeat reply. Lets you point the [enterprise backup](/deploy/binaries/#backup-binary) subsystem (Hyper-V, MSSQL, system image) at a separate backup control plane instead of the main API. Must be `https://` in production; `http://` is accepted only for `localhost`/`127.0.0.1`. Leave unset to keep backups pointed at the main API. |
+| `RECOVERY_MEDIA_WORK_DIR` | `/data/recovery-work` (Compose) | Scratch directory for building [bare-metal recovery](/backup/bare-metal-recovery/) bundles and ISOs (a 45–65 MB helper binary plus a tarball or ISO per build). The `api` and `worker` containers mount `/tmp` as a 64 MB tmpfs, so building under the OS temp directory fails with `ENOSPC`; the shipped Compose files default this to a directory on the persistent `api_data` volume. Override only to move it elsewhere on durable storage, and map it in the `api` service `environment:` block. |
+| `BACKUP_GC_GRACE_MS` | `172800000` (48 h) | How long an expired snapshot's storage objects are kept before the retention sweep deletes them. **Lab/test knob only.** In production the API enforces a floor of one hour and logs when a lower value is ignored. Leave unset. |
+| `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` | `777600000` (9 d) | **v0.113.0+, lab/test only.** How long an upload that never finished, or whose record could not be reconciled, sits idle before the storage sweep reclaims its prefix. Production floor: 7 days. Re-read on every sweep, no restart needed. |
+| `BACKUP_BASE_LEASE_MS` | `604800000` (7 d) | **v0.113.0+, lab/test only.** How long a base restore point another backup is building on stays protected from reclamation. Production floor: 1 hour. |
+| `BACKUP_RESTORE_PIN_LINGER_MS` | `604800000` (7 d) | **v0.113.0+, lab/test only.** How long a restore point stays pinned after a restore or verification referenced it. Production floor: 1 hour. |
+| `BACKUP_PUBLISH_MARGIN_MS` | `3600000` (1 h) | **v0.113.0+, lab/test only.** Safety margin around a restore point's publish time before its objects are considered for reclamation. Production floor: 5 minutes. |
 
 ## Cloud-to-Cloud Backup (M365)
 
@@ -655,6 +692,35 @@ Customer Graph-read lets a customer administrator grant read-only Microsoft Grap
   The API does **not** read a `..._CALLBACK_URL` variable. It builds the OAuth consent callback from `PUBLIC_URL` (falling back to `PUBLIC_APP_URL`, then `PUBLIC_API_URL`) and appends `/api/v1/m365/consent/callback`. In production at least one of those origin variables must be set. The `M365_CUSTOMER_GRAPH_READ_CALLBACK_URL` line in `.env.example` is **not consumed by the API** — it is read only by the separate executor sidecar (where it must equal that exact `https://<origin>/api/v1/m365/consent/callback` URL). On an API-only host you can ignore it.
 </Aside>
 
+### API-side tenant sync
+
+These are read by the **API**. The master switch defaults off — see the
+Microsoft 365 tenant sync release note on the release notes page for the
+flag-on rollout order.
+
+| Variable | Required | Format / example | Meaning |
+|---|---|---|---|
+| `M365_TENANT_SYNC_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for the scheduled tenant snapshot (users, sign-in activity, Intune devices, Conditional Access, licenses, Secure Score). Gates **every** entry point: the ticker, post-consent seeding, the on-demand sync route, and the disconnect hook. Off means no sync work of any kind runs. |
+| `M365_SYNC_CONCURRENCY` | No | Positive integer (default `4`) | Sync jobs processed concurrently per API instance. The Graph fetch holds no database connection, so this bounds persist work, not fetch work. |
+| `M365_SYNC_MAX_BACKLOG` | No | Positive integer (default `500`) | Queue depth (`waiting + prioritized + delayed + active`) above which the ticker skips a tick. Due rows keep their past due time and are picked up next tick. |
+| `M365_SYNC_TICK_BATCH` | No | Positive integer (default `200`) | Rows claimed per 60-second tick. This is the capacity dial: target at most 50 % utilisation of `batch × 1440` runs per day. |
+
+### Executor-side tenant-sync tuning (v0.113.0+)
+
+These are read by the **`m365-graph-read-executor` sidecar**, not the API. They tune the Microsoft 365 tenant-sync feature that ships in v0.113.0. All are optional; the executor refuses to start on a malformed value rather than guessing.
+
+| Variable | Default | Format | Meaning |
+|---|---|---|---|
+| `M365_SYNC_CONTINUATION_KEY` | — (ephemeral per process) | Exactly 32 bytes, base64-encoded (44 characters) | Secret used to seal sync continuation tokens so a long sign-in-log sync can resume across executor restarts or replicas. When unset, the executor mints a key at boot: continuations then die with the process and the sync restarts that domain from page 1 — a self-healing default, so an existing executor keeps working without it. Set it when you run more than one executor replica. |
+| `M365_SYNC_MAX_IN_FLIGHT` | `4` | Integer `1`–`64` | Maximum concurrent tenant-sync operations the executor will run. |
+| `M365_MAX_IN_FLIGHT` | `32` | Integer `1`–`1024` | Overall in-flight Graph request ceiling for the executor. **Must be greater than or equal to `M365_SYNC_MAX_IN_FLIGHT`**, or the executor refuses to start. |
+| `M365_SIGNIN_ACTIVITY_RPM` | `4` | Positive integer | Token bucket for sign-in-activity Graph requests. Microsoft's limit is **10 per minute per application across all tenants**, so divide this across every region and replica that shares one app registration. |
+| `M365_SIGNIN_PAGES_PER_CALL` | `5` | Positive integer | Pages fetched per sign-in call before returning an opaque continuation. |
+| `M365_SYNC_MAX_ITEMS_USERS` | `25000` | Positive integer | Per-pull user cap. A tenant over the cap syncs as `partial` and never has vanished rows marked stale; raising the cap is the remedy. |
+| `M365_SYNC_MAX_ITEMS_DEVICES` | `25000` | Positive integer | Same, for Intune managed devices. |
+| `M365_SYNC_MAX_ITEMS_CA` | `500` | Positive integer | Same, for Conditional Access policies. |
+| `M365_SYNC_MAX_ITEMS_SKUS` | `200` | Positive integer | Same, for subscribed SKUs. |
+
 <Aside type="tip">
   With Docker secrets, `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` points at the in-container mount path (e.g. `/run/secrets/...`), while `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` in `.env` is the **host path** of the source JWK that feeds that secret. Provision the source file with a numeric owner and mode `0400`; only the mounted `..._FILE` path is validated at boot.
 </Aside>
@@ -709,6 +775,7 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 |---|---|---|
 | `BILLING_SERVICE_URL` | — | URL of the billing service for AI credit checks and deductions. When unset, AI usage is unlimited. |
 | `BILLING_SERVICE_API_KEY` | — | API key for authenticating to the billing service |
+| `STRIPE_SESSION_REVOCATION_MODE` | `enforce` | **v0.113.0+.** How strictly Breeze cancels a customer's open Stripe Checkout payment link when the invoice it belongs to is reset, paid manually, voided, or the Stripe key is replaced. `enforce` (default) refuses the transition with `503 STRIPE_REVOCATION_PENDING` if it cannot prove every open Checkout session is dead; the revocation intent is kept and retried by a 60-second sweep, so the refusal is short-lived. `observe` still records the intent and calls Stripe, but a failure never blocks the transition — an incident de-escalation lever, not a normal setting. Any other value is treated as `enforce` with a warning. Roll back by flipping to `observe`, never by reverting the migration. |
 
 <Aside>
   Billing integration is optional. When these variables are unset, AI chat sessions proceed without credit checks.
@@ -722,6 +789,8 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `ANTHROPIC_BASE_URL` | — | **Self-hosted only.** Point the AI Agent at an Anthropic-compatible `/v1/messages` backend (vLLM 0.23+, LiteLLM). Must be an `http(s)` URL. Permitted only when `IS_HOSTED` is explicitly `false` (or `0`/`no`/`off`); refused at boot if `IS_HOSTED` is `true`, unset, or invalid. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
+| `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` | `true` | **v0.113.0+.** Lets the AI assistant and background agents write a script as a reviewed proposal ([AI Script Authoring](/features/ai-script-authoring/)). Set `false` to hide the `propose_script` / `get_script_proposal` tools and the `/api/v1/ai/script-proposals` routes entirely. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`; any other value stops the API from starting. The shipped Compose file defaults it to `true` as well. This flag does **not** control the unattended lane, which stays off until a partner raises its ceiling and an organization opts in. |
+| `BREEZE_AI_SCRIPT_REVIEWER_MODEL` | — | **v0.113.0+.** Platform-default model for the independent reviewer that examines every AI-authored script proposal. Unset = the platform default (`ANTHROPIC_MODEL` when set, otherwise the Sonnet-class fallback). A partner or organization can name its own reviewer model on its script-authoring policy, which takes precedence. |
 
 ### AI Operator (preview, off by default)
 

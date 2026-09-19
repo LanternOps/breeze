@@ -7,7 +7,7 @@
     },
     "loading": "Carregando automação...",
     "breadcrumb": {
-      "automations": "Automações",
+      "automations": "Jobs",
       "new": "Nova automação",
       "edit": "Editar automação"
     },
@@ -106,7 +106,8 @@
       "sendNotification": "Enviar notificação",
       "createAlert": "Criar alerta",
       "executeCommand": "Executar comando",
-      "deploySoftware": "Implantar software"
+      "deploySoftware": "Implantar software",
+      "aiTriage": "Triagem por IA"
     },
     "severity": {
       "critical": "Crítica",
@@ -133,7 +134,8 @@
       "saveAutomation": "Salvar automação",
       "copyUrl": "Copiar URL",
       "addCondition": "Adicionar condição",
-      "addAction": "Adicionar ação"
+      "addAction": "Adicionar ação",
+      "removeAction": "Remover ação"
     },
     "scope": {
       "title": "Escopo",
@@ -204,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilégios elevados",
     "relativeTime": {
       "justNow": "Agora mesmo",
       "minutesAgo": "há {{count}} min",
@@ -341,8 +344,8 @@
       "delete": "Falha ao excluir automação"
     },
     "loading": "Carregando automações...",
-    "title": "Automações",
-    "description": "Crie e gerencie fluxos automatizados.",
+    "title": "Jobs",
+    "description": "Automações agendadas, sob demanda, por webhook e por evento.",
     "actions": {
       "new": "Nova automação",
       "deleting": "Excluindo..."
@@ -351,6 +354,14 @@
       "title": "Excluir automação",
       "confirmPrefix": "Tem certeza de que deseja excluir",
       "confirmSuffix": "Esta ação não pode ser desfeita."
+    },
+    "tabs": {
+      "ariaLabel": "Tipos de job",
+      "all": "Todos",
+      "scheduled": "Agendados",
+      "on-demand": "Sob demanda",
+      "webhooks": "Webhooks",
+      "event-rules": "Regras de evento"
     }
   },
   "complianceDashboard": {
@@ -1332,6 +1343,11 @@
       "confirmSuffix": "Esta ação não pode ser desfeita."
     },
     "library": {
+      "target": "Importar em",
+      "allOrgs": "Todas as organizações do parceiro",
+      "chooseOrg": "Escolha uma organização",
+      "partnerPermission": "Você não pode importar scripts para todas as organizações. Escolha uma organização.",
+      "importSuccess": "“{{name}}” importado",
       "title": "Biblioteca de scripts do sistema",
       "description": "Importe scripts para sua organização",
       "searchPlaceholder": "Pesquisar scripts do sistema...",
@@ -1370,12 +1386,21 @@
     "modeSkip": "Ignorar",
     "modeRename": "Importar com um novo nome",
     "modeNewVersion": "Adicionar como nova versão do script existente",
+    "tagLegacy": "Marcar como importação legada",
+    "tagLegacyHint": "Adiciona a tag legacy-import para que um Fleet Design possa inventariar para que esses scripts serviam.",
     "partnerWide": "Disponibilizar para todas as organizações (em todo o parceiro)",
     "importCommit": "Importar {{count}} scripts",
     "resultSummary": "{{imported}} importados, {{renamed}} renomeados, {{versioned}} versionados, {{skipped}} ignorados, {{failed}} com falha",
     "scriptCount": "{{count}} scripts no pacote",
     "statusInvalid": "Inválido",
-    "exportLimit": "Você pode exportar até {{max}} scripts por pacote."
+    "exportLimit": "Você pode exportar até {{max}} scripts por pacote.",
+    "importDoneTitle": "Importação concluída",
+    "importDoneNothing": "Nada foi importado",
+    "importDoneOpen": "Abrir script",
+    "resultActionImported": "Importado",
+    "resultActionRenamed": "Renomeado de {{name}}",
+    "resultActionVersioned": "Adicionado como nova versão",
+    "resultOpen": "Abrir"
   },
   "testRunner": {
     "title": "Execução de teste",
@@ -1412,5 +1437,33 @@
       "pollDeadline": "Ainda sem resultado — verifique o histórico de execuções.",
       "pollFailed": "Não foi possível ler o resultado — a execução pode ter sido excluída ou seu acesso mudou."
     }
+  },
+  "provenance": {
+    "origin": "Origem",
+    "originHuman": "Humano",
+    "originAiProposal": "Proposta de IA",
+    "originImported": "Importado",
+    "originSystem": "Integrado",
+    "reviewed": "Revisado",
+    "editedSinceReview": "Editado após a revisão",
+    "notReviewed": "Não revisado",
+    "notReviewedDetail": "Criado por IA e aprovado por uma pessoa, mas nenhuma revisão de modelo foi realizada nesta versão.",
+    "provenanceTitle": "Procedência",
+    "reviewSummary": "Resumo da revisão",
+    "approvedBy": "Aprovado por",
+    "evidenceErased": "Evidência da revisão apagada",
+    "allOrigins": "Todas as origens"
+  },
+  "scriptProposalDetail": {
+    "loading": "Carregando…",
+    "loadError": "Não foi possível carregar esta proposta.",
+    "evidenceErased": "As evidências de revisão desta proposta foram apagadas (a organização de origem foi mesclada ou o período de retenção expirou). A execução de script resultante ainda é visível no histórico do dispositivo.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Nível de risco",
+    "reviewSummaryLabel": "Resumo do revisor",
+    "riskLow": "Baixo",
+    "riskMedium": "Médio",
+    "riskHigh": "Alto",
+    "riskCritical": "Crítico"
   }
 }

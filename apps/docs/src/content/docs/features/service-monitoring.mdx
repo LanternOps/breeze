@@ -19,6 +19,10 @@ A Monitoring feature covers one thing: **service & process watches** — service
 
 Because Monitoring is a configuration-policy feature, it can be owned by a single organization or made **partner-wide** to apply the same watches across every organization you manage. See [Configuration Policies](/features/configuration-policies/) for how ownership and the cascade work.
 
+<Aside type="note">
+  The **Service stopped**, **Process stopped**, and **Process resource** kinds on a [Monitor](/features/monitors/) still read their watch list from this tab -- creating one of those monitor kinds doesn't add a watch by itself, the name also has to be configured here until a future wave unifies the two.
+</Aside>
+
 ## Define monitors in a configuration policy
 
 <Steps>

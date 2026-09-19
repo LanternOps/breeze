@@ -1,0 +1,173 @@
+{
+  "page": {
+    "title": "Design de frota",
+    "description": "Um design criado por IA para a frota desta organização: para que serve cada dispositivo, o que monitorar e o que mudou.",
+    "orgLabel": "Organização",
+    "selectOrgPlaceholder": "Nenhuma organização disponível",
+    "siteLabel": "Site (opcional)",
+    "allSites": "Todos os sites",
+    "startButton": "Iniciar um design de frota",
+    "startError": "Não foi possível iniciar a execução do design de frota.",
+    "startSuccess": "Execução do design de frota iniciada.",
+    "empty": "Ainda não há designs de frota para esta organização.",
+    "loadError": "Falha ao carregar os designs de frota.",
+    "detailLoadError": "Falha ao carregar este design de frota.",
+    "loadingDesign": "Carregando design…",
+    "downloadPdf": "Baixar PDF",
+    "downloadFailed": "Falha ao baixar o PDF.",
+    "reviewApply": "Revisar e aplicar",
+    "listColumns": {
+      "generated": "Gerado",
+      "functions": "Funções",
+      "watches": "Monitoramentos",
+      "rules": "Regras",
+      "applied": "Aplicado"
+    },
+    "startSkipped": {
+      "modeOff": "O agente projetista está desativado para esta organização.",
+      "killSwitchOff": "Os agentes de IA estão desativados para toda a plataforma no momento.",
+      "agentDisabled": "O agente projetista está desabilitado para esta organização.",
+      "noEffectiveAgent": "Nenhum agente projetista está configurado para esta organização.",
+      "orgBudgetExceeded": "O orçamento de IA desta organização foi esgotado neste período.",
+      "agentDailyBudgetExceeded": "O orçamento diário do agente projetista foi esgotado.",
+      "maxConcurrentDesignRuns": "Já existe uma execução de design de frota em andamento para esta organização.",
+      "designRate": "Esta organização atingiu seu limite de execuções de design de frota por enquanto.",
+      "duplicate": "Uma execução de design de frota equivalente já havia sido solicitada.",
+      "generic": "A execução não foi iniciada ({{reason}}).",
+      "noDesignerAgent": "Ainda não existe um agente Fleet Designer para o parceiro desta organização."
+    },
+    "fileAsDocument": "Arquivar como documento",
+    "fileAsDocumentSuccess": "Design arquivado na biblioteca de documentos.",
+    "fileAsDocumentError": "Não foi possível arquivar o design como documento.",
+    "designerSetup": {
+      "status": {
+        "missing": "Ainda não existe um agente Fleet Designer.",
+        "off": "O agente Fleet Designer está desligado.",
+        "disabled": "O agente Fleet Designer está desabilitado.",
+        "killSwitchOff": "Os agentes de IA estão desligados em toda a plataforma no momento."
+      },
+      "enableHint": "Ative-o aqui. O designer apenas lê sua frota e escreve um design; ele nunca altera um dispositivo.",
+      "askPartnerAdmin": "Peça a um administrador do parceiro para ativar o agente Fleet Designer em Configurações → Agentes de IA.",
+      "killSwitchHint": "Esta é uma configuração da plataforma; nada nesta página pode alterá-la.",
+      "enableButton": "Ativar Fleet Designer",
+      "enableSuccess": "Fleet Designer ativado.",
+      "enableError": "Não foi possível ativar o Fleet Designer.",
+      "errors": {
+        "partnerScopeRequired": "Somente um administrador do parceiro pode ativar o agente Fleet Designer.",
+        "partnerAdminRequired": "Somente um administrador do parceiro pode ativar o agente Fleet Designer.",
+        "killSwitchOff": "Os agentes de IA estão desligados em toda a plataforma no momento.",
+        "agentKindExists": "Já existe um agente designer. Atualize a página e tente novamente.",
+        "actPrerequisitesNotMet": "O agente designer precisa de um destinatário antes de poder ser executado. Adicione um em Configurações → Agentes de IA.",
+        "invalidRecipients": "Não foi possível definir sua conta como destinatário do designer. Adicione um em Configurações → Agentes de IA."
+      }
+    }
+  },
+  "sections": {
+    "found": "O que foi encontrado",
+    "functions": "Para que serve cada dispositivo",
+    "monitoring": "O que monitorar, e por quê",
+    "retired": "O que não é mantido",
+    "automation": "Automação",
+    "legacy": "Inventário de scripts legados",
+    "baseline": "Linha de base e precursores",
+    "unsure": "Sobre o que o projetista não tem certeza"
+  },
+  "items": {
+    "none": "Nada aqui.",
+    "applied": "Aplicado",
+    "findingCount": "{{title}} — {{count}} dispositivos",
+    "functionMeta": "{{count}} dispositivos · {{pct}}% de confiança",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "automation": {
+    "showContent": "Mostrar conteúdo do script"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Categoria",
+      "coveredBy": "Coberto por",
+      "intent": "Intenção",
+      "notes": "Notas"
+    },
+    "bucket": {
+      "obsolete": "Obsoleto",
+      "covered": "Coberto",
+      "needed": "Necessário"
+    }
+  },
+  "drawer": {
+    "title": "Aplicar design de frota",
+    "loadingPreview": "Verificando o que isso fará…",
+    "nothingSelected": "Selecione pelo menos um item para aplicar.",
+    "creates": "Cria",
+    "createsScripts": "Cria scripts",
+    "scriptRenamed": "já existe um script com esse nome — o novo receberá um sufixo numerado",
+    "scriptsNote": "Criado na biblioteca de scripts desta organização, marcado como fleet-design. Nada é executado até que alguém o execute; a reversão remove a marcação e mantém o script.",
+    "watchAndRuleCount": "{{watches}} monitoramentos, {{rules}} regras",
+    "retires": "Retira",
+    "displaces": "Desloca",
+    "displacesCount": "{{count}} dispositivos",
+    "acceptDisplacement": "Aceitar deslocamento",
+    "roleCorrections": "Correções de função",
+    "billingWarning": "Alterações de função podem afetar a cobrança.",
+    "alreadyApplied": "Já aplicado",
+    "blockers": "Bloqueios",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "applyingCloseBlocked": "Aplicando — aguarde a conclusão.",
+    "rollingBackCloseBlocked": "Revertendo — aguarde a conclusão."
+  },
+  "result": {
+    "applied": "{{count}} item(ns) aplicado(s).",
+    "skipped": "{{count}} item(ns) já aplicado(s) ignorado(s).",
+    "partial": "Aplicado parcialmente — falhou na etapa {{step}}: {{reason}}",
+    "rollback": "Reverter o que foi aplicado",
+    "rollbackDone": "{{count}} item(ns) revertido(s).",
+    "rollbackRefused": "Alguns itens não puderam ser revertidos:",
+    "close": "Fechar"
+  },
+  "errors": {
+    "genericPreview": "Falha ao pré-visualizar este design de frota.",
+    "genericApply": "Falha ao aplicar este design de frota.",
+    "genericRollback": "Falha ao reverter este design de frota.",
+    "blocked": "Este design ainda não pode ser aplicado — resolva os bloqueios e tente novamente.",
+    "site_restricted": "Contas restritas a um site não podem aplicar nem reverter um design de frota.",
+    "no_designer_agent": "Nenhum agente projetista está configurado para esta organização.",
+    "not_found": "Este design de frota não foi encontrado.",
+    "scripts_write_required": "Criar scripts requer a permissão de escrita em Scripts. Remova a seleção dos scripts propostos ou peça a um administrador."
+  },
+  "drift": {
+    "banner": "Desvio desde o design aplicado em {{date}}: {{missing}} ausentes, {{extra}} extras, {{changed}} alterados.",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos",
+    "rows": {
+      "missing": "Ausente",
+      "extra": "Excedente",
+      "changed": "Alterado"
+    },
+    "columns": {
+      "drift": "Desvio",
+      "kind": "Tipo",
+      "item": "Elemento",
+      "scope": "Função / política",
+      "detail": "Detalhe"
+    }
+  },
+  "evidence": {
+    "notMeasured": "Não medido",
+    "org": "Organização",
+    "devices": "Dispositivos",
+    "software": "Inventário de software",
+    "services": "Serviços do sistema",
+    "network": "Evidências de rede",
+    "posture": "Postura de segurança",
+    "health": "Integridade do parque",
+    "configuration": "Configuração",
+    "automation": "Evidências de automação",
+    "logs": "Logs de eventos",
+    "counts": "Contagens de atividades",
+    "precursors": "Indicadores de alerta antecipado",
+    "drift": "Desvios em relação ao projeto aprovado"
+  }
+}

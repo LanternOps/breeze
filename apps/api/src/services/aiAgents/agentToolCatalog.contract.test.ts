@@ -84,6 +84,11 @@ describe('agentToolCatalog contract', () => {
     }
   });
 
+  it('the designer preset is empty: it reaches reads by the guardrail rule and one outcome tool', () => {
+    expect(AGENT_KIND_PRESETS.designer).toEqual([]);
+    expect(buildAgentToolCatalog().presets.designer).toEqual([]);
+  });
+
   it('operations carry tiers from checkGuardrails and flags from the registries', () => {
     const catalog = buildAgentToolCatalog();
     const services = catalog.tools.find((t) => t.name === 'manage_services')!;

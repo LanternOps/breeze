@@ -43,6 +43,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
+import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
   pamAgentResultV2Schema,
@@ -289,28 +290,55 @@ async function handleVaultSyncResult({ agentId, command, result, resolvedDeviceI
   }
 }
 
-async function handleSnmpPollResult({ agentId, command, result, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+/** Called only after the transport has bound the result to its dispatched target.
+ * The update stays in the agent's org-scoped DB context; RETURNING supplies the
+ * authoritative org for the log, never an agent-supplied organization id.
+ */
+export async function recordSnmpPollFailure(snmpDeviceId: string, deviceId: string, error: string): Promise<void> {
+  const { snmpDevices } = await import('../db/schema');
+  const lastError = redactSecretsFromOutput(error).slice(0, 500);
+  const [updated] = await db.update(snmpDevices)
+    .set({ lastError, lastErrorAt: new Date(), lastStatus: 'warning' })
+    .where(eq(snmpDevices.id, snmpDeviceId))
+    .returning({ orgId: snmpDevices.orgId });
+  if (updated) {
+    console.warn('[AgentWs] SNMP poll failed', { deviceId, orgId: updated.orgId, snmpDeviceId, error: lastError });
+  }
+}
+
+async function handleSnmpPollResult({ agentId, command, result, commandId, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
     const snmpData = result.result as {
       deviceId?: string;
       metrics?: SnmpMetricResult[];
+      protocol?: number;
+      success?: boolean;
     } | undefined;
 
-    if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
-      if (!expectedDeviceId || snmpData.deviceId !== expectedDeviceId) {
-        console.warn(
-          `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
-          `sentDevice=${snmpData.deviceId} expected=${expectedDeviceId ?? 'none'}`
-        );
-        return;
-      }
-      if (isRedisAvailable()) {
+    if (!expectedDeviceId || (snmpData?.deviceId && snmpData.deviceId !== expectedDeviceId)) {
+      console.warn(
+        `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
+        `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectedDeviceId ?? 'none'}`
+      );
+      return;
+    }
+    if (result.status !== 'completed' || snmpData?.success === false) {
+      await recordSnmpPollFailure(expectedDeviceId, resolvedDeviceId, result.error || 'SNMP poll failed');
+      return;
+    }
+    if (snmpData?.deviceId && Array.isArray(snmpData.metrics)) {
+      if (isRedisAvailable() || snmpData.metrics.length === 0) {
+        const { snmpDevices } = await import('../db/schema');
+        await db.update(snmpDevices)
+          .set({ lastError: null, lastErrorAt: null })
+          .where(eq(snmpDevices.id, expectedDeviceId));
+        if (snmpData.metrics.length === 0) return;
         const metrics = snmpData.metrics;
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics));
+        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics, undefined, snmpData.protocol));
       } else {
         // Redis not available — log warning about dropped metrics and mark status
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
@@ -324,7 +352,9 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
             // healthy SNMP target to 'offline' and a one-hour interval.
             lastPollAttemptedAt: new Date(),
             consecutiveFailures: 0,
-            lastStatus: 'warning'
+            lastStatus: 'warning',
+            lastError: null,
+            lastErrorAt: null
           })
           .where(eq(snmpDevices.id, expectedDeviceId));
       }
@@ -333,6 +363,19 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
     console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
     captureException(err);
   }
+}
+
+/** W03 (#5612): `proposalId` rides every CAS rung's RETURNING so the terminal
+ *  convergence point below can enqueue verification without a second read.
+ *  A function, not a module-level const: many route suites mock `../db/schema`
+ *  with a narrow table set, and a const would dereference `scriptExecutions`
+ *  at import time and fail every one of them. */
+function terminalExecutionProjection() {
+  return {
+    id: scriptExecutions.id,
+    scriptId: scriptExecutions.scriptId,
+    proposalId: scriptExecutions.proposalId,
+  } as const;
 }
 
 async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
@@ -452,7 +495,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       phase = 'cancel-confirm-cas';
-      let cancelClosed: Array<{ id: string; scriptId: string }> = [];
+      let cancelClosed: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
       let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db
@@ -464,10 +507,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.status, 'cancelling'),
             eq(scriptExecutions.cancelCommandId, markerCommandId),
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
         cancelConfirmed = cancelClosed.length > 0;
       }
       if (cancelClosed.length === 0) {
@@ -480,13 +520,10 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             eq(scriptExecutions.status, 'cancelling'),
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
       }
 
-      let updatedExecutions: Array<{ id: string; scriptId: string }> = [];
+      let updatedExecutions: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -499,10 +536,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
         effectiveExecution = updatedExecutions[0] ?? null;
 
         // #3607 — second chance for an execution a server-side sweep already
@@ -548,10 +582,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
               isNull(scriptExecutions.exitCode),
               isNull(scriptExecutions.stdout)
             ))
-            .returning({
-              id: scriptExecutions.id,
-              scriptId: scriptExecutions.scriptId,
-            });
+            .returning(terminalExecutionProjection());
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
@@ -673,6 +704,27 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           error: executionValues.errorMessage ?? executionValues.stderr,
           completedAt: executionValues.completedAt,
         });
+
+        if (effectiveExecution.proposalId) {
+          // W03 (#5612, spec §4.9): the proposal's verification claim is
+          // evaluated AFTER the execution reaches a terminal state, by an
+          // independent device read — never inferred from this result frame,
+          // which is why a failed run still enqueues. Wrapped: a Redis hiccup
+          // must not fail result ingestion, which is the durable record. The
+          // proposal simply stays `executed` and the card shows "verification
+          // pending" rather than losing the output.
+          try {
+            // #1105: never hold the ambient DB context across a Redis round-trip.
+            await runOutsideDbContext(() => enqueueScriptVerify({
+              proposalId: effectiveExecution.proposalId as string,
+              executionId: effectiveExecution.id,
+              attempt: 1,
+            }));
+          } catch (err) {
+            console.error(`[AgentWs] script-verify enqueue failed for execution ${effectiveExecution.id}:`, err);
+            captureException(err, undefined, { area: 'script_verify_enqueue', executionId: effectiveExecution.id });
+          }
+        }
       }
 
       // Update batch counters if this is part of a batch.
@@ -698,7 +750,10 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const countedExecution = updatedExecutions[0] ?? cancelClosed[0] ?? null;
       const batchId = payload?.batchId as string | undefined;
       phase = 'batch-counters';
-      if (batchId && countedExecution) {
+      // A proposal-backed execution has no library script and is never part of
+      // a batch (script_execution_batches.script_id is NOT NULL), so the
+      // counter update only applies to rows that carry a script_id.
+      if (batchId && countedExecution && countedExecution.scriptId) {
         const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';
         await db
           .update(scriptExecutionBatches)

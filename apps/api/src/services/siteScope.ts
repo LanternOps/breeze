@@ -95,6 +95,28 @@ export interface SystemReportExecutionAuthority {
   capturedAt: Date;
 }
 
+/**
+ * The authorities a report generator may run under. `ReportExecutionAuthority`
+ * is the request-path union (user | portal_user) and stays the public surface of
+ * `generateReport`. `SystemReportExecutionAuthority` is admitted ONLY through
+ * `generateManagedEvidenceReport`, and only for a type the closed
+ * `MANAGED_EVIDENCE_REGISTRY` names (#5784, OD-5 = B).
+ */
+export type ReportGenerationAuthority =
+  | ReportExecutionAuthority
+  | SystemReportExecutionAuthority;
+
+/**
+ * The authority `generateManagedEvidenceReport` runs under (#5784). Always
+ * org-wide unrestricted: a restricted fingerprint must never be stamped on an
+ * org-wide result, because a later reader would believe the artifact was
+ * scoped when it was not. Delegates to `systemReportAuthority` (P2-3) so there
+ * is exactly one minting site with its argument validation.
+ */
+export function systemReportAuthorityFor(orgId: string): SystemReportExecutionAuthority {
+  return systemReportAuthority(orgId);
+}
+
 export type LiveReportAuthorityResult =
   | { ok: true; authority: UserReportExecutionAuthority }
   | {
@@ -176,6 +198,15 @@ export function siteScopeFromPermissions(
   };
 }
 
+/**
+ * An INTEGRITY digest over the normalized scope, not a MAC. It is unkeyed, so
+ * anyone able to write the row can also write a matching digest: it proves the
+ * seven execution-scope columns are internally consistent (no half-written or
+ * hand-edited envelope decodes), never that a particular principal authored
+ * them. Binding to a principal is done by the per-table
+ * `*_execution_scope_shape_chk` constraint (`execution_scope_user_id =
+ * requested_by`) plus the worker's re-assertion of live authority before use.
+ */
 export function siteScopeFingerprint(scope: SiteScopeV1): string {
   const normalized = normalizeScope(scope);
   let stableValue: Record<string, unknown>;

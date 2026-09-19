@@ -460,6 +460,11 @@
       "discardFailed": "KI-Entwurf konnte nicht verworfen werden.",
       "discarded": "Entwurf verworfen"
     },
+    "aiProposal": {
+      "postAsNote": "Als interne Notiz posten",
+      "posted": "Als interne Notiz gepostet",
+      "postFailed": "Notiz konnte nicht gepostet werden"
+    },
     "resolve": {
       "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
       "submit": "Ticket lösen"

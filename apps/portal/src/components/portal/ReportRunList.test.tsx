@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PortalRunDto } from '@breeze/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ReportRunList } from './ReportRunList';
+import { ReportRunList, reportDisplayName } from './ReportRunList';
 
 const { generateMock, listMock } = vi.hoisted(() => ({
   generateMock: vi.fn(),
@@ -34,6 +34,31 @@ const runAt = (id: string): PortalRunDto => ({ ...run, id });
 
 describe('ReportRunList', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  // #5784 W03 (OD-10 = A). A managed-evidence run reaches the portal list only
+  // after its occurrence is delivered; the customer may never generate one, so
+  // the toolbar must NOT gain a fourth button.
+  it('lists a delivered endpoint management review run with no generate button for it', () => {
+    const evidenceRun: PortalRunDto = {
+      ...run,
+      id: 'run-epm',
+      name: 'Service evidence — Endpoint management review',
+      type: 'endpoint_management_review',
+    };
+
+    render(<ReportRunList initialRuns={[evidenceRun]} timezone="America/Denver" />);
+
+    expect(screen.getByTestId('portal-report-run-row-run-epm')).toBeTruthy();
+    // #6101: the internal "Service evidence —" prefix is trimmed, same as
+    // the MSP-side "Customer portal —" prefix.
+    expect(screen.getByText('Endpoint management review')).toBeTruthy();
+    expect(screen.queryByText(/Service evidence/)).toBeNull();
+    expect(
+      screen.getByTestId('portal-report-run-pdf-run-epm').getAttribute('href'),
+    ).toBe('/api/v1/portal/reports/runs/run-epm/pdf');
+    expect(screen.queryByTestId('portal-reports-generate-endpoint-management')).toBeNull();
+    expect(screen.queryByText(/generate endpoint management/i)).toBeNull();
+  });
 
   it('generates a report and renders PDF/CSV download links', async () => {
     generateMock.mockResolvedValue({ data: run });
@@ -93,6 +118,55 @@ describe('ReportRunList', () => {
     expect(row.textContent).not.toContain('Customer portal');
   });
 
+  // #6101: `MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX` in
+  // apps/api/src/services/managedEvidenceRegistry.ts is an internal label —
+  // customers should never see "Service evidence —" any more than they see
+  // "Customer portal —".
+  describe('reportDisplayName', () => {
+    it('trims the "Customer portal —" prefix (em dash)', () => {
+      expect(reportDisplayName('Customer portal — Executive summary')).toBe(
+        'Executive summary',
+      );
+    });
+
+    it('trims the "Service evidence —" prefix (em dash)', () => {
+      expect(reportDisplayName('Service evidence — Threat detection review')).toBe(
+        'Threat detection review',
+      );
+    });
+
+    it('tolerates the en dash and hyphen variants for both prefixes', () => {
+      expect(reportDisplayName('Customer portal – Executive summary')).toBe(
+        'Executive summary',
+      );
+      expect(reportDisplayName('Customer portal - Executive summary')).toBe(
+        'Executive summary',
+      );
+      expect(reportDisplayName('Service evidence – Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+      expect(reportDisplayName('Service evidence - Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+    });
+
+    it('leaves a name with neither prefix untouched', () => {
+      expect(reportDisplayName('Executive summary')).toBe('Executive summary');
+    });
+
+    it('tolerates a dash with no surrounding whitespace', () => {
+      expect(reportDisplayName('Service evidence—Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+    });
+
+    it('does not trim the prefix when it appears mid-string, not at the start', () => {
+      expect(reportDisplayName('Report: Service evidence — Vulnerability management')).toBe(
+        'Report: Service evidence — Vulnerability management',
+      );
+    });
+  });
+
   it('totals the ledger in a foot line', () => {
     render(
       <ReportRunList
@@ -133,14 +207,50 @@ describe('ReportRunList', () => {
     });
   });
 
-  it('offers the two generate actions as peers, with no false primary', () => {
+  it('offers the three generate actions as peers, with no false primary', () => {
     render(<ReportRunList initialRuns={[run]} timezone="UTC" />);
 
     const posture = screen.getByTestId('portal-reports-generate-posture');
     const executive = screen.getByTestId('portal-reports-generate-executive');
+    const lifecycle = screen.getByTestId('portal-reports-generate-lifecycle');
     expect(posture.className).toBe(executive.className);
+    expect(lifecycle.className).toBe(executive.className);
     // BTN_PRIMARY's service-green fill is the tell.
     expect(posture.className).not.toContain('bg-primary');
+  });
+
+  it('generates a hardware lifecycle plan from the third action', async () => {
+    generateMock.mockResolvedValue({ data: { ...run, type: 'hardware_lifecycle' } });
+    listMock.mockResolvedValue({ data: [{ ...run, type: 'hardware_lifecycle' }] });
+
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+
+    fireEvent.click(screen.getByTestId('portal-reports-generate-lifecycle'));
+
+    await waitFor(() => {
+      expect(generateMock).toHaveBeenCalledWith('hardware_lifecycle');
+    });
+  });
+
+  it('labels the lifecycle action and its progress line in plain words', async () => {
+    let release: (value: unknown) => void = () => {};
+    generateMock.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    listMock.mockResolvedValue({ data: [] });
+
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+
+    const button = screen.getByTestId('portal-reports-generate-lifecycle');
+    expect(button.textContent).toBe('Generate hardware lifecycle plan');
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('portal-reports-status').textContent,
+      ).toBe('Generating your hardware lifecycle plan…');
+    });
+
+    release({ data: run });
   });
 
   it('speaks of the machines rather than an "environment", and labels the summary plainly', () => {
@@ -190,5 +300,93 @@ describe('ReportRunList', () => {
       'Report generation is temporarily limited. Try again in about 2 minutes.',
     );
     expect(screen.getByTestId('portal-reports-status').textContent).toBe('');
+  });
+
+  // #5784 W02 / OD-10 = A: the customer SEES and downloads what their service
+  // plan produced, but cannot generate it — only the three self-service types
+  // get a button. The type reaches this list through portalRunListPredicate,
+  // which has no type filter, so an unwidened union would be a type lie the
+  // compiler cannot see.
+  it('labels a threat detection run without offering a generate button', () => {
+    const threatRun: PortalRunDto = {
+      ...run,
+      id: 'run-td',
+      name: 'Service evidence — Threat detection review',
+      type: 'threat_detection_review',
+    };
+    render(<ReportRunList initialRuns={[threatRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-td')).toBeInTheDocument();
+    expect(screen.getByText(/threat detection review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-threat_detection_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-td')).toBeInTheDocument();
+  });
+
+  // #5784 W04, OD-10 = A. A delivered vulnerability-management run is LISTED
+  // and downloadable, but the portal user never gets a button to produce one.
+  it('lists a delivered vulnerability management run with no generate action for it', () => {
+    render(
+      <ReportRunList
+        initialRuns={[{
+          ...run,
+          id: 'run-vuln',
+          name: 'Service evidence — Vulnerability management',
+          type: 'vulnerability_management',
+        }]}
+        timezone="UTC"
+      />,
+    );
+
+    // #6101: `reportDisplayName` trims both the MSP's "Customer portal —"
+    // prefix and the internal "Service evidence —" prefix.
+    expect(screen.getByText('Vulnerability management')).toBeTruthy();
+    expect(screen.queryByText(/Service evidence/)).toBeNull();
+    expect(screen.getByTestId('portal-report-runs-table')).toBeTruthy();
+    expect(screen.queryByTestId('portal-reports-generate-vulnerability')).toBeNull();
+    // Exactly the three self-service actions, unchanged.
+    expect(screen.getByTestId('portal-reports-generate-posture')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-executive')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-lifecycle')).toBeTruthy();
+  });
+
+  // #5784 W06 / OD-10 = A, and the PII case: this artifact carries user
+  // principal names and IP addresses, so it must be listed-but-not-generatable
+  // for exactly the same reason as the threat review above, only more so.
+  it('labels an identity access run without offering a generate button', () => {
+    const identityRun: PortalRunDto = {
+      ...run,
+      id: 'run-ia',
+      name: 'Service evidence — Identity and access review',
+      type: 'identity_access_review',
+    };
+    render(<ReportRunList initialRuns={[identityRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-ia')).toBeInTheDocument();
+    expect(screen.getByText(/identity and access review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-identity_access_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
+  });
+});
+
+describe('ReportRunList — hardware lifecycle link', () => {
+  it('renders a ruled link row under the title when given a lifecycleHref, and nothing otherwise', () => {
+    const { unmount } = render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const link = screen.getByTestId('reports-lifecycle-card');
+    expect(link).toHaveAttribute('href', '/portal/devices#lifecycle');
+    expect(link.className).not.toContain('bg-card');
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+    expect(screen.queryByTestId('reports-lifecycle-card')).toBeNull();
+  });
+});
+
+describe('ReportRunList — lifecycle row padding', () => {
+  it('gives the hover wash side padding while keeping the text on the column edge', () => {
+    render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const cls = screen.getByTestId('reports-lifecycle-card').className;
+    expect(cls).toMatch(/\bpx-4\b/);
+    expect(cls).toMatch(/-mx-4\b/);
   });
 });

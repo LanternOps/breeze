@@ -60,6 +60,11 @@ import { AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS } from '@breeze/shared';
 export const FINDINGS_TO_REVIEW_OUTCOME_PATHS: readonly (readonly string[])[] = [
   ['sweepFindings', 'findings'],
   ['proposedActions'],
+  // AI patch agent W01 (#5747) — a patch plan's items are the work a human
+  // must read; without this a patch run badges "No action" over unread
+  // items. Refused items are counted too: the model proposed them and the
+  // run detail shows why each was refused.
+  ['patchPlan', 'items'],
 ] as const;
 
 /** Guards the `sql.raw` splice below — every key is a module constant, and

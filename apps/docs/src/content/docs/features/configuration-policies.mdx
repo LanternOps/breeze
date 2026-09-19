@@ -78,6 +78,7 @@ A policy can bundle multiple feature types:
 | **Backup** | Schedule and retention |
 | **Security** | Security policy settings |
 | **Monitoring** | Agent-side service & process watches, check interval, auto-restart |
+| **Monitors** | Attaches [monitors](/features/monitors/) -- objects that bundle a condition, severity, delivery, and response actions -- to this policy's scope |
 | **Automation** | Event triggers, cron schedules, bulk actions |
 | **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
 | **Vulnerability Scanning** | Turns on daily CVE correlation for the scope (off by default) -- see [vulnerability management](/features/vulnerability-management/) |
@@ -104,6 +105,8 @@ Each feature can be configured in one of two modes:
 - **Monitoring** is **agent-side**. It watches specific Windows services or processes you name (e.g. `Spooler`, `sshd`, `node`), reports whether each one is running, and can automatically restart one that stops. It does not evaluate metric thresholds or event logs itself.
 
 A single policy can carry both a Monitoring feature and an Alert Rules feature at the same time -- for example, watching the `Spooler` service with auto-restart while also alerting on disk usage above 90%. See [Creating Alert Rules](/features/alerts/#creating-alert-rules) and [Service & Process Monitoring](/features/service-monitoring/) for how to configure each.
+
+Don't confuse either of these with the separate **Monitors** feature (a third, similarly-named thing): a [monitor](/features/monitors/) is a single authored object -- condition, severity, delivery, and response actions together -- that compiles into an Alert Rule and an Automation for you, rather than requiring you to wire the two together by hand.
 
 If the same kind of threshold is set on Alert Rules feature links at different levels of the policy hierarchy (e.g. a disk-space rule on both the organization and one of its sites), the **most specific (closest) level to the device wins** -- the same closest-wins rule that governs every other policy setting, described above.
 
@@ -166,6 +169,15 @@ Add one or more alert conditions. Each condition requires:
 - **Auto-resolve** — automatically resolve the alert when the condition clears
 
 Optionally link a title and message template to control notification formatting.
+
+Each rule can also carry its own delivery settings, independent of any organization-wide default:
+
+- **Notification channels** (`notificationChannelIds`) — specific channels to notify. If left unset, delivery falls back to notification routing rules, then the organization's default channels.
+- **Escalation policy** (`escalationPolicyId`) — an [escalation policy](/features/alerts/#escalation-policies) to attach, so an alert from this rule that goes unacknowledged notifies progressively broader audiences over time.
+
+<Aside type="note">
+  These two fields exist on both a config-policy Alert Rule and a standalone alert rule. Before this option existed, a config-policy alert rule had no way to attach an escalation policy and always fell back to the organization's default notification channels.
+</Aside>
 
 ### Maintenance Windows
 
@@ -360,7 +372,7 @@ When creating a policy, set `ownerScope` to `organization` (the default) or `par
 
 To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `monitors`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`. `monitors` (plural) is the [Monitors](/features/monitors/) feature -- distinct from `monitoring` (singular), which is the agent-side service/process watch feature.
 
 ## Troubleshooting
 

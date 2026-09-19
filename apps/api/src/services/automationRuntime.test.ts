@@ -171,6 +171,17 @@ describe('automationRuntime', () => {
     variableScope,
   }) as any;
 
+  it('forwards the run remediation cause alongside the automation script lane', async () => {
+    const trigger = { kind: 'alert' as const, refId: 'alert-1', key: 'alert:rule-1' };
+    await executeRunScriptAction({ type: 'run_script', scriptId: 'script-1' }, 0, {
+      ...contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
+      remediationTrigger: trigger,
+    });
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(expect.objectContaining({
+      triggerType: 'automation', trigger,
+    }));
+  });
+
   it('takes the variable scope from the run context and never loads one itself (#3409 PR3 P2)', async () => {
     // The hoist's whole point: executeRunScriptAction runs once PER DEVICE PER
     // run_script action inside runWithConcurrency. Calling it N times must

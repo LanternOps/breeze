@@ -125,7 +125,22 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  * profile" note on `classifyTerminal`.
  */
 const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
-  'verdict', 'sweep', 'narrative', 'triage',
+  'verdict', 'sweep', 'narrative', 'triage', 'design',
+  // AI patch agent (W01): a patch run returns a plan — advice a human must
+  // accept — built from a system-assembled evidence bundle, and executes
+  // nothing. Its clean completion says nothing about whether the org's
+  // remediation is working, so it never resets (or increments) the streak.
+  // `failed` stays profile-independent, as for every member here. Added BY
+  // HAND: nothing fails to compile if this line is missing (see the note on
+  // `classifyTerminal`); agentCircuit.test.ts's per-profile row is the guard.
+  'patch',
+  // Execution plane W04 (#5715): an analysis run computes over data it was
+  // given and PROPOSES; it executes nothing on the fleet
+  // (`maxActionsPerRun: 0`), so its clean completion says nothing about
+  // whether the org's remediation is working and must neither reset nor
+  // increment the streak. Added BY HAND, same as `patch` above — the
+  // per-profile row in agentCircuit.test.ts is the guard.
+  'analysis',
 ]);
 
 /**
@@ -179,7 +194,19 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * completion carries no information about the org's remediation health
  * either. `failed` stays profile-independent here too.
  *
- * NOTE for whoever adds the sixth profile: this function compares `profile`
+ * Fleet Designer (W01): a `design`-profile run gets the SAME
+ * `completed`/`awaiting_approval` -> `neutral` treatment as `narrative` and
+ * `triage`, for the same-shaped reason — a design run reads a bounded,
+ * system-assembled evidence bundle (never live tool output beyond its own
+ * small read-only drill-down floor) and produces a fleet DESIGN, not a
+ * remediation attempt, so its outcome carries no information whatsoever
+ * about whether the org's remediation is working. It must never reset (or
+ * increment) the streak either way. `failed` stays profile-independent: a
+ * design run can genuinely blow the turn/budget ceiling or hit
+ * `llm_unavailable` exactly like any other profile, and that is a real
+ * signal.
+ *
+ * NOTE for whoever adds the next profile: this function compares `profile`
  * as a plain string and has NO exhaustive `never` guard (unlike
  * `profileCaps` in `runService.ts` or `outcomeToolsForProfile` in
  * `outcomeTools.ts`). Adding a value to `AI_AGENT_RUN_PROFILES` will NOT

@@ -30,6 +30,9 @@
  *
  *   1. compute the occurrence key;
  *   2. skip when it equals `last_occurrence_key` (this tick already ran it);
+ *   2b. skip when the occurrence predates the schedule's own `created_at` —
+ *      a brand-new baseline has a NULL key, so without this it would catch up
+ *      on the occurrence that passed BEFORE it existed (#6201);
  *   3. `queue.add('occurrence', …, { jobId })` — `getSweepOccurrenceJobId` is
  *      a pure function of (scheduleId, key), and BullMQ SILENTLY NO-OPS an add
  *      whose jobId is already present;
@@ -127,6 +130,14 @@ const TICK_JOB_ID = 'ai-agent-sweep-tick';
  *  why they are not two separate workers. */
 const SWEEP_WORKER_CONCURRENCY = 3;
 
+/**
+ * How far a schedule's `created_at` may sit in the FUTURE before the tick stops
+ * treating it as ordinary app/DB clock skew and says so at `warn` (#6201).
+ * An hour is far beyond any plausible skew and far short of a cron period, so
+ * a real bad row surfaces on the first tick while a normal one never does.
+ */
+const FUTURE_CREATED_AT_WARN_MS = 60 * 60 * 1000;
+
 export interface SweepOccurrenceJobData {
   scheduleId: string;
   occurrenceKey: string;
@@ -179,6 +190,11 @@ interface DueBaselineRow {
   timezone: string;
   sweepKinds: AiSweepKind[];
   lastOccurrenceKey: string | null;
+  /**
+   * When this baseline came into existence. Load-bearing, not informational:
+   * it is the floor for catch-up (#6201). See `processSweepTick`.
+   */
+  createdAt: Date;
 }
 
 /**
@@ -199,6 +215,7 @@ async function loadDueBaselines(): Promise<DueBaselineRow[]> {
       timezone: aiAgentSchedules.timezone,
       sweepKinds: aiAgentSchedules.sweepKinds,
       lastOccurrenceKey: aiAgentSchedules.lastOccurrenceKey,
+      createdAt: aiAgentSchedules.createdAt,
     })
     .from(aiAgentSchedules)
     .innerJoin(aiAgents, eq(aiAgents.id, aiAgentSchedules.agentId))
@@ -266,6 +283,81 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
       const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
       if (!occurrence) continue;
       if (occurrence.key === baseline.lastOccurrenceKey) continue;
+
+      // Catch-up floor: never run an occurrence from before the schedule
+      // existed (#6201).
+      //
+      // `latestCronOccurrence` answers "what is the most recent minute this
+      // cron was due at?" and the module header explains why: a fixed 5-minute
+      // tick must be able to recover an occurrence a missed or drifted tick
+      // would otherwise drop, anywhere inside the 24 h lookback. But on a
+      // BRAND-NEW schedule that recovery has nothing to recover — the
+      // occurrence it finds predates the row. `last_occurrence_key` is NULL,
+      // so the dedupe check above cannot tell the two cases apart, and the
+      // first tick after creation swept immediately: v0.114.0's boot backfill
+      // created a `0 2 * * *` America/Denver baseline at 17:37 local and the
+      // 17:40Z tick ran that morning's 02:00 occurrence — 19 org runs, 11
+      // approval cards, real LLM spend, at the wrong time of day.
+      //
+      // The guard lives HERE rather than in the create paths (seeding
+      // `last_occurrence_key` at insert) because this is the single producer:
+      // it covers `ensureDefaultPatchSchedule`, the user-facing create route,
+      // seeds, and any future creator, including rows already in the database
+      // with a NULL key. Seeding would have had to be repeated, correctly, in
+      // every one of them.
+      //
+      // Strictly `<`, compared against the un-floored `createdAt`: a schedule
+      // created at 02:00:30 does NOT retro-run the 02:00 occurrence that had
+      // already passed, while one created exactly at 02:00:00 — the firing its
+      // author just asked for — still runs. Skipping deliberately leaves the
+      // key NULL: stamping it would consume the CAS's NULL previous-key and
+      // the real first firing would have nothing to claim against.
+      // `created_at` is NOT NULL and Drizzle hands back a Date, but coerce
+      // rather than call `.getTime()` on the row value directly: a non-Date
+      // would throw into the per-schedule catch below and wedge THIS schedule
+      // out of every future tick, which is far worse than one early sweep.
+      // That fallback is LOGGED, not silent — an unreadable NOT NULL timestamp
+      // is a data-integrity signal, and dropping the floor restores exactly the
+      // behaviour this guard exists to prevent.
+      const createdAtMs = new Date(baseline.createdAt).getTime();
+      if (!Number.isFinite(createdAtMs)) {
+        console.warn('[AiAgentSweepScheduler] unreadable created_at — running WITHOUT the catch-up floor', {
+          scheduleId: baseline.id, createdAt: baseline.createdAt, occurrenceKey: occurrence.key,
+        });
+      } else if (occurrence.at.getTime() < createdAtMs) {
+        // Routine case — the schedule is simply waiting for its first real
+        // slot. This repeats on every 5-minute tick until then (up to a full
+        // cron period), so it is `debug`: it is expected, not a fault.
+        //
+        // A `created_at` materially in the FUTURE is a different animal. The
+        // floor then suppresses EVERY occurrence until real time reaches it,
+        // because `latestCronOccurrence` only ever returns instants at or
+        // before `now` — so a row with a bogus or badly skewed timestamp goes
+        // quiet for as long as the skew lasts. Small skew between the app and
+        // the DB clock is normal and the suppression is correct there (the
+        // schedule really was just created), so the behaviour is unchanged
+        // either way; what changes is that the pathological case stops being
+        // invisible. An operator asking "why has this schedule never fired?"
+        // gets an answer at default log level instead of having to raise
+        // verbosity and wait for the next tick.
+        const skewMs = createdAtMs - now.getTime();
+        const detail = {
+          scheduleId: baseline.id,
+          occurrenceKey: occurrence.key,
+          occurrenceAt: occurrence.at.toISOString(),
+          createdAt: new Date(createdAtMs).toISOString(),
+          now: now.toISOString(),
+        };
+        if (skewMs > FUTURE_CREATED_AT_WARN_MS) {
+          console.warn(
+            '[AiAgentSweepScheduler] created_at is in the FUTURE — this schedule cannot fire until then',
+            { ...detail, createdAtSkewMs: skewMs },
+          );
+        } else {
+          console.debug('[AiAgentSweepScheduler] occurrence predates the schedule — no catch-up', detail);
+        }
+        continue;
+      }
 
       // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
       // holding a pooled Postgres connection across it is what exhausted the
@@ -556,9 +648,15 @@ export async function processSweepOccurrence(
     enqueuedAt: new Date().toISOString(),
   });
 
-  // P2-3. Hoisted out of the loop: `kind` is immutable for the lifetime of a
-  // schedule row, so this is a property of the OCCURRENCE, not of any one org.
-  const isNarrative = baseline.kind === 'narrative';
+  // P2-3 / design. Hoisted out of the loop: `kind` is immutable for the
+  // lifetime of a schedule row, so this is a property of the OCCURRENCE, not
+  // of any one org.
+  const kind = baseline.kind;
+  // A narrative or design baseline sweeps NOTHING —
+  // `ai_agent_schedules_kind_kinds_chk` forbids any other shape for either —
+  // so the empty-`sweepKinds` guard below is sweep-only.
+  // AI patch agent W01: a patch baseline sweeps nothing too (same CHECK arm).
+  const hasNoSweepKinds = kind === 'narrative' || kind === 'design' || kind === 'patch';
 
   let summary: AiAgentScheduleRunSummary;
   try {
@@ -579,13 +677,13 @@ export async function processSweepOccurrence(
       // An override that disables, or that intersects the baseline down to no
       // kinds at all, is the same outcome: this org has nothing to sweep.
       //
-      // The kinds half of that is SWEEP-ONLY. A narrative schedule sweeps
-      // nothing by definition (`ai_agent_schedules_kind_kinds_chk` forbids any
-      // other shape), so applying the guard to it would skip every org on
-      // every occurrence and the feature would never fire. An org override of
-      // a narrative baseline therefore has exactly one lever — `enabled` —
-      // and it still works.
-      if (!effective.enabled || (!isNarrative && effective.sweepKinds.length === 0)) {
+      // The kinds half of that is SWEEP-ONLY. A narrative or design schedule
+      // sweeps nothing by definition (`ai_agent_schedules_kind_kinds_chk`
+      // forbids any other shape for either), so applying the guard to them
+      // would skip every org on every occurrence and the feature would never
+      // fire. An org override of a narrative or design baseline therefore has
+      // exactly one lever — `enabled` — and it still works.
+      if (!effective.enabled || (!hasNoSweepKinds && effective.sweepKinds.length === 0)) {
         countSkip('override_disabled');
         continue;
       }
@@ -601,32 +699,67 @@ export async function processSweepOccurrence(
         // own (see `alertVerdictSubscriber.ts`'s header on the #1105
         // pool-hold seam).
         //
-        // The two arms differ ONLY in profile, triggerRef and dedupe key. The
-        // dedupe key is namespaced by profile on purpose: `(org_id,
-        // dedupe_key)` is a real unique index, so a shared `sweep-` prefix
-        // would make a narrative and a sweep run for the same (schedule, org,
-        // occurrence) collide and silently drop one of them.
-        const result = isNarrative
-          ? await createAndEnqueueAgentRun({
-            orgId,
-            kind: 'triage',
-            triggerKind: 'schedule',
-            deviceId: null,
-            profile: 'narrative',
-            scheduleId: baseline.id,
-            triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'narrative' },
-            dedupeKey: `narrative-${baseline.id}-${orgId}-${occurrenceKey}`,
-          })
-          : await createAndEnqueueAgentRun({
-            orgId,
-            kind: 'triage',
-            triggerKind: 'schedule',
-            deviceId: null,
-            profile: 'sweep',
-            scheduleId: baseline.id,
-            triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
-            dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
-          });
+        // The three arms differ ONLY in agent kind, profile, triggerRef and
+        // dedupe key. The dedupe key is namespaced by profile on purpose:
+        // `(org_id, dedupe_key)` is a real unique index, so a shared prefix
+        // would make two of these collide for the same (schedule, org,
+        // occurrence) and silently drop one of them.
+        const buildAdmission = (): Parameters<typeof createAndEnqueueAgentRun>[0] => {
+          switch (kind) {
+            case 'narrative':
+              return {
+                orgId,
+                kind: 'triage',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'narrative',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'narrative' },
+                dedupeKey: `narrative-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            case 'design':
+              return {
+                orgId,
+                kind: 'designer',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'design',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'design' },
+                dedupeKey: `design-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            // AI patch agent W01 (#5747) — one device-less patch-plan run per
+            // org, driven by the patch agent (runService rule 8a pins
+            // profile 'patch' to kind 'patch' and no device).
+            case 'patch':
+              return {
+                orgId,
+                kind: 'patch',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'patch',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'patch' },
+                dedupeKey: `patch-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            case 'sweep':
+              return {
+                orgId,
+                kind: 'triage',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'sweep',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+                dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            default: {
+              const exhaustive: never = kind;
+              throw new Error(`[AiAgentSweepScheduler] unknown schedule kind ${String(exhaustive)}`);
+            }
+          }
+        };
+        const result = await createAndEnqueueAgentRun(buildAdmission());
 
         if (result.created) runsAdmitted++;
         else countSkip(result.skipped);

@@ -28,6 +28,7 @@ export default function AiChatSidebar() {
     toggle,
     close,
     messages,
+    chatRuns,
     isStreaming,
     isLoading,
     error,
@@ -342,6 +343,7 @@ export default function AiChatSidebar() {
             {/* Messages area */}
             <AiChatMessages
               messages={messages}
+              chatRuns={chatRuns}
               pendingApproval={pendingApproval}
               pendingPlan={pendingPlan}
               activePlan={activePlan}

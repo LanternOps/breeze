@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Download, Monitor } from 'lucide-react';
 import { publicApiPath, type Device } from '@/lib/api';
 import { cn, formatDate, formatRelativeTime } from '@/lib/utils';
@@ -17,6 +17,9 @@ import {
 interface DeviceListProps {
   devices: Device[];
   error?: string | null;
+  /** Rendered as a tab panel under DevicesPage's own header: no H1 and no
+   *  Export action of its own — DevicesPage puts Export on the tab row. */
+  embedded?: boolean;
 }
 
 // Local labels for the customer's office manager, kept private rather than
@@ -67,6 +70,23 @@ function whenLabel(
   return relative ? { text: relative, title: value } : { text: value };
 }
 
+/**
+ * Pre-hydration fallback for `whenLabel` (#5881). `formatRelativeTime` calls
+ * `new Date()` during render, once on the server (SSR) and again on the
+ * client's first render pass (before hydration commits) — two independent
+ * clock reads that can land on different calendar days (server/client
+ * timezone differ, or the SSR-to-hydration gap simply crosses local
+ * midnight), producing a React hydration mismatch that discards and
+ * re-renders the whole tree. This fallback never reads the clock: it is the
+ * raw, already-formatted stamp the API sent (deterministic — same string on
+ * server and client), so the first paint on both sides is byte-identical.
+ * `DeviceList` swaps to the real `whenLabel` only after mount (see
+ * `mounted` state below), once there is no more SSR output to disagree with.
+ */
+function staticWhenLabel(value: string | null, missing: string): { text: string; title?: string } {
+  return value ? { text: value } : { text: missing };
+}
+
 /** Warranty ends in the future, so relative time is meaningless for it — a
  *  calendar date, read on its own calendar day (no timezone shift). */
 function warrantyLabel(value: string | null): string {
@@ -114,17 +134,56 @@ function DeviceFact({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-/** The four facts a customer wants only once they're asking about one machine. */
-function moreFacts(device: Device): { label: string; text: string; title?: string }[] {
+/** The four facts a customer wants only once they're asking about one machine.
+ *  `mounted` gates the relative-time facts to the hydration-stable fallback
+ *  (see `staticWhenLabel`) until after the client has mounted. */
+function moreFacts(
+  device: Device,
+  mounted: boolean,
+): { label: string; text: string; title?: string }[] {
+  const when = mounted ? whenLabel : staticWhenLabel;
   return [
-    { label: 'Last patch', ...whenLabel(device.lastPatchAt, 'Not available') },
+    { label: 'Last patch', ...when(device.lastPatchAt, 'Not available') },
     { label: 'Encryption', text: encryptionLabel(device.encryption) },
-    { label: 'Last backup', ...whenLabel(device.lastBackupAt, 'Not available') },
+    { label: 'Last backup', ...when(device.lastBackupAt, 'Not available') },
     { label: 'Warranty ends', text: warrantyLabel(device.warrantyEndsAt) },
   ];
 }
 
-export function DeviceList({ devices, error }: DeviceListProps) {
+/** How long a device row linked to from the lifecycle plan table stays
+ *  highlighted after landing, in milliseconds. */
+const HIGHLIGHT_DURATION_MS = 3000;
+
+export function DeviceList({ devices, error, embedded = false }: DeviceListProps) {
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+
+  // Flips true in the passive-effects flush right after the initial commit
+  // (#5881) — the SSR pass and the client's pre-hydration render both see
+  // `false` and render the clock-free `staticWhenLabel` fallback, so they
+  // always agree and hydration never discards the tree. Only once mounted do
+  // the relative-time cells ("5 minutes ago", "Yesterday") take over. A
+  // separate effect (rather than folding into the one below) so the
+  // scroll-and-highlight effect's own scheduling is untouched.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Runs once on mount: a link from the lifecycle plan table lands here as
+  // `/devices#<deviceId>` (hash-based UI state per CLAUDE.md, not a query
+  // param). Scroll the matching row into view and ring-highlight it briefly.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = window.location.hash.slice(1);
+    if (!id || !devices.some((d) => d.id === id)) return;
+
+    setHighlightedId(id);
+    rowRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const timer = setTimeout(() => setHighlightedId(null), HIGHLIGHT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   if (error) {
     // The transport error is ours to read, not the customer's: they can act on
     // "ask your IT team", never on a connection string.
@@ -146,22 +205,26 @@ export function DeviceList({ devices, error }: DeviceListProps) {
           : `All ${devices.length} devices online`
         : `${online} of ${devices.length} online`;
 
+  const exportAction = (
+    <a
+      href={publicApiPath('/portal/devices/export.csv')}
+      data-testid="portal-devices-export"
+      className={BTN_SECONDARY}
+    >
+      <Download className="h-4 w-4" aria-hidden="true" />
+      Export CSV
+    </a>
+  );
+
   return (
     <div>
-      <PageHeader
-        title="Devices"
-        lede="The machines your IT team looks after for you."
-        action={
-          <a
-            href={publicApiPath('/portal/devices/export.csv')}
-            data-testid="portal-devices-export"
-            className={BTN_SECONDARY}
-          >
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Export CSV
-          </a>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="Devices"
+          lede="The machines your IT team looks after for you."
+          action={exportAction}
+        />
+      )}
 
       {devices.length === 0 ? (
         <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">
@@ -201,13 +264,21 @@ export function DeviceList({ devices, error }: DeviceListProps) {
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {devices.map((device) => {
                 const mark = statusMark(device.status);
-                const lastOnline = whenLabel(device.lastSeenAt, 'Not known');
+                const lastOnline = mounted
+                  ? whenLabel(device.lastSeenAt, 'Not known')
+                  : staticWhenLabel(device.lastSeenAt, 'Not known');
                 const trailing =
                   'basis-full text-xs text-foreground sm:text-sm sm:text-muted-foreground';
                 return (
                   <tr
                     key={device.id}
-                    className={ROW}
+                    ref={(el) => {
+                      rowRefs.current[device.id] = el;
+                    }}
+                    className={cn(
+                      ROW,
+                      highlightedId === device.id && 'ring-2 ring-primary ring-inset',
+                    )}
                     data-testid={`portal-device-${device.id}`}
                   >
                     {/* order-* reorders the phone card: name and status share
@@ -238,7 +309,7 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                           More about this device
                         </summary>
                         <dl className="mt-2 space-y-1.5">
-                          {moreFacts(device).map((fact) => (
+                          {moreFacts(device, mounted).map((fact) => (
                             <DeviceFact key={fact.label} label={fact.label}>
                               <span title={fact.title}>{fact.text}</span>
                             </DeviceFact>

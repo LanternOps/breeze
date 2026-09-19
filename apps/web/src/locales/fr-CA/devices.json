@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Activité de l'IA",
+    "count": "{{count}} actions envoyées au cours des {{days}} derniers jours",
+    "tooltip": "Comptabilise les scripts et commandes envoyés par l'IA enregistrés sur cet appareil. Une annulation compte comme une action distincte. Enregistré de façon raisonnable, sans garantie d'exhaustivité."
+  },
   "deviceChangeHistoryTab": {
     "title": "Historique des modifications",
     "loading": "Chargement de l'historique des modifications…",
@@ -278,7 +283,21 @@
     "loadMore": "Chargez plus",
     "couldnTLoadMore": "Je ne pouvais pas charger plus.",
     "viewAllActivity2": "Voir toute l’activité",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Voir la proposition",
+    "trigger": {
+      "manual": "Déclenchement manuel",
+      "schedule": "Planification",
+      "sweep_finding": "Constat du balayage",
+      "alert": "Alerte",
+      "monitor": "Surveillance",
+      "fleet_finding": "Constat du parc",
+      "policy": "Stratégie",
+      "automation": "Automatisation",
+      "ticket": "Demande de soutien",
+      "anomaly": "Anomalie",
+      "api": "Appel API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossible de récupérer l’historique des alertes",
@@ -930,6 +949,23 @@
     "role": "Rôle",
     "changeRole": "Changement de rôle",
     "source": "Source",
+    "function": "Fonction",
+    "changeFunction": "Changement de fonction",
+    "functionNone": "Non évaluée",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}} % confiance",
+    "functionEvidence": "Pourquoi le concepteur pense cela",
+    "functionEvidenceUnavailable": "Impossible de charger les détails de l’évaluation.",
+    "functionCustom": "Personnalisé…",
+    "functionCustomSlug": "clé personnalisée (a-z, 0-9, -)",
+    "functionCustomLabel": "Libellé",
+    "functionClear": "Effacer",
+    "functionSaved": "Fonction de l’appareil enregistrée",
+    "functionCleared": "Fonction de l’appareil effacée",
+    "functionSaveFailed": "Impossible d’enregistrer la fonction de l’appareil",
     "operatingSystem": "Système d’exploitation",
     "osType": "Type de système d’exploitation",
     "osVersion": "Version du système d’exploitation",
@@ -1269,6 +1305,9 @@
     "tenantId": "Locataire ID :",
     "mdmEnrollment": "Inscription au MDM :",
     "detectionSource": "Source de détection :",
+    "identityDetectionUnsupported": "Détection de jonction non prise en charge",
+    "identityDetectionUnsupportedHint": "Breeze ne vérifie pas encore l'annuaire ni l'inscription Intune/Entra sur le système d'exploitation de cet appareil. Son état de jonction est donc inconnu et n'a pas été confirmé comme non joint.",
+    "flagUnknown": "{{label}} : Inconnu",
     "detectedManagementTools": "Outils de gestion détectés",
     "tool": "outil",
     "s": "s",
@@ -1676,7 +1715,10 @@
     "saveChanges": "Enregistrer les modifications",
     "site": "Site",
     "tags": "Étiquettes",
-    "title": "Paramètres de l’appareil"
+    "title": "Paramètres de l’appareil",
+    "purchaseDate": "Date d’achat",
+    "purchaseDateHelp": "Utilisée par le rapport de cycle de vie du matériel pour planifier le remplacement.",
+    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1876,7 +1918,7 @@
     "refresh": "Actualiser",
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
-    "title": "Dispositifs",
+    "title": "Dispositifs et actifs",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
@@ -2271,18 +2313,29 @@
     "genericError": "Impossible de démarrer le mode maintenance."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "En attente d’approbation : aucune surveillance n’est encore effectuée.",
+      "dismissedBanner": "Ignoré : masqué dans les listes d’appareils.",
+      "approve": "Approuver",
+      "dismiss": "Ignorer",
+      "approvedAnnouncement": "Actif approuvé",
+      "dismissedAnnouncement": "Actif ignoré"
+    },
     "backToDevices": "Retour aux appareils",
-    "configurePrefix": "Configurer l’interrogation SNMP et les moniteurs réseau depuis le",
     "confirmUnlink": "Déconnecter cet appareil ?",
     "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez de nouveau.",
     "connecting": "Connexion en cours",
-    "discoveryAssetView": "vue de l'actif de découverte",
     "emptyPorts": "Aucun port ouvert trouvé lors de la dernière analyse.",
     "emptySnmp": "Aucune donnée SNMP n’a été collectée — l’appareil n’a peut-être pas répondu ou n’a pas été interrogé via SNMP. Vérifiez que la méthode SNMP est activée et que la chaîne de communauté est définie dans le profil de découverte.",
     "errors": {
+      "unexpected": "Une erreur est survenue. Veuillez réessayer.",
       "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
       "malformed": "Le serveur a renvoyé une réponse inattendue pour cet appareil réseau. Réessayez et, si le problème persiste, communiquez avec le soutien technique.",
-      "notFound": "Périphérique réseau non trouvé"
+      "notFound": "Périphérique réseau non trouvé",
+      "monitoringLoad": "Impossible de charger les données de surveillance de cet appareil. Réessayez.",
+      "checksLoad": "Impossible de charger les vérifications réseau.",
+      "thresholdsLoad": "Impossible de charger les alertes de seuil.",
+      "templateLoad": "Impossible de charger le modèle SNMP."
     },
     "fields": {
       "assetType": "Type",
@@ -2301,7 +2354,20 @@
       "ping": "Ping",
       "snmpMonitoring": "Surveillance SNMP",
       "status": "Statut",
-      "tags": "Étiquettes"
+      "tags": "Étiquettes",
+      "bridgingAgent": "Agent relais",
+      "ipAddress": "Adresse IP",
+      "macAddress": "Adresse MAC",
+      "nicVendor": "Fabricant de la carte réseau",
+      "nicVendorHint": "Le fabricant enregistré pour l’adresse MAC, qui diffère du fabricant de l’appareil lorsque la carte réseau est fabriquée par une autre entreprise.",
+      "site": "Emplacement",
+      "sysObjectId": "sysObjectID (brut)",
+      "legacyScanVerdict": "Résultat de la dernière analyse",
+      "legacyScanVerdictHint": "— ce que la dernière analyse du sous-réseau a enregistré, et non la joignabilité en temps réel",
+      "pollStatus": "État des interrogations",
+      "template": "Modèle",
+      "pollingInterval": "Intervalle d’interrogation",
+      "snmpTransport": "Transport SNMP"
     },
     "goBack": "Retour",
     "live": {
@@ -2309,7 +2375,6 @@
       "refreshed": "Détails de l'appareil actualisés"
     },
     "loading": "Chargement du dispositif réseau...",
-    "manageInDiscovery": "Gérer dans Découverte",
     "manuallySet": "Réglé manuellement",
     "manuallySetWithDetected": "Réglé manuellement · balayage détecté {{type}}",
     "networkDevice": "Appareil réseau",
@@ -2335,17 +2400,43 @@
       "agentListFailed": "Impossible de charger la liste des agents. Réessayer."
     },
     "resetToAutoDetected": "Réinitialiser en détection automatique",
-    "savingType": "Enregistrement en cours…",
-    "resettingType": "Réinitialisation en cours…",
     "sections": {
       "discovery": "Découverte",
       "identity": "Identité",
       "monitoringStatus": "Statut de surveillance",
       "openPorts": "Ports ouverts",
-      "snmpData": "Données SNMP"
+      "snmpData": "Données SNMP",
+      "reachability": "Accessibilité",
+      "collection": "Collecte",
+      "printerHealth": "État de l’imprimante",
+      "scanDetails": "Tous les détails de l’analyse",
+      "pollConfiguration": "Configuration des interrogations",
+      "oids": "OID",
+      "networkChecks": "Vérifications réseau",
+      "thresholds": "Alertes de seuil SNMP",
+      "history": "Historique",
+      "deviceHealth": "État de l’appareil"
     },
     "stats": {
-      "asOf": "en date de {{time}}"
+      "asOf": "en date de {{time}}",
+      "lowestSupply": "Consommable le plus bas",
+      "portsUp": "Ports actifs",
+      "portsUpValue": "{{up}} sur {{total}}",
+      "reachability": "Accessibilité",
+      "lastPoll": "Dernière interrogation"
+    },
+    "probe": {
+      "checkNow": "Vérifier maintenant",
+      "checking": "Vérification…",
+      "errors": {
+        "noAgentInSite": "Aucun agent en ligne sur ce site ne peut joindre cet appareil. Mettez un agent en ligne sur ce site, puis réessayez.",
+        "inFlight": "Une vérification est déjà en cours pour cet appareil.",
+        "noIp": "Cet actif ne possède aucune adresse IP à vérifier.",
+        "timedOut": "L’agent n’a pas répondu dans un délai d’une minute. Il est peut-être hors ligne ou occupé.",
+        "unknown": "Impossible de vérifier cet appareil pour le moment.",
+        "noSite": "Cet actif n’est associé à aucun site. Associez-le à un site, puis réessayez.",
+        "refreshFailed": "Enregistré, mais la page n’a pas pu lire le résultat. Rechargez la page."
+      }
     },
     "tabs": {
       "overview": "Aperçu",
@@ -2387,7 +2478,320 @@
       "sysName": "Nom du système",
       "sysDescr": "Description",
       "sysObjectId": "ID d'objet (OID)"
-    }
+    },
+    "settings": {
+      "title": "Paramètres de {{name}}",
+      "subtitle": "Gérez chaque section séparément.",
+      "navLabel": "Sections des paramètres de l’actif",
+      "unsavedChanges": "Modifications non enregistrées",
+      "refreshFailed": "Enregistré, mais la page n’a pas pu être actualisée. Rechargez-la pour voir la modification.",
+      "sections": {
+        "identity": "Identité",
+        "monitoring": "Surveillance",
+        "link": "Association",
+        "danger": "Zone de danger"
+      },
+      "identity": {
+        "description": "Choisissez comment identifier cet actif.",
+        "displayName": "Nom affiché",
+        "type": "Type d’appareil",
+        "typeFixed": "Ce type enregistré ne peut pas être sélectionné à nouveau. Vous pouvez choisir un autre type.",
+        "typeDetected": "Détecté : {{type}}",
+        "typeConsequence": "Modifie le modèle SNMP suggéré et la présentation de l’appareil.",
+        "resetToDetected": "Rétablir le type détecté",
+        "tags": "Étiquettes",
+        "tagsHint": "Séparez les étiquettes par des virgules.",
+        "notes": "Remarques",
+        "conflict": "Cet actif a été modifié ailleurs. Vérifiez les dernières valeurs avant d’enregistrer à nouveau.",
+        "typeGroups": {
+          "endpoints": "Terminaux",
+          "networkGear": "Équipements réseau",
+          "peripherals": "Périphériques",
+          "other": "Autres"
+        }
+      },
+      "monitoring": {
+        "description": "Configurez la collecte SNMP et les vérifications réseau.",
+        "loadFailed": "Impossible de charger les paramètres de surveillance. Réessayez.",
+        "checksLoadFailed": "Impossible de charger les vérifications réseau. Réessayez.",
+        "conflict": "Les paramètres de surveillance ont été modifiés ailleurs. Vérifiez les dernières valeurs avant d’enregistrer à nouveau.",
+        "communityRequired": "Saisissez une chaîne de communauté pour activer SNMP v1 ou v2c.",
+        "usernameRequired": "Saisissez un nom d’utilisateur pour activer SNMP v3.",
+        "invalidInterval": "L’intervalle d’interrogation doit être un nombre entier entre 30 et 86400 secondes.",
+        "invalidPort": "Le port doit être un nombre entier entre 1 et 65535.",
+        "pause": "Suspendre les interrogations",
+        "resume": "Reprendre les interrogations",
+        "disable": "Désactiver toute la surveillance",
+        "disableTitle": "Désactiver toute la surveillance?",
+        "disableMessage": "Les interrogations SNMP et les vérifications réseau de cet actif seront désactivées.",
+        "checksTitle": "Vérifications réseau",
+        "noChecks": "Aucune vérification réseau configurée.",
+        "addCheck": "Ajouter une vérification",
+        "removeCheck": "Supprimer la vérification",
+        "removeCheckTitle": "Supprimer la vérification réseau?",
+        "removeCheckMessage": "Supprimer la vérification réseau « {{name}} »? Cette action est irréversible.",
+        "never": "jamais",
+        "leaveBlankToKeep": "Enregistré — laissez vide pour conserver la valeur actuelle",
+        "snmpVersion": "Version SNMP",
+        "pollingInterval": "Intervalle d’interrogation (secondes)",
+        "community": "Chaîne de communauté",
+        "username": "Nom d’utilisateur",
+        "authProtocol": "Protocole d’authentification",
+        "authPassword": "Mot de passe d’authentification",
+        "privacyProtocol": "Protocole de confidentialité",
+        "privacyPassword": "Mot de passe de confidentialité",
+        "port": "Port SNMP",
+        "template": "Modèle SNMP",
+        "templatesUnavailable": "Impossible de charger les modèles. Le modèle actuel sera conservé.",
+        "suggestionsUnavailable": "Suggestions non disponibles",
+        "noTemplate": "Aucun modèle",
+        "suggestion": "Suggestion : {{template}} — {{reason}}",
+        "useSuggestion": "Utiliser la suggestion",
+        "noTemplateWarning": "Aucun modèle n’est attribué, donc aucune interrogation n’est effectuée.",
+        "collectionStatus": {
+          "ok": "Collecte en cours",
+          "failing": "Échec de la collecte",
+          "no_template": "Aucun modèle n’est attribué, donc aucune interrogation n’est effectuée",
+          "no_agent": "Aucun agent disponible sur ce site",
+          "asset_moved": "Actif déplacé vers un autre site",
+          "never_polled": "Jamais interrogé",
+          "paused": "Interrogations suspendues",
+          "warning": "Collecte partielle",
+          "offline": "Aucune réponse aux interrogations",
+          "unknown": "État de collecte inconnu"
+        },
+        "checkState": {
+          "responding": "Répond",
+          "degraded": "Dégradé",
+          "notResponding": "Ne répond pas",
+          "paused": "Suspendu",
+          "unverified": "Non vérifié"
+        },
+        "checkSource": {
+          "icmp_ping": "test ping",
+          "tcp_port": "port TCP",
+          "http_check": "vérification HTTP",
+          "dns_check": "vérification DNS"
+        }
+      },
+      "link": {
+        "description": "Associez cet actif découvert à l’appareil géré qui correspond à la même machine.",
+        "unlinkHint": "La dissociation empêche aussi l’association automatique de recréer ce lien lors de la prochaine analyse."
+      },
+      "danger": {
+        "description": "État d’approbation et suppression définitive.",
+        "approvalTitle": "Approbation",
+        "approvedExplainer": "Cet actif est approuvé et figure dans les listes d’appareils.",
+        "pendingExplainer": "En attente d’approbation : aucune surveillance n’est encore effectuée.",
+        "dismissedExplainer": "Ignoré : masqué dans les listes d’appareils.",
+        "approve": "Approuver",
+        "dismiss": "Ignorer",
+        "deleteTitle": "Supprimer l’actif",
+        "deleteDescription": "Supprime l’actif et toutes les données recueillies à son sujet. La découverte le recréera lors de la prochaine analyse si l’appareil est toujours sur le réseau.",
+        "deleteAsset": "Supprimer l’actif",
+        "deleteConfirmTitle": "Supprimer cet actif?",
+        "deleteConfirmMessage": "« {{name}} » et tous les éléments ci-dessous seront supprimés. Cette action est irréversible.",
+        "deleteConfirmPrompt": "Saisissez {{name}} pour confirmer",
+        "cascade": {
+          "snmp": "Sa configuration d’interrogation SNMP",
+          "metrics": "Toutes les mesures recueillies",
+          "thresholds": "Ses seuils d’alerte SNMP",
+          "checks": "Toutes les vérifications réseau associées à cet actif",
+          "topology": "Sa position enregistrée sur la carte de topologie"
+        }
+      },
+      "openMonitoringSettings": "Modifier les paramètres de surveillance",
+      "openLinkSettings": "Gérer ce lien",
+      "toasts": {
+        "identitySaved": "Identité enregistrée",
+        "identitySaveFailed": "Impossible d’enregistrer les modifications de l’identité",
+        "approved": "Actif approuvé",
+        "approveFailed": "Impossible d’approuver l’actif",
+        "dismissed": "Actif ignoré",
+        "dismissFailed": "Impossible d’ignorer l’actif",
+        "assetDeleted": "Actif supprimé",
+        "assetDeleteFailed": "Impossible de supprimer l’actif",
+        "snmpSaved": "Paramètres SNMP enregistrés",
+        "snmpSaveFailed": "Impossible d’enregistrer les paramètres SNMP",
+        "pollingPaused": "Interrogation SNMP suspendue",
+        "pollingResumed": "Interrogation SNMP reprise",
+        "monitoringDisabled": "Surveillance désactivée pour cet actif",
+        "monitoringDisableFailed": "Impossible de désactiver la surveillance",
+        "checkCreated": "Vérification réseau ajoutée",
+        "checkCreateFailed": "Impossible d’ajouter la vérification réseau",
+        "checkRemoved": "Vérification réseau supprimée",
+        "checkRemoveFailed": "Impossible de supprimer la vérification réseau"
+      }
+    },
+    "header": {
+      "lastError": "Dernière erreur : {{error}}",
+      "settings": "Paramètres"
+    },
+    "editInSettings": "Modifier dans les paramètres",
+    "reachability": {
+      "state": {
+        "responding": "Répond",
+        "notResponding": "Ne répond pas",
+        "unverified": "Non vérifié"
+      },
+      "source": {
+        "networkCheck": "Vérification réseau",
+        "probe": "Sonde",
+        "scan": "Analyse",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "dernière détection par {{source}} {{relative}}",
+      "neverObserved": "jamais observé",
+      "detail": {
+        "check": {
+          "online": "En ligne",
+          "degraded": "Dégradé",
+          "offline": "Hors ligne"
+        },
+        "probe": {
+          "ok": "Réponse reçue",
+          "failed": "Aucune réponse",
+          "pending": "En attente de l’agent"
+        },
+        "snmp": {
+          "ok": "Interrogation en cours",
+          "failing": "En échec",
+          "no_template": "Aucun modèle",
+          "no_agent": "Aucun agent sur le site",
+          "asset_moved": "Actif déplacé",
+          "never_polled": "Jamais interrogé"
+        },
+        "snmpFailures": "{{count}} échecs consécutifs",
+        "snmpNote": "Un échec SNMP peut concerner l’agent relais plutôt que l’appareil — les échecs sont comptés lors de l’envoi de l’interrogation.",
+        "scan": {
+          "seen": "Détecté",
+          "missed": "Non détecté"
+        },
+        "emptyTitle": "Aucun rapport reçu pour cet appareil",
+        "emptyDescription": "Aucune analyse, vérification, interrogation ou sonde manuelle n’a encore produit d’observation."
+      }
+    },
+    "collection": {
+      "status": {
+        "ok": "Interrogation en cours",
+        "failing": "En échec",
+        "noTemplate": "Aucun modèle",
+        "noAgent": "Aucun agent sur le site",
+        "assetMoved": "Actif déplacé",
+        "neverPolled": "Jamais interrogé",
+        "paused": "En pause",
+        "notConfigured": "Non configuré"
+      },
+      "count": {
+        "collecting": "{{count}} en cours de collecte",
+        "unsupported": "{{count}} non pris en charge",
+        "stale": "{{count}} périmés",
+        "unknown": "{{count}} inconnus",
+        "neverPolled": "{{count}} jamais interrogés",
+        "noOids": "Aucun OID dans ce modèle"
+      },
+      "viewOids": "Voir les OID",
+      "oidState": {
+        "collecting": "Collecte en cours",
+        "unsupported": "Non pris en charge",
+        "stale": "Périmé",
+        "neverPolled": "Jamais interrogé",
+        "unknown": "Inconnu"
+      },
+      "unknownNeedsAgentUpdate": "Cette version de l’agent ne peut pas lire les valeurs des tables. Mettez à jour l’agent sur l’appareil relais.",
+      "partialRows": "Résultats partiels : le parcours a atteint sa limite de lignes.",
+      "unsupportedWithCode": "L’appareil a répondu {{code}} — cet OID n’est pas implémenté sur cet appareil."
+    },
+    "health": {
+      "empty": {
+        "title": "Aucune surveillance n’est encore en place",
+        "action": "Configurer la surveillance",
+        "benefit": {
+          "printer": "Activez SNMP pour afficher les niveaux de toner et d’encre, les bacs à papier, les compteurs de pages et les erreurs de l’imprimante.",
+          "switch": "Activez SNMP pour afficher l’état des interfaces, le débit par port et la durée de fonctionnement.",
+          "generic": "Activez SNMP pour recueillir les données d’état de cet appareil, ou ajoutez une vérification ping ou de port."
+        }
+      },
+      "noTemplate": "SNMP est activé, mais aucun modèle n’est attribué : aucune donnée n’est donc interrogée.",
+      "pickTemplate": "Choisir un modèle",
+      "viewAllOids": "Afficher les {{count}} OID"
+    },
+    "printer": {
+      "low": "Faible",
+      "supplyFallback": "Consommable {{instance}}",
+      "pageCount": "Total des pages",
+      "sinceYesterday": "{{count}} depuis hier",
+      "sinceLastWeek": "{{count}} au cours de la dernière semaine",
+      "notCollectedYet": "Aucune donnée sur l’état de l’imprimante n’a encore été recueillie.",
+      "status": {
+        "other": "Autre",
+        "unknown": "Inconnu",
+        "idle": "En attente",
+        "printing": "Impression en cours",
+        "warmup": "Préchauffage"
+      },
+      "deviceStatus": {
+        "unknown": "Inconnu",
+        "running": "En fonction",
+        "warning": "Avertissement",
+        "testing": "Test en cours",
+        "down": "Hors service"
+      },
+      "errors": {
+        "lowPaper": "Peu de papier",
+        "noPaper": "Plus de papier",
+        "lowToner": "Peu de toner",
+        "noToner": "Plus de toner",
+        "doorOpen": "Capot ouvert",
+        "jammed": "Bourrage papier",
+        "offline": "Hors ligne",
+        "serviceRequested": "Entretien requis",
+        "inputTrayMissing": "Bac d’alimentation absent",
+        "outputTrayMissing": "Bac de sortie absent",
+        "markerSupplyMissing": "Consommable absent",
+        "outputNearFull": "Bac de sortie presque plein",
+        "outputFull": "Bac de sortie plein",
+        "inputTrayEmpty": "Bac d’alimentation vide",
+        "overduePreventMaint": "Entretien en retard"
+      }
+    },
+    "charts": {
+      "loadFailed": "Impossible de charger l’historique de cette mesure.",
+      "pickOids": "Tracer",
+      "cap": "Le maximum de {{count}} graphiques est affiché. Désélectionnez-en un pour en ajouter un autre.",
+      "perBucket": "Variation par {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 minutes",
+        "hour": "heure",
+        "day": "jour"
+      },
+      "emptyTitle": "Aucun OID ne recueille encore de valeurs",
+      "emptyDescription": "L’historique apparaît dès qu’une interrogation renvoie une valeur pour au moins un OID.",
+      "truncated": "Seules les 64 premières séries d’instances sont affichées."
+    },
+    "poll": {
+      "everySeconds": "toutes les {{count}} s",
+      "everyMinutes": "toutes les {{count}} min",
+      "everyHours": "toutes les {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Aucune vérification réseau pour cet appareil",
+      "emptyDescription": "Une vérification par ping ou par port détermine si cet appareil est joignable, indépendamment du balayage de découverte.",
+      "add": "Ajouter une vérification",
+      "paused": "En pause",
+      "status": {
+        "online": "En ligne",
+        "degraded": "Dégradé",
+        "offline": "Hors ligne",
+        "never": "Jamais vérifié"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Aucune alerte de seuil SNMP configurée",
+      "emptyDescription": "Aucune valeur relevée sur cet appareil ne déclenchera d’alerte pour le moment."
+    },
+    "loadingMonitoring": "Chargement des données de surveillance…"
   },
   "osIcons": {
     "linux": "Linux",
@@ -2769,7 +3173,8 @@
       "assignedContactPlaceholder": "Rechercher des contacts…",
       "tags": "Étiquettes",
       "tagsPlaceholder": "Séparées par des virgules",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Date d’achat"
     }
   },
   "addNetworkAssetModal": {

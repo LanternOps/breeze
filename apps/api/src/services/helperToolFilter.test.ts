@@ -86,9 +86,12 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
     }
   });
 
-  it('run_backup_verification stays excluded (no executeTool registration exists)', () => {
+  it('no level contains a tool that is not registered for execution', () => {
+    // The three orphan backup tools used to be the example here; they were
+    // removed (execution-plane W01, registry guard). Keep the invariant with a
+    // real org-wide tool instead.
     for (const level of ['basic', 'standard', 'extended'] as const) {
-      expect(getHelperAllowedTools(level)).not.toContain('run_backup_verification');
+      expect(getHelperAllowedTools(level)).not.toContain('get_backup_status');
     }
   });
 
@@ -97,8 +100,7 @@ describe('helper governed tool sets (finding A, Phase 1)', () => {
       const tools = getHelperAllowedTools(level);
       for (const t of [
         ...ORG_WIDE,
-        'get_backup_health',
-        'get_recovery_readiness',
+        'get_backup_status',
         'get_cis_compliance',
       ]) {
         expect(tools, `${level} must not contain org-wide tool ${t}`).not.toContain(t);
