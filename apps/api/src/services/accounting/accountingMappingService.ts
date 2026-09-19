@@ -55,8 +55,17 @@ import { normalizeCurrencyCode } from './accountingCurrency';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
-import { billingAddressColumns } from '../orgImport';
-import { siteAddressFrom } from './quickbooksCustomerImport';
+// Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
+// which dynamically imports `routes/agentWs.ts` — several callers of this
+// module (quoteSendWorker, stripeReconcileSweep, invoiceWorker, contractWorker,
+// accountingSyncWorker, accountingReconcileWorker) are `global`-placement
+// workers whose closure must never reach socket-local dispatch (see
+// workerEntrypointClosure.contract.test.ts).
+import { billingAddressColumns } from '../orgImport/addressColumns';
+// Narrow import: `./quickbooksCustomerImport` transitively pulls in
+// `../orgImport` (for commitOrgImport/previewOrgImport), same reachability
+// concern as billingAddressColumns above.
+import { siteAddressFrom } from './addressMapping';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type {
