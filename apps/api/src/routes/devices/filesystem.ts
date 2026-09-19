@@ -30,6 +30,14 @@ import {
   readPlanScanPath,
   safeCleanupCategories,
 } from '../../services/filesystemAnalysis';
+import {
+  CLEANUP_RUNS_DEFAULT_LIMIT,
+  CLEANUP_RUNS_MAX_LIMIT,
+  decodeCleanupRunCursor,
+  getCleanupRun,
+  listCleanupRuns,
+} from '../../services/filesystemCleanupRuns';
+
 import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -672,5 +680,74 @@ filesystemRoutes.post(
       return failJson(c, 'all cleanup actions failed', 500, responseData);
     }
     return okJson(c, responseData);
+  }
+);
+
+const cleanupRunParamSchema = z.object({
+  id: z.string().guid(),
+  runId: z.string().guid(),
+});
+
+filesystemRoutes.get(
+  '/:id/filesystem/cleanup-runs',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ success: false, error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ success: false, error: 'Device not found' }, 404);
+    }
+
+    const rawLimit = Number.parseInt(c.req.query('limit') ?? '', 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(CLEANUP_RUNS_MAX_LIMIT, rawLimit)
+      : CLEANUP_RUNS_DEFAULT_LIMIT;
+
+    const rawCursor = c.req.query('cursor');
+    if (rawCursor !== undefined && decodeCleanupRunCursor(rawCursor) === null) {
+      // Ignoring it would re-serve page 1 forever under a "Load more" button —
+      // a silent failure the operator reads as "the history is stuck".
+      return c.json({ success: false, error: 'invalid_cursor' }, 400);
+    }
+
+    const result = await listCleanupRuns(deviceId, {
+      limit,
+      ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
+    });
+
+    return c.json({ success: true, data: result });
+  }
+);
+
+filesystemRoutes.get(
+  '/:id/filesystem/cleanup-runs/:runId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', cleanupRunParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId, runId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ success: false, error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ success: false, error: 'Device not found' }, 404);
+    }
+
+    const run = await getCleanupRun(deviceId, runId);
+    if (!run) {
+      return c.json({ success: false, error: 'Cleanup run not found' }, 404);
+    }
+
+    return c.json({ success: true, data: run });
   }
 );

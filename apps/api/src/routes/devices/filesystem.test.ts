@@ -74,6 +74,14 @@ vi.mock('../../services/filesystemAnalysis', () => ({
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash']
 }));
 
+vi.mock('../../services/filesystemCleanupRuns', () => ({
+  CLEANUP_RUNS_DEFAULT_LIMIT: 20,
+  CLEANUP_RUNS_MAX_LIMIT: 100,
+  decodeCleanupRunCursor: vi.fn(() => ({ requestedAt: '2026-09-19T10:00:00.000Z', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })),
+  listCleanupRuns: vi.fn(),
+  getCleanupRun: vi.fn(),
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -81,6 +89,12 @@ vi.mock('../../services/auditEvents', () => ({
 vi.mock('../../services/filesystemVolumes', () => ({
   listFilesystemVolumes: vi.fn(),
 }));
+
+import {
+  decodeCleanupRunCursor,
+  getCleanupRun,
+  listCleanupRuns,
+} from '../../services/filesystemCleanupRuns';
 
 import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { withAuthDbAccessContext } from '../../middleware/auth';
@@ -1244,4 +1258,108 @@ describe('device filesystem routes', () => {
       expect(executeCommand).not.toHaveBeenCalled();
     });
   });
+  it('lists cleanup runs with the default limit and returns the nextCursor', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(listCleanupRuns).mockResolvedValue({
+      runs: [{
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        kind: 'files',
+        status: 'executed',
+        scanPath: 'C:\\',
+        requestedAt: '2026-09-19T10:00:00.000Z',
+        approvedAt: '2026-09-19T10:01:00.000Z',
+        bytesReclaimed: 4096,
+        error: null,
+        candidateCount: 3,
+        estimatedBytes: 12288,
+        actionCount: 2,
+      }],
+      nextCursor: '2026-09-19T10:00:00.000Z|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-runs`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.runs).toHaveLength(1);
+    expect(body.data.nextCursor).toBe('2026-09-19T10:00:00.000Z|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(listCleanupRuns).toHaveBeenCalledWith(deviceId, { limit: 20 });
+  });
+
+  it('passes a decoded cursor and an explicit limit through', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(listCleanupRuns).mockResolvedValue({ runs: [], nextCursor: null } as never);
+
+    const res = await app.request(
+      `/devices/${deviceId}/filesystem/cleanup-runs?limit=5&cursor=2026-09-19T10%3A00%3A00.000Z%7Caaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(listCleanupRuns).toHaveBeenCalledWith(deviceId, {
+      limit: 5,
+      cursor: '2026-09-19T10:00:00.000Z|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+  });
+
+  it('answers 400 on a malformed cursor instead of silently restarting the list', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(decodeCleanupRunCursor).mockReturnValueOnce(null as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-runs?cursor=nonsense`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('invalid_cursor');
+    expect(listCleanupRuns).not.toHaveBeenCalled();
+  });
+
+  it('returns the full row from the cleanup-run detail route', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getCleanupRun).mockResolvedValue({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      plan: { preview: { candidates: [{ path: '/tmp/a' }] } },
+      executedActions: [{ path: '/tmp/a', status: 'completed' }],
+    } as never);
+
+    const res = await app.request(
+      `/devices/${deviceId}/filesystem/cleanup-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.plan.preview.candidates).toHaveLength(1);
+    expect(getCleanupRun).toHaveBeenCalledWith(deviceId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+
+  it('answers 404 for a cleanup run that is not this device\u2019s', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getCleanupRun).mockResolvedValue(null as never);
+
+    const res = await app.request(
+      `/devices/${deviceId}/filesystem/cleanup-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it('denies the cleanup-run history when site scope excludes the device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-runs`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(listCleanupRuns).not.toHaveBeenCalled();
+  });
+
 });
