@@ -1,5 +1,7 @@
 import { Hono, type Context } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
+import { jsonError } from '../../lib/jsonError';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
@@ -180,7 +182,7 @@ mfaRoutes.get('/mfa/enrollment-options', authMiddleware, async (c) => {
     .from(users)
     .where(eq(users.id, auth.user.id))
     .limit(1);
-  if (!user) return c.json({ error: 'User not found' }, 404);
+  if (!user) return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
 
   const policy = await getEffectiveMfaPolicy({
     scope: auth.scope,
@@ -298,7 +300,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // Rate limit MFA attempts
     const rateCheck = await rateLimiter(redis, `mfa:${pendingUserId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
     if (!rateCheck.allowed) {
-      return c.json({ error: 'Too many MFA attempts' }, 429);
+      return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many MFA attempts');
     }
 
     // Pre-auth lookup — wrap in system scope so the `users` RLS policy
@@ -1268,7 +1270,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   // shares a namespace with a grant key.
   const stepUpRate = await rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
   if (!stepUpRate.allowed) {
-    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+    return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many attempts. Please try again later.');
   }
 
   // A step-up must prove a factor that is allowed NOW, not a stale credential

@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
@@ -290,6 +291,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       await floorPromise;
       return c.json({
         error: 'Too many login attempts. Please try again later.',
+        code: ERROR_CODES.RATE_LIMITED,
         retryAfter: Math.ceil((ipRateCheck.resetAt.getTime() - Date.now()) / 1000)
       }, 429);
     }
@@ -302,6 +304,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       await floorPromise;
       return c.json({
         error: 'Too many login attempts. Please try again later.',
+        code: ERROR_CODES.RATE_LIMITED,
         retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
       }, 429);
     }
@@ -337,7 +340,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       });
     }
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
 
   // Task 10: per-account lockout check. Runs AFTER the user lookup so
@@ -392,7 +395,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // account re-bumping on every attempt would let an attacker hold a victim
     // locked out indefinitely, turning the control into a DoS amplifier.
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
 
   if (!validPassword) {
@@ -413,7 +416,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { method: 'password' }
     });
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
 
   // Check account status. Avoid response-content differentiation here: a
@@ -436,7 +439,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { accountStatus: user.status, method: 'password' }
     });
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
 
   // Look up user's partner/org context
@@ -464,7 +467,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       details: { method: 'password' }
     });
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
 
   // Partner IP allowlist: block before issuing tokens so the login form shows
@@ -482,7 +485,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     console.error('[auth] IP allowlist check failed during login:', err);
     captureException(err, c);
     await floorPromise;
-    return c.json(genericAuthError(), 401);
+    return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
   }
   if (isBlocked(ipDecision)) {
     void auditUserLoginFailure(c, {
@@ -533,7 +536,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     const pendingEpochs = await getUserEpochs(user.id);
     if (!pendingEpochs) {
       await floorPromise;
-      return c.json(genericAuthError(), 401);
+      return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
     }
     const pendingPolicy = await getEffectiveMfaPolicy({
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
@@ -548,7 +551,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     if (!allowedMethods.totp && !allowedMethods.sms && !allowedMethods.passkey && !recoveryAvailable) {
       await cancelAuthIssuance(capability).catch(() => undefined);
       await floorPromise;
-      return c.json(genericAuthError(), 401);
+      return c.json({ ...genericAuthError(), code: ERROR_CODES.INVALID_CREDENTIALS }, 401);
     }
     const guardedCapability = capability;
     let pendingTransition: { transitionId: string; browserGeneration: number };
@@ -918,6 +921,7 @@ loginRoutes.post('/refresh', async (c) => {
       c.header('Retry-After', String(retryAfter));
       return c.json({
         error: 'Too many refresh attempts. Please try again later.',
+        code: ERROR_CODES.RATE_LIMITED,
         retryAfter
       }, 429);
     }

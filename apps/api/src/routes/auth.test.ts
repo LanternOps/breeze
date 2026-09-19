@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
 import { authRoutes } from './auth';
 
@@ -1150,7 +1151,10 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       const body = await res.json();
-      expect(body).toEqual({ error: 'Invalid email or password' });
+      expect(body).toEqual({
+        error: 'Invalid email or password',
+        code: ERROR_CODES.INVALID_CREDENTIALS,
+      });
       expect(JSON.stringify(body)).not.toMatch(/lock/i);
       expect(body.retryAfter).toBeUndefined();
       expect(res.headers.get('retry-after')).toBeNull();
@@ -3162,6 +3166,26 @@ describe('auth routes', () => {
         phoneConfigured: true,
         mfaEnrollmentRequired: false,
         mfaGraceEndsAt: null,
+      });
+    });
+
+    it('GET /auth/mfa/enrollment-options returns NOT_FOUND when the user row is missing', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/enrollment-options', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({
+        error: 'User not found',
+        code: ERROR_CODES.NOT_FOUND,
       });
     });
 

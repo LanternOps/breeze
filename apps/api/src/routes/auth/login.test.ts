@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 
 // Mutable flag so the "MFA enrollment enforcement" describe block below can
 // flip ENABLE_2FA to true for its tests while every other describe block in
@@ -1025,7 +1026,10 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Invalid email or password' });
+    expect(await res.json()).toEqual({
+      error: 'Invalid email or password',
+      code: ERROR_CODES.INVALID_CREDENTIALS,
+    });
     expect(setexMock).not.toHaveBeenCalled();
     expect(createTokenPair).not.toHaveBeenCalled();
   });
@@ -1594,6 +1598,7 @@ describe('POST /refresh — per-family rate limiting (#3696)', () => {
     const body = await res.json();
     expect(body).toMatchObject({
       error: 'Too many refresh attempts. Please try again later.',
+      code: ERROR_CODES.RATE_LIMITED,
       retryAfter: expect.any(Number),
     });
     expect(res.headers.get('retry-after')).toBe(String(body.retryAfter));
@@ -1807,10 +1812,14 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     // even if the status code is equalized.
     expect(lockedHeaders).toEqual(unknownHeaders);
     expect(locked.headers.get('retry-after')).toBeNull();
-    // The old oracle fields must be gone from the body.
+    // The old oracle fields must be gone from the body. The additive
+    // translation code must be the same generic credential code on both paths.
     expect(JSON.stringify(lockedBody)).not.toMatch(/lock/i);
     expect(lockedBody).not.toHaveProperty('retryAfter');
-    expect(lockedBody).not.toHaveProperty('code');
+    expect(lockedBody).toHaveProperty(
+      'code',
+      ERROR_CODES.INVALID_CREDENTIALS,
+    );
   });
 
   it('runs the real password verification on the locked path so it is not measurably faster', async () => {
