@@ -80,6 +80,40 @@ const BLOCKED_ROWS: Row[] = [
   { label: 'IPv6 link-local fe80::/10 high', host: '[febf::1]', bare: 'febf::1' },
   { label: 'IPv6 multicast ff00::/8', host: '[ff02::1]', bare: 'ff02::1' },
 
+  // ---- IPv6 alternative spellings of the same addresses -----------------
+  // Classification runs on the parsed groups, so an uncompressed or zero-padded
+  // spelling must reach the same verdict as the canonical one.
+  { label: 'uncompressed ::1', host: '[0:0:0:0:0:0:0:1]', bare: '0:0:0:0:0:0:0:1' },
+  {
+    label: 'zero-padded ::1',
+    host: '[0000:0000:0000:0000:0000:0000:0000:0001]',
+    bare: '0000:0000:0000:0000:0000:0000:0000:0001',
+  },
+  { label: 'uncompressed ::', host: '[0:0:0:0:0:0:0:0]', bare: '0:0:0:0:0:0:0:0' },
+  {
+    label: 'zero-padded fe80::1',
+    host: '[fe80:0000:0000:0000:0000:0000:0000:0001]',
+    bare: 'fe80:0000:0000:0000:0000:0000:0000:0001',
+  },
+  {
+    label: 'uncompressed mapped metadata',
+    host: '[0:0:0:0:0:ffff:169.254.169.254]',
+    bare: '0:0:0:0:0:ffff:169.254.169.254',
+  },
+  {
+    label: 'uncompressed mapped loopback hex-pair',
+    host: '[0:0:0:0:0:ffff:7f00:1]',
+    bare: '0:0:0:0:0:ffff:7f00:1',
+  },
+  {
+    label: 'uncompressed mapped RFC1918',
+    host: '[0:0:0:0:0:ffff:10.0.0.5]',
+    bare: '0:0:0:0:0:ffff:10.0.0.5',
+    allowedIn: ONPREM,
+    rfc1918OrUla: true,
+  },
+  { label: 'fd00::/8 ULA zero-padded', host: '[fd00:0000::0001]', bare: 'fd00:0000::0001', allowedIn: ONPREM, rfc1918OrUla: true },
+
   // ---- IPv4-mapped IPv6, dotted form -----------------------------------
   { label: 'mapped loopback ::ffff:127.0.0.1', host: '[::ffff:127.0.0.1]', bare: '::ffff:127.0.0.1' },
   {
@@ -142,6 +176,9 @@ const ALLOWED_ROWS: Array<{ label: string; host: string }> = [
   { label: '100.128.0.1 just above CGNAT', host: '100.128.0.1' },
   { label: '1.0.0.1 leading octet 1, not 0', host: '1.0.0.1' },
   { label: 'hostname that merely starts with fd', host: 'fd-cdn.example.com' },
+  { label: 'public IPv6 uncompressed', host: '[2606:2800:0220:0001:0248:1893:25c8:1946]' },
+  { label: 'fec0:: (site-local, outside fe80::/10)', host: '[fec0::1]' },
+  { label: 'fb00:: (outside fc00::/7)', host: '[fb00::1]' },
 ];
 
 describe('ssrfGuard blocklist ranges', () => {

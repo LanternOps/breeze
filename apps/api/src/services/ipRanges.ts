@@ -188,46 +188,94 @@ function v4RangeFor(ip: string): V4Range | null {
 }
 
 /**
- * If `ip` is an IPv4-mapped IPv6 literal (`::ffff:…`), return the embedded IPv4
- * address as a dotted-decimal string; otherwise return null. Handles BOTH the
- * dotted-decimal form (`::ffff:169.254.169.254`) AND the hex-pair form
- * (`::ffff:a9fe:a9fe`), case-insensitively.
+ * Parse an IPv6 text form into its eight 16-bit groups, or null when it is not
+ * a valid IPv6 literal.
  *
- * The hex-pair form is the one that is easy to miss: `::ffff:a9fe:a9fe` decodes
- * to 169.254.169.254, yet it still contains a `:` after the prefix is stripped,
- * so a check that branches on "contains a colon" routes it down the IPv6
- * path and never reaches the IPv4 table.
+ * Classification happens on these NUMBERS, never on the text, because one
+ * address has many spellings: `::1`, `0:0:0:0:0:0:0:1` and
+ * `0000:0000:0000:0000:0000:0000:0000:0001` are the same host, and
+ * `::ffff:127.0.0.1`, `::ffff:7f00:1` and `0:0:0:0:0:ffff:127.0.0.1` are the
+ * same IPv4-mapped address. A prefix or regex test over the text matches some of
+ * those spellings and not others. `new URL()` happens to canonicalise a URL
+ * hostname and `dns.lookup` returns canonical records, but these predicates are
+ * exported and called on addresses from elsewhere too, so the parse is what
+ * makes the verdict independent of how the address was written.
  */
-function mappedV4(ip: string): string | null {
-  const lower = ip.toLowerCase();
-  if (!lower.startsWith('::ffff:')) return null;
-  const rest = lower.slice('::ffff:'.length);
-  // Dotted-decimal embedded form: ::ffff:a.b.c.d
-  if (rest.includes('.')) {
-    return parseV4(rest) ? rest : null;
+function parseV6(ip: string): number[] | null {
+  let text = ip.toLowerCase();
+  if (text.includes('%')) text = text.slice(0, text.indexOf('%')); // zone id
+  if (!text.includes(':')) return null;
+  if (text.split('::').length > 2) return null;
+
+  // A trailing dotted-quad (`::ffff:1.2.3.4`) contributes two groups.
+  let tailGroups: number[] = [];
+  const lastColon = text.lastIndexOf(':');
+  const tail = text.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    const octets = parseV4(tail);
+    if (!octets) return null;
+    tailGroups = [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!];
+    text = text.slice(0, lastColon + 1) + '0';
   }
-  // Hex-pair embedded form: ::ffff:HHHH:HHHH
-  const groups = rest.split(':');
-  if (groups.length !== 2) return null;
-  if (!groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
-  const hi = parseInt(groups[0]!, 16);
-  const lo = parseInt(groups[1]!, 16);
+
+  const [headText, tailText] = text.includes('::')
+    ? (text.split('::') as [string, string])
+    : [text, null];
+
+  const toGroups = (part: string): number[] | null => {
+    if (part === '') return [];
+    const out: number[] = [];
+    for (const g of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+
+  const head = toGroups(headText!);
+  if (head === null) return null;
+  let groups: number[];
+  if (tailText === null) {
+    groups = head;
+    if (tailGroups.length > 0) groups = [...groups.slice(0, -1), ...tailGroups];
+    return groups.length === 8 ? groups : null;
+  }
+  const rest = toGroups(tailText);
+  if (rest === null) return null;
+  let after = rest;
+  if (tailGroups.length > 0) after = [...after.slice(0, -1), ...tailGroups];
+  const fill = 8 - head.length - after.length;
+  if (fill < 0) return null;
+  return [...head, ...Array(fill).fill(0), ...after];
+}
+
+/** The IPv4 address embedded in an IPv4-mapped IPv6 literal, else null. */
+function mappedV4(ip: string): string | null {
+  const groups = parseV6(ip);
+  if (groups === null) return null;
+  if (groups.slice(0, 5).some((g) => g !== 0) || groups[5] !== 0xffff) return null;
+  const hi = groups[6]!;
+  const lo = groups[7]!;
   return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
-/** IPv6 ranges that must never be dialed, in the same shape as the IPv4 table. */
+/** IPv6 ranges that must never be dialed, matched on the parsed groups. */
 const BLOCKED_V6_RANGES: ReadonlyArray<{
   cidr: string;
   category: BlockedIpCategory;
-  match: (lower: string) => boolean;
+  match: (g: number[]) => boolean;
 }> = [
-  { cidr: '::/128', category: 'unspecified', match: (v) => v === '::' || /^(0:){7}0$/.test(v) },
-  { cidr: '::1/128', category: 'loopback', match: (v) => v === '::1' || /^(0:){7}1$/.test(v) },
+  { cidr: '::/128', category: 'unspecified', match: (g) => g.every((x) => x === 0) },
+  {
+    cidr: '::1/128',
+    category: 'loopback',
+    match: (g) => g.slice(0, 7).every((x) => x === 0) && g[7] === 1
+  },
   // Unique Local Addresses — first byte 0xfc or 0xfd.
-  { cidr: 'fc00::/7', category: 'private', match: (v) => /^f[cd]/.test(v) },
-  // Link-local, fe80 .. febf.
-  { cidr: 'fe80::/10', category: 'link-local', match: (v) => /^fe[89ab]/.test(v) },
-  { cidr: 'ff00::/8', category: 'multicast-or-reserved', match: (v) => v.startsWith('ff') }
+  { cidr: 'fc00::/7', category: 'private', match: (g) => (g[0]! >> 9) === 0x7e },
+  // Link-local, fe80:: .. febf:ffff:….
+  { cidr: 'fe80::/10', category: 'link-local', match: (g) => (g[0]! & 0xffc0) === 0xfe80 },
+  { cidr: 'ff00::/8', category: 'multicast-or-reserved', match: (g) => (g[0]! >> 8) === 0xff }
 ];
 
 /**
@@ -244,13 +292,14 @@ export function classifyBlockedIp(ip: string): BlockedIpCategory | null {
   if (!ip) return 'unspecified';
   const lower = ip.toLowerCase();
 
-  // Normalise any IPv4-mapped IPv6 literal (dotted OR hex-pair) to its embedded
-  // IPv4 first, so both spellings route through the IPv4 table.
-  const mapped = mappedV4(lower);
-  if (mapped !== null) return v4RangeFor(mapped)?.category ?? null;
-
   if (lower.includes(':')) {
-    return BLOCKED_V6_RANGES.find((r) => r.match(lower))?.category ?? null;
+    const groups = parseV6(lower);
+    if (groups === null) return null;
+    // An IPv4-mapped address is classified as the IPv4 address it carries, so
+    // both families route through the one table.
+    const mapped = mappedV4(lower);
+    if (mapped !== null) return v4RangeFor(mapped)?.category ?? null;
+    return BLOCKED_V6_RANGES.find((r) => r.match(groups))?.category ?? null;
   }
   return v4RangeFor(lower)?.category ?? null;
 }
@@ -280,18 +329,17 @@ export function isPrivateIp(ip: string): boolean {
 export function isRfc1918OrUla(ip: string): boolean {
   if (!ip) return false;
   const lower = ip.toLowerCase();
+  // An IPv4-mapped literal is judged as the IPv4 address it carries: embedded
+  // RFC1918 counts as RFC1918, embedded metadata does not and so stays
+  // always-blocked.
   const mapped = mappedV4(lower);
-  if (mapped !== null) {
-    // Embedded RFC1918 counts as RFC1918; embedded metadata does not, so it
-    // stays always-blocked.
-    const range = v4RangeFor(mapped);
+  const v4 = mapped ?? (lower.includes(':') ? null : lower);
+  if (v4 !== null) {
+    const range = v4RangeFor(v4);
     return range !== null && RFC1918_CIDRS.has(range.cidr);
   }
-  if (lower.includes(':')) {
-    return classifyBlockedIp(lower) === 'private';
-  }
-  const range = v4RangeFor(lower);
-  return range !== null && RFC1918_CIDRS.has(range.cidr);
+  // ULA (fc00::/7) is the IPv6 member of the 'private' category.
+  return classifyBlockedIp(lower) === 'private';
 }
 
 /**
