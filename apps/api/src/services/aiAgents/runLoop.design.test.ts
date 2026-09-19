@@ -599,6 +599,39 @@ describe('design run limits come from designLimits, not the agent\'s general lim
     expect(lastQueryOptions?.maxBudgetUsd).not.toBe(999 / 100);
   });
 
+  // #5870 — the run loop's own wall clock, not the SDK's `maxTurns`/
+  // `maxBudgetUsd`, is what was cutting design runs mid-reasoning at the
+  // shared 600s default. `wallClockMs` never reaches an SDK option (it drives
+  // a local `setTimeout`/`AbortController`), so the run-loop-start log line
+  // (#5870's observability requirement) is the one place a wiring bug here
+  // is externally visible without reaching into the module's closure.
+  it('#5870: pins the design wall clock to designWallClockSeconds, not the shared 600s default, and logs it at loop start', async () => {
+    const effective = policy({
+      limits: {
+        ...AI_AGENT_LIMIT_DEFAULTS,
+        wallClockSeconds: 600,
+        designWallClockSeconds: 1800,
+        designMaxTurns: 6,
+      },
+    });
+    seedRows({ effective });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await executeAgentRun(RUN_ID);
+
+    const startLog = logSpy.mock.calls.find(([msg]) => msg === '[aiAgentRunLoop] run loop starting');
+    expect(startLog, 'expected a run-loop-start log line').toBeDefined();
+    const [, meta] = startLog as [string, Record<string, unknown>];
+    expect(meta.runId).toBe(RUN_ID);
+    expect(meta.profile).toBe('design');
+    expect(meta.maxTurns).toBe(6);
+    expect(meta.wallClockMs).toBe(1800 * 1000);
+    expect(meta.wallClockMs).not.toBe(600 * 1000);
+    // No secrets/prompt content — only the five documented metadata keys.
+    expect(Object.keys(meta).sort()).toEqual(['maxTurns', 'model', 'profile', 'runId', 'wallClockMs']);
+    logSpy.mockRestore();
+  });
+
   // `maxActionsPerRun` never reaches an observable SDK option or the
   // `guardrailPolicy` object runLoop.ts builds (see its own construction) —
   // it is consumed only by the act-mode reservation path, which a design run

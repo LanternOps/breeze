@@ -45,6 +45,7 @@ import {
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
 import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
@@ -847,6 +848,18 @@ aiAgentsRoutes.post(
     }
     if (!auth.canAccessOrg(orgId)) {
       return c.json({ error: 'Organization not accessible' }, 403);
+    }
+    // SITE CEILING (audit §1.1). This route raises the identical
+    // `manage_ai_agents:authorize_supervised_key` grant the AI tool does, and
+    // the tool's handler already refuses a site- or exact-device-restricted
+    // raiser (services/aiToolsAiAgentGovernance.ts). Without the same gate
+    // here the ceiling was simply bypassable by calling the HTTP route
+    // instead of the tool. The grant converts "ask a human" into "run
+    // unattended for this ORG" and fans out across every site, so there is
+    // nothing to narrow for a caller who holds only part of the org — it
+    // fails closed exactly as every other org-wide governance write does.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
 
     try {
@@ -1652,6 +1665,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
         region: aiRunWorkspaces.region,
         status: aiRunWorkspaces.status,
         bootstrapHash: aiRunWorkspaces.bootstrapHash,
+        runtimeImage: aiRunWorkspaces.runtimeImage,
         createdAt: aiRunWorkspaces.createdAt,
         readyAt: aiRunWorkspaces.readyAt,
         destroyedAt: aiRunWorkspaces.destroyedAt,

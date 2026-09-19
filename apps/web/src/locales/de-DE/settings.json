@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketverkauf",
-        "description": "Status, SLAs, Exporte"
+        "description": "Status, SLAs, Kategorien, Formulare",
+        "linkCta": "Ticketing-Einstellungen verwalten →"
       },
       "aiBudgets": {
         "label": "KI-Budgets",
@@ -565,6 +566,10 @@
       "loginBranding": {
         "label": "Login-Branding",
         "description": "Erscheinungsbild der Anmeldeseite"
+      },
+      "modules": {
+        "label": "Module",
+        "description": "Service Desk & Abrechnung ein/aus"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1134,6 +1139,10 @@
       "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
       "enableAll": "Alle Sichtbarkeiten aktivieren",
       "toggles": {
+        "enableDevices": {
+          "label": "Geräte",
+          "description": "Die Geräteseite anzeigen. Self-Service gewährt ebenfalls Zugriff auf diese Seite."
+        },
         "enableDashboard": {
           "label": "Übersicht",
           "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."
@@ -1544,6 +1553,7 @@
       "actMode": {
         "label": "Aktionsmodus",
         "hint": "Wenn aktiviert, kann dieser Zeitplan bestimmte Korrekturen automatisch anwenden, anstatt auf eine Genehmigung zu warten.",
+        "deploymentDisabledHint": "Der Aktionsmodus ist nicht verfügbar, da BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED für diese Bereitstellung deaktiviert ist. Wenden Sie sich zur Aktivierung an Ihren Administrator.",
         "disabledHint": "Zum Aktivieren des Aktionsmodus ist vollständiger Partnerzugriff auf alle Organisationen erforderlich.",
         "scopeNote": "Unbeaufsichtigte Korrekturen beschränken sich auf den Neustart eines gestoppten Dienstes, und das nur auf Geräten, deren Organisation bereits die Berechtigung manage_services:restart erhalten hat. Alles andere wartet weiterhin auf eine Genehmigung.",
         "disableForOrg": "Aktionsmodus für diese Organisation deaktivieren",
@@ -1617,7 +1627,9 @@
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
       "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
-      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten."
+      "designerAct": "Ein",
+      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät.",
+      "shadowApprovalNotice": "Vorschläge landen im Genehmigungsposteingang; wer einen genehmigt, führt ihn tatsächlich aus — kein Testlauf."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
@@ -2115,11 +2127,13 @@
           "title": "Von diesem Lauf erzeugte Dateien",
           "download": "Herunterladen",
           "preview": "Vorschau",
-          "attachToTicket": "An ein Ticket anhängen",
-          "attach": "{{name}} anhängen",
+          "attachToTicket": "Als interne Notiz anhängen",
+          "attach": "{{name}} als interne Notiz anhängen",
           "ticketIdPlaceholder": "Ticket-ID",
-          "attachedToTicket": "An das Ticket angehängt",
-          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
+          "attachedToTicket": "Als interne Notiz an das Ticket angehängt",
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden",
+          "attachedButCommentFailed": "Die Datei wurde angehängt, aber die Notiz konnte nicht zum Ticket hinzugefügt werden",
+          "downloadExpired": "Diese Datei ist abgelaufen und kann nicht mehr heruntergeladen werden."
         },
         "workspace": {
           "title": "Was in der Sandbox ausgeführt wurde",
@@ -3054,6 +3068,11 @@
       "searchPlaceholder": "Skripte durchsuchen…",
       "selectedCount_one": "{{count}} Skript autorisiert",
       "selectedCount_other": "{{count}} Skripte autorisiert"
+    },
+    "designerNote": {
+      "title": "Dieser Agent liest nur und schreibt Berichte",
+      "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
+      "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
     }
   },
   "apiKeyForm": {
@@ -3396,7 +3415,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren.",
+    "distributorsLink": "Distributorverbindungen verwalten →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Aktuelles Passwort ist erforderlich",
@@ -4041,6 +4061,7 @@
     "languageLoadFailed": "Präferenz gespeichert, aber die Sprache konnte nicht geladen werden – Englisch wird angezeigt. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Standard-Zeiteintrag (Minuten)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA Minuten und Stundensatz müssen Zahlen sein.",
     "categoryUpdated": "Kategorie aktualisiert",
     "ticketing": "Ticketverkauf",
@@ -4142,7 +4163,10 @@
     "inboundEmail": "Eingehende E-Mail",
     "cannedResponses": "Vorgefertigte Antworten",
     "checkingAccess": "Zugriff wird geprüft...",
-    "timeTracking": "Zeiterfassung"
+    "timeTracking": "Zeiterfassung",
+    "email": "E-Mail",
+    "templates": "Vorlagen",
+    "timeCapture": "Zeiterfassung"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -5117,7 +5141,15 @@
     "columns": {
       "email": "E-Mail",
       "role": "Rolle",
-      "lastLogin": "Letzter Login"
+      "lastLogin": "Letzter Login",
+      "mfaStatus": "MFA-Status"
+    },
+    "mfaStatus": {
+      "enrolled": "Registriert",
+      "pending": "Ausstehend",
+      "pendingByDate": "Ausstehend — registrieren bis {{date}}",
+      "overdue": "Überfällig",
+      "notRequired": "Nicht erforderlich"
     },
     "status": {
       "active": "Aktiv",
@@ -5236,6 +5268,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen (ungültige Antwort)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organisationsspezifische Variablen werden unter der jeweiligen Organisation aufgeführt.",
     "title": "Variablen",
     "description": "Definieren Sie einen Wert einmal – ein Anbieter-Site-Token, eine interne Repository-URL – und verweisen Sie in Skripten darauf, statt ihn pro Kunde fest einzutragen.",
     "loading": "Variablen werden geladen …",
@@ -5579,5 +5612,18 @@
     "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
     "loading": "Wird geladen…",
     "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing-Einstellungen",
+    "description": "Status, SLAs, Kategorien, Erfassungsformulare, E-Mail, Vorlagen und Zeiterfassung — für alle Organisationen."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog-Standardwerte",
+    "description": "Wird verwendet, um Katalogimporte und die automatische Angebotsausfüllung vorzubefüllen — diese wirken sich nicht direkt auf die Preisermittlung aus.",
+    "loading": "Katalog-Standardwerte werden geladen...",
+    "loadError": "Katalog-Standardwerte konnten nicht geladen werden.",
+    "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
+    "saveSuccess": "Katalog-Standardwerte gespeichert",
+    "saveButton": "Speichern"
   }
 }

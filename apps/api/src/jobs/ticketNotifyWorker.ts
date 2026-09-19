@@ -65,7 +65,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return withSystem(fn);
 };
 
-interface EmailPayload {
+interface EmailPayloadBase {
   to: string;
   subject: string;
   html: string;
@@ -77,6 +77,19 @@ interface EmailPayload {
   // Tech/assignee payloads never set this, so they always use EmailService.
   graphMailbox?: { tenantId: string; mailbox: string; originalMessageId: string | null };
 }
+
+/**
+ * Who this ticket email is FOR, in the sender contract's terms (spec §8.2).
+ * Both audiences leave through the same send loop below, so the classification
+ * has to travel with each payload rather than being decided at the transport.
+ * Precedence for customer mail is unchanged: connected Graph mailbox first,
+ * then the partner lane (W04), then the platform sender.
+ */
+type EmailPayloadSender =
+  | { purpose: 'ticket.staff_notification' }
+  | { purpose: 'ticket.customer_notification'; partnerId: string | null };
+
+type EmailPayload = EmailPayloadBase & EmailPayloadSender;
 
 async function getTicket(ticketId: string) {
   const rows = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
@@ -170,6 +183,7 @@ async function collectAssigneeNotification(
         subject: `[${label}] Assigned to you: ${ticket.subject}`,
         html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
         bestEffort: true,
+        purpose: 'ticket.staff_notification',
       }]
     : [];
 
@@ -232,7 +246,9 @@ async function collectRequesterEmail(
       to: ticket.submitterEmail,
       subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
       html,
-      graphMailbox
+      graphMailbox,
+      purpose: 'ticket.customer_notification',
+      partnerId: ticket.partnerId ?? null
     }];
   }
 
@@ -268,7 +284,9 @@ async function collectRequesterEmail(
     html,
     replyTo,
     headers,
-    graphMailbox
+    graphMailbox,
+    purpose: 'ticket.customer_notification',
+    partnerId: ticket.partnerId ?? null
   }];
 }
 
@@ -342,7 +360,7 @@ async function collectAutoresponse(
   // are only used on the EmailService fallback path).
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox }];
+  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox, purpose: 'ticket.customer_notification', partnerId: ticket.partnerId ?? null }];
 }
 
 async function collectSlaBreachNotification(
@@ -418,6 +436,7 @@ async function collectSlaBreachNotification(
           subject: `SLA breached: ${label} — ${ticket.subject}`,
           html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
           bestEffort: true,
+          purpose: 'ticket.staff_notification',
         });
       }
     }
@@ -586,12 +605,27 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
       // Platform EmailService path (tech/assignee notifications + customers on partners
       // with no connected mailbox). Skip silently if no transport is configured.
       if (!email) return;
+      // Branch rather than spread: `purpose` is the discriminant of
+      // SendEmailParams, so a union-typed value would not narrow.
+      if (payload.purpose === 'ticket.customer_notification') {
+        await email.sendEmail({
+          to: payload.to,
+          subject: payload.subject,
+          html: payload.html,
+          replyTo: payload.replyTo,
+          headers: payload.headers,
+          purpose: 'ticket.customer_notification',
+          partnerId: payload.partnerId
+        });
+        return;
+      }
       await email.sendEmail({
         to: payload.to,
         subject: payload.subject,
         html: payload.html,
         replyTo: payload.replyTo,
-        headers: payload.headers
+        headers: payload.headers,
+        purpose: 'ticket.staff_notification'
       });
     };
 

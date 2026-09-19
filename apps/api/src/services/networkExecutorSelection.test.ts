@@ -18,7 +18,7 @@ vi.mock('../db', () => {
   return { db: { select: () => chain() } };
 });
 
-import { selectNetworkExecutor, loadAssetSiteId } from './networkExecutorSelection';
+import { selectNetworkExecutor, loadAssetSiteId, selectMonitorExecutor } from './networkExecutorSelection';
 
 const dialect = new PgDialect();
 const render = (v: unknown) => dialect.sqlToQuery(v as SQL);
@@ -82,5 +82,43 @@ describe('loadAssetSiteId', () => {
   it('returns null when the asset is not in the org', async () => {
     selectResults = [[]];
     await expect(loadAssetSiteId('org-1', 'asset-1')).resolves.toBeNull();
+  });
+});
+
+
+describe('selectMonitorExecutor shared manual/scheduled policy', () => {
+  it.each([{ assetRows: [] }, { assetRows: [{ siteId: null }] }])('never turns an unresolved bound asset into an org-wide monitor (%j)', async ({ assetRows }) => {
+    selectResults = [assetRows];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1' }))
+      .resolves.toEqual({ error: 'no_agent_in_site' });
+    expect(captured.wheres).toHaveLength(1);
+  });
+
+  it.each([{ allowedSiteIds: [] }, { allowedSiteIds: ['site-b'] }])('denies a bound site outside caller authorization %j', async ({ allowedSiteIds }) => {
+    selectResults = [[{ siteId: 'site-a' }]];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1' }, { allowedSiteIds }))
+      .resolves.toEqual({ error: 'site_access_denied' });
+    expect(captured.wheres).toHaveLength(1);
+  });
+
+  it('requires unrestricted site authorization for genuinely unbound monitors', async () => {
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: null }, { allowedSiteIds: ['site-a'] }))
+      .resolves.toEqual({ error: 'site_access_denied' });
+    expect(captured.wheres).toHaveLength(0);
+  });
+
+  it('rechecks the exact executor against org, site, status and ephemeral predicates', async () => {
+    selectResults = [[{ siteId: 'site-a' }], []];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1' }, { agentId: 'original-agent', allowedSiteIds: ['site-a'] }))
+      .resolves.toEqual({ error: 'no_agent_in_site' });
+    const query = render(captured.wheres[1]);
+    expect(query.sql).toContain('"devices"."org_id" =');
+    expect(query.sql).toContain('"devices"."site_id" =');
+    expect(query.sql).toContain('"devices"."agent_id" =');
+    expect(query.sql).toContain('"devices"."status" =');
+    expect(query.sql).toContain('"devices"."agent_token_suspended_at" is null');
+    expect(query.sql).toContain('"devices"."is_ephemeral" =');
+    expect(query.params).toEqual(['org-1', false, 'online', 'original-agent', 'site-a']);
+    expect(captured.wheres).toHaveLength(2);
   });
 });

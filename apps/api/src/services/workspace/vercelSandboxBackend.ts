@@ -5,6 +5,7 @@
  * on 2026-09-13 and cross-checked against
  *   https://vercel.com/docs/sandbox/sdk-reference
  *   https://vercel.com/docs/sandbox/concepts/firewall
+ * Re-checked 2026-09-16 against 3.3.0 — still current, no SDK bump since.
  * The plan doc (docs/superpowers/plans/ai-mcp/2026-09-13-execution-plane-w02-
  * sandbox-adapter.md) carries the full table; the load-bearing names are:
  *
@@ -17,8 +18,14 @@
  *            NO stdin field exists — see execWithStdin below.
  *   files    sandbox.writeFiles([{ path, content, mode? }])   (no mkdir -p)
  *            sandbox.fs.mkdir(path, { recursive: true })
- *            sandbox.readFileToBuffer({ path }) -> Buffer | null  (null = absent)
+ *            sandbox.readFile({ path }, { signal }) -> Promise<Readable | null>
+ *              (Node's Readable, not a web ReadableStream — see the `AnySandbox`
+ *              type below, which is what's actually declared and used)
  *            sandbox.fs.readdir(path, { withFileTypes: true }) / fs.lstat
+ *              (fs.lstat is the PRE-TRANSFER size gate: this backend's
+ *              `readFile()` stats a file before calling sandbox.readFile on
+ *              it, so a file exceeding the caller's byte cap is rejected
+ *              without ever pulling its bytes into the API process)
  *   stop     sandbox.stop() -> { activeCpuDurationMs?, duration?, memory?, vcpus? }
  *            getters (populated only after stop): sandbox.activeCpuUsageMs,
  *            sandbox.totalActiveCpuDurationMs, sandbox.totalDurationMs
@@ -42,7 +49,7 @@
  *    credentials (spec §8).
  */
 import { randomUUID } from 'node:crypto';
-import { Writable } from 'node:stream';
+import { Writable, type Readable } from 'node:stream';
 
 import * as vercelSdk from '@vercel/sandbox';
 
@@ -65,6 +72,17 @@ import {
 export const VERCEL_SANDBOX_IMAGE = 'vercel/sandbox/universal';
 export const VERCEL_DEFAULT_REGION_EU = 'fra1';
 export const VERCEL_DEFAULT_REGION_US = 'iad1';
+
+/** Deployment-owned image; never accept a model-supplied image reference. */
+export function resolveVercelImage(env: NodeJS.ProcessEnv = process.env): string {
+  const image = env.VERCEL_SANDBOX_IMAGE || VERCEL_SANDBOX_IMAGE;
+  if (!image || /\s/.test(image)) {
+    throw new SandboxError('create_failed', 'VERCEL_SANDBOX_IMAGE must be a nonempty image reference without whitespace', {
+      backend: 'vercel',
+    });
+  }
+  return image;
+}
 
 /**
  * Regions that must NEVER serve a Breeze "eu" workspace. `lhr1` is London:
@@ -175,6 +193,17 @@ interface LiveBox {
   destroyed: boolean;
 }
 
+/** Carries a created provider resource when bootstrap cleanup needs the reaper. */
+export class VercelSandboxCreateError extends Error {
+  readonly code = 'create_failed' as const;
+  readonly backend = 'vercel' as const;
+
+  constructor(readonly handle: SandboxHandle, cause: unknown) {
+    super('Sandbox bootstrap failed and cleanup must be retried', { cause });
+    this.name = 'VercelSandboxCreateError';
+  }
+}
+
 export function createVercelSandboxBackend(): SandboxBackend {
   const boxes = new Map<string, LiveBox>();
 
@@ -187,7 +216,7 @@ export function createVercelSandboxBackend(): SandboxBackend {
     totalDurationMs?: number;
     runCommand(params: Record<string, unknown>): Promise<{ exitCode: number | null; durationMs?: number }>;
     writeFiles(files: Array<{ path: string; content: Buffer }>): Promise<void>;
-    readFileToBuffer(file: { path: string }): Promise<Buffer | null>;
+    readFile(file: { path: string }, opts: { signal: AbortSignal }): Promise<Readable | null>;
     fs: {
       mkdir(p: string, o: { recursive: boolean }): Promise<unknown>;
       readdir(p: string, o: { withFileTypes: true }): Promise<Array<{ name: string }>>;
@@ -266,6 +295,7 @@ export function createVercelSandboxBackend(): SandboxBackend {
     async create(spec: SandboxCreateSpec): Promise<SandboxHandle> {
       const region = resolveVercelRegion(spec.region);
       const credentials = readVercelCredentials();
+      const image = resolveVercelImage();
       const SandboxCtor = sdk().Sandbox as { create(p: Record<string, unknown>): Promise<AnySandbox> };
       let sandbox: AnySandbox;
       try {
@@ -277,28 +307,33 @@ export function createVercelSandboxBackend(): SandboxBackend {
           persistent: false,
           timeout: spec.deadlineSeconds * 1000,
           resources: { vcpus: spec.cpu },
-          image: VERCEL_SANDBOX_IMAGE,
+          image,
           ...credentials,
         });
       } catch (err) {
         throw mapError(err, 'create_failed');
       }
 
-      // Residency assertion (spec §8). A sandbox that landed elsewhere is not
-      // usable for a customer we told "your analysis runs in <region>", so it
-      // is destroyed rather than used. Best-effort delete: the create already
-      // failed, and a failed cleanup must not mask that.
-      if (sandbox.region !== region) {
+      const handle: SandboxHandle = {
+        backend: 'vercel', providerRef: sandbox.name, region: spec.region, createdAt: new Date(), runtimeImage: image,
+      };
+      try {
+        if (sandbox.region !== region) {
+          throw new SandboxError('create_failed',
+            `Vercel placed the sandbox in "${sandbox.region}" but "${region}" was requested`,
+            { backend: 'vercel' });
+        }
+        await sandbox.fs.mkdir(`${SANDBOX_ROOT}/in`, { recursive: true });
+        await sandbox.fs.mkdir(`${SANDBOX_ROOT}/out`, { recursive: true });
+        await sandbox.fs.mkdir(`${SANDBOX_ROOT}/tmp`, { recursive: true });
+      } catch (error) {
         try {
           await sandbox.delete({ deleteOrphanSnapshots: true });
-        } catch {
-          /* reported by the region error below; the reaper has no row to find. */
+        } catch (cleanupError) {
+          // Preserve the resource identity so the service can persist it for cleanup.
+          throw new VercelSandboxCreateError(handle, new AggregateError([error, cleanupError]));
         }
-        throw new SandboxError(
-          'create_failed',
-          `Vercel placed the sandbox in "${sandbox.region}" but "${region}" was requested`,
-          { backend: 'vercel' },
-        );
+        throw mapError(error, 'create_failed');
       }
 
       boxes.set(sandbox.name, {
@@ -309,18 +344,7 @@ export function createVercelSandboxBackend(): SandboxBackend {
         destroyed: false,
       });
 
-      // /work is not part of the managed image; create it up front so every
-      // later path assertion describes something that exists.
-      await sandbox.fs.mkdir(`${SANDBOX_ROOT}/in`, { recursive: true });
-      await sandbox.fs.mkdir(`${SANDBOX_ROOT}/out`, { recursive: true });
-      await sandbox.fs.mkdir(`${SANDBOX_ROOT}/tmp`, { recursive: true });
-
-      return {
-        backend: 'vercel',
-        providerRef: sandbox.name,
-        region: spec.region,
-        createdAt: new Date(),
-      };
+      return handle;
     },
 
     async exec(h: SandboxHandle, cmd: string[], opts: ExecOptions): Promise<ExecResult> {
@@ -428,29 +452,38 @@ export function createVercelSandboxBackend(): SandboxBackend {
       const normalized = assertSandboxPath(filePath);
       const sandbox = await acquire(h);
       await assertNoSymlinkComponents(sandbox, normalized);
-      let buffer: Buffer | null;
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+        throw new SandboxError('file_too_large', 'Invalid file byte cap', { backend: 'vercel' });
+      }
+      const abort = new AbortController();
+      let stream: Readable | null = null;
       try {
-        buffer = await sandbox.readFileToBuffer({ path: normalized });
+        const stat = await sandbox.fs.lstat(normalized);
+        if (stat.size > maxBytes) {
+          throw new SandboxError('file_too_large', `${filePath} exceeds the ${maxBytes}-byte cap`, { backend: 'vercel' });
+        }
+        stream = await sandbox.readFile({ path: normalized }, { signal: abort.signal });
+        if (!stream) throw new SandboxError('not_found', `no such file ${filePath}`, { backend: 'vercel' });
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of stream) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.length;
+          if (size > maxBytes) {
+            abort.abort();
+            throw new SandboxError('file_too_large', `${filePath} exceeds the ${maxBytes}-byte cap`, { backend: 'vercel' });
+          }
+          chunks.push(bytes);
+        }
+        return Buffer.concat(chunks, size);
       } catch (err) {
-        // A genuinely missing file is `null`, not a throw (pinned SDK surface),
-        // and is reported as not_found just below. Anything that THROWS here is
-        // a vendor-side failure, so it must not wear the same code.
+        if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+          throw new SandboxError('not_found', `no such file ${filePath}`, { backend: 'vercel', cause: err });
+        }
         throw mapError(err, 'backend_error');
+      } finally {
+        stream?.destroy();
       }
-      if (buffer === null) {
-        throw new SandboxError('not_found', `no such file ${filePath}`, { backend: 'vercel' });
-      }
-      // The SDK has no server-side byte cap, so this is enforced AFTER transfer.
-      // W03 must therefore lstat and refuse before calling readFile for anything
-      // it expects to be large — this check is the backstop, not the budget.
-      if (buffer.length > maxBytes) {
-        throw new SandboxError(
-          'file_too_large',
-          `${filePath} is ${buffer.length} bytes, over the ${maxBytes}-byte cap`,
-          { backend: 'vercel' },
-        );
-      }
-      return buffer;
     },
 
     async listFiles(h: SandboxHandle, dir: string): Promise<FileStat[]> {

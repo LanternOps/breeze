@@ -80,6 +80,14 @@ export interface SecurityPostureSummary {
 export interface SecurityPostureFilter {
   orgId?: string;
   orgIds?: string[];
+  /**
+   * Exact-device allowlist (`auth.allowedDeviceIds`, set only for AI agent
+   * runs — and for a device-LESS analysis run it is the ONLY axis present).
+   * Undefined = unrestricted; `[]` = nothing in scope, which returns no rows.
+   * Narrowing here rather than post-fetch matters because `limit` is applied
+   * by the query: filtering afterwards produced short pages (#6096).
+   */
+  deviceIds?: readonly string[];
   minScore?: number;
   maxScore?: number;
   riskLevel?: SecurityRiskLevel;
@@ -923,12 +931,20 @@ function hydratePostureRows(rows: LatestPostureRow[], deviceRows: Array<{
 }
 
 export async function listLatestSecurityPosture(filter: SecurityPostureFilter): Promise<SecurityPostureItem[]> {
+  // A restricted caller with nothing in scope must see nothing. `inArray(col, [])`
+  // already compiles to `false`, but short-circuiting keeps it explicit and
+  // saves the round trip.
+  if (filter.deviceIds && filter.deviceIds.length === 0) return [];
+
   const maxLimit = Math.min(Math.max(Number(filter.limit ?? 500), 1), 2000);
   const scopeConditions: SQL[] = [];
   if (filter.orgId) {
     scopeConditions.push(eq(securityPostureSnapshots.orgId, filter.orgId));
   } else if (filter.orgIds && filter.orgIds.length > 0) {
     scopeConditions.push(inArray(securityPostureSnapshots.orgId, filter.orgIds));
+  }
+  if (filter.deviceIds) {
+    scopeConditions.push(inArray(securityPostureSnapshots.deviceId, [...filter.deviceIds]));
   }
 
   const rankedSnapshots = db

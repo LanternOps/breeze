@@ -196,21 +196,46 @@ operationsRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const isAccessibleDevice = (device: { orgId: string; siteId: string | null }) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions);
+
     let candidateDevices: Array<{ id: string; orgId: string; siteId: string | null }> = [];
     let missingDeviceIds: string[] = [];
+    let notInstalledDeviceIds: string[] = [];
 
     if (data.deviceIds && data.deviceIds.length > 0) {
-      candidateDevices = await db
+      // Bind each rollback target to the device's own `installed` observation
+      // (#5565), mirroring how install binds to `pending` (SEC-115). A device
+      // that exists but never reported this patch as installed is skipped
+      // rather than sent a rollback for a catalog row it has no relation to.
+      const requestedDevices = await db
         .select({
           id: devices.id,
           orgId: devices.orgId,
-          siteId: devices.siteId
+          siteId: devices.siteId,
+          observationId: devicePatches.id
         })
         .from(devices)
+        .leftJoin(devicePatches, and(
+          eq(devicePatches.deviceId, devices.id),
+          eq(devicePatches.patchId, id),
+          eq(devicePatches.status, 'installed')
+        ))
         .where(inArray(devices.id, data.deviceIds));
 
-      const foundIds = new Set(candidateDevices.map((device) => device.id));
+      const foundIds = new Set(requestedDevices.map((device) => device.id));
       missingDeviceIds = data.deviceIds.filter((deviceId) => !foundIds.has(deviceId));
+      // Access is decided before install state is revealed: a device the
+      // caller cannot reach is reported as inaccessible whether or not it has
+      // the patch, so the response never discloses per-device install status
+      // for devices outside the caller's scope.
+      notInstalledDeviceIds = requestedDevices
+        .filter((device) => device.observationId === null && isAccessibleDevice(device))
+        .map((device) => device.id);
+      candidateDevices = requestedDevices
+        .filter((device) => device.observationId !== null || !isAccessibleDevice(device))
+        .map(({ id: deviceId, orgId, siteId }) => ({ id: deviceId, orgId, siteId }));
     } else {
       candidateDevices = await db
         .select({
@@ -228,12 +253,9 @@ operationsRoutes.post(
         );
     }
 
-    const permissions = c.get('permissions') as UserPermissions | undefined;
-    const accessibleDevices = candidateDevices.filter((device) =>
-      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
-    );
+    const accessibleDevices = candidateDevices.filter(isAccessibleDevice);
     const inaccessibleDeviceIds = candidateDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
+      .filter((device) => !isAccessibleDevice(device))
       .map((device) => device.id);
 
     if (accessibleDevices.length === 0) {
@@ -241,6 +263,7 @@ operationsRoutes.post(
         error: 'No accessible devices found for rollback',
         skipped: {
           missingDeviceIds,
+          notInstalledDeviceIds,
           inaccessibleDeviceIds
         }
       }, 404);
@@ -336,6 +359,7 @@ operationsRoutes.post(
       failedDeviceIds,
       skipped: {
         missingDeviceIds,
+        notInstalledDeviceIds,
         inaccessibleDeviceIds
       }
     });

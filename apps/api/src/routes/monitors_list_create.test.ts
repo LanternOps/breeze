@@ -186,6 +186,56 @@ describe('monitors routes', () => {
       expect(body.total).toBe(1);
     });
 
+    it.each([
+      {
+        tlsState: 'observed',
+        tlsNotAfter: new Date('2026-12-01T00:00:00Z'),
+        tlsIssuer: 'Example CA',
+        tlsObservedHost: 'example.com',
+        tlsObservedAt: NOW,
+      },
+      {
+        tlsState: null,
+        tlsNotAfter: null,
+        tlsIssuer: null,
+        tlsObservedHost: null,
+        tlsObservedAt: null,
+      },
+    ])('returns TLS observation fields when state is $tlsState', async (tls) => {
+      const monitor = {
+        id: MONITOR_ID,
+        orgId: ORG_ID,
+        name: 'Website Check',
+        monitorType: 'http_check',
+        target: 'https://example.com',
+        createdAt: NOW,
+        updatedAt: NOW,
+        ...tls,
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([monitor]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }]),
+          }),
+        } as any);
+
+      const res = await app.request('/monitors');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({
+        ...tls,
+        tlsNotAfter: tls.tlsNotAfter?.toISOString() ?? null,
+        tlsObservedAt: tls.tlsObservedAt?.toISOString() ?? null,
+      });
+    });
+
     it('filters by monitorType', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({

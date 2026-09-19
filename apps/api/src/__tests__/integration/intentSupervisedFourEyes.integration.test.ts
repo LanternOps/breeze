@@ -99,7 +99,8 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // worker path to prove execution without faking anything but the outbound
 // Google network call.
 const TOOL_NAME = 'google_suspend_user';
-const GOOGLE_EXECUTE = { resource: 'google', action: 'execute' } as const;
+// google_suspend_user -> organizations:write (2026-09-17 ROLE audit §2.6).
+const GOOGLE_EXECUTE = { resource: 'organizations', action: 'write' } as const;
 
 const THIRTY_MIN_MS = 30 * 60 * 1000;
 

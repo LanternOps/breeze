@@ -69,6 +69,8 @@ vi.mock('../db/schema', () => ({
     isActive: 'snmpDevices.isActive',
     lastPolled: 'snmpDevices.lastPolled',
     lastStatus: 'snmpDevices.lastStatus',
+    lastError: 'snmpDevices.lastError',
+    lastErrorAt: 'snmpDevices.lastErrorAt',
     createdAt: 'snmpDevices.createdAt',
     community: 'snmpDevices.community',
     username: 'snmpDevices.username',
@@ -321,7 +323,9 @@ describe('monitoring routes', () => {
               port: 161,
               isActive: true,
               lastPolled: null,
-              lastStatus: null,
+              lastStatus: 'warning',
+              lastError: 'SNMP request timed out',
+              lastErrorAt: new Date('2026-09-16T11:58:00.000Z'),
               createdAt: new Date(),
             }]),
           }),
@@ -366,6 +370,12 @@ describe('monitoring routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].snmp.configured).toBe(true);
       expect(body.data[0].snmp.snmpVersion).toBe('v2c');
+      expect(body.data[0].snmp.lastError).toBe('SNMP request timed out');
+      expect(body.data[0].snmp.lastErrorAt).toBe('2026-09-16T11:58:00.000Z');
+      expect(db.select).toHaveBeenCalledWith(expect.objectContaining({
+        lastError: 'snmpDevices.lastError',
+        lastErrorAt: 'snmpDevices.lastErrorAt',
+      }));
       expect(body.data[0].monitoring.configured).toBe(true);
       // W01 (spec §4.4) — the list route carries the derived reachability.
       expect(body.data[0].reachability).toEqual({
@@ -405,7 +415,7 @@ describe('monitoring routes', () => {
   // GET /assets/:id
   // ============================================
   describe('GET /monitoring/assets/:id', () => {
-    it('returns 403 for a site-restricted caller reading an out-of-scope asset', async () => {
+    it('returns an opaque 404 (matching a missing asset) for a site-restricted caller reading an out-of-scope asset (#5777)', async () => {
       // Asset lookup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -414,33 +424,20 @@ describe('monitoring routes', () => {
           }),
         }),
       } as any);
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([]),
-              }),
-            }),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 0 }]),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 0 }]),
-          }),
-        } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
       });
 
-      expect(res.status).toBe(403);
+      // Same status AND same body as the "returns 404 for nonexistent asset"
+      // test below — an out-of-ceiling asset must be indistinguishable from
+      // a missing one (existence oracle, #5777). The route now returns
+      // before any of the later network-monitor/SNMP selects run, so only
+      // the asset lookup needs wiring here.
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Asset not found');
     });
 
     it('leaves unrestricted asset detail callers unchanged', async () => {
@@ -486,7 +483,10 @@ describe('monitoring routes', () => {
       expect(body.networkMonitors.totalCount).toBe(0);
     });
 
-    it('returns asset detail with SNMP config and metrics', async () => {
+    it.each([
+      { lastError: 'SNMP request timed out', lastErrorAt: new Date('2026-09-16T11:58:00.000Z') },
+      { lastError: null, lastErrorAt: null },
+    ])('returns asset detail with SNMP diagnostics: $lastError', async ({ lastError, lastErrorAt }) => {
       reachabilityByAsset.set(ASSET_ID, {
         state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
       });
@@ -512,6 +512,8 @@ describe('monitoring routes', () => {
                 isActive: true,
                 lastPolled: null,
                 lastStatus: 'ok',
+                lastError,
+                lastErrorAt,
                 username: null,
                 community: 'public',
               }]),
@@ -559,6 +561,8 @@ describe('monitoring routes', () => {
       const body = await res.json();
       expect(body.enabled).toBe(true);
       expect(body.snmpDevice.snmpVersion).toBe('v2c');
+      expect(body.snmpDevice.lastError).toBe(lastError);
+      expect(body.snmpDevice.lastErrorAt).toBe(lastErrorAt?.toISOString() ?? null);
       expect(body.recentMetrics).toHaveLength(1);
       expect(body.networkMonitors.totalCount).toBe(2);
       // W01 (spec §6.2) — collection health rides the same response. This

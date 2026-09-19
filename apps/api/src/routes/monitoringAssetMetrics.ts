@@ -67,7 +67,11 @@ monitoringAssetMetricsRoutes.get(
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404, not 403 — an out-of-ceiling asset must be
+      // indistinguishable from a missing one, or a restricted caller can
+      // fingerprint asset ids in sites they cannot see (#5777, matching the
+      // deployments existence-oracle fix in #5545).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     const oids = query.oid.split(',').map((o) => o.trim()).filter(Boolean);

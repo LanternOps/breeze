@@ -784,7 +784,32 @@ export async function terminalizeIntent(
  * do not generalise speculatively; add a pair only with its own release
  * test and a handler that checks `context.approverRelease`.
  */
-const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set(['manage_tickets:log_time_entry']);
+/**
+ * #6200 added the three `services/aiToolsFleet.ts` writers with the same
+ * shape as `log_time_entry`: agent-mintable as an action intent (a tier-3
+ * entry in `aiGuardrails.ts`'s `TIER3_SUPERVISED_ACTIONS` /
+ * `TIER3_FOUR_EYES_ACTIONS`) AND storing `auth.user.id` in a `users` FK
+ * column. Under the rebuilt agent auth that id is an `aiAgents.id`, so the
+ * insert was a guaranteed 23503 the technician saw as `execution_error`
+ * seconds after their own WebAuthn approval, with nothing done — observed
+ * three times on US prod for `install` (2026-09-18).
+ *
+ * `services/aiToolsFleet.userOwnedRelease.contract.test.ts` pins this set
+ * against the source, so a newly agent-mintable `auth.user.id` write into a
+ * users FK cannot be added to that file without landing here too.
+ */
+const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
+  'manage_tickets:log_time_entry',
+  // deployments.created_by (db/schema/deployments.ts) — tier 3 supervised.
+  'manage_deployments:create',
+  // patch_jobs.created_by (db/schema/patches.ts) — tier 3 supervised. The
+  // prod failure in #6200.
+  'manage_patches:install',
+  // patch_rollbacks.initiated_by (db/schema/patches.ts) — tier 3 four_eyes.
+  // Same FK, same 23503; only the approval scope differs, and the approver
+  // substitution is scope-independent.
+  'manage_patches:rollback',
+]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
   if (!intent.requestingAgentRunId) return null;

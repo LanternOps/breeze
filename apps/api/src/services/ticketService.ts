@@ -2589,12 +2589,16 @@ export const DELIVERABLE_TICKET_PINNED_MESSAGE =
  */
 export async function assertTicketNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  ticketId: string
+  ticketId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
-    .where(eq(serviceDeliverableOccurrences.ticketId, ticketId))
+    .where(and(
+      eq(serviceDeliverableOccurrences.ticketId, ticketId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2612,13 +2616,17 @@ export async function assertTicketNotPinnedToDeliverable(
  */
 export async function assertDeviceTicketsNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  deviceId: string
+  deviceId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
     .innerJoin(tickets, eq(tickets.id, serviceDeliverableOccurrences.ticketId))
-    .where(eq(tickets.deviceId, deviceId))
+    .where(and(
+      eq(tickets.deviceId, deviceId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2723,7 +2731,7 @@ export async function moveTicketOrg(
       throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
     }
     // #5573 W02: cheap precondition, before the ticket UPDATE burns anything.
-    await assertTicketNotPinnedToDeliverable(tx, ticketId);
+    await assertTicketNotPinnedToDeliverable(tx, ticketId, ticket.orgId);
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };

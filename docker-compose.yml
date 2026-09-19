@@ -42,6 +42,16 @@ x-api-env: &api-env
   DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
   DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
+  # #6048 — RLS GUC prologue deadline + wedged-backend detector/reclaimer.
+  DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: ${DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
+  DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_DISABLED: ${DB_WEDGED_BACKEND_RECLAIM_DISABLED:-}
+  DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS: ${DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS: ${DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS:-}
+  DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS: ${DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_CONFIRM_DELAY_MS: ${DB_WEDGED_BACKEND_CONFIRM_DELAY_MS:-}
   # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
   # above: deploy/environment.mdx documents these as working knobs, and an
   # unmapped var set in .env is silently inert. The monitor runs on its
@@ -295,6 +305,14 @@ x-api-env: &api-env
   # AI execution plane (W01). Hosted-only; all optional. Empty strings are
   # treated as unset by the readers (config/env.ts, services/artifacts/blobStorage.ts).
   BREEZE_AI_WORKSPACE_ENABLED: ${BREEZE_AI_WORKSPACE_ENABLED:-false}
+  AI_WORKSPACE_BACKEND: ${AI_WORKSPACE_BACKEND:-}
+  VERCEL_SANDBOX_TOKEN: ${VERCEL_SANDBOX_TOKEN:-}
+  VERCEL_TEAM_ID: ${VERCEL_TEAM_ID:-}
+  VERCEL_PROJECT_ID: ${VERCEL_PROJECT_ID:-}
+  VERCEL_SANDBOX_IMAGE: ${VERCEL_SANDBOX_IMAGE:-}
+  VERCEL_SANDBOX_REGION_EU: ${VERCEL_SANDBOX_REGION_EU:-}
+  VERCEL_SANDBOX_REGION_US: ${VERCEL_SANDBOX_REGION_US:-}
+  AI_COMPUTE_PRICE_MULTIPLIER: ${AI_COMPUTE_PRICE_MULTIPLIER:-1.0}
   BREEZE_REGION: ${BREEZE_REGION:-}
   ARTIFACT_BLOB_BACKEND: ${ARTIFACT_BLOB_BACKEND:-}
   ARTIFACT_S3_ENDPOINT_EU: ${ARTIFACT_S3_ENDPOINT_EU:-}
@@ -310,6 +328,14 @@ x-api-env: &api-env
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # MCP OAuth (off by default, opt-in via env)
   MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
+
+  # BYO-MCP tool catalog (#5216 W01) — dark-shipped, default OFF. Mapped here
+  # because Compose interpolates only what this block names; without it the
+  # Tool Sources page and every /tool-sources route stay invisible in every
+  # deployment (same trap as AI_OPERATOR_* above).
+  TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
+  # Self-hosted only: let a tool source point at a private/loopback address.
+  TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}
   OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
@@ -333,6 +359,14 @@ x-api-env: &api-env
   # default false this release (#4491, opt in with true); mapped so a
   # self-hoster can actually flip it either way.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+  # WebAuthn / passkeys (services/passkeys.ts). All optional: RP ID and origin
+  # default to PUBLIC_APP_URL's hostname/origin. Mapped so a deployment that
+  # serves the web app on a different host than PUBLIC_APP_URL (local stacks,
+  # reverse-proxied installs) can pin them — a value in .env alone never
+  # reaches the container.
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-}
+  WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
   # present only in .env is inert unless it is listed here.
@@ -362,12 +396,9 @@ x-api-env: &api-env
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
-  # Offline work queue (#5128). Queueing for previously-rejecting callers
-  # (patches, automations, scan/rollback) is ON by default since W4 — pass
-  # `false` to opt back out. The TTL vars are per delivery class, in hours;
+  # Offline work queue (#5128). TTL vars are per delivery class, in hours;
   # left empty so services/commandOfflinePolicy.ts owns the defaults
   # (168 / 24 / 24) in exactly one place.
-  DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED: ${DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED:-}
   DEVICE_COMMAND_QUEUE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_TTL_HOURS:-}
   DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS:-}
   DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS:-}
@@ -384,6 +415,22 @@ x-api-env: &api-env
   # happens for vars listed in this block).
   SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
   MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
+  # Custom sender addresses / partner sending domains. All optional; unset =
+  # feature off. Compose interpolation only happens for vars listed here, so a
+  # value in .env alone is inert.
+  EMAIL_DOMAINS_PROVIDER: ${EMAIL_DOMAINS_PROVIDER:-}
+  EMAIL_DOMAINS_STATIC_ALLOWED: ${EMAIL_DOMAINS_STATIC_ALLOWED:-}
+  EMAIL_DOMAINS_RESEND_API_KEY: ${EMAIL_DOMAINS_RESEND_API_KEY:-}
+  EMAIL_DOMAINS_RESEND_SENDING_KEY: ${EMAIL_DOMAINS_RESEND_SENDING_KEY:-}
+  EMAIL_DOMAINS_REGION: ${EMAIL_DOMAINS_REGION:-}
+  EMAIL_DOMAINS_MAX_PER_PARTNER: ${EMAIL_DOMAINS_MAX_PER_PARTNER:-}
+  EMAIL_DOMAINS_DAILY_SEND_CAP: ${EMAIL_DOMAINS_DAILY_SEND_CAP:-}
+  EMAIL_DOMAINS_PARTNER_ALLOWLIST: ${EMAIL_DOMAINS_PARTNER_ALLOWLIST:-}
+  EMAIL_DOMAINS_DENYLIST: ${EMAIL_DOMAINS_DENYLIST:-}
+  EMAIL_DOMAINS_WEBHOOK_SECRET: ${EMAIL_DOMAINS_WEBHOOK_SECRET:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: ${EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES: ${EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES:-}
+  EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: ${EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}

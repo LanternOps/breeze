@@ -149,6 +149,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test'],
     ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/'],
     ['post', '/api/v1/tool-sources/src-1/tools/tool-1/test'], // method is case-insensitive
+    // #6098 — POST /agent-versions/sync-github fetches the GitHub release +
+    // manifest (RELEASE_FETCH_TIMEOUT_MS=30s) inside the handler; binarySync's
+    // writes now manage their own short withSystemDbAccessContext blocks, so
+    // the ambient request transaction must not be held across the fetch.
+    ['POST', '/api/v1/agent-versions/sync-github'],
+    ['POST', '/api/v1/agent-versions/sync-github/'],
+    ['post', '/api/v1/agent-versions/sync-github'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -297,6 +304,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],
+    // #6098 — the other agent-versions routes are DB-only (or, for /pinnable,
+    // the whole point is a cheap tenant-scoped read) and must keep the
+    // ambient RLS transaction.
+    ['GET', '/api/v1/agent-versions/sync-github', 'sync-github is POST-only'],
+    ['POST', '/api/v1/agent-versions/sync-github/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/agent-versions', 'plain upload route is DB-only'],
+    ['GET', '/api/v1/agent-versions/pinnable', 'pinnable listing is DB-only'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

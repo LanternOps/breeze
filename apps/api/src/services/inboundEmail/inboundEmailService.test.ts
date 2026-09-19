@@ -873,6 +873,80 @@ describe('processInboundEmail', () => {
     expect(String(log[0]!.error)).toContain('self-loop');
   });
 
+  // OUR OWN OUTBOUND, LOOPING BACK (spec §8.5). With a partner sending domain
+  // the sender is neither `no-reply` nor TICKETS_INBOUND_DOMAIN, so the
+  // self-loop rule above cannot see it: a contact address that forwards to the
+  // partner's support mailbox, which forwards into Breeze, would otherwise open
+  // a ticket from our own notification.
+  it('drops mail carrying X-Breeze-Outbound as ignored, before any create/match', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    await processInboundEmail(email({
+      from: 'contact@customer.example', subject: 'Re: [T-1] printer', outboundMarker: '1',
+    }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(log[0]!.partnerId).toBe('p-1');
+    expect(String(log[0]!.error)).toContain('outbound-marker');
+  });
+
+  it('drops mail whose own Message-ID we generated, as ignored', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    await processInboundEmail(email({
+      from: 'contact@customer.example',
+      messageId: '<ticket-t1-c1@tickets.example.com>',
+    }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(String(log[0]!.error)).toContain('own-message-id');
+  });
+
+  // The rule must not swallow the pipeline's whole purpose: a customer reply
+  // carries OUR anchor in In-Reply-To/References and its OWN Message-ID.
+  it('processes a customer reply that quotes our anchor in In-Reply-To', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-reply', internalNumber: 'T-2026-0015' });
+    await processInboundEmail(email({
+      from: 'contact@customer.example',
+      messageId: '<CAF=abc@mail.example.com>',
+      inReplyTo: '<ticket-t1@tickets.example.com>',
+      references: ['<ticket-t1@tickets.example.com>'],
+    }));
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).not.toBe('ignored');
+  });
+
+  // Spec §8.5: a technician writing in FROM the partner's own support address
+  // is a person, not a loop — which is why the rule is about the MESSAGE and
+  // never about the sending domain.
+  it('processes a technician writing from the partner identity address', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-tech', internalNumber: 'T-2026-0016' });
+    await processInboundEmail(email({
+      from: 'support@mail.acme.test', messageId: '<abc@mail.acme.test>',
+    }));
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).not.toBe('ignored');
+  });
+
   it('does NOT drop normal mail when the sender domain differs from the inbound domain', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

@@ -41,6 +41,7 @@ import {
   type RemoteWsSharedLeaseClaim,
   type RemoteWsSharedLeaseManager,
 } from '../../services/remoteWsSharedLease';
+import { REDIS_CLIENT_BASE_OPTIONS } from '../../services/redis';
 import {
   bindRemoteConnection,
   installLocalRemoteConnection,
@@ -59,6 +60,7 @@ import {
 const INSTANCE_ID = randomUUID();
 
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380', {
+  ...REDIS_CLIENT_BASE_OPTIONS,
   maxRetriesPerRequest: 2,
   // The partition scenario calls `redis.disconnect()`; without this ioredis
   // would silently heal the "partition" mid-assertion.

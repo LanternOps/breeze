@@ -48,6 +48,8 @@ export const snmpDevices = pgTable('snmp_devices', {
   // exponential backoff of the effective polling interval (#3217).
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   lastStatus: varchar('last_status', { length: 20 }),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
   // W01 (spec §7.1) — monotonic dispatch counter. W02 gates `cadence: 'slow'`
   // OID specs on `poll_seq % SLOW_CADENCE_EVERY === 0`. Unused in W01.
   pollSeq: integer('poll_seq').notNull().default(0),
@@ -63,7 +65,11 @@ export const snmpMetrics = pgTable('snmp_metrics', {
   // qualified instance OID and `base_oid` is the column it belongs to.
   // NULL on every legacy-agent row; readers COALESCE(base_oid, oid).
   baseOid: varchar('base_oid', { length: 200 }),
-  instance: varchar('instance', { length: 64 }),
+  // 200, matching `oid`/`base_oid`: an instance suffix is a suffix of the
+  // fully-qualified OID, and a real inetCidrRouteTable walk returns 110-char
+  // IPv6 suffixes that a VARCHAR(64) silently killed the whole poll over
+  // (#6108, widened by 2026-10-17-140000-snmp-metrics-instance-width.sql).
+  instance: varchar('instance', { length: 200 }),
   name: varchar('name', { length: 100 }).notNull(),
   value: text('value'),
   // 'null' | 'number' | 'string' | 'object' | 'error'. An 'error' row carries

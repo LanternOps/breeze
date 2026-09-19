@@ -25,13 +25,25 @@ describe('design profile', () => {
     expect(isDesignProfile({ profile: 'design' })).toBe(true);
     expect(isDesignProfile({ profile: 'narrative' })).toBe(false);
   });
-  it('substitutes design budget and turns and zeroes actions', () => {
-    const l = designLimits({ ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 500, designMaxTurns: 20 } as AiAgentLimits);
+  it('substitutes design budget, turns and wall clock and zeroes actions', () => {
+    const l = designLimits({
+      ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 500, designMaxTurns: 20, designWallClockSeconds: 1200,
+    } as AiAgentLimits);
     expect(l.maxBudgetCentsPerRun).toBe(500);
     expect(l.maxTurnsPerRun).toBe(20);
+    expect(l.wallClockSeconds).toBe(1200);
     expect(l.maxActionsPerRun).toBe(0);
-    const legacy = designLimits({ ...AI_AGENT_LIMIT_DEFAULTS, designMaxTurns: undefined } as unknown as AiAgentLimits);
+    const legacy = designLimits({
+      ...AI_AGENT_LIMIT_DEFAULTS, designMaxTurns: undefined, designWallClockSeconds: undefined,
+    } as unknown as AiAgentLimits);
     expect(legacy.maxTurnsPerRun).toBe(AI_AGENT_LIMIT_DEFAULTS.designMaxTurns);
+    expect(legacy.wallClockSeconds).toBe(AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds);
+  });
+  it('#5870: does not inherit the shared 600s wall clock default', () => {
+    const l = designLimits(AI_AGENT_LIMIT_DEFAULTS);
+    expect(l.wallClockSeconds).toBe(AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds);
+    expect(l.wallClockSeconds).not.toBe(AI_AGENT_LIMIT_DEFAULTS.wallClockSeconds);
+    expect(AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds).toBe(1800);
   });
   it('is a floor: ignores the agent allowlist, ends with the outcome tool', () => {
     const list = designToolAllowlist(['run_script']);

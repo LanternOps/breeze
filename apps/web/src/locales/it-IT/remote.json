@@ -67,6 +67,21 @@
     "openInBrowser": "Apri nel browser",
     "policyDisabled": "Il desktop remoto è disabilitato dai criteri",
     "policyDisabledNamed": "Il desktop remoto è disabilitato dal criterio \"{{name}}\"",
+    "revoked": {
+      "title": "Sessione revocata",
+      "setUpMfa": "Configura MFA",
+      "reasons": {
+        "session_ended": "La sessione era già terminata.",
+        "user_inactive": "Il tuo account non è più attivo.",
+        "epoch_baseline_missing": "Non è stato possibile verificare le tue autorizzazioni. Prova a riconnetterti.",
+        "permissions_changed": "Le tue autorizzazioni sono cambiate dopo l'inizio di questa sessione. Riconnettiti per continuare con il tuo accesso attuale.",
+        "membership_removed": "Non hai più accesso a questa organizzazione o dispositivo.",
+        "site_scope_lost": "Questo dispositivo è al di fuori dell'ambito del sito assegnato.",
+        "mfa_required": "L'autenticazione a più fattori è ora richiesta per l'accesso al desktop remoto.",
+        "hard_deadline": "Questa sessione ha raggiunto la durata massima consentita.",
+        "default": "La sessione è stata terminata da un criterio di sicurezza. Riprova a connetterti."
+      }
+    },
     "unavailable": {
       "default": "Il desktop non è disponibile su questo dispositivo",
       "headless": "Questo dispositivo non dispone di uno schermo: il desktop remoto non è disponibile",

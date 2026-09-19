@@ -2,7 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { promises as dns } from 'node:dns';
 import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { auditLogs, devices, organizations, partners, users } from '../db/schema';
+import { auditLogs, devices, organizations, partnerSendingDomains, partners, users } from '../db/schema';
 import { sendOpsAlert } from './opsAlerts';
 import { getRedis } from './redis';
 
@@ -36,6 +36,12 @@ export interface EvidenceCard {
     isVirtual: boolean;
     enrollmentIp: string | null;
   }>;
+  /**
+   * The partner's custom outbound sending domains (spec §9.2). Listed by NAME
+   * so the reviewer can spot a lookalike of a bank or a well-known brand —
+   * nothing automatic can make that judgement.
+   */
+  sendingDomains: Array<{ domain: string; status: string; verifiedAt: string | null }>;
   denials24h: number;
   matchedSuspendedAxes: Array<'email_domain' | 'billing_card_fingerprint'>;
 }
@@ -112,7 +118,7 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
       email: users.email,
     }).from(users).where(eq(users.partnerId, partnerId)).orderBy(asc(users.createdAt)).limit(1);
 
-    const [deviceRows, denialRows] = await Promise.all([
+    const [deviceRows, denialRows, sendingDomainRows] = await Promise.all([
       db.select({
         hostname: devices.hostname,
         enrollmentIpClass: devices.enrollmentIpClass,
@@ -126,6 +132,13 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
         eq(auditLogs.resourceId, partnerId),
         gte(auditLogs.timestamp, new Date(Date.now() - 24 * 60 * 60 * 1000)),
       )),
+      db.select({
+        domain: partnerSendingDomains.domain,
+        status: partnerSendingDomains.status,
+        verifiedAt: partnerSendingDomains.verifiedAt,
+      }).from(partnerSendingDomains)
+        .where(eq(partnerSendingDomains.partnerId, partnerId))
+        .orderBy(asc(partnerSendingDomains.createdAt)),
     ]);
 
     const domain = emailDomain(primaryUser?.email);
@@ -185,6 +198,11 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
         region: partner.billingAddressRegion,
       },
       devices: deviceRows,
+      sendingDomains: sendingDomainRows.map((row) => ({
+        domain: row.domain,
+        status: row.status,
+        verifiedAt: row.verifiedAt ? row.verifiedAt.toISOString() : null,
+      })),
       denials24h: denialRows[0]?.count ?? 0,
       matchedSuspendedAxes: [...axes],
     };
@@ -319,6 +337,7 @@ function renderCardText(card: EvidenceCard): string {
     `Billing: ${card.billing.distinctPaymentMethods} distinct payment methods; ${card.billing.failedAttempts} failed attempts`,
     `Capability denials (24h): ${card.denials24h}`,
     `Matched suspended axes (same region): ${card.matchedSuspendedAxes.join(', ') || 'none'}`,
+    `Sending domains: ${card.sendingDomains.map((d) => `${d.domain} (${d.status})`).join(', ') || 'none'}`,
     'Devices:', devicesText,
   ].join('\n');
 }

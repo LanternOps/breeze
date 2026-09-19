@@ -95,7 +95,9 @@
     "aiRisk": "KI-Risiko",
     "deviceBackup": "Gerätesicherung",
     "sectionServiceDesk": "Service-Desk",
-    "serviceManagement": "Service-Management"
+    "serviceManagement": "Service-Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Liefervorlagen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -956,7 +958,8 @@
         "fallbackTitle": "Überwachen",
         "fields": {
           "interval": "Intervall (s)",
-          "timeout": "Zeitüberschreitung (s)"
+          "timeout": "Zeitüberschreitung (s)",
+          "target": "Ziel-URL"
         },
         "labels": {
           "lastChecked": "Zuletzt geprüft: {{time}}",
@@ -984,6 +987,20 @@
           "httpCheck": "HTTP-Prüfung",
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
+        },
+        "targetResetNote": "Wenn Sie die URL ändern, wird die TLS-Beobachtung zurückgesetzt.",
+        "saved": "Monitor aktualisiert",
+        "certificate": {
+          "title": "Zertifikat",
+          "issuer": "Aussteller",
+          "expires": "Gültig bis",
+          "observedHost": "Beobachteter Host",
+          "state": "Zustand",
+          "states": {
+            "observed": "Beobachtet",
+            "handshakeFailed": "TLS-Handshake fehlgeschlagen",
+            "notTls": "Kein TLS"
+          }
         }
       },
       "NetworkMonitorList": {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
 var newHTTPClient = func() *http.Client {
@@ -207,6 +208,24 @@ func NewRecoveryProvider(ctx context.Context, serverURL, token string, bs *Boots
 	return newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download), nil
 }
 
+// authenticateStatusError is a non-2xx answer from /bmr/recover/authenticate,
+// typed so the download provider's session refresher can tell a rate limit
+// (429, with the server's Retry-After) from a transient server error (5xx)
+// from a rejected token (any other 4xx) without matching error text. Error()
+// keeps the exact strings this function returned before the type existed.
+type authenticateStatusError struct {
+	statusCode int
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *authenticateStatusError) Error() string {
+	if e.message != "" {
+		return fmt.Sprintf("bmr: authenticate failed: %s", e.message)
+	}
+	return fmt.Sprintf("bmr: authenticate failed with status %d", e.statusCode)
+}
+
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
 	payload, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
@@ -231,13 +250,17 @@ func authenticateRecoverySessionContext(ctx context.Context, serverURL, token st
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		statusErr := &authenticateStatusError{
+			statusCode: resp.StatusCode,
+			retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now()),
+		}
 		var errorBody map[string]any
 		if err := json.Unmarshal(data, &errorBody); err == nil {
-			if message, ok := errorBody["error"].(string); ok && message != "" {
-				return nil, fmt.Errorf("bmr: authenticate failed: %s", message)
+			if message, ok := errorBody["error"].(string); ok {
+				statusErr.message = message
 			}
 		}
-		return nil, fmt.Errorf("bmr: authenticate failed with status %d", resp.StatusCode)
+		return nil, statusErr
 	}
 	body, err := decodeBootstrapResponse(data)
 	if err != nil {

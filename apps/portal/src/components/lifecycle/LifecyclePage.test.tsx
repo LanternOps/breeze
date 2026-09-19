@@ -69,6 +69,39 @@ describe('LifecyclePage', () => {
     vi.clearAllMocks();
   });
 
+  it('renders the partner contact from the initial response', () => {
+    render(<LifecyclePage initialRun={RUN} initialSummary={summaryWith([SAM4])}
+      initialContact={{ name: 'Sam Lee', email: 'support@example.test' }} />);
+    expect(screen.getByTestId('lifecycle-closing')).toHaveTextContent('Sam Lee (support@example.test)');
+  });
+
+  it('omits the closing line without a contact', () => {
+    render(<LifecyclePage initialRun={RUN} initialSummary={summaryWith([SAM4])} initialContact={null} />);
+    expect(screen.queryByTestId('lifecycle-closing')).toBeNull();
+  });
+
+  it('updates and clears the contact when refreshing', async () => {
+    vi.mocked(portalApi.generateReport).mockResolvedValue({
+      data: {
+        id: 'run-2', reportId: 'report-1', type: 'hardware_lifecycle',
+        name: 'Hardware lifecycle', status: 'completed', startedAt: null,
+        completedAt: null, rowCount: 1, createdAt: '2026-06-10T12:00:00.000Z',
+      },
+      statusCode: 201,
+    });
+    const payload = { run: RUN, summary: summaryWith([SAM4]), enableSelfService: true };
+    vi.mocked(portalApi.getHardwareLifecycleLatest)
+      .mockResolvedValueOnce({ data: { ...payload, contact: { name: 'New Contact', email: 'new@example.test' } } })
+      .mockResolvedValueOnce({ data: { ...payload, contact: null } });
+
+    render(<LifecyclePage initialRun={RUN} initialSummary={payload.summary} />);
+    fireEvent.click(screen.getByTestId('lifecycle-refresh'));
+    await waitFor(() => expect(screen.getByTestId('lifecycle-closing')).toHaveTextContent('New Contact (new@example.test)'));
+    await waitFor(() => expect(screen.getByTestId('lifecycle-refresh')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('lifecycle-refresh'));
+    await waitFor(() => expect(screen.queryByTestId('lifecycle-closing')).toBeNull());
+  });
+
   it('lays out the sections in PDF order: bar, schedule, workstations, servers, other equipment, recommendations, closing', () => {
     const summary = summaryWith([SAM4, LAW_SRV, MACBOOK_AIR]);
     render(<LifecyclePage initialRun={RUN} initialSummary={summary} />);

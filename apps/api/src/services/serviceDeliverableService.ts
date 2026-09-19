@@ -987,13 +987,21 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
  * untouched: a missed deliverable's work may still be in flight, and closing
  * its ticket would destroy that signal.
  */
-export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable, today: string): Promise<number> {
-  const cutoff = addDaysISO(today, -d.graceDays);   // due_at < cutoff ⇔ due_at + grace < today (isPastGrace)
+export async function markDueOccurrencesMissedForDeliverable(
+  d: SweepDeliverable, today: string, options: { closing?: boolean } = {},
+): Promise<number> {
+  // Closing mode (#5609): the deliverable has left its window (inactive or past
+  // effective_until), so the main sweep will never visit it again. Retire every
+  // not-yet-terminal occurrence, including `scheduled` rows that never opened,
+  // but keep the grace window: `active` is reversible, and a paused deliverable
+  // must not stamp `missed` earlier than the normal sweep would.
+  const statuses = options.closing ? (['scheduled', ...MISSABLE] as const) : MISSABLE;
+  const cutoff = addDaysISO(today, -d.graceDays);
   const rows = await db.update(serviceDeliverableOccurrences)
     .set({ status: 'missed', updatedAt: new Date() })
     .where(and(
       eq(serviceDeliverableOccurrences.deliverableId, d.id),
-      inArray(serviceDeliverableOccurrences.status, MISSABLE),
+      inArray(serviceDeliverableOccurrences.status, statuses),
       lt(serviceDeliverableOccurrences.dueAt, cutoff),
     ))
     .returning({ id: serviceDeliverableOccurrences.id });

@@ -118,7 +118,7 @@ async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): P
     // Mailgun retains the original form fields; Graph retains structured CCs.
     for (const cc of [raw?.Cc, raw?.cc]) {
       if (typeof cc === 'string' && addressparser(cc, { flatten: true })
-        .some(({ address }) => address.trim().toLowerCase() === normalizedFrom)) return true;
+        .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom)) return true;
     }
     if (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
       const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;

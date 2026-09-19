@@ -633,21 +633,49 @@
   "quotes": {
     "deviceSet": {
       "roleNoun": {
-        "workstation": "iş istasyonları", "server": "sunucular", "printer": "yazıcılar", "router": "yönlendiriciler", "switch": "ağ anahtarları", "firewall": "güvenlik duvarları",
-        "access_point": "erişim noktaları", "phone": "telefonlar", "iot": "IoT cihazları", "camera": "kameralar", "nas": "NAS cihazları"
+        "workstation": "iş istasyonları",
+        "server": "sunucular",
+        "printer": "yazıcılar",
+        "router": "yönlendiriciler",
+        "switch": "ağ anahtarları",
+        "firewall": "güvenlik duvarları",
+        "access_point": "erişim noktaları",
+        "phone": "telefonlar",
+        "iot": "IoT cihazları",
+        "camera": "kameralar",
+        "nas": "NAS cihazları"
       }
     },
     "editor": {
       "deviceSet": {
-        "toggle": "Cihaz grubuna göre faturala", "typeLabel": "Cihaz grubu",
-        "types": { "per_device": "Cihaz başına", "per_device_role": "Cihaz rolü başına", "per_device_group": "Cihaz grubu başına", "per_seat": "Kullanıcı başına" },
-        "rolesLabel": "Cihaz rolleri", "groupLabel": "Cihaz grubu", "siteLabel": "Konum (isteğe bağlı)", "allSites": "Tüm konumlar",
-        "quantityAuto": "Miktar otomatik olarak sayılır", "autoSummary": "Otomatik miktar · {{count}} {{set}} · tahmini",
-        "driftChip": "sayı değişti: {{stored}} → {{live}}", "refresh": "Sayıları yenile", "estimateError": "Güncel cihaz sayısı denetlenemedi.", "pickerError": "Cihaz grupları veya siteler yüklenemedi. Sayfayı yenileyip tekrar deneyin.",
-        "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin", "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
+        "toggle": "Cihaz grubuna göre faturala",
+        "typeLabel": "Cihaz grubu",
+        "types": {
+          "per_device": "Cihaz başına",
+          "per_device_role": "Cihaz rolü başına",
+          "per_device_group": "Cihaz grubu başına",
+          "per_seat": "Kullanıcı başına"
+        },
+        "rolesLabel": "Cihaz rolleri",
+        "groupLabel": "Cihaz grubu",
+        "siteLabel": "Konum (isteğe bağlı)",
+        "allSites": "Tüm konumlar",
+        "quantityAuto": "Miktar otomatik olarak sayılır",
+        "autoSummary": "Otomatik miktar · {{count}} {{set}} · tahmini",
+        "driftChip": "sayı değişti: {{stored}} → {{live}}",
+        "refresh": "Sayıları yenile",
+        "estimateError": "Güncel cihaz sayısı denetlenemedi.",
+        "pickerError": "Cihaz grupları veya siteler yüklenemedi. Sayfayı yenileyip tekrar deneyin.",
+        "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin",
+        "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
         "typeLocked": "Cihaz grubu, satır oluşturulduktan sonra değiştirilemez — satırı kaldırıp yeniden ekleyin.",
-        "allowanceGroupLabel": "Miktar limiti", "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
-        "includedLabel": "Dahil miktar", "overageModeLabel": "Dahil miktarın üstü", "overageBill": "Her ek birimi faturala", "overageFlag": "İnceleme için raporla", "overagePriceLabel": "Aşım fiyatı",
+        "allowanceGroupLabel": "Miktar limiti",
+        "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
+        "includedLabel": "Dahil miktar",
+        "overageModeLabel": "Dahil miktarın üstü",
+        "overageBill": "Her ek birimi faturala",
+        "overageFlag": "İnceleme için raporla",
+        "overagePriceLabel": "Aşım fiyatı",
         "driftToast": "{{count}} satır artık güncel cihaz sayısıyla eşleşmiyor: {{lines}}",
         "retargetToast": "{{count}} satır için bu kuruluşa ait cihaz grubu veya konum yeniden seçilmeli"
       },
@@ -1333,8 +1361,12 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Tah.", "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
-        "setDevices": "cihazlar", "setSeats": "kullanıcılar", "setGroup": "“{{name}}” içindeki cihazlar", "atSite": "{{site}} konumundaki {{set}}",
+        "badge": "Tah.",
+        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
+        "setDevices": "cihazlar",
+        "setSeats": "kullanıcılar",
+        "setGroup": "“{{name}}” içindeki cihazlar",
+        "atSite": "{{site}} konumundaki {{set}}",
         "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
         "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
       },
@@ -1828,6 +1860,7 @@
       },
       "reverseError": "Ödeme geri alınamadı.",
       "reverseSuccess": "Ödeme geri alındı",
+      "reverseInQuickbooksToo": "Bu ödemeyi QuickBooks’ta da iptal edin",
       "sendLink": "Ödeme bağlantısını gönder",
       "setUp": "Kurulum",
       "shareLinkPrompt": "Bu ödeme bağlantısını müşterinizle paylaşın:",
@@ -2039,7 +2072,9 @@
       "total": "Toplam"
     },
     "title": "Faturalar",
-    "tryAgain": "Tekrar deneyin"
+    "tryAgain": "Tekrar deneyin",
+    "exportBillables": "Faturalandırılabilirleri dışa aktar",
+    "exportBillablesDialogTitle": "Faturalandırılabilirleri dışa aktar"
   },
   "orgBillingSettings": {
     "address": {
@@ -2171,6 +2206,24 @@
     },
     "statusPill": {
       "prefix": "Durum:"
+    }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Varsayılanlar",
+    "documents": "Belgeler",
+    "connections": "Bağlantılar"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Muhasebe",
+      "description": "Stripe ve QuickBooks, Entegrasyonlar altında bağlanır — onları orada yönetin.",
+      "cta": "Muhasebe bağlantılarını yönet →"
+    },
+    "catalog": {
+      "title": "Katalog ve distribütörler",
+      "description": "Ürün Kataloğu ve distribütör bağlantıları (Pax8, TD SYNNEX) iki yerde bulunur — buradan geçiş yapın.",
+      "catalogCta": "Ürün Kataloğunu aç →",
+      "distributorsCta": "Distribütörleri aç →"
     }
   }
 }

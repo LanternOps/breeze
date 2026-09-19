@@ -9,7 +9,10 @@
  * move: any change to what they produce must be a deliberate snapshot update.
  *
  * Shape to keep in mind downstream: both take EMAIL ADDRESS STRINGS (not user
- * ids), build in-memory PDF/CSV buffers, and touch no db handle.
+ * ids) and IDENTIFIERS THE CALLER ALREADY RESOLVED (`partnerId`), build
+ * in-memory PDF/CSV buffers, and touch no db handle. That last property is why
+ * `partnerId` is a parameter rather than a lookup: the partner-lane sender
+ * (spec §8.2) needs it, and this module must not grow a query to get it.
  */
 
 import { getEmailService } from './email';
@@ -55,10 +58,13 @@ export async function emailReportFailure(opts: {
     ].join(''),
   });
 
+  // Platform sender (spec §8.2): this tells the MSP's own people that their
+  // scheduled report did not arrive — not a customer-facing deliverable.
   await email.sendEmail({
     to: opts.recipients,
     subject: `Scheduled report failed: ${opts.reportName}`,
     html,
+    purpose: 'staff.report_failure',
   });
 }
 
@@ -73,6 +79,17 @@ export async function emailReportRun(opts: {
   trendLine?: string | null;
   timezone: string;
   branding: ReportBranding;
+  /**
+   * The partner that owns the report's org — the `general` stream's sender
+   * (spec §8.2). Passed IN, never read here: this module's contract is that it
+   * takes address strings, a branding bag and a timezone and touches no db
+   * handle (see the module docstring). Both callers already hold an org id and
+   * a system DB context, so the read is theirs to make.
+   *
+   * `null` is allowed and means the platform sender, for a caller that cannot
+   * resolve one (spec §8.1).
+   */
+  partnerId: string | null;
 }): Promise<void> {
   const email = getEmailService();
   if (!email) {
@@ -140,6 +157,14 @@ export async function emailReportRun(opts: {
 
   await email.sendEmail({
     to: opts.recipients,
+    // The scheduled report itself IS a customer deliverable — partner lane,
+    // `general` stream (spec §8.2). The partner is RESOLVED BY THE CALLER and
+    // passed in: this module takes only address strings, a branding bag and a
+    // timezone, and touches no db handle (module docstring). Both callers
+    // already hold the report's org id and a system DB context, so the read is
+    // theirs. `null` still resolves to the platform sender (§8.1).
+    purpose: 'report.delivery',
+    partnerId: opts.partnerId,
     subject: `Scheduled report ready: ${opts.reportName}`,
     html: renderLayout({
       title: 'Scheduled report',
