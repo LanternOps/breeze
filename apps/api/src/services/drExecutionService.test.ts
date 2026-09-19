@@ -154,6 +154,72 @@ describe('drExecutionService', () => {
     ]);
   });
 
+  // ── W05b Task 7: BARE_METAL_REBUILD source + rebuild-host refs ──────────
+  const DEVICE_2 = '66666666-6666-6666-6666-666666666666';
+  const HOST_ID = '99999999-9999-9999-9999-999999999999';
+  const SNAP_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const SNAP_2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+
+  it('BARE_METAL_REBUILD: one snapshot source per device from its latest restorable snapshot, plus the host as a target', async () => {
+    const resolveLatestRestorableSnapshotId = vi.fn(async (_orgId: string, deviceId: string) =>
+      deviceId === DEVICE_ID ? SNAP_1 : SNAP_2);
+    const refs = await resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      devices: [DEVICE_ID, DEVICE_2],
+      restoreConfig: {
+        commandType: 'BARE_METAL_REBUILD',
+        snapshotSelection: 'latest_restorable',
+        rebuildHostDeviceId: HOST_ID,
+        waitTimeoutMinutes: 60,
+      },
+    }, ORG_ID, { resolveProviderSnapshotId: vi.fn(), resolveLatestRestorableSnapshotId });
+
+    expect(refs).toEqual([
+      { kind: 'device', id: DEVICE_ID, role: 'target' },
+      { kind: 'device', id: DEVICE_2, role: 'target' },
+      { kind: 'device', id: HOST_ID, role: 'target' },
+      { kind: 'snapshot', id: SNAP_1, role: 'source' },
+      { kind: 'snapshot', id: SNAP_2, role: 'source' },
+    ]);
+    expect(resolveLatestRestorableSnapshotId).toHaveBeenCalledWith(ORG_ID, DEVICE_ID);
+    expect(resolveLatestRestorableSnapshotId).toHaveBeenCalledWith(ORG_ID, DEVICE_2);
+  });
+
+  it('BARE_METAL_REBUILD: a device with no restorable snapshot denies the group (resource_not_found)', async () => {
+    const resolveLatestRestorableSnapshotId = vi.fn(async (_o: string, d: string) => (d === DEVICE_ID ? SNAP_1 : null));
+    const err = await resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      devices: [DEVICE_ID, DEVICE_2],
+      restoreConfig: { commandType: 'BARE_METAL_REBUILD' },
+    }, ORG_ID, {
+      resolveProviderSnapshotId: vi.fn(),
+      resolveLatestRestorableSnapshotId,
+    }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(DrRecoveryAuthorizationDeniedError);
+    expect((err as DrRecoveryAuthorizationDeniedError).code).toBe('resource_not_found');
+    expect(resolveLatestRestorableSnapshotId).toHaveBeenCalledWith(ORG_ID, DEVICE_2);
+  });
+
+  it('BARE_METAL_REBUILD: an invalid step config is denied before any snapshot lookup', async () => {
+    const resolveLatestRestorableSnapshotId = vi.fn();
+    await expect(resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      restoreConfig: { commandType: 'BARE_METAL_REBUILD', waitTimeoutMinutes: 2 },
+    }, ORG_ID, { resolveProviderSnapshotId: vi.fn(), resolveLatestRestorableSnapshotId }))
+      .rejects.toThrow('invalid_step_config');
+    expect(resolveLatestRestorableSnapshotId).not.toHaveBeenCalled();
+  });
+
+  it('other step types still deny a group with no source', async () => {
+    await expect(resolveDrGroupAuthorizationRefs({
+      ...groupRow(),
+      restoreConfig: { commandType: 'vm_restore_from_backup', payload: {} },
+    }, ORG_ID, {
+      resolveProviderSnapshotId: vi.fn(),
+      resolveLatestRestorableSnapshotId: vi.fn().mockResolvedValue(SNAP_1),
+    })).rejects.toThrow('resource_not_found');
+  });
+
   it('fails closed when a provider snapshot id is ambiguous', async () => {
     await expect(resolveDrGroupAuthorizationRefs(groupRow(), ORG_ID, {
       resolveProviderSnapshotId: vi.fn().mockRejectedValue(new Error('ambiguous_snapshot_reference')),

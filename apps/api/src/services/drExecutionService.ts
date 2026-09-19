@@ -15,6 +15,12 @@ import {
   ResilienceAuthorizationError,
   type ResilienceResourceRef,
 } from './resilienceSiteAuthorization';
+import {
+  DR_STEP_BARE_METAL_REBUILD,
+  drBareMetalRebuildConfigSchema,
+  isBareMetalRebuildConfig,
+  resolveLatestRestorableSnapshotId as resolveLatestRestorableSnapshotIdWithDb,
+} from './drBareMetalRebuildStep';
 
 const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
@@ -22,6 +28,8 @@ const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
   CommandTypes.HYPERV_RESTORE,
   CommandTypes.MSSQL_RESTORE,
   CommandTypes.BMR_RECOVER,
+  // Not a device command for failover/failback — see dispatchBareMetalRebuildGroup.
+  DR_STEP_BARE_METAL_REBUILD,
 ]);
 
 export type DrPlanGroupRecord = typeof drPlanGroups.$inferSelect;
@@ -334,7 +342,17 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 type DrAuthorizationRefDependencies = {
   resolveProviderSnapshotId(orgId: string, snapshotId: string): Promise<string>;
+  /** W05b: a device's newest bare-metal-restorable snapshot, or null when it has none. */
+  resolveLatestRestorableSnapshotId(orgId: string, deviceId: string): Promise<string | null>;
 };
+
+function defaultAuthorizationRefDependencies(tx?: DrDb): DrAuthorizationRefDependencies {
+  return {
+    resolveProviderSnapshotId: (ownerOrgId, snapshotId) => resolveProviderSnapshotIdWithDb(ownerOrgId, snapshotId, tx),
+    resolveLatestRestorableSnapshotId: (ownerOrgId, deviceId) =>
+      resolveLatestRestorableSnapshotIdWithDb(ownerOrgId, deviceId, tx),
+  };
+}
 
 async function resolveProviderSnapshotIdWithDb(
   orgId: string,
@@ -377,9 +395,7 @@ const EXPLICIT_SOURCE_FIELDS: ReadonlyArray<{
 export async function resolveDrGroupAuthorizationRefs(
   group: Pick<DrPlanGroupRecord, 'devices' | 'restoreConfig'>,
   orgId: string,
-  deps: DrAuthorizationRefDependencies = {
-    resolveProviderSnapshotId: (ownerOrgId, snapshotId) => resolveProviderSnapshotIdWithDb(ownerOrgId, snapshotId),
-  },
+  deps: DrAuthorizationRefDependencies = defaultAuthorizationRefDependencies(),
 ): Promise<ResilienceResourceRef[]> {
   const rawDeviceIds = Array.isArray(group.devices) ? group.devices : [];
   if (
@@ -401,6 +417,28 @@ export async function resolveDrGroupAuthorizationRefs(
       refs.push({ kind, id, role: 'source' });
     }
   };
+
+  // W05b BARE_METAL_REBUILD: the sources are each device's latest restorable
+  // snapshot (a group holds N devices, so one pinned snapshot id cannot
+  // describe N sources), and the rebuild host is an authorized target too —
+  // a rehearsal writes N disk images onto it.
+  if (isBareMetalRebuildConfig(restoreConfig)) {
+    const parsed = drBareMetalRebuildConfigSchema.safeParse(restoreConfig);
+    if (!parsed.success) {
+      throw new DrRecoveryAuthorizationDeniedError('invalid_step_config');
+    }
+    const host = parsed.data.rebuildHostDeviceId;
+    if (host && !deviceIds.includes(host)) {
+      refs.push({ kind: 'device', id: host, role: 'target' });
+    }
+    for (const deviceId of deviceIds) {
+      const snapshotId = await deps.resolveLatestRestorableSnapshotId(orgId, deviceId);
+      if (!snapshotId) {
+        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+      }
+      addSource('snapshot', snapshotId);
+    }
+  }
 
   for (const { field, kind } of EXPLICIT_SOURCE_FIELDS) {
     for (const container of [restoreConfig, payload]) {
@@ -432,11 +470,9 @@ async function resolveAllExecutionRefs(
   tx: DrDb,
 ): Promise<ResilienceResourceRef[]> {
   const refs: ResilienceResourceRef[] = [];
+  const deps = defaultAuthorizationRefDependencies(tx);
   for (const group of groups) {
-    refs.push(...await resolveDrGroupAuthorizationRefs(group, orgId, {
-      resolveProviderSnapshotId: (ownerOrgId, snapshotId) =>
-        resolveProviderSnapshotIdWithDb(ownerOrgId, snapshotId, tx),
-    }));
+    refs.push(...await resolveDrGroupAuthorizationRefs(group, orgId, deps));
   }
   return refs;
 }

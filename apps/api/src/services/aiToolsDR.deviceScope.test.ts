@@ -11,7 +11,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() } }));
+vi.mock('../db', () => ({
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
+  // aiToolsDR imports verifyDeviceAccess from the hub (W05b), which loads commandQueue.
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
 vi.mock('./drExecutionService', () => ({ createDrExecutionAndEnqueue: vi.fn() }));
 
 import { db } from '../db';
