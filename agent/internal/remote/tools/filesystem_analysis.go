@@ -562,8 +562,16 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		unrotatedLogs = unrotatedLogs[:200]
 	}
 
-	// Trash usage is calculated separately from known locations.
-	for _, trashPath := range getTrashPaths() {
+	// Trash usage is calculated separately from known locations, scoped to the
+	// volume that was scanned (defect 2: the bin was hardcoded to C:\).
+	trashPaths, trashScanErrors := getTrashPaths(cleanRoot)
+	for _, trashScanError := range trashScanErrors {
+		if len(scanErrors) >= maxFSErrors {
+			break
+		}
+		scanErrors = append(scanErrors, trashScanError)
+	}
+	for _, trashPath := range trashPaths {
 		size, _, timedOut, trashErr := estimateDirectorySize(trashPath, deadline, maxEntries/2)
 		if trashErr != nil {
 			if !os.IsNotExist(trashErr) {
@@ -584,11 +592,18 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			Path:      trashPath,
 			SizeBytes: size,
 		})
+		// Safe is COMPUTED (spec §6.1): a trash location the rule table does
+		// not recognise is still reported in trashUsage, but is emitted with
+		// Safe=false so buildCleanupPreview never offers it for deletion.
+		trashCategory, _, trashSafe := classifyCleanupPath(trashPath, now, now)
+		if trashCategory == "" {
+			trashCategory = "trash"
+		}
 		addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
 			Path:      trashPath,
-			Category:  "trash",
+			Category:  trashCategory,
 			SizeBytes: size,
-			Safe:      true,
+			Safe:      trashSafe,
 			Reason:    "trash/recycle bin cleanup",
 		}, maxFSCleanupCandidates)
 	}
@@ -1115,60 +1130,137 @@ func mapCleanupCandidates(existing map[string]FilesystemCleanupCandidate, limit 
 	return candidates
 }
 
-func getTrashPaths() []string {
+// isWindowsVolumeRoot reports whether path names a volume root (C:\, d:/, C:).
+// Recycle bins only exist there, so a scan rooted deeper emits none.
+func isWindowsVolumeRoot(path string) bool {
+	return normalizeCleanupPathFor("windows", path) == "<vol>"
+}
+
+// enumerateWindowsRecycleBins lists <volumeRoot>\$Recycle.Bin\S-* — one
+// directory per SID. Each is a `contents`-granularity candidate: the bin ROOT
+// sits at depth 1 and isRecursiveDeleteBoundary refuses it (which is why the
+// old C:\$Recycle.Bin candidate could never be deleted), while a SID directory
+// is depth 2 and its contents are reachable.
+//
+// ReadDir errors are RETURNED rather than swallowed: a bin that cannot be read
+// is a scan error an operator needs to see, not silence.
+func enumerateWindowsRecycleBins(volumeRoot string) ([]string, []FilesystemScanError) {
+	binRoot := filepath.Join(volumeRoot, "$Recycle.Bin")
+	entries, err := os.ReadDir(binRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []FilesystemScanError{{Path: binRoot, Error: err.Error()}}
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToUpper(entry.Name()), "S-") {
+			continue
+		}
+		paths = append(paths, filepath.Join(binRoot, entry.Name()))
+	}
+	return paths, nil
+}
+
+// trashPathsForRoot is getTrashPaths with the platform and home directory
+// passed in, so both grammars are testable from any host.
+func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanError) {
 	paths := make([]string, 0, 12)
+	scanErrors := make([]FilesystemScanError, 0, 2)
 	seen := make(map[string]struct{})
 	addPath := func(p string) {
 		if p == "" {
 			return
 		}
 		clean := filepath.Clean(p)
+		// POSIX trash enumeration used to ignore the scan root entirely, so a
+		// /data scan proposed deleting the OS volume's trash (spec §13 row 11).
+		// Windows is already volume-scoped by isWindowsVolumeRoot above.
+		if goos != "windows" && !isRealPathUnderRoot(scanRoot, clean) {
+			return
+		}
 		if _, ok := seen[clean]; ok {
 			return
 		}
 		seen[clean] = struct{}{}
 		paths = append(paths, clean)
 	}
+	addDirErr := func(dir string, err error) {
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		scanErrors = append(scanErrors, FilesystemScanError{Path: dir, Error: err.Error()})
+	}
 
-	home, _ := os.UserHomeDir()
-	switch runtime.GOOS {
+	switch goos {
 	case "windows":
-		addPath(`C:\$Recycle.Bin`)
+		if !isWindowsVolumeRoot(scanRoot) {
+			return paths, scanErrors
+		}
+		binPaths, binErrors := enumerateWindowsRecycleBins(scanRoot)
+		for _, p := range binPaths {
+			addPath(p)
+		}
+		scanErrors = append(scanErrors, binErrors...)
 	case "darwin":
 		if home != "" {
 			addPath(filepath.Join(home, ".Trash"))
 		}
-		if entries, err := os.ReadDir("/Users"); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				if strings.HasPrefix(name, ".") {
-					continue
-				}
-				addPath(filepath.Join("/Users", name, ".Trash"))
+		entries, err := os.ReadDir("/Users")
+		addDirErr("/Users", err)
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
+			addPath(filepath.Join("/Users", entry.Name(), ".Trash"))
 		}
 	case "linux":
 		if home != "" {
 			addPath(filepath.Join(home, ".local", "share", "Trash"))
 		}
-		if entries, err := os.ReadDir("/home"); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				if strings.HasPrefix(name, ".") {
-					continue
-				}
-				addPath(filepath.Join("/home", name, ".local", "share", "Trash"))
+		entries, err := os.ReadDir("/home")
+		addDirErr("/home", err)
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
+			addPath(filepath.Join("/home", entry.Name(), ".local", "share", "Trash"))
 		}
 		addPath(filepath.Join("/root", ".local", "share", "Trash"))
 	}
-	return paths
+	return paths, scanErrors
+}
+
+func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError) {
+	home, _ := os.UserHomeDir()
+	return trashPathsForRoot(runtime.GOOS, scanRoot, home)
+}
+
+// isRealPathUnderRoot reports whether candidate's REAL path (symlinks resolved)
+// is scanRoot's real path or below it. Resolving both sides is the point: a
+// trash directory reached through a symlink out of the scanned tree is not in
+// scope, and a candidate that cannot be resolved at all is refused rather than
+// guessed at (spec §13 row 11).
+func isRealPathUnderRoot(scanRoot, candidate string) bool {
+	realRoot, err := filepath.EvalSymlinks(scanRoot)
+	if err != nil {
+		return false
+	}
+	realCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		// A trash directory that does not exist is not a candidate anyway —
+		// estimateDirectorySize would drop it a moment later.
+		return false
+	}
+	if realCandidate == realRoot {
+		return true
+	}
+	prefix := strings.TrimSuffix(realRoot, string(filepath.Separator)) + string(filepath.Separator)
+	return strings.HasPrefix(realCandidate, prefix)
 }
 
 func estimateDirectorySize(root string, deadline time.Time, maxEntries int) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {

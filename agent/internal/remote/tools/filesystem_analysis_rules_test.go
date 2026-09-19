@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,4 +124,128 @@ func indexOfCleanupSubstring(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+func TestIsWindowsVolumeRoot(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`C:\`, true},
+		{`c:/`, true},
+		{`D:\`, true},
+		{`C:`, true},
+		{`C:\Users`, false},
+		{`C:\$Recycle.Bin`, false},
+		{`\\server\share`, false},
+	}
+	for _, c := range cases {
+		if got := isWindowsVolumeRoot(c.path); got != c.want {
+			t.Errorf("isWindowsVolumeRoot(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+// Defect 2: the only Windows trash path was the literal C:\$Recycle.Bin, which
+// is depth 1 and therefore refused by isRecursiveDeleteBoundary — Windows bin
+// reclaim was dead on arrival, and no other volume's bin was ever seen. The bin
+// is now enumerated per SID, one level down, on whatever volume was scanned.
+func TestEnumerateWindowsRecycleBinsListsSidDirectories(t *testing.T) {
+	volumeRoot := t.TempDir()
+	binRoot := filepath.Join(volumeRoot, "$Recycle.Bin")
+	for _, sid := range []string{"S-1-5-21-1111111111-1-1-1001", "S-1-5-18"} {
+		if err := os.MkdirAll(filepath.Join(binRoot, sid), 0o700); err != nil {
+			t.Fatalf("mkdir sid dir: %v", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(binRoot, "notasid"), 0o700); err != nil {
+		t.Fatalf("mkdir decoy dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binRoot, "desktop.ini"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write desktop.ini: %v", err)
+	}
+
+	paths, scanErrors := enumerateWindowsRecycleBins(volumeRoot)
+	if len(scanErrors) != 0 {
+		t.Fatalf("unexpected scan errors: %+v", scanErrors)
+	}
+	got := map[string]bool{}
+	for _, p := range paths {
+		got[filepath.Base(p)] = true
+	}
+	if len(got) != 2 || !got["S-1-5-21-1111111111-1-1-1001"] || !got["S-1-5-18"] {
+		t.Fatalf("expected exactly the two SID directories, got %v", got)
+	}
+}
+
+func TestEnumerateWindowsRecycleBinsReportsReadErrors(t *testing.T) {
+	volumeRoot := t.TempDir()
+	// $Recycle.Bin exists but is a FILE, so ReadDir fails with something other
+	// than IsNotExist. Defect: that error used to be swallowed entirely.
+	if err := os.WriteFile(filepath.Join(volumeRoot, "$Recycle.Bin"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+	paths, scanErrors := enumerateWindowsRecycleBins(volumeRoot)
+	if len(paths) != 0 {
+		t.Errorf("expected no paths, got %v", paths)
+	}
+	if len(scanErrors) != 1 {
+		t.Fatalf("expected the ReadDir error to be reported, got %+v", scanErrors)
+	}
+}
+
+func TestTrashPathsForRootIsVolumeScopedOnWindows(t *testing.T) {
+	paths, scanErrors := trashPathsForRoot("windows", `C:\Users\alice`, "")
+	if len(paths) != 0 || len(scanErrors) != 0 {
+		t.Fatalf("a scan rooted below the volume root must emit no bin candidates, got %v / %+v", paths, scanErrors)
+	}
+}
+
+func TestTrashPathsForRootPosixSkipsTrashOutsideTheScannedRoot(t *testing.T) {
+	// §13 row 11: a /data scan must not propose deleting the OS volume's trash.
+	home := t.TempDir()
+	for _, trash := range []string{filepath.Join(home, ".local", "share", "Trash"), filepath.Join(home, ".Trash")} {
+		if err := os.MkdirAll(trash, 0o700); err != nil {
+			t.Fatalf("mkdir trash: %v", err)
+		}
+	}
+	elsewhere := t.TempDir()
+	paths, _ := trashPathsForRoot("linux", elsewhere, home)
+	for _, path := range paths {
+		if strings.HasPrefix(path, home) {
+			t.Fatalf("trash under %s must not be offered for a scan rooted at %s (got %v)", home, elsewhere, paths)
+		}
+	}
+}
+
+func TestTrashPathsForRootPosixUsesHome(t *testing.T) {
+	home := t.TempDir()
+	for _, trash := range []string{filepath.Join(home, ".local", "share", "Trash"), filepath.Join(home, ".Trash")} {
+		if err := os.MkdirAll(trash, 0o700); err != nil {
+			t.Fatalf("mkdir trash: %v", err)
+		}
+	}
+	paths, _ := trashPathsForRoot("linux", "/", home)
+	want := filepath.Join(home, ".local", "share", "Trash")
+	found := false
+	for _, p := range paths {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s in %v", want, paths)
+	}
+
+	paths, _ = trashPathsForRoot("darwin", "/", home)
+	want = filepath.Join(home, ".Trash")
+	found = false
+	for _, p := range paths {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s in %v", want, paths)
+	}
 }
