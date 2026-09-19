@@ -239,6 +239,11 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
       expect.any(Object),
     );
+    // Provider fixture has trustsIdpMfa: false ⇒ not assured ⇒ no source.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
     expect(linked).toBeTruthy();
   });
@@ -270,6 +275,11 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     });
 
     expect(outcome.ok).toBe(true);
+    // A Breeze-verified factor in the ceremony outranks the IdP evaluation.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'factor' }),
+      expect.anything(),
+    );
     expect(beginAuthIssuanceForStoredTransition).not.toHaveBeenCalled();
     expect(finishAuthIssuance).toHaveBeenCalledWith(capability, expect.any(Function));
   });
