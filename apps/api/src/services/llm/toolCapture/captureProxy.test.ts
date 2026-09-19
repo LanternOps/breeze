@@ -102,4 +102,32 @@ describe('startCaptureProxy', () => {
       model: null, tools: [], systemBytes: 0, toolReferenceCount: 0, usage: null, status: 400,
     });
   });
+
+  it('keeps the upstream base path when forwarding, instead of dropping it', async () => {
+    const proxyWithBasePath = await startCaptureProxy(`${upstreamUrl}/anthropic`);
+    try {
+      const res = await fetch(`${proxyWithBasePath.url}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+      });
+      await res.text();
+      expect(seenRequest.path).toBe('/anthropic/v1/messages');
+    } finally {
+      await proxyWithBasePath.close();
+    }
+  });
+
+  it('records a failed request (upstream unreachable) as a 502 with no invented usage, instead of dropping it', async () => {
+    const deadProxy = await startCaptureProxy('http://127.0.0.1:1');
+    try {
+      deadProxy.setLabel('unreachable');
+      const res = await fetch(`${deadProxy.url}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'x' }),
+      });
+      expect(res.status).toBe(502);
+      const record = deadProxy.records().at(-1);
+      expect(record).toMatchObject({ label: 'unreachable', status: 502, usage: null });
+    } finally {
+      await deadProxy.close();
+    }
+  });
 });

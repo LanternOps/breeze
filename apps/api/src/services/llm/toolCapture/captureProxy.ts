@@ -91,6 +91,8 @@ export async function startCaptureProxy(upstream: string): Promise<CaptureProxy>
     req.on('end', () => {
       const bodyBuffer = Buffer.concat(chunks);
       const body = parseObject(bodyBuffer.toString('utf8'));
+      const basePath = target.pathname === '/' ? '' : target.pathname.replace(/\/$/, '');
+      const forwardPath = basePath + (req.url ?? '/');
       const record: CapturedRequest = {
         label: requestLabel,
         at: new Date(startedAt).toISOString(),
@@ -110,7 +112,7 @@ export async function startCaptureProxy(upstream: string): Promise<CaptureProxy>
       };
       const forward = request(target, {
         method: req.method,
-        path: req.url,
+        path: forwardPath,
         headers: { ...req.headers, host: target.host },
       }, (up) => {
         record.status = up.statusCode ?? 502;
@@ -133,6 +135,11 @@ export async function startCaptureProxy(upstream: string): Promise<CaptureProxy>
         res.on('close', () => up.destroy());
       });
       forward.on('error', () => {
+        // A lost request must not vanish from the count: record it (status
+        // 502, no invented usage) even though no upstream response arrived.
+        record.status = 502;
+        record.ttfbMs = Date.now() - startedAt;
+        records.push(record);
         if (res.headersSent) res.destroy();
         else { res.writeHead(502); res.end('Upstream request failed'); }
       });
