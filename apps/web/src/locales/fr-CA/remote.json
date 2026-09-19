@@ -237,7 +237,8 @@
         "trash": "Corbeille"
       },
       "cleanupPreview": "Aperçu du nettoyage",
-      "cleanupOutcomeBreakdown": "{{failed}} en échec · {{rejected}} refusés · {{locked}} verrouillés · {{skipped}} non traités",
+      "cleanupOutcomeBreakdown": "{{failed}} échoué(s) · {{partial}} partiel(s) · {{rejected}} rejeté(s) · {{locked}} verrouillé(s) · {{skipped}} non atteint(s)",
+      "cleanupChildIssues": "{{failedChildren}} fichier(s) dans une corbeille n'ont pas pu être supprimés · {{skippedLinks}} lien(s) ignoré(s)",
       "cleanupBudgetExhausted": "Le temps alloué s’est épuisé avant que toutes les cibles soient traitées. Relancez le nettoyage pour continuer.",
       "cleanupResult": "Nettoyage {{status}} : récupéré {{size}} de {{count}} cible(s), {{failed}} échoué.",
       "data": "Data : {{size}}",
@@ -259,7 +260,10 @@
       "selected": "Sélectionné : {{count}} · {{size}}",
       "threshold": "Seuil",
       "title": "Analyse du disque",
-      "trigger": "Déclencheur : {{value}}"
+      "trigger": "Déclencheur : {{value}}",
+      "cleanupExecuteFailed": "Échec de l'exécution du nettoyage",
+      "agentUpdateRequiredToast": "L'agent doit être mis à jour avant d'exécuter ce nettoyage.",
+      "agentUpdateRequired": "L'agent doit être mis à jour vers la version {{minAgentVersion}} ou ultérieure avant d'exécuter ce nettoyage."
     },
     "dismiss": "Fermer",
     "dropFiles": "Déposez les fichiers",

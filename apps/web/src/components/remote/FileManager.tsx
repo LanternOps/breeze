@@ -32,6 +32,7 @@ import {
 import { formatNumber } from '@/lib/i18n/format';
 import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { runAction, ActionError } from '@/lib/runAction';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
 import {
   copyFiles,
@@ -126,6 +127,15 @@ type DiskCleanupPreview = {
   candidates: DiskCleanupCandidate[];
 };
 
+type DiskCleanupAction = {
+  path: string;
+  status: 'completed' | 'partial' | 'failed' | 'skipped_locked' | 'rejected' | 'skipped_budget';
+  reason?: string;
+  error?: string;
+  failedChildren?: string[];
+  skippedLinkCount?: number;
+};
+
 type DiskCleanupResult = {
   cleanupRunId: string | null;
   status: 'executed' | 'failed';
@@ -134,6 +144,7 @@ type DiskCleanupResult = {
   failedCount: number;
   partial?: boolean;
   rejectedPaths?: string[];
+  actions?: DiskCleanupAction[];
   counts?: {
     completed: number;
     // §13 row 13: a contentsOnly delete that could not remove every child.
@@ -143,6 +154,16 @@ type DiskCleanupResult = {
     rejected: number;
     skipped_budget: number;
   };
+};
+
+/**
+ * The route's 400 ("no valid cleanup paths", nothing ever dispatched) carries
+ * only `actions`/`rejectedPaths` — no `status`/`bytesReclaimed`, since no run
+ * was ever created. A 500 carries the full `DiskCleanupResult` shape (item 7).
+ */
+type DiskCleanupFailureDetail = {
+  actions: DiskCleanupAction[];
+  rejectedPaths: string[];
 };
 
 type DeviceCommandDetail = {
@@ -316,6 +337,7 @@ export default function FileManager({
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [diskLoadingAction, setDiskLoadingAction] = useState<'scan' | 'preview' | 'execute' | null>(null);
   const [diskError, setDiskError] = useState<string | null>(null);
+  const [diskErrorDetail, setDiskErrorDetail] = useState<DiskCleanupFailureDetail | null>(null);
   const [diskSnapshot, setDiskSnapshot] = useState<DiskAnalysisSnapshot | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<DiskCleanupPreview | null>(null);
   const [selectedCleanupPaths, setSelectedCleanupPaths] = useState<Set<string>>(new Set());
@@ -1016,37 +1038,60 @@ export default function FileManager({
 
     setDiskLoadingAction('execute');
     setDiskError(null);
+    setDiskErrorDetail(null);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/filesystem/cleanup-execute`, {
-        method: 'POST',
-        // Pin the deletion to the run the user actually previewed. Without it
-        // the API re-derives candidates from whatever snapshot is now newest,
-        // which is the race the pinning exists to prevent (defect 4).
-        body: JSON.stringify(
-          cleanupPreview?.cleanupRunId
-            ? { paths, cleanupRunId: cleanupPreview.cleanupRunId }
-            : { paths },
-        )
+      const body = await runAction<{ data?: DiskCleanupResult }>({
+        request: () => fetchWithAuth(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+          method: 'POST',
+          // Pin the deletion to the run the user actually previewed. Without it
+          // the API re-derives candidates from whatever snapshot is now newest,
+          // which is the race the pinning exists to prevent (defect 4).
+          body: JSON.stringify(
+            cleanupPreview?.cleanupRunId
+              ? { paths, cleanupRunId: cleanupPreview.cleanupRunId }
+              : { paths },
+          )
+        }),
+        errorFallback: t('fileManager.disk.cleanupExecuteFailed'),
+        // The default toast would otherwise show the raw machine token
+        // "agent_update_required" verbatim; the specific minAgentVersion is
+        // rendered separately below, from the parsed body in the catch block.
+        friendly: (code) => code === 'agent_update_required'
+          ? t('fileManager.disk.agentUpdateRequiredToast')
+          : undefined,
       });
-      if (!response.ok) {
-        const json = await response.json().catch(() => ({ error: 'Cleanup execution failed' }));
-        throw new Error(json.error || 'Cleanup execution failed');
-      }
-
-      const json = await response.json();
-      setCleanupResult((json.data ?? null) as DiskCleanupResult | null);
+      setCleanupResult((body?.data ?? null) as DiskCleanupResult | null);
       setCleanupPreview(null);
       setSelectedCleanupPaths(new Set());
       await fetchDirectory(currentPath);
       await loadLatestFilesystemSnapshot();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Cleanup execution failed';
+      if (err instanceof ActionError && err.status === 401) return;
+      let message = err instanceof Error ? err.message : t('fileManager.disk.cleanupExecuteFailed');
+      if (err instanceof ActionError) {
+        const errorBody = err.body as { data?: Partial<DiskCleanupResult> & { minAgentVersion?: string } } | undefined;
+        const data = errorBody?.data;
+        if (err.status === 409 && data?.minAgentVersion) {
+          message = t('fileManager.disk.agentUpdateRequired', { minAgentVersion: data.minAgentVersion });
+        } else if (data && (Array.isArray(data.actions) || Array.isArray(data.rejectedPaths))) {
+          // Every dispatched path failed (500) or nothing was ever dispatched
+          // (400) — either way the caller needs to see WHICH paths and WHY,
+          // not just the top-level error string (item 7).
+          setDiskErrorDetail({
+            actions: Array.isArray(data.actions) ? data.actions : [],
+            rejectedPaths: Array.isArray(data.rejectedPaths) ? data.rejectedPaths : [],
+          });
+          if (err.status === 500 && data.status) {
+            setCleanupResult(data as DiskCleanupResult);
+          }
+        }
+      }
       setDiskError(message);
       onError?.(message);
     } finally {
       setDiskLoadingAction(null);
     }
-  }, [cleanupPreview, currentPath, deviceId, fetchDirectory, loadLatestFilesystemSnapshot, onError, selectedCleanupPaths]);
+  }, [cleanupPreview, currentPath, deviceId, fetchDirectory, loadLatestFilesystemSnapshot, onError, selectedCleanupPaths, t]);
 
   // Initial load
   useEffect(() => {
@@ -1319,7 +1364,20 @@ export default function FileManager({
 
             {diskError && (
               <div className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
-                {diskError}
+                <div>{diskError}</div>
+                {diskErrorDetail && (diskErrorDetail.actions.length > 0 || diskErrorDetail.rejectedPaths.length > 0) && (
+                  <ul data-testid="disk-error-detail" className="mt-1 list-disc space-y-0.5 pl-4">
+                    {(diskErrorDetail.actions.length > 0
+                      ? diskErrorDetail.actions
+                      : diskErrorDetail.rejectedPaths.map((path) => ({ path, status: 'rejected' as const, reason: undefined }))
+                    ).map((action) => (
+                      <li key={action.path}>
+                        {action.path}
+                        {action.reason ? ` — ${action.reason}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
 
@@ -1405,6 +1463,15 @@ export default function FileManager({
               const skippedLockedCount = cleanupResult.counts?.skipped_locked ?? 0;
               const skippedBudgetCount = cleanupResult.counts?.skipped_budget ?? 0;
               const partialCount = cleanupResult.counts?.partial ?? 0;
+              // §13 row 13: a contentsOnly delete that emptied most of a bin but
+              // left a handful of children behind, or kept back a symlink,
+              // is `partial` at the action level even when nothing shows up in
+              // `counts` — the breakdown must total these too, not just the
+              // per-status counts.
+              const failedChildrenTotal = (cleanupResult.actions ?? [])
+                .reduce((sum, action) => sum + (action.failedChildren?.length ?? 0), 0);
+              const skippedLinkTotal = (cleanupResult.actions ?? [])
+                .reduce((sum, action) => sum + (action.skippedLinkCount ?? 0), 0);
               // A partial failure used to render in the SAME green box as a
               // clean run, so "3 of 40 targets failed" read as success.
               const clean =
@@ -1412,7 +1479,9 @@ export default function FileManager({
                 rejectedCount === 0 &&
                 skippedLockedCount === 0 &&
                 skippedBudgetCount === 0 &&
-                partialCount === 0;
+                partialCount === 0 &&
+                failedChildrenTotal === 0 &&
+                skippedLinkTotal === 0;
               return (
                 <div
                   data-testid="disk-cleanup-result"
@@ -1432,12 +1501,21 @@ export default function FileManager({
                     })}
                   </div>
                   {!clean && (
-                    <div className="mt-1">
+                    <div data-testid="disk-cleanup-breakdown" className="mt-1">
                       {t('fileManager.disk.cleanupOutcomeBreakdown', {
                         failed: cleanupResult.failedCount,
+                        partial: partialCount,
                         rejected: rejectedCount,
                         locked: skippedLockedCount,
                         skipped: skippedBudgetCount,
+                      })}
+                    </div>
+                  )}
+                  {(failedChildrenTotal > 0 || skippedLinkTotal > 0) && (
+                    <div data-testid="disk-cleanup-child-issues" className="mt-1">
+                      {t('fileManager.disk.cleanupChildIssues', {
+                        failedChildren: failedChildrenTotal,
+                        skippedLinks: skippedLinkTotal,
                       })}
                     </div>
                   )}

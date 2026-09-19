@@ -237,7 +237,8 @@
         "trash": "Trash"
       },
       "cleanupPreview": "Cleanup Preview",
-      "cleanupOutcomeBreakdown": "{{failed}} failed · {{rejected}} rejected · {{locked}} locked · {{skipped}} not reached",
+      "cleanupOutcomeBreakdown": "{{failed}} failed · {{partial}} partial · {{rejected}} rejected · {{locked}} locked · {{skipped}} not reached",
+      "cleanupChildIssues": "{{failedChildren}} file(s) inside a bin failed to delete · {{skippedLinks}} link(s) skipped",
       "cleanupBudgetExhausted": "The time budget ran out before every target was reached. Run the cleanup again to continue.",
       "cleanupResult": "Cleanup {{status}}: reclaimed {{size}} from {{count}} target(s), {{failed}} failed.",
       "data": "Data: {{size}}",
@@ -259,7 +260,10 @@
       "selected": "Selected: {{count}} · {{size}}",
       "threshold": "Threshold",
       "title": "Disk Intelligence",
-      "trigger": "Trigger: {{value}}"
+      "trigger": "Trigger: {{value}}",
+      "cleanupExecuteFailed": "Cleanup execution failed",
+      "agentUpdateRequiredToast": "The agent must be updated before this cleanup can run.",
+      "agentUpdateRequired": "The agent must be updated to {{minAgentVersion}} or later before this cleanup can run."
     },
     "dismiss": "Dismiss",
     "dropFiles": "Drop Files",

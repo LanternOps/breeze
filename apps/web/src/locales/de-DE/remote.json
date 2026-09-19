@@ -237,7 +237,8 @@
         "trash": "Papierkorb"
       },
       "cleanupPreview": "Bereinigungsvorschau",
-      "cleanupOutcomeBreakdown": "{{failed}} fehlgeschlagen · {{rejected}} abgelehnt · {{locked}} gesperrt · {{skipped}} nicht erreicht",
+      "cleanupOutcomeBreakdown": "{{failed}} fehlgeschlagen · {{partial}} teilweise · {{rejected}} abgelehnt · {{locked}} gesperrt · {{skipped}} nicht erreicht",
+      "cleanupChildIssues": "{{failedChildren}} Datei(en) im Papierkorb konnten nicht gelöscht werden · {{skippedLinks}} Link(s) übersprungen",
       "cleanupBudgetExhausted": "Das Zeitbudget war aufgebraucht, bevor alle Ziele erreicht wurden. Führen Sie die Bereinigung erneut aus.",
       "cleanupResult": "Aufräumen {{status}}: {{size}} von {{count}} Ziel(en) zurückgewonnen, {{failed}} fehlgeschlagen.",
       "data": "Daten: {{size}}",
@@ -259,7 +260,10 @@
       "selected": "Ausgewählt: {{count}} · {{size}}",
       "threshold": "Schwelle",
       "title": "Datenträgeranalyse",
-      "trigger": "Auslöser: {{value}}"
+      "trigger": "Auslöser: {{value}}",
+      "cleanupExecuteFailed": "Bereinigung fehlgeschlagen",
+      "agentUpdateRequiredToast": "Der Agent muss aktualisiert werden, bevor diese Bereinigung ausgeführt werden kann.",
+      "agentUpdateRequired": "Der Agent muss auf {{minAgentVersion}} oder höher aktualisiert werden, bevor diese Bereinigung ausgeführt werden kann."
     },
     "dismiss": "Schließen",
     "dropFiles": "Dateien ablegen",
