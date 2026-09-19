@@ -40,11 +40,56 @@ vi.mock('../../db', () => ({
   },
 }));
 
-vi.mock('../../middleware/auth', () => ({
-  authMiddleware: authMiddlewareMock,
-  requireScope: requireScopeMock,
-  requirePermission: requirePermissionMock,
-  requireMfa: requireMfaMock,
+// Device move-org step-up: requireInteractiveSession is the REAL middleware
+// (imported from the original module) so the machine-principal denial below
+// tests production code, not a stub. The other gates stay stubbed as before.
+vi.mock('../../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../middleware/auth')>();
+  return {
+    authMiddleware: authMiddlewareMock,
+    requireScope: requireScopeMock,
+    requirePermission: requirePermissionMock,
+    requireMfa: requireMfaMock,
+    requireInteractiveSession: actual.requireInteractiveSession,
+    isInteractiveUserSession: actual.isInteractiveUserSession,
+  };
+});
+
+// ENABLE_2FA is a module constant (routes/auth/schemas.ts); the established
+// way to flip it per test is a getter over hoisted state (precedent:
+// routes/devices/commands.test.ts).
+const { enable2faState } = vi.hoisted(() => ({ enable2faState: { value: true } }));
+vi.mock('../auth/schemas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auth/schemas')>();
+  return {
+    ...actual,
+    get ENABLE_2FA() {
+      return enable2faState.value;
+    },
+  };
+});
+
+// PARTIAL: moveOrgResourceDigest stays REAL so the binding assertion compares
+// against the production canonicalisation, not a stub.
+vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/mfaStepUpGrant')>();
+  return {
+    ...actual,
+    validateStepUpGrant: vi.fn(async () => true),
+    consumeStepUpGrant: vi.fn(async () => true),
+  };
+});
+
+// The actor FOR SHARE lock is unit-tested on its own
+// (services/stepUpActorAssurance.test.ts) and proved against real Postgres in
+// the integration suite; here it is a mock so its POSITION in the transaction
+// can be asserted without teaching the tx recorder about the users table.
+vi.mock('../../services/stepUpActorAssurance', () => ({
+  lockActorAssurance: vi.fn(async () => true),
+}));
+
+vi.mock('../../services/authEpochs', () => ({
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
 
 vi.mock('./helpers', async (importOriginal) => {
@@ -111,6 +156,8 @@ import { propagateCancelledDeviceCommands } from '../../services/commandCancelPr
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
+import { consumeStepUpGrant, moveOrgResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
+import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import {
   ALERT_CHILD_ORG_REWRITE_TABLES,
   CUSTOM_ORG_REWRITE_TABLES,
@@ -138,6 +185,7 @@ const TARGET_ORG = '22222222-2222-4222-8222-222222222222';
 const SOURCE_SITE = '33333333-3333-4333-8333-333333333333';
 const TARGET_SITE = '44444444-4444-4444-8444-444444444444';
 const DEVICE_ID = '55555555-5555-4555-8555-555555555555';
+const GRANT_ID = '99999999-9999-4999-8999-999999999999';
 const OTHER_PARTNER_TARGET_ORG = '66666666-6666-4666-8666-666666666666';
 
 const SAMPLE_DEVICE = {
@@ -156,6 +204,8 @@ function setAuth(overrides: Partial<{
   canAccessOrg: (id: string) => boolean;
   /** Resolved permission set requirePermission stores on the context (auth.ts). */
   permissions: { resource: string; action: string }[];
+  principalKind: string;
+  sid: string | undefined;
 }> = {}) {
   authMiddlewareMock.mockImplementation((c: any, next: any) => {
     c.set('permissions', { permissions: overrides.permissions ?? [{ resource: '*', action: '*' }] });
@@ -167,7 +217,8 @@ function setAuth(overrides: Partial<{
       accessibleOrgIds: [SOURCE_ORG, TARGET_ORG],
       canAccessOrg: overrides.canAccessOrg ?? ((id: string) => id === SOURCE_ORG || id === TARGET_ORG),
       orgCondition: () => undefined,
-      token: {},
+      principal: { kind: overrides.principalKind ?? 'user_session' },
+      token: { mfa: true, aep: 1, mep: 1, sid: 'sid' in overrides ? overrides.sid : 'sid-1' },
     });
     return next();
   });
@@ -386,6 +437,7 @@ describe('POST /devices/:id/move-org', () => {
   let app: Hono;
 
   beforeEach(() => {
+    enable2faState.value = true;
     vi.clearAllMocks();
     barrierMissingOrgIds = new Set<string>();
     executeResultFor = null;
@@ -396,6 +448,9 @@ describe('POST /devices/:id/move-org', () => {
     pamGuardMock.mockReset();
     pamGuardMock.mockResolvedValue(undefined);
     setAuth();
+    vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+    vi.mocked(consumeStepUpGrant).mockResolvedValue(true);
+    vi.mocked(lockActorAssurance).mockResolvedValue(true);
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
   });
@@ -410,6 +465,9 @@ describe('POST /devices/:id/move-org', () => {
       expect(registeredPermResources).toContain('devices:write');
       expect(registeredPermResources).toContain('organizations:write');
       expect(registeredMfaCallCount).toBeGreaterThan(0);
+      // requireInteractiveSession is not stubbed (see the auth mock), so its
+      // registration is proved behaviourally by the machine-principal case in
+      // the "step-up gate" describe below, not by a call count here.
     });
   });
 
@@ -431,7 +489,7 @@ describe('POST /devices/:id/move-org', () => {
       app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
     it('both the SELECT and the cancel UPDATE exclude self_uninstall', async () => {
@@ -490,7 +548,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(200);
@@ -596,7 +654,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(200);
@@ -622,7 +680,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -655,7 +713,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -687,7 +745,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -727,7 +785,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -763,7 +821,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -801,7 +859,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -853,7 +911,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -875,7 +933,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -920,7 +978,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -951,7 +1009,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
 
@@ -985,7 +1043,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
 
       expect(res.status).toBe(500);
@@ -1037,7 +1095,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
       return rigged;
@@ -1267,7 +1325,7 @@ describe('POST /devices/:id/move-org', () => {
     const postMove = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
       method: 'POST',
       headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
     });
 
     function rigMove() {
@@ -1449,7 +1507,7 @@ describe('POST /devices/:id/move-org', () => {
     const postBody = (extra: Record<string, unknown> = {}) => ({
       method: 'POST',
       headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, ...extra }),
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID, ...extra }),
     });
     const crossCurrencyOrgs = [
       { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha', currencyCode: 'USD' },
@@ -1616,7 +1674,7 @@ describe('POST /devices/:id/move-org', () => {
     const postBody = () => ({
       method: 'POST',
       headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
     });
     const orgRows = [
       { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha' },
@@ -1658,7 +1716,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(404);
       expect(writeRouteAudit).not.toHaveBeenCalled();
@@ -1670,7 +1728,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(403);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -1693,7 +1751,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(403);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -1714,7 +1772,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
     });
@@ -1732,7 +1790,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -1744,7 +1802,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: SOURCE_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: SOURCE_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
       expect(db.transaction).not.toHaveBeenCalled();
@@ -1754,9 +1812,163 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── device move-org step-up (spec 2026-09-18 W01) ────────────────────────
+  describe('step-up gate', () => {
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      return rigTransactionSuccess();
+    }
+    const move = (body: Record<string, unknown> = { orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }) =>
+      app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const expectedBinding = () => ({
+      userId: 'user-1',
+      operation: 'device_move_org',
+      authEpoch: 1,
+      mfaEpoch: 1,
+      sid: 'sid-1',
+      resourceDigest: moveOrgResourceDigest({ deviceId: DEVICE_ID, targetOrgId: TARGET_ORG, targetSiteId: TARGET_SITE, acceptCurrencyMismatch: false }),
+    });
+
+    it('runs with ENABLE_2FA true (precondition for every case below)', async () => {
+      const { ENABLE_2FA } = await import('../auth/schemas');
+      expect(ENABLE_2FA).toBe(true);
+    });
+
+    it.each([[true], [false]])('denies an api_key principal with ENABLE_2FA=%s before any lookup, with no state change', async (twoFactorOn) => {
+      enable2faState.value = twoFactorOn;
+      setAuth({ principalKind: 'api_key' });
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+      expect(getDeviceWithOrgAndSiteCheck).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies with no step-up grant after preflight, with no transaction and no failed-move audit', async () => {
+      rigMove();
+      const res = await move({ orgId: TARGET_ORG, siteId: TARGET_SITE });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies a stale or mismatched grant indistinguishably from a missing one', async () => {
+      rigMove();
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expectedBinding());
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('binds acceptCurrencyMismatch into the grant digest', async () => {
+      rigMove();
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+      await move({ orgId: TARGET_ORG, siteId: TARGET_SITE, acceptCurrencyMismatch: true, stepUpGrant: GRANT_ID });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expect.objectContaining({
+        resourceDigest: moveOrgResourceDigest({ deviceId: DEVICE_ID, targetOrgId: TARGET_ORG, targetSiteId: TARGET_SITE, acceptCurrencyMismatch: true }),
+      }));
+    });
+
+    it('answers 503 when the session carries no sid (cannot bind a grant)', async () => {
+      setAuth({ sid: undefined });
+      rigMove();
+      const res = await move();
+      expect(res.status).toBe(503);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('moves with a valid grant: locks the actor, consumes with the exact binding BEFORE the org locks, and audits stepUp: grant', async () => {
+      const rig = rigMove();
+      // lockActorAssurance / consumeStepUpGrant are mocks that issue no SQL, so
+      // they write a marker into the SAME statement log the tx recorder uses —
+      // that makes their position against the org FOR SHARE barrier and the
+      // UPDATEs directly assertable.
+      vi.mocked(lockActorAssurance).mockImplementationOnce(async () => {
+        rig.statements.push('LOCK users FOR share (actor)');
+        return true;
+      });
+      vi.mocked(consumeStepUpGrant).mockImplementationOnce(async () => {
+        rig.statements.push('CONSUME step-up grant');
+        return true;
+      });
+      const res = await move();
+      expect(res.status).toBe(200);
+      expect(lockActorAssurance).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(lockActorAssurance).mock.calls[0]![0]).toBe(rig.tx());
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT_ID, expectedBinding());
+
+      const actorLock = rig.statements.indexOf('LOCK users FOR share (actor)');
+      const consume = rig.statements.indexOf('CONSUME step-up grant');
+      const firstOrgShare = rig.statements.findIndex((s) => s.startsWith('SELECT organizations FOR share'));
+      const firstUpdate = rig.statements.findIndex((s) => s.startsWith('UPDATE'));
+      expect(actorLock).toBeGreaterThanOrEqual(0);
+      expect(firstOrgShare).toBeGreaterThanOrEqual(0);
+      expect(firstUpdate).toBeGreaterThanOrEqual(0);
+      // users(actor) -> grant consume -> organizations(asc) -> writes.
+      expect(actorLock).toBeLessThan(consume);
+      expect(consume).toBeLessThan(firstOrgShare);
+      expect(firstOrgShare).toBeLessThan(firstUpdate);
+
+      const details = vi.mocked(writeRouteAudit).mock.calls.find((c) => c[1].action === 'device.move_org.source')![1].details as Record<string, unknown>;
+      expect(details.stepUp).toBe('grant');
+    });
+
+    it('a grant burned by a racing request aborts the transaction with 403 and no failed-move audit or Sentry', async () => {
+      const rig = rigMove();
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(rig.statements.filter((s) => s.startsWith('UPDATE'))).toEqual([]);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('a lost actor lock (factor reset between validate and write) aborts the same way', async () => {
+      const rig = rigMove();
+      vi.mocked(lockActorAssurance).mockResolvedValueOnce(false);
+      const res = await move();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(rig.statements.filter((s) => s.startsWith('UPDATE'))).toEqual([]);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('skips the grant requirement when ENABLE_2FA is off and records stepUp: disabled_2fa', async () => {
+      enable2faState.value = false;
+      rigMove();
+      const res = await move({ orgId: TARGET_ORG, siteId: TARGET_SITE });
+      expect(res.status).toBe(200);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(lockActorAssurance).not.toHaveBeenCalled();
+      const details = vi.mocked(writeRouteAudit).mock.calls.find((c) => c[1].action === 'device.move_org.target')![1].details as Record<string, unknown>;
+      expect(details.stepUp).toBe('disabled_2fa');
     });
   });
 });
