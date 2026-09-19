@@ -13,6 +13,8 @@ import { deriveCollection, type CollectionTemplateEntry } from '../services/snmp
 import { isRedisAvailable } from '../services/redis';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
+import { enqueueSnmpPoll } from '../jobs/snmpWorker';
+import { captureException } from '../services/sentry';
 
 import {
   resolveOrgIdForAuth as resolveOrgId,
@@ -39,7 +41,9 @@ function serializeSnmpDevice(device: typeof snmpDevices.$inferSelect) {
     pollingInterval: device.pollingInterval,
     isActive: device.isActive,
     lastPolled: device.lastPolled?.toISOString?.() ?? (device.lastPolled ? new Date(device.lastPolled as any).toISOString() : null),
-    lastStatus: device.lastStatus
+    lastStatus: device.lastStatus,
+    lastError: device.lastError ?? null,
+    lastErrorAt: device.lastErrorAt?.toISOString() ?? null
   };
 }
 
@@ -119,6 +123,8 @@ monitoringRoutes.get(
         isActive: snmpDevices.isActive,
         lastPolled: snmpDevices.lastPolled,
         lastStatus: snmpDevices.lastStatus,
+        lastError: snmpDevices.lastError,
+        lastErrorAt: snmpDevices.lastErrorAt,
         createdAt: snmpDevices.createdAt
       })
       .from(snmpDevices)
@@ -240,7 +246,9 @@ monitoringRoutes.get(
             port: snmp!.port,
             isActive: snmp!.isActive,
             lastPolled: snmp!.lastPolled?.toISOString?.() ?? (snmp!.lastPolled ? new Date(snmp!.lastPolled as any).toISOString() : null),
-            lastStatus: snmp!.lastStatus ?? null
+            lastStatus: snmp!.lastStatus ?? null,
+            lastError: snmp!.lastError ?? null,
+            lastErrorAt: snmp!.lastErrorAt?.toISOString() ?? null
           } : {
             configured: false,
             deviceId: null,
@@ -250,7 +258,9 @@ monitoringRoutes.get(
             port: null,
             isActive: false,
             lastPolled: null,
-            lastStatus: null
+            lastStatus: null,
+            lastError: null,
+            lastErrorAt: null
           },
           network: {
             configured: networkConfigured,
@@ -284,7 +294,11 @@ monitoringRoutes.get(
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404, not 403 — an out-of-ceiling asset must be
+      // indistinguishable from a missing one, or a restricted caller can
+      // fingerprint asset ids in sites they cannot see (#5777, matching the
+      // deployments existence-oracle fix in #5545).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     // W01 (spec §4.4) — derived once and returned on BOTH exits below. The
@@ -454,7 +468,8 @@ monitoringRoutes.get(
     // Site scope is an app-layer-only authz axis; RLS does not defend it.
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404 — see /assets/:id above (#5777).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     const rows = await db
@@ -506,7 +521,8 @@ monitoringRoutes.get(
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404 — see /assets/:id above (#5777).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     const sysObjectId = readSysObjectId(asset.snmpData);
@@ -683,6 +699,28 @@ monitoringRoutes.put(
       details: { snmpDeviceId: upserted.id, snmpVersion: upserted.snmpVersion }
     });
 
+    // #6209 — a template change (or first-time SNMP setup) shouldn't sit
+    // waiting for the scheduler's next due tick (up to a full
+    // pollingInterval, longer under backoff). Enqueue an immediate poll so
+    // the new OID set shows up within seconds. Fire-and-forget like
+    // writeRouteAudit above (unawaited so the Redis round-trip never extends
+    // the request's held withDbAccessContext transaction, and its actual
+    // execution naturally lands after that transaction commits — see
+    // groups.ts's dynamic-group-evaluation comment for why a detached
+    // promise resumes post-commit here) — but NOT the same safety net:
+    // writeRouteAudit's failure path retries with backoff and reports to
+    // Sentry on exhaustion (auditService.ts); a missed immediate poll has no
+    // such retry, only this console.error + captureException, because the
+    // worst case is a device polling on its next scheduled tick instead of
+    // immediately — low enough stakes that logging is enough, but real
+    // failures (e.g. Redis misconfigured) still need to surface somewhere.
+    if (!existing || existing.templateId !== upserted.templateId) {
+      void enqueueSnmpPoll(upserted.id, asset.orgId).catch((err) => {
+        console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${upserted.id}:`, err);
+        captureException(err);
+      });
+    }
+
     return c.json({
       success: true,
       snmpDevice: serializeSnmpDevice(upserted),
@@ -752,6 +790,19 @@ monitoringRoutes.patch(
       if (isMaskedSnmpSecret(body.privPassword)) delete setValues.privPassword;
       else setValues.privPassword = encryptSnmpSecret(body.privPassword);
     }
+
+    // Deliberately NOT auto-applying a template suggestion here (#6099
+    // follow-up). PATCH is a partial-edit endpoint: unlike PUT/create, an
+    // absent `templateId` on PATCH does not mean "no explicit choice yet" —
+    // it means "this edit isn't about the template." Every PATCH caller that
+    // omits templateId for an unrelated field (the web form's own explicit
+    // clear followed by, say, an interval change; AI tools; scheduler/
+    // threshold saves; agent paths) must leave templateId exactly as it was,
+    // including staying null after an explicit clear. Auto-apply only
+    // belongs on the one-time "no explicit choice yet" moment, which is PUT.
+    // The web UI already has the suggestion from a separate GET
+    // (`/monitoring/templates/suggest`, W03) and offers "Use suggestion"
+    // from there, so nothing is lost by not echoing it here too.
     if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
     // Captured before the scheduler fields below are mixed in, so the audit
@@ -777,6 +828,15 @@ monitoringRoutes.patch(
       resourceId: assetId,
       details: { snmpDeviceId: updated.id, changes: changedFields }
     });
+
+    // #6209 — see the PUT handler above for the full rationale. Only when
+    // this PATCH actually touched templateId and changed its value.
+    if (changedFields.includes('templateId') && existing.templateId !== updated.templateId) {
+      void enqueueSnmpPoll(updated.id, asset.orgId).catch((err) => {
+        console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${updated.id}:`, err);
+        captureException(err);
+      });
+    }
 
     return c.json({
       success: true,
@@ -1092,7 +1152,11 @@ monitoringRoutes.get(
     {
       const userPerms = c.get('permissions') as UserPermissions | undefined;
       if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
-        return c.json({ error: 'Access to this site denied' }, 403);
+        // Opaque 404, not 403 — an out-of-ceiling device must be
+        // indistinguishable from a missing one, or a restricted caller can
+        // fingerprint device ids in sites they cannot see (#5777, matching
+        // the deployments existence-oracle fix in #5545).
+        return c.json({ error: 'Device not found' }, 404);
       }
     }
 
@@ -1153,7 +1217,8 @@ monitoringRoutes.get(
     {
       const userPerms = c.get('permissions') as UserPermissions | undefined;
       if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
-        return c.json({ error: 'Access to this site denied' }, 403);
+        // Opaque 404 — see /results/:deviceId/summary above (#5777).
+        return c.json({ error: 'Device not found' }, 404);
       }
     }
 

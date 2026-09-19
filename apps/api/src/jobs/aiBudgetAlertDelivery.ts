@@ -215,7 +215,7 @@ export async function deliverAiBudgetAlert(eventId: string): Promise<{ recipient
         const to = rows.map((r) => r.email);
         if (to.length > 0) {
           const email = buildAiBudgetAlertEmail(ctx);
-          await emailService.sendEmail({ to, subject: email.subject, html: email.html, text: email.text });
+          await emailService.sendEmail({ to, subject: email.subject, html: email.html, text: email.text, purpose: 'staff.ai_budget_alert' });
           emailed = true;
         }
       }

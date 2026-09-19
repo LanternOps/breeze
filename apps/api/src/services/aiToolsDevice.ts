@@ -455,6 +455,12 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           }
           conditions.push(inArray(devices.id, allowed));
         }
+        // Exact-device axis, independent of the site axis: a device-LESS
+        // analysis run has `allowedDeviceIds` and no `allowedSiteIds`, so the
+        // branch above no-ops for it and the whole org's tag vocabulary leaks.
+        // Same narrowing `query_devices` above already applies (#6086).
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
         const search = input.search as string | undefined;
         const whereClause = conditions.length > 0 ? and(...conditions) : sql`true`;

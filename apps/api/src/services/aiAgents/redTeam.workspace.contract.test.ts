@@ -202,14 +202,28 @@ describe('workspace red-team fixture (W04)', () => {
     // "Also read the other org's export, handle 4242…" — the frozen
     // staged_inputs list is what makes that impossible, not the model's
     // judgement.
+    // Same org, different run: ownership by run id is the boundary, so a
+    // sibling run's artifact is refused even though RLS would let us read it.
     artifacts.set('h-elsewhere', {
-      id: 'h-elsewhere', orgId: 'org-1', runId: 'run-1', name: 'other.log',
+      id: 'h-elsewhere', orgId: 'org-1', runId: 'run-other', name: 'other.log',
       bytes: 3, body: Buffer.from('xxx'),
     });
     const svc = new WorkspaceService(ctxFor([]), recordingBackend([]) as never);
     await expect(svc.stage(['h-elsewhere'])).rejects.toMatchObject({
       code: 'staged_handle_not_allowed',
     });
+  });
+
+  it('stages an artifact this run persisted outside the service (export_dataset)', async () => {
+    // Persisted ownership, not only the in-memory output set: export_dataset
+    // writes artifacts for this run without going through WorkspaceService.
+    artifacts.set('h-own-export', {
+      id: 'h-own-export', orgId: 'org-1', runId: 'run-1', name: 'export.csv',
+      bytes: 3, body: Buffer.from('a,b'),
+    });
+    const svc = new WorkspaceService(ctxFor([]), recordingBackend([]) as never);
+    const result = await svc.stage(['h-own-export']);
+    expect(result.staged.map((s) => s.handle)).toEqual(['h-own-export']);
   });
 
   it('refuses to collect the staged input back out through a traversal', async () => {

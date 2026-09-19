@@ -15,7 +15,9 @@ vi.mock('../../services/auditEvents', async (importOriginal) => ({
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve(userRow.current ? [userRow.current] : []) }) }) }),
+    // W04: forgot-password inner-joins organizations for the partner that owns
+    // the portal user's org (spec §8.2), so the chain must accept innerJoin.
+    select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(userRow.current ? [userRow.current] : []) }; return { from: () => chain }; },
     update: () => ({ set: (v: any) => ({ where: () => {
       updateSpy(v);
       return { returning: () => Promise.resolve(updateRows.current ?? [{ id: '11111111-2222-4333-8444-555566667777', authEpoch: (userRow.current?.authEpoch ?? 1) + 1 }]) };
@@ -32,7 +34,7 @@ vi.mock('../../db', () => ({
 // discoveredAssetTypeEnum: networkBaseline.ts (transitive import of the portal
 // route graph) reads its .enumValues at module load, so the full-module mock
 // must provide it or the suite fails to load.
-vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
+vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendPasswordReset: sendPasswordResetSpy }) }));
 
 import { authRoutes } from './auth';

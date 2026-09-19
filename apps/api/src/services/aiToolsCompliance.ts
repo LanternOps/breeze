@@ -32,7 +32,12 @@ import {
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -118,6 +123,12 @@ registerTool({
       }
       conditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis: a device-LESS
+    // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+    // branch above no-ops for it and the tool read the whole org (#6086).
+    const complianceDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+    if (complianceDeviceCondition) conditions.push(complianceDeviceCondition);
 
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
 
@@ -576,6 +587,12 @@ registerTool({
         complianceConditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
       }
 
+      // Exact-device axis, applied independently of the site axis (#6086). This
+      // fan-out QUEUES UNINSTALLS, so a device-less analysis run reaching every
+      // violating device in the org is the worst shape of this bug.
+      const remediationDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
+      if (remediationDeviceCondition) complianceConditions.push(remediationDeviceCondition);
+
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
@@ -763,6 +780,10 @@ registerTool({
       }
       conditions.push(inArray(automationPolicyCompliance.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis (#6086).
+    const automationDeviceCondition = deviceScopeCondition(auth, automationPolicyCompliance.deviceId);
+    if (automationDeviceCondition) conditions.push(automationDeviceCondition);
 
     const records = await db
       .select({

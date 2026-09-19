@@ -83,11 +83,12 @@ import {
 import { releaseApprovedIntent } from './intentReleaseWorker';
 
 const TOOL_NAME = 'google_suspend_user';
-// google_suspend_user → { resource: 'google', action: 'execute' } in
-// aiGuardrails.TOOL_PERMISSIONS. revalidation step (e) re-checks the REQUESTER
+// google_suspend_user → { resource: 'organizations', action: 'write' } in
+// aiGuardrails.TOOL_PERMISSIONS (2026-09-17 ROLE audit §2.6: `google` was
+// never a resource in the canonical catalog). revalidation step (e) re-checks the REQUESTER
 // still holds this against their freshly-rebuilt role, so the requester's org
 // role must carry it or release fails `rbac_denied` (not the Google path).
-const GOOGLE_EXECUTE = { resource: 'google', action: 'execute' } as const;
+const GOOGLE_EXECUTE = { resource: 'organizations', action: 'write' } as const;
 const APPROVALS_DECIDE = { resource: 'approvals', action: 'decide' } as const;
 
 /** Real org-scope AuthContext for the requester, same shape authMiddleware

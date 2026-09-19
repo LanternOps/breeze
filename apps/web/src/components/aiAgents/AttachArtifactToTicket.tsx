@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 
 /**
- * Put a finding in front of a customer: attach a run artifact to a ticket
+ * Add a run artifact to a ticket as an internal note
  * (execution-plane spec §6.3). Reference only — no bytes move, which is why a
  * 128 MiB analysis output can be attached at all.
  *
@@ -28,22 +28,48 @@ export default function AttachArtifactToTicket({
   const [open, setOpen] = useState(false);
   const [ticketId, setTicketId] = useState('');
   const [busy, setBusy] = useState(false);
+  // A failed comment can retry against the existing pending reference row
+  // (from `/attachments/from-artifact`, below) without creating a duplicate —
+  // nothing is uploaded here, it's a reference, not a copy.
+  const pending = useRef(new Map<string, string>());
 
   const submit = async () => {
     const id = ticketId.trim();
     if (!id || busy) return;
     setBusy(true);
     try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/tickets/${id}/attachments/from-artifact`, {
+      let attachmentId = pending.current.get(id);
+      if (!attachmentId) {
+        attachmentId = await runAction<string>({
+          request: () => fetchWithAuth(`/tickets/${id}/attachments/from-artifact`, {
             method: 'POST',
             body: JSON.stringify({ handle: artifactId }),
           }),
+          parseSuccess: (data) => {
+            const attachment = (data as { data?: { id?: unknown } } | null)?.data?.id;
+            if (typeof attachment !== 'string' || !attachment) throw new Error('Missing attachment id');
+            return attachment;
+          },
+          errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachFailed'),
+          onUnauthorized: handleSessionExpired,
+        });
+        pending.current.set(id, attachmentId);
+      }
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/tickets/${id}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ content: '', isPublic: false, attachmentIds: [attachmentId] }),
+          }),
         successMessage: t('aiAgentsPage.runs.detail.artifacts.attachedToTicket'),
-        errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachFailed'),
+        // The attachment reference already exists by this point (the call
+        // above succeeded) — only the internal-note comment failed.
+        // "attachFailed" would be a false claim here; it is reserved for the
+        // reference-creation call.
+        errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachedButCommentFailed'),
         onUnauthorized: handleSessionExpired,
       });
+      pending.current.delete(id);
       setOpen(false);
       setTicketId('');
     } catch (err) {
@@ -75,6 +101,7 @@ export default function AttachArtifactToTicket({
       <input
         data-testid={`attach-artifact-ticket-${artifactId}`}
         value={ticketId}
+        disabled={busy}
         onChange={(e) => setTicketId(e.target.value)}
         placeholder={t('aiAgentsPage.runs.detail.artifacts.ticketIdPlaceholder')}
         aria-label={t('aiAgentsPage.runs.detail.artifacts.ticketIdPlaceholder')}

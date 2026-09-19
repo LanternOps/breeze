@@ -626,6 +626,8 @@ export interface AiAgentRunWorkspaceDto {
   region: 'eu' | 'us';
   status: string;
   bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
   createdAt: string;
   readyAt: string | null;
   destroyedAt: string | null;

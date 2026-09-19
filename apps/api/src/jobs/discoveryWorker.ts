@@ -28,6 +28,7 @@ import { attachWorkerObservability } from './workerObservability';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/cronDue';
+import { utcMsFromOffsetlessDbTimestamp } from '../utils/offsetlessTimestamp';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { resolveAssetIdentity, type ResolvedAssetIdentity } from '../services/assetIdentity';
 import {
@@ -420,6 +421,31 @@ async function expireStaleRunningJobs(): Promise<number> {
   return staleJobs.length;
 }
 
+/**
+ * Whether an interval-scheduled discovery profile is due, given the most
+ * recent job's run timestamp.
+ *
+ * `discovery_jobs.scheduled_at` / `.created_at` are `timestamp(...)` columns
+ * with no `withTimezone: true` (`db/schema/discovery.ts:132,139`), so the
+ * driver hands back the UTC wall clock re-read as this process's LOCAL time
+ * and `getTime()` is wrong by the host's offset (#4059 gap 2 — see
+ * `utils/offsetlessTimestamp.ts`). Subtracting that from a true-instant `now`
+ * skews the elapsed interval by the same amount: on a host west of UTC the
+ * last run reads as more recent than it was, so interval discovery silently
+ * stops firing for up to the host's offset; east of UTC it fires early.
+ *
+ * Exported as a pure seam so this is assertable without a database — see
+ * `discoveryWorker.intervalDue.test.ts`, registered in `vitest.config.tz.ts`.
+ */
+export function isIntervalScheduleDue(
+  latestRunAt: Date | null,
+  now: Date,
+  thresholdMs: number,
+): boolean {
+  if (!latestRunAt) return true;
+  return now.getTime() - utcMsFromOffsetlessDbTimestamp(latestRunAt) >= thresholdMs;
+}
+
 async function processScheduleProfiles(): Promise<{ enqueued: number }> {
   const now = new Date();
   const minuteStart = new Date(now);
@@ -470,8 +496,7 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
         .limit(1);
 
       const latestRunAt = latest?.scheduledAt ?? latest?.createdAt ?? null;
-      const isDue = !latestRunAt || (now.getTime() - latestRunAt.getTime() >= thresholdMs);
-      if (!isDue) continue;
+      if (!isIntervalScheduleDue(latestRunAt, now, thresholdMs)) continue;
 
       const result = await enqueueScheduledProfileRun(profile.id, profile.orgId, profile.siteId);
       if (result.queued) enqueued++;

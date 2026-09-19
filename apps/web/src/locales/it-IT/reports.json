@@ -399,6 +399,9 @@
       },
       "loading": "Caricamento report...",
       "never": "Mai",
+      "success": {
+        "generated": "Report \"{{name}}\" generato."
+      },
       "visibleInPortal": "Visibile nel portale clienti",
       "newReport": "Nuovo report",
       "nextOccurrence": "Prossimo: {{next}}",

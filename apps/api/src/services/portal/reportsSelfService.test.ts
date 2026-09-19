@@ -923,7 +923,29 @@ describe('latestPortalHardwareLifecycleRun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.where = undefined;
+    state.getReportBranding.mockReset().mockResolvedValue({});
     state.execute.mockReset().mockResolvedValue([{ prior_ms: 0 }]);
+  });
+
+  it.each([
+    [{ contactName: 'Sam Lee', contactEmail: 'support@example.test' }, { name: 'Sam Lee', email: 'support@example.test' }],
+    [{ contactEmail: 'support@example.test' }, { name: null, email: 'support@example.test' }],
+    [{ contactName: 'Sam Lee', contactEmail: null }, null],
+    [{}, null],
+  ])('returns the PDF branding contact for the session org: %j', async (branding, contact) => {
+    state.getReportBranding.mockResolvedValue(branding);
+    state.selected.mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+
+    expect(dto).toHaveProperty('contact', contact);
+    expect(state.getReportBranding).toHaveBeenCalledExactlyOnceWith(ORG_ID);
   });
 
   it('pins the lookup to the org, the type, the portal flag, and completion', async () => {
@@ -1043,6 +1065,7 @@ describe('latestPortalHardwareLifecycleRun', () => {
       latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
     expect(state.selected).toHaveBeenCalledOnce();
+    expect(state.getReportBranding).not.toHaveBeenCalled();
   });
 
   it('refuses when the org has no portal_branding row at all', async () => {
@@ -1053,28 +1076,29 @@ describe('latestPortalHardwareLifecycleRun', () => {
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });
 
-  // #5880: LifecyclePlanTable links a device row's Computer cell to
-  // /portal/devices, but that route itself redirects home when the org's
-  // enable_self_service flag is off — so the portal page needs the flag to
-  // know whether the link is safe to render at all.
-  it("includes the org's enable_self_service flag in the DTO when it is on", async () => {
+  // The legacy DTO field controls device deep-links, so either Devices grant
+  // must enable it even when self-service actions are disabled.
+  it.each([[true, false], [false, true], [true, true]])(
+    'enables device links with enableDevices=%s and enableSelfService=%s',
+    async (enableDevices, enableSelfService) => {
+      state.selected
+        .mockReset()
+        .mockResolvedValueOnce([{ enableLifecycle: true, enableDevices, enableSelfService }])
+        .mockResolvedValue([{
+          id: RUN_ID,
+          result: { summary: {} },
+          completedAt: new Date('2026-09-02T18:00:00.000Z'),
+        }]);
+
+      const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+      expect(dto.enableSelfService).toBe(true);
+    },
+  );
+
+  it('disables device links when both Devices grants are off', async () => {
     state.selected
       .mockReset()
-      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: true }])
-      .mockResolvedValue([{
-        id: RUN_ID,
-        result: { summary: {} },
-        completedAt: new Date('2026-09-02T18:00:00.000Z'),
-      }]);
-
-    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
-    expect(dto.enableSelfService).toBe(true);
-  });
-
-  it('reports enableSelfService as false when the org has self-service off', async () => {
-    state.selected
-      .mockReset()
-      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: false }])
+      .mockResolvedValueOnce([{ enableLifecycle: true, enableDevices: false, enableSelfService: false }])
       .mockResolvedValue([{
         id: RUN_ID,
         result: { summary: {} },

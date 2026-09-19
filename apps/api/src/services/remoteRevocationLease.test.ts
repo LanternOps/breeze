@@ -11,6 +11,9 @@ vi.mock('./remoteAccessPolicy', () => ({
     maxSessionDurationHours: 8,
   })),
 }));
+vi.mock('./mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({ required: false })),
+}));
 vi.mock('../db', () => ({
   db: {},
   runOutsideDbContext: vi.fn(async (fn: () => unknown) => fn()),
@@ -31,6 +34,7 @@ import {
   type RevocationRecheckRow,
 } from './remoteRevocationLease';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
+import { getEffectiveMfaPolicy } from './mfaPolicy';
 import { afterEach } from 'vitest';
 
 const NOW = Date.parse('2026-10-15T12:00:00.000Z');
@@ -66,7 +70,7 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       partnerId: 'partner-1',
       mfaProtected: true,
     },
-    orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: false },
+    orgMembership: { roleId: 'role-1', siteIds: null },
     partnerMembership: null,
     sessionOrgUsable: true,
   };
@@ -177,7 +181,7 @@ describe('evaluateRevocationRecheck', () => {
   it('revokes when the device left the caller site ceiling', () => {
     expect(
       evaluateRevocationRecheck(
-        row({ orgMembership: { roleId: 'role-1', siteIds: ['site-9'], forceMfa: false } }),
+        row({ orgMembership: { roleId: 'role-1', siteIds: ['site-9'] } }),
         NOW,
         NOW + 60_000,
       ),
@@ -189,7 +193,7 @@ describe('evaluateRevocationRecheck', () => {
       evaluateRevocationRecheck(
         row({
           device: { ...row().device, siteId: null },
-          orgMembership: { roleId: 'role-1', siteIds: ['site-1'], forceMfa: false },
+          orgMembership: { roleId: 'role-1', siteIds: ['site-1'] },
         }),
         NOW,
         NOW + 60_000,
@@ -207,27 +211,34 @@ describe('evaluateRevocationRecheck', () => {
     ).toEqual({ ok: true });
   });
 
-  it('revokes when the role now forces MFA and the user holds no factor', () => {
+  // #6107: the evaluator no longer reads the role's raw force_mfa. "MFA is
+  // required" is the effective-policy verdict (kill switch, enrolment grace,
+  // org/partner requireMfa) resolved by the caller, so the lease and login
+  // cannot disagree.
+  it('revokes when policy requires MFA and the user holds no factor', () => {
     expect(
       evaluateRevocationRecheck(
-        row({
-          orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: true },
-          user: { ...row().user, mfaProtected: false },
-        }),
+        row({ user: { ...row().user, mfaProtected: false } }),
         NOW,
         NOW + 60_000,
+        true,
       ),
     ).toEqual({ ok: false, reason: 'mfa_required' });
   });
 
-  it('keeps a forced-MFA role renewing while the user still holds a factor', () => {
+  it('keeps a factorless user renewing while policy does not require MFA', () => {
     expect(
       evaluateRevocationRecheck(
-        row({ orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: true } }),
+        row({ user: { ...row().user, mfaProtected: false } }),
         NOW,
         NOW + 60_000,
+        false,
       ),
     ).toEqual({ ok: true });
+  });
+
+  it('keeps renewing under required MFA while the user still holds a factor', () => {
+    expect(evaluateRevocationRecheck(row(), NOW, NOW + 60_000, true)).toEqual({ ok: true });
   });
 
   it('revokes once the hard deadline has passed', () => {
@@ -262,7 +273,6 @@ describe('evaluateRevocationRecheck', () => {
           roleId: 'role-p',
           orgAccess: 'all',
           orgIds: null,
-          forceMfa: false,
         },
         sessionOrgUsable: true,
       });
@@ -457,6 +467,100 @@ describe('renewRevocationLease', () => {
         status: 'disconnected', terminalGeneration: 7n, terminationPhase: 'pending',
       },
     ]);
+  });
+
+  describe('MFA through the effective policy (#6107)', () => {
+    const factorless = (over: Partial<RevocationRecheckRow> = {}) =>
+      row({ user: { ...row().user, mfaProtected: false }, ...over });
+
+    beforeEach(() => {
+      vi.mocked(getEffectiveMfaPolicy).mockReset();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({ required: false } as never);
+    });
+
+    it('renews a factorless user when the policy does not require MFA (kill switch / grace)', async () => {
+      const markRow = vi.fn();
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result.status).toBe('renewed');
+      expect(markRow).not.toHaveBeenCalled();
+      expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
+        scope: 'organization',
+        userId: 'user-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+      });
+    });
+
+    it('revokes a factorless user when the policy requires MFA', async () => {
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({ required: true } as never);
+      const markRow = vi.fn(async () => null);
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result).toEqual({ status: 'revoked', reason: 'mfa_required' });
+      expect(markRow).toHaveBeenCalledWith('sess-1', 'mfa_required');
+    });
+
+    it('asks the policy at partner scope for a partner-scoped user', async () => {
+      await renewRevocationLease('sess-1', {
+        loadRow: async () =>
+          factorless({
+            user: { ...row().user, orgId: null, mfaProtected: false },
+            orgMembership: null,
+            partnerMembership: { roleId: 'prole-1', orgAccess: 'all', orgIds: null },
+            sessionOrgUsable: true,
+          }),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+      });
+      expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
+        scope: 'partner',
+        userId: 'user-1',
+        orgId: null,
+        partnerId: 'partner-1',
+      });
+    });
+
+    it('never consults the policy for a user who holds a factor', async () => {
+      await renewRevocationLease('sess-1', {
+        loadRow: async () => row(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+      });
+      expect(getEffectiveMfaPolicy).not.toHaveBeenCalled();
+    });
+
+    it('never consults the policy (no grace-grant write) for a session that is revoked anyway', async () => {
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless({ user: { ...row().user, status: 'suspended', mfaProtected: false } }),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: vi.fn(async () => null),
+      });
+      expect(result).toEqual({ status: 'revoked', reason: 'user_inactive' });
+      expect(getEffectiveMfaPolicy).not.toHaveBeenCalled();
+    });
+
+    it('returns lease_unavailable and does NOT revoke when the policy read throws', async () => {
+      vi.mocked(getEffectiveMfaPolicy).mockRejectedValue(new Error('db down'));
+      const markRow = vi.fn();
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result).toEqual({ status: 'unavailable' });
+      expect(markRow).not.toHaveBeenCalled();
+    });
   });
 
   it('returns lease_unavailable and does NOT mark the session when the recheck query throws', async () => {

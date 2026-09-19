@@ -154,6 +154,15 @@ export const JOB_SCHEDULES = {
   // never pruned). Hour 20 was entirely free; :03 keeps it in the
   // daily = 3 (mod 5) lane.
   'monitor-episode-retention': '3 20 * * *',
+  // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
+  // the hosted drift report (listDomains vs local rows + outbox) and, on a
+  // `static` instance, the re-check that a domain the operator removed from
+  // EMAIL_DOMAINS_STATIC_ALLOWED stops being used. A slot rather than
+  // `repeat: { every: 24h }` — BullMQ anchors `every` to the epoch, so a 24 h
+  // repeatable fires at exactly 00:00:00.000 UTC alongside every other one (see
+  // this file's header). Hour 21 was entirely free; :03 keeps the daily = 3
+  // (mod 5) lane.
+  'sending-domains-daily': '3 21 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

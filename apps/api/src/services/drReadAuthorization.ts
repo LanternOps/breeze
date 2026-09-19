@@ -130,6 +130,19 @@ export async function collectReadableDrRows<T extends DrReadCursor>(input: {
   return visible.slice(0, input.limit);
 }
 
+/**
+ * True when neither DR read axis narrows this caller, i.e. the whole filter is
+ * a no-op and the cheap single-query path is safe.
+ *
+ * The exact-device axis is INDEPENDENT of the site axis (#6086): a device-less
+ * analysis run carries `allowedDeviceIds` with `allowedSiteIds` undefined, and
+ * `drReadSiteCeiling` reports that as `null` — unrestricted. Every caller that
+ * short-circuits on the site ceiling alone must use this instead.
+ */
+export function drReadUnrestricted(auth: AuthContext, override?: string[]): boolean {
+  return drReadSiteCeiling(auth, override) === null && !auth.allowedDeviceIds;
+}
+
 async function readableKeys(
   auth: AuthContext,
   orgId: string,
@@ -137,8 +150,17 @@ async function readableKeys(
   override?: string[],
 ): Promise<Set<string>> {
   const sites = drReadSiteCeiling(auth, override);
-  if (sites === null) return new Set(entries.map((entry) => entry.key));
-  if (sites.length === 0) return new Set();
+  const allowedDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  if (sites !== null && sites.length === 0) return new Set();
+  if (sites === null && allowedDevices === null) return new Set(entries.map((entry) => entry.key));
+  // Exact-device axis. Unlike the site axis below, a missing device row does
+  // NOT excuse an id here: the id itself is the sensitive fact (a DR plan
+  // naming a machine the run was never bound to), and an allowlist is a closed
+  // set that cannot be satisfied by a row that no longer exists.
+  const deviceDenies = (id: string) => allowedDevices !== null && !allowedDevices.has(id);
+  const visibleOn = (denies: (id: string) => boolean) =>
+    new Set(entries.filter((entry) => entry.ids !== null && !entry.ids.some(denies)).map((entry) => entry.key));
+  if (sites === null) return visibleOn(deviceDenies);
   const allIds = [...new Set(entries.flatMap((entry) => entry.ids ?? []))];
   const rows: Array<{ id: string; siteId: string | null }> = [];
   for (const idChunk of chunks(allIds)) {
@@ -156,19 +178,20 @@ async function readableKeys(
   // A device that DOES still exist and sits outside the ceiling — or carries no
   // site at all — still denies the whole resource.
   const denies = (id: string) => {
+    if (deviceDenies(id)) return true;
     const siteId = resolved.get(id);
     if (siteId === undefined) return false;
     return siteId === null || !allowed.has(siteId);
   };
-  return new Set(entries.filter((entry) => entry.ids !== null && !entry.ids.some(denies)).map((entry) => entry.key));
+  return visibleOn(denies);
 }
 
 export async function filterReadableDrPlans<T extends { id: string }>(
   rows: T[], auth: AuthContext, orgId: string, override?: string[],
 ): Promise<T[]> {
   const sites = drReadSiteCeiling(auth, override);
-  if (sites === null || rows.length === 0) return rows;
-  if (sites.length === 0) return [];
+  if (rows.length === 0 || drReadUnrestricted(auth, override)) return rows;
+  if (sites !== null && sites.length === 0) return [];
   const groups: GroupRef[] = [];
   for (const planIds of chunks(rows.map((row) => row.id))) {
     groups.push(...await db.select({ planId: drPlanGroups.planId, devices: drPlanGroups.devices })
@@ -188,8 +211,8 @@ export async function filterReadableDrExecutions<T extends ExecutionRef>(
   rows: T[], auth: AuthContext, orgId: string, override?: string[],
 ): Promise<T[]> {
   const sites = drReadSiteCeiling(auth, override);
-  if (sites === null || rows.length === 0) return rows;
-  if (sites.length === 0) return [];
+  if (rows.length === 0 || drReadUnrestricted(auth, override)) return rows;
+  if (sites !== null && sites.length === 0) return [];
   const planIds = [...new Set(rows.map((r) => r.planId))];
   const groups: GroupRef[] = [];
   for (const planIdChunk of chunks(planIds)) {

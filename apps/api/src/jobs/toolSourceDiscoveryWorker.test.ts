@@ -81,7 +81,7 @@ describe('getToolSourceDiscoveryQueue', () => {
 });
 
 describe('enqueueToolSourceDiscovery', () => {
-  it('adds a job with the discover:<sourceId> jobId (dedupes), 3 attempts, exponential 5s backoff', async () => {
+  it('adds a job with the discover-<sourceId> jobId (dedupes), 3 attempts, exponential 5s backoff', async () => {
     await enqueueToolSourceDiscovery(SOURCE_ID);
 
     expect(shared.addMock).toHaveBeenCalledTimes(1);
@@ -89,10 +89,20 @@ describe('enqueueToolSourceDiscovery', () => {
     expect(jobName).toBe(TOOL_SOURCE_DISCOVERY_JOB_NAME);
     expect(data).toEqual({ sourceId: SOURCE_ID });
     expect(opts).toMatchObject({
-      jobId: `discover:${SOURCE_ID}`,
+      jobId: `discover-${SOURCE_ID}`,
       attempts: 3,
       backoff: { type: 'exponential', delay: 5_000 },
     });
+  });
+
+  // Regression guard: BullMQ 5 throws "Custom Id cannot contain :" on Queue.add,
+  // so the dedupe key must never use ':' as a separator.
+  it('does not contain a colon in the jobId (BullMQ 5 rejects custom ids with ":")', async () => {
+    await enqueueToolSourceDiscovery(SOURCE_ID);
+
+    const [, , opts] = shared.addMock.mock.calls[0]!;
+    const jobId = (opts as { jobId: string }).jobId;
+    expect(jobId).not.toContain(':');
   });
 
   it('reuses the same jobId for the same source (dedupe key is stable)', async () => {
@@ -100,7 +110,7 @@ describe('enqueueToolSourceDiscovery', () => {
     await enqueueToolSourceDiscovery(SOURCE_ID);
 
     const jobIds = shared.addMock.mock.calls.map((c) => (c[2] as { jobId: string }).jobId);
-    expect(jobIds).toEqual([`discover:${SOURCE_ID}`, `discover:${SOURCE_ID}`]);
+    expect(jobIds).toEqual([`discover-${SOURCE_ID}`, `discover-${SOURCE_ID}`]);
   });
 });
 

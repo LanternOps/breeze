@@ -33,11 +33,34 @@
       "maxConcurrentDesignRuns": "Bu kuruluş için zaten bir Filo Tasarımı çalıştırması sürüyor.",
       "designRate": "Bu kuruluş şu an için Filo Tasarımı çalıştırma sınırına ulaştı.",
       "duplicate": "Eşdeğer bir Filo Tasarımı çalıştırması zaten istenmişti.",
-      "generic": "Çalıştırma başlatılmadı ({{reason}})."
+      "generic": "Çalıştırma başlatılmadı ({{reason}}).",
+      "noDesignerAgent": "Bu kuruluşun iş ortağı için henüz bir Fleet Designer aracısı yok."
     },
     "fileAsDocument": "Belge olarak dosyala",
     "fileAsDocumentSuccess": "Tasarım belge kitaplığına dosyalandı.",
-    "fileAsDocumentError": "Tasarım belge olarak dosyalanamadı."
+    "fileAsDocumentError": "Tasarım belge olarak dosyalanamadı.",
+    "designerSetup": {
+      "status": {
+        "missing": "Henüz bir Fleet Designer aracısı yok.",
+        "off": "Fleet Designer aracısı kapalı.",
+        "disabled": "Fleet Designer aracısı devre dışı.",
+        "killSwitchOff": "Yapay zekâ aracıları şu anda platform genelinde kapalı."
+      },
+      "enableHint": "Buradan etkinleştirin. Tasarımcı yalnızca filonuzu okur ve bir tasarım yazar; hiçbir cihazı değiştirmez.",
+      "askPartnerAdmin": "Bir iş ortağı yöneticisinden Fleet Designer aracısını Ayarlar → Yapay Zekâ Aracıları altında etkinleştirmesini isteyin.",
+      "killSwitchHint": "Bu bir platform ayarıdır; bu sayfadaki hiçbir şey onu değiştiremez.",
+      "enableButton": "Fleet Designer'ı etkinleştir",
+      "enableSuccess": "Fleet Designer etkinleştirildi.",
+      "enableError": "Fleet Designer etkinleştirilemedi.",
+      "errors": {
+        "partnerScopeRequired": "Fleet Designer aracısını yalnızca bir iş ortağı yöneticisi etkinleştirebilir.",
+        "partnerAdminRequired": "Fleet Designer aracısını yalnızca bir iş ortağı yöneticisi etkinleştirebilir.",
+        "killSwitchOff": "Yapay zekâ aracıları şu anda platform genelinde kapalı.",
+        "agentKindExists": "Zaten bir tasarımcı aracısı var. Sayfayı yenileyip tekrar deneyin.",
+        "actPrerequisitesNotMet": "Tasarımcı aracısının çalışabilmesi için bir alıcıya ihtiyacı var. Ayarlar → Yapay Zekâ Aracıları altında bir alıcı ekleyin.",
+        "invalidRecipients": "Hesabınız tasarımcının alıcısı olarak ayarlanamadı. Ayarlar → Yapay Zekâ Aracıları altında bir alıcı ekleyin."
+      }
+    }
   },
   "sections": {
     "found": "Neler bulundu",
@@ -130,5 +153,21 @@
       "scope": "İşlev / ilke",
       "detail": "Ayrıntı"
     }
+  },
+  "evidence": {
+    "notMeasured": "Ölçülmedi",
+    "org": "Kuruluş",
+    "devices": "Cihazlar",
+    "software": "Yazılım envanteri",
+    "services": "Sistem hizmetleri",
+    "network": "Ağ verileri",
+    "posture": "Güvenlik durumu",
+    "health": "Filo sağlığı",
+    "configuration": "Yapılandırma",
+    "automation": "Otomasyon verileri",
+    "logs": "Olay günlükleri",
+    "counts": "Etkinlik sayıları",
+    "precursors": "Erken uyarı göstergeleri",
+    "drift": "Onaylanan tasarımdan sapmalar"
   }
 }

@@ -34,10 +34,30 @@ export default defineConfig({
     },
   },
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     // This is a manual allowlist, not a broad glob — a new TZ-sensitive test
     // file must be added here explicitly or it runs under UTC only.
+    //
+    // AUDIT NOTE (#4059 gap 2, 2026-09): the other schedulers named in that
+    // issue — `services/automationRuntime.ts`/`services/cronDue.ts`
+    // (`isCronDue`/`getZonedDateParts`), `jobs/patchSchedulerWorker.ts`
+    // (`getLocalTimeParts` and friends) and `services/pamRuleEngine.ts`
+    // (`isWithinTimeWindow`) — were audited and deliberately NOT added. They
+    // are timezone-AWARE but host-timezone-INDEPENDENT: every one takes an
+    // explicit IANA zone (defaulting to the 'UTC' sentinel, never the host
+    // default) and resolves parts through `Intl.DateTimeFormat`, and their
+    // existing suites pass explicit zone strings into every assertion. Re-running
+    // them under a pinned zone is byte-identical to the UTC run, so it would
+    // cost CI time for zero signal. `pamRuleEngine`'s `at` argument traces to
+    // `elevation_requests.requested_at`, which IS `withTimezone: true`, so it
+    // has no offsetless exposure either. What the audit DID find was two
+    // offsetless-`timestamp` reads feeding instant arithmetic — registered
+    // below. Re-audit if any of those files starts reading wall-clock parts off
+    // a Date with bare local getters (`getHours`/`getDay`) or consumes a
+    // `timestamp`-without-timezone column.
     include: [
       'src/routes/auth.test.ts',
       'src/routes/auth.passkeys.test.ts',
@@ -67,6 +87,15 @@ export default defineConfig({
       // password-change revocation, same offsetless-timestamp bug shape as
       // #4018 (see tokenRevocation.ts's isTokenIssuedBeforePasswordChange).
       'src/services/tokenRevocation.test.ts',
+      // #4059 gap 2: the two offsetless-`timestamp` reads found by auditing
+      // the schedulers named in that issue. Both compare a driver-parsed Date
+      // against a true instant, so both are wrong by the API host's offset and
+      // both are dormant under UTC — see each file's header.
+      'src/jobs/reportScheduleWorker.due.test.ts',
+      // Its findDueReports fixtures now build lastGeneratedAt through
+      // pgOffsetlessTimestamp, so they too are offset-sensitive.
+      'src/jobs/reportScheduleWorker.test.ts',
+      'src/jobs/discoveryWorker.intervalDue.test.ts',
       // Canary asserting the pin itself is active — see its own file
       // header. Deliberately excluded from vitest.config.ts (main) so it
       // fails loudly there if it's ever accidentally run under UTC.

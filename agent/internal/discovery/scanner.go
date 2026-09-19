@@ -12,11 +12,16 @@ import (
 
 // ScanConfig defines the parameters for a network discovery scan.
 type ScanConfig struct {
-	Subnets          []string
-	ExcludeIPs       []string
-	Methods          []string
-	PortRanges       []string
-	SNMPCommunities  []string
+	Subnets    []string
+	ExcludeIPs []string
+	Methods    []string
+	PortRanges []string
+	// SNMPCommunities are the profile's legacy v1/v2c community strings.
+	SNMPCommunities []string
+	// SNMPCredentials are the profile's structured credentials (v3 user +
+	// protocols + passphrases, or a v2c community). normalizeConfig folds
+	// SNMPCommunities into this list; probes read only SNMPCredentials.
+	SNMPCredentials  []SNMPCredential
 	Timeout          time.Duration
 	Concurrency      int
 	DeepScan         bool
@@ -162,7 +167,7 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 	}
 
 	if methods["snmp"] {
-		snmpResults := discoverSNMP(targets, s.config.SNMPCommunities, s.config.Timeout, s.config.Concurrency)
+		snmpResults := discoverSNMP(targets, s.config.SNMPCredentials, s.config.Timeout, s.config.Concurrency)
 		for ip, snmpInfo := range snmpResults {
 			host := getOrCreateHost(hosts, ip, now)
 			host.SNMPData = snmpInfo
@@ -219,9 +224,8 @@ func normalizeConfig(config ScanConfig) ScanConfig {
 	if len(config.PortRanges) == 0 {
 		config.PortRanges = []string{"22,80,443,445,3389,161,139,135,5985,5986,9100"}
 	}
-	if len(config.SNMPCommunities) == 0 {
-		config.SNMPCommunities = []string{"public"}
-	}
+	// Issue #6234: never default to "public" when the profile configured v3.
+	config.SNMPCredentials = ResolveSNMPCredentials(config.SNMPCredentials, config.SNMPCommunities)
 	return config
 }
 
@@ -424,7 +428,7 @@ func compareIPs(a, b string) bool {
 // CollectAdjacency walks LLDP/CDP for SNMP-credentialed responders and returns
 // adjacency blocks that contain at least one neighbor row.
 func (s *Scanner) CollectAdjacency(hosts []DiscoveredHost) []DeviceAdjacency {
-	if len(s.config.SNMPCommunities) == 0 {
+	if len(s.config.SNMPCredentials) == 0 {
 		return nil
 	}
 	out := make([]DeviceAdjacency, 0)
@@ -432,7 +436,7 @@ func (s *Scanner) CollectAdjacency(hosts []DiscoveredHost) []DeviceAdjacency {
 		if h.SNMPData == nil || !hasMethod(h.Methods, "snmp") {
 			continue
 		}
-		adj := collectAdjacencyFor(h.IP, s.config.SNMPCommunities, s.config.Timeout)
+		adj := collectAdjacencyFor(h.IP, s.config.SNMPCredentials, s.config.Timeout)
 		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 {
 			out = append(out, adj)
 		}

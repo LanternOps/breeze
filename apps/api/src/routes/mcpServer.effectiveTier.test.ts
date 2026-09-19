@@ -241,19 +241,19 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
   // Use real aiGuardrails so registry_operations action:'delete_key' escalates
   // base tier 1 → effective tier 3 and manage_processes action:'kill' → tier 3.
   beforeEach(() => {
-    // registry_operations / manage_processes / manage_patches are base tier 1;
-    // run_script is base tier 3; security_scan is base tier 2 (its
+    // manage_processes / manage_patches are base tier 1; registry_operations
+    // is base tier 2 (SR5-01, 2026-09-17 audit §2.4 — registry reads are
+    // privileged agent executions, not device reads, so they were raised off
+    // Tier 1); run_script is base tier 3; security_scan is base tier 2 (its
     // action:'vulnerabilities' downgrades to tier 1 in guardrails — used by the
     // downgrade-clamp test to prove Math.max ignores the downgrade).
     mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
     mocks.getToolTier.mockImplementation((name: string) =>
       name === 'run_script'
         ? 3
-        : name === 'security_scan'
+        : name === 'security_scan' || name === 'registry_operations'
           ? 2
-          : name === 'registry_operations' ||
-              name === 'manage_processes' ||
-              name === 'manage_patches'
+          : name === 'manage_processes' || name === 'manage_patches'
             ? 1
             : undefined,
     );
@@ -340,12 +340,35 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
   });
 
-  it('ai:read key calling a benign read action on the same tool still succeeds', async () => {
-    const res = await callTool(['ai:read'], 'registry_operations', { action: 'read_value' });
+  // Review finding #5: this used to call `registry_operations` with a
+  // non-existent action (`read_value`) against a mocked base tier of 1 —
+  // production now bases `registry_operations` at tier 2 (SR5-01) with real
+  // read actions `read_key`/`get_value` explicitly gated there (aiGuardrails
+  // TIER2_ACTIONS), so the ORIGINAL scenario ("a benign read succeeds under
+  // ai:read alone") is no longer true for this tool at all — every action on
+  // it now requires ai:write. Re-pointed at a tool that IS genuinely tier 1
+  // with no escalation on this action: `manage_processes` action:'list'
+  // (aiToolsScripts.ts's own comment: "manage_processes list is Tier 1" —
+  // only `kill` escalates, tested separately below).
+  it('ai:read key calling a benign read action on a genuinely tier-1 tool still succeeds', async () => {
+    const res = await callTool(['ai:read'], 'manage_processes', { action: 'list', deviceId: 'dev-1' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.error).toBeUndefined();
     expect(body.result?.content?.[0]?.text).toContain('ok');
+  });
+
+  // Review finding #5: pins the NEW, correct behavior for
+  // `registry_operations` now that its base tier is 2 — an ai:read-only key
+  // is refused even for a real, non-escalating read action (tier >= 2
+  // requires ai:write), not just for the destructive/escalated ones covered
+  // elsewhere in this file.
+  it('ai:read key calling a real read action (read_key) on registry_operations (base tier 2) is denied (requires ai:write)', async () => {
+    const res = await callTool(['ai:read'], 'registry_operations', { action: 'read_key', key: 'HKLM\\foo' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('requires ai:write');
   });
 
   it('manage_processes action:kill is escalated to tier 3 and gated (MCP_APPROVAL_REQUIRED) for ai:read', async () => {
@@ -395,8 +418,12 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 
+  // Review finding #5: re-pointed at `manage_processes` action:'list' for the
+  // same reason as the ai:read success test above — `registry_operations` no
+  // longer has ANY action a non-tier-2 scope can reach, so it can no longer
+  // stand in for "a benign action on a tier-1 tool".
   it('benign read action on a tier-1 tool does NOT create a ledger', async () => {
-    await callTool(['ai:read', 'ai:execute'], 'registry_operations', { action: 'read_value' });
+    await callTool(['ai:read', 'ai:execute'], 'manage_processes', { action: 'list', deviceId: 'dev-1' });
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 });

@@ -249,6 +249,13 @@ async function seedFixture(): Promise<Fixture> {
         sweepKinds: BASELINE_KINDS,
         enabled: true,
         createdBy: user.id,
+        // A LONG-STANDING baseline, not one created this second. The tick
+        // refuses to catch up on an occurrence that predates `created_at`
+        // (#6201), and this fixture's hourly occurrence is the top of the
+        // current hour — i.e. before "now" on every run but one that happens
+        // to land exactly on :00. Without this the CAS test below would pass
+        // or fail depending on the wall clock.
+        createdAt: new Date(Date.now() - 24 * 3_600_000),
         updatedAt: new Date(),
       })
       .returning(),
@@ -494,6 +501,37 @@ describe('sweep fan-out (real Postgres)', () => {
     const job = await getAiAgentSweepQueue().getJob(getSweepOccurrenceJobId(f.baseline.id, expected!.key));
     expect(job).toBeDefined();
     expect(job!.data).toMatchObject({ scheduleId: f.baseline.id, occurrenceKey: expected!.key });
+  });
+
+  it('a baseline created AFTER its last occurrence is not caught up, and fires on its next one (#6201)', async () => {
+    const f = await seedFixture();
+    expect(AI_AGENTS_ENABLED).toBe(true);
+
+    // Re-point created_at so the schedule came into existence at 06:30, half
+    // an hour AFTER the 06:00 occurrence its hourly cron last had. Both ticks
+    // below take an explicit `now`, so this is wall-clock independent.
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiAgentSchedules)
+        .set({ createdAt: new Date('2026-08-29T06:30:00Z') })
+        .where(eq(aiAgentSchedules.id, f.baseline.id)),
+    );
+
+    // 06:35 — five minutes into the schedule's life. The latest occurrence
+    // (06:00) predates it, so nothing is enqueued and, critically, the key
+    // stays NULL so the real firing still has the NULL-keyed CAS to win.
+    const early = await processSweepTick(new Date('2026-08-29T06:35:00Z'));
+    expect(early).toMatchObject({ scanned: 1, enqueued: 0 });
+    const afterEarly = await readSchedule(f.baseline.id);
+    expect(afterEarly.lastOccurrenceKey).toBeNull();
+    expect(afterEarly.lastEnqueuedAt).toBeNull();
+
+    // 07:02 — the first occurrence that actually belongs to this schedule.
+    const due = await processSweepTick(new Date('2026-08-29T07:02:00Z'));
+    expect(due).toMatchObject({ scanned: 1, enqueued: 1 });
+    const afterDue = await readSchedule(f.baseline.id);
+    expect(afterDue.lastOccurrenceKey).toBe('2026-08-29T07:00@UTC');
+    expect(afterDue.lastEnqueuedAt).not.toBeNull();
   });
 
   it('a scoped intent created from the device-less run releases with allowedDeviceIds pinned to the scope device', async () => {

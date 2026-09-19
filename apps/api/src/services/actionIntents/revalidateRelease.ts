@@ -9,6 +9,8 @@ import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
@@ -410,6 +412,34 @@ export async function revalidateApprovedIntentForRelease(
       return authority;
     }
     return { ok: true, auth };
+  }
+
+  // (f) Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents — the
+  // release-time twin of the raise gate in `createActionIntent`.
+  //
+  // `createActionIntent` refuses a ceilinged RAISER, but the ceiling is
+  // mutable state: a technician who was unrestricted when they raised an
+  // identity-tenant mutation can be confined to a site during the approval
+  // wait. The rebuilt `auth` from (c) carries the LIVE `allowedSiteIds`
+  // (actorContext.ts re-derives it from the DB), so checking it here is what
+  // makes the ceiling hold across the durable boundary — and it is the only
+  // check that can, because the m365/google release path dispatches through
+  // the HEADLESS `*Action` functions, which take no AuthContext at all and so
+  // never reach the in-handler gate.
+  //
+  // RBAC alone does not cover this: `organizations:write` is exactly what a
+  // site-restricted org technician legitimately holds for their own sites.
+  //
+  // Agent-originated intents returned above: they have no user RBAC to
+  // consult and are governed by `checkAgentReleaseAuthority` instead. No
+  // agent can reach these tools anyway — every m365/google tool is
+  // session-only, so `listAgentReachableTools` excludes the whole surface.
+  if (isOrgWideGovernanceIntent(intent.actionName, intent.arguments) && !canMutateOrgWideGovernance(auth)) {
+    return {
+      ok: false,
+      errorCode: 'site_ceiling',
+      details: { reason: SITE_CEILING_WRITE_DENIED_MESSAGE },
+    };
   }
 
   // The actor must STILL hold the specific RBAC permission the tool

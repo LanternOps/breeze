@@ -14,7 +14,7 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
 
@@ -52,6 +52,12 @@ export async function buildAgentLogConditions(
   if (filters.deviceIds && filters.deviceIds.length > 0) {
     conditions.push(inArray(agentLogs.deviceId, filters.deviceIds));
   }
+
+  // Exact-device axis: independent of the site axis. A device-LESS analysis run
+  // carries only `allowedDeviceIds`, so the site block below never fires for it
+  // and the search would read org-wide (#6096 RC3). No-op when unrestricted.
+  const deviceCond = deviceScopeCondition(auth, agentLogs.deviceId);
+  if (deviceCond) conditions.push(deviceCond);
 
   if (auth.allowedSiteIds) {
     const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
@@ -235,7 +241,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
@@ -320,7 +326,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 

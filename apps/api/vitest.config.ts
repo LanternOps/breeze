@@ -9,6 +9,8 @@ export default defineConfig({
     },
   },
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),

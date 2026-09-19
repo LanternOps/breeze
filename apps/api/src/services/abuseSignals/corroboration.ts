@@ -75,6 +75,20 @@ export const SIGNAL_AXIS: Record<string, string> = {
   'billing.cardholder_name_mismatch': 'billing_identity',
   'billing.card_testing': 'billing_identity',
   'billing.shared_card_fingerprint': 'billing_identity',
+  // Partner sending domains (W06). TWO axes, not four.
+  //
+  //  - `added` and `verify_failures` are the same observation at two
+  //    strengths: this partner is claiming DNS names. A partner adding three
+  //    lookalikes and failing to verify them must contribute ONE axis, not two.
+  //  - `cap_hit` and `bounce_complaint` are both "the mail this partner
+  //    actually sent". A single blast produces both — over the cap AND a bounce
+  //    spike — and counting that one episode as two independent axes would let
+  //    it manufacture an alert by itself, the exact trap the ip_scatter and
+  //    origin_ip pairs are grouped for.
+  'email.sending_domain_added': 'sending_domain_setup',
+  'email.sending_domain_verify_failures': 'sending_domain_setup',
+  'email.partner_lane_cap_hit': 'sending_reputation',
+  'email.sending_bounce_complaint': 'sending_reputation',
 };
 
 /**

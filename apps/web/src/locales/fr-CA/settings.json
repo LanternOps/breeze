@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Billetterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, ERS, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de billetterie →"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -565,6 +566,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Bureau de service et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1134,6 +1139,10 @@
       "description": "Choisissez les renseignements de service que ce client peut voir dans le portail.",
       "enableAll": "Activer toute la visibilité",
       "toggles": {
+        "enableDevices": {
+          "label": "Appareils",
+          "description": "Afficher la page Appareils. Le libre-service donne également accès à cette page."
+        },
         "enableDashboard": {
           "label": "Tableau de bord",
           "description": "Affiche un résumé de l'état du service à la connexion."
@@ -1544,6 +1553,7 @@
       "actMode": {
         "label": "Mode d'action",
         "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "deploymentDisabledHint": "Le mode action est indisponible car BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED est désactivé pour ce déploiement. Communiquez avec votre administrateur pour l’activer.",
         "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
         "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
         "disableForOrg": "Désactiver le mode d'action pour cette organisation",
@@ -1617,7 +1627,9 @@
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
-      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
+      "designerAct": "Activé",
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -2115,11 +2127,13 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un billet",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du billet",
-          "attachedToTicket": "Joint au billet",
-          "attachFailed": "Impossible de joindre le fichier à ce billet"
+          "attachedToTicket": "Joint au billet comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce billet",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au billet",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",
@@ -3054,6 +3068,11 @@
       "searchPlaceholder": "Rechercher des scripts…",
       "selectedCount_one": "{{count}} script autorisé",
       "selectedCount_other": "{{count}} scripts autorisés"
+    },
+    "designerNote": {
+      "title": "Cet agent ne fait que lire et rédiger des rapports",
+      "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
+      "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3391,7 +3410,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs.",
+    "distributorsLink": "Gérer les connexions aux distributeurs →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -4089,6 +4109,7 @@
     "languageLoadFailed": "Préférence enregistrée, mais la langue ne se chargeait pas — l’anglais montré. Vérifiez votre connexion et réessayez."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Saisie de temps par défaut (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
     "ticketing": "Billetterie",
@@ -4190,7 +4211,10 @@
     "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "Courriel",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -5165,7 +5189,15 @@
     "columns": {
       "email": "Courriel",
       "role": "Rôle",
-      "lastLogin": "Dernière connexion"
+      "lastLogin": "Dernière connexion",
+      "mfaStatus": "Statut MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrit",
+      "pending": "En attente",
+      "pendingByDate": "En attente — à inscrire avant le {{date}}",
+      "overdue": "En retard",
+      "notRequired": "Non requise"
     },
     "status": {
       "active": "Actif",
@@ -5236,6 +5268,7 @@
     "confirmYourPassword": "Confirmez votre mot de passe"
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
     "title": "Variables",
     "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
     "loading": "Chargement des variables…",
@@ -5579,5 +5612,18 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de billetterie",
+    "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les importations du catalogue et le remplissage automatique de l'éditeur de soumissions — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
   }
 }

@@ -283,6 +283,137 @@ describe('networkBaseline routes', () => {
       expect(res.status).toBe(200);
     });
 
+    it('recomputes nextScanAt from the new interval instead of carrying the stale one forward (#6103)', async () => {
+      // normalizeBaselineScanSchedule is mocked as a passthrough (`(s) => s ?? default`)
+      // in this file, so whatever schedule object the route builds and hands it is
+      // exactly what a real caller (the DB write) would receive. That lets this test
+      // assert the route's OWN merge logic — the stale-carry-forward bug lives there,
+      // not inside normalizeBaselineScanSchedule itself.
+      const staleNextScanAt = '2026-01-01T00:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: staleNextScanAt },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      // Interval changes; the web form never sends nextScanAt.
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scanSchedule: { enabled: true, intervalHours: 6 } }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.intervalHours).toBe(6);
+      // The stale nextScanAt from the pre-edit interval must NOT survive the merge —
+      // it must be cleared so the (real, unmocked in production) normalizer computes
+      // a fresh one from the new interval.
+      expect(writtenSchedule?.nextScanAt).not.toBe(staleNextScanAt);
+    });
+
+    it('keeps the existing nextScanAt when intervalHours is unchanged (#6103)', async () => {
+      // The other half of the branch introduced by the fix: an edit that
+      // touches scanSchedule but NOT the interval (e.g. toggling `enabled`)
+      // must not reset the schedule clock. An off-by-one here (clearing
+      // nextScanAt whenever any scanSchedule field changes) would silently
+      // push out every baseline's next run on unrelated edits.
+      const frozenNextScanAt = '2026-02-01T00:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: frozenNextScanAt },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      // Same intervalHours as the stored schedule; only `enabled` flips.
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scanSchedule: { enabled: false, intervalHours: 24 } }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.enabled).toBe(false);
+      expect(writtenSchedule?.nextScanAt).toBe(frozenNextScanAt);
+    });
+
+    it('respects an explicit nextScanAt override even when intervalHours also changes (#6103)', async () => {
+      // The override path: a caller (e.g. a manual reschedule) that supplies
+      // its own nextScanAt must win over the recompute-from-new-interval
+      // behavior, not get silently discarded.
+      const explicitNextScanAt = '2026-03-15T12:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: '2026-01-01T00:00:00.000Z' },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          scanSchedule: { enabled: true, intervalHours: 6, nextScanAt: explicitNextScanAt },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.intervalHours).toBe(6);
+      expect(writtenSchedule?.nextScanAt).toBe(explicitNextScanAt);
+    });
+
     it('should return 400 when neither scanSchedule nor alertSettings provided', async () => {
       const res = await app.request(`/baselines/${BASELINE_ID}`, {
         method: 'PATCH',

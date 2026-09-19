@@ -5454,6 +5454,76 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     expect(Object.keys(body)).toContain('configUpdate');
     expect(Object.keys(body)).toContain('manifestTrustKeys');
   });
+
+  it('a TENANT drain does NOT get a rotateToken signal (#3997 — the mint route would refuse it)', async () => {
+    // `rotate-token` is off the tenant drain surface as of #3997, so asking
+    // for a rotation here would make every agent in the offboarding tenant
+    // attempt a mint it cannot complete on every beat for the whole 72h window.
+    // The device row is arranged to make the signal MAXIMALLY due (no watchdog
+    // token hash, which alone satisfies the rotateToken condition), so this
+    // asserts the drain suppression and not merely an unmet age threshold.
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          watchdogTokenHash: null,
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildDrainingApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.rotateToken).toBeUndefined();
+  });
+
+  it('an ACTIVE tenant with the same device row DOES get rotateToken (positive control for the suppression above)', async () => {
+    // Without this, the assertion above would also pass if `rotateToken` were
+    // simply never emitted — proving nothing about the drain condition.
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          watchdogTokenHash: null,
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.rotateToken).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------

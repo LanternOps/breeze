@@ -25,7 +25,7 @@ import {
 } from './securityPosture';
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
 // Static, from the pure type module — NOT from './commandQueue', whose lazy
 // import used to be this file's last route to the queue (#5022 W01).
@@ -221,8 +221,31 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Organization context required' });
       }
 
+      // Site AND exact-device axes. This branch takes no deviceId, so the
+      // declarative `deviceArgs` gate never runs and a device-bound agent run
+      // could enumerate the whole fleet's posture (#6096 #9). Mirrors
+      // get_sensitive_data_overview below. The resolved allowlist is pushed
+      // INTO the query (`deviceIds`) rather than applied to its result, so
+      // `limit` bounds the narrowed set instead of the whole org's — a
+      // post-fetch filter returned short (or empty) pages whenever the
+      // caller's own devices sorted past the cut.
+      const postureOrgId = (typeof input.orgId === 'string' && input.orgId) ? input.orgId : getOrgId(auth);
+      const allowedDeviceIds = postureOrgId ? await resolveSiteAllowedDeviceIds(postureOrgId, auth) : null;
+      if (allowedDeviceIds !== null && allowedDeviceIds.length === 0) {
+        return JSON.stringify({
+          summary: {
+            totalDevices: 0, averageScore: 0, lowRiskDevices: 0,
+            mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 0
+          },
+          worstDevices: [],
+          devices: [],
+          note: SITE_SCOPE_EMPTY_NOTE
+        });
+      }
+
       const postures = await listLatestSecurityPosture({
         orgIds,
+        deviceIds: allowedDeviceIds ?? undefined,
         minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
         maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
         riskLevel: input.riskLevel as 'low' | 'medium' | 'high' | 'critical' | undefined,
