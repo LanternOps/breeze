@@ -124,9 +124,19 @@ async function main(): Promise<void> {
           'ttft ms': observation.ttftMs,
           'ToolSearch seen': `uses=${observation.toolSearchUses}, blocks=${observation.toolSearchResultBlocks}, refs=${observation.toolReferenceNames.length}, stderr=${observation.stderrToolSearchLines.length}`,
           'first tool': observation.toolUses[0]?.name ?? null,
+          'result subtype': observation.result?.subtype ?? null,
         });
         if (turn < args.turns) {
-          if (!observation.sessionId) throw new Error('Cannot resume turn 2: SDK returned no session ID');
+          if (!observation.sessionId) {
+            // Deny mode routinely ends a turn with a non-success result
+            // subtype (e.g. `error_max_turns` — every tool call is refused,
+            // so the model has nothing left to try). That is an EXPECTED
+            // ending, not a harness failure: the row above is already
+            // written, so stop resuming this surface and move on instead of
+            // failing the whole run.
+            console.error(`tool-capture: ${surface.id} turn ${turn} ended (result subtype=${observation.result?.subtype ?? 'unknown'}) with no session id to resume; skipping remaining turns for this surface.`);
+            break;
+          }
           resume = observation.sessionId;
         }
       }
