@@ -450,6 +450,10 @@ export function getToolDomain(toolName: string): AiToolDomain | undefined {
 }
 
 export function getToolSearchHint(toolName: string): string | undefined {
+  // This chat-only tool executes inline in the SDK bridge, outside aiTools.
+  if (toolName === 'propose_action_plan') {
+    return 'Propose a multi-step action plan for user approval before execution';
+  }
   return aiTools.get(toolName)?.searchHint
     ?? m365ToolSearchHints[toolName]
     ?? googleToolSearchHints[toolName];

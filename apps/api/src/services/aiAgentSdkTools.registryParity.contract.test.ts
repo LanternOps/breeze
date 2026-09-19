@@ -25,10 +25,10 @@
  * NOTE: no vi.mock — this suite needs the REAL registry, same rationale as
  * aiGuardrails.readonly.contract.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { TOOL_TIERS } from './aiAgentSdkTools';
-import { getAllRegisteredToolNames, getToolTier } from './aiTools';
+import { TOOL_TIERS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
+import { getAllRegisteredToolNames, getToolTier, getToolAlwaysLoad, getToolSearchHint } from './aiTools';
 
 /**
  * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
@@ -231,5 +231,43 @@ describe('TOOL_TIERS agrees with the registry tier (#3300)', () => {
         'registry is the source of truth for what the tool actually does; a ' +
         'lower tier here silently downgrades its approval gate.',
     ).toEqual([]);
+  });
+});
+
+describe('SDK declarations carry registry search metadata (A-W02)', () => {
+  const fakeAuth = () => { throw new Error('handlers must not run in this test'); };
+  const raw = (() => {
+    vi.stubEnv('M365_ENABLED', 'true');
+    vi.stubEnv('GOOGLE_WORKSPACE_ENABLED', 'true');
+    vi.stubEnv('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', 'true');
+    try {
+      return buildBreezeSdkTools(fakeAuth as never);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  })();
+  const declared = raw.map(attachRegistryMeta);
+
+  it('builds the full declared set', () => {
+    expect(declared.length).toBeGreaterThan(140);
+  });
+
+  it('every declared tool has the registry hint in _meta and alwaysLoad only where the registry says so', () => {
+    const bad = declared.filter((t) => {
+      const meta = (t._meta ?? {}) as Record<string, unknown>;
+      return meta['anthropic/searchHint'] !== getToolSearchHint(t.name)
+        || (meta['anthropic/alwaysLoad'] === true) !== getToolAlwaysLoad(t.name);
+    }).map((t) => t.name);
+    expect(bad, 'declarations whose _meta disagrees with the registry').toEqual([]);
+  });
+
+  it('keeps name, description, schema and handler intact when attaching meta', () => {
+    const byName = new Map(declared.map((t) => [t.name, t]));
+    for (const t of raw) {
+      const wrapped = byName.get(t.name)!;
+      expect(wrapped.description).toBe(t.description);
+      expect(Object.keys(wrapped.inputSchema)).toEqual(Object.keys(t.inputSchema));
+      expect(wrapped.handler).toBe(t.handler);
+    }
   });
 });
