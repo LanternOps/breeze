@@ -7,7 +7,7 @@ const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'limit', 'orderBy']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'leftJoin', 'where', 'limit', 'orderBy']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
       Promise.resolve(dbResults.shift() ?? []).then(resolve);
     return chain;
@@ -28,14 +28,13 @@ vi.mock('../services/invoiceLinkToken', () => ({
 }));
 
 const { markViewedMock } = vi.hoisted(() => ({ markViewedMock: vi.fn() }));
-vi.mock('../services/invoiceService', () => ({
-  toCustomerInvoiceHeader: (inv: Record<string, unknown>) => ({
-    id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status,
-    total: inv.total, balance: inv.balance, depositDue: inv.depositDue,
-  }),
-  toCustomerInvoiceLine: (l: unknown) => l,
-  markViewed: markViewedMock,
-}));
+vi.mock('../services/invoiceService', async (importActual) => {
+  const actual = await importActual<typeof import('../services/invoiceService')>();
+  return {
+    ...actual,
+    markViewed: markViewedMock,
+  };
+});
 
 const { payLinkMock } = vi.hoisted(() => ({ payLinkMock: vi.fn() }));
 vi.mock('../services/invoiceCheckout', () => ({ createInvoicePayLink: payLinkMock }));

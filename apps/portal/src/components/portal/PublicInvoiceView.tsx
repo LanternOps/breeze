@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
@@ -261,23 +261,65 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                 </tr>
               </thead>
               <tbody>
-                {lines.map((l, index) => {
-                  const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-                  const title = (l.name ?? l.description ?? '').trim() || '—';
-                  const blurb = l.name ? (l.description ?? '').trim() : '';
-                  return (
-                    <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
-                      <td className="px-4 py-3 text-foreground sm:px-5">
-                        {title}
-                        {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
-                      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
-                      {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
-                      <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
-                    </tr>
-                  );
-                })}
+                {(() => {
+                  const list: { key: string; ticketId: string | null; ticketNumber: string | null; ticketSubject?: string | null; ticketCategory?: string | null; lines: typeof lines }[] = [];
+                  const map = new Map<string, typeof list[0]>();
+                  for (const l of lines) {
+                    const key = l.ticketId ?? (l.ticketNumber ? `num_${l.ticketNumber}` : '__none__');
+                    let g = map.get(key);
+                    if (!g) {
+                      g = {
+                        key,
+                        ticketId: l.ticketId ?? null,
+                        ticketNumber: l.ticketNumber ?? null,
+                        ticketSubject: l.ticketSubject ?? null,
+                        ticketCategory: l.ticketCategory ?? null,
+                        lines: []
+                      };
+                      map.set(key, g);
+                      list.push(g);
+                    }
+                    g.lines.push(l);
+                  }
+                  return list.map((group) => (
+                    <Fragment key={group.key}>
+                      {(group.ticketId || group.ticketNumber) && (
+                        <tr className="border-b bg-muted/30">
+                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-semibold text-foreground">
+                                {group.ticketNumber ? `Ticket #${group.ticketNumber}` : 'Ticket work'}{group.ticketSubject ? `: ${group.ticketSubject}` : ''}
+                              </span>
+                              {group.ticketCategory && (
+                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
+                                  {group.ticketCategory}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      {group.lines.map((l) => {
+                        const index = lines.indexOf(l);
+                        const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                        const title = (l.name ?? l.description ?? '').trim() || '—';
+                        const blurb = l.name ? (l.description ?? '').trim() : '';
+                        return (
+                          <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
+                            <td className="px-4 py-3 text-foreground sm:px-5">
+                              {title}
+                              {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                            </td>
+                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
+                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
+                            {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
+                            <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ));
+                })()}
               </tbody>
             </table>
           </div>

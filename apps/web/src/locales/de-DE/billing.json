@@ -1951,6 +1951,8 @@
       "unitPrice": "Stückpreis"
     },
     "terms": "Allgemeine Geschäftsbedingungen",
+    "ticketHeader": "Ticket-Nr. {{number}}",
+    "ticketWork": "Ticket-Arbeit",
     "totals": {
       "amountDue": "Fälliger Betrag",
       "paid": "Bezahlt",

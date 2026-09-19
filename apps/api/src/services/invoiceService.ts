@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
+import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
   accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
@@ -700,7 +700,20 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
 
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
-  const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  const rawLines = await db.select({
+    ...getTableColumns(invoiceLines),
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+  }).from(invoiceLines)
+    .leftJoin(tickets, and(
+      eq(invoiceLines.ticketId, tickets.id),
+      isNull(tickets.deletedAt),
+    ))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(eq(invoiceLines.invoiceId, invoiceId))
+    .orderBy(invoiceLines.sortOrder);
+
   // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
   // out of listInvoices and the customer projection.
   const evidenceCounts = await db
@@ -709,7 +722,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     .where(eq(invoiceLineDevices.invoiceId, invoiceId))
     .groupBy(invoiceLineDevices.invoiceLineId);
   const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
-  const linesWithDeviceCount = lines.map((line) => ({
+  const linesWithDeviceCount = rawLines.map((line) => ({
     ...line,
     deviceCount: deviceCountByLine.get(line.id) ?? 0,
   }));
@@ -735,7 +748,10 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 }
 
 export type CustomerInvoiceLine = {
+  ticketId: string | null;
   ticketNumber: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -774,7 +790,10 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 >;
 
 type CustomerInvoiceLineSource = {
+  ticketId?: string | null;
   ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -786,7 +805,10 @@ type CustomerInvoiceLineSource = {
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
+    ticketId: line.ticketId ?? null,
     ticketNumber: line.ticketNumber ?? null,
+    ticketSubject: line.ticketSubject ?? null,
+    ticketCategory: line.ticketCategory ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -831,7 +853,10 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
-    ticketNumber: tickets.ticketNumber,
+    ticketId: invoiceLines.ticketId,
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
@@ -841,7 +866,9 @@ export async function getCustomerInvoice(
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
-  )).where(and(
+    isNull(tickets.deletedAt),
+  )).leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+  .where(and(
     eq(invoiceLines.invoiceId, invoiceId),
     eq(invoiceLines.orgId, inv.orgId),
     eq(invoiceLines.customerVisible, true),
@@ -1067,7 +1094,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
   let sort = 0;
   await db.insert(invoiceLines).values(specs.map((s) => ({
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
-    parentLineId: null, ticketId: s.ticketId, description: s.description, quantity: s.quantity,
+    parentLineId: null, ticketId: s.ticketId, name: s.name ?? null, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
     lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, sortOrder: sort++
   })));

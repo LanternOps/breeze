@@ -1951,6 +1951,8 @@
       "unitPrice": "Prix unitaire"
     },
     "terms": "Conditions générales",
+    "ticketHeader": "Billet n° {{number}}",
+    "ticketWork": "Travail lié au billet",
     "totals": {
       "amountDue": "Montant dû",
       "paid": "Payé",

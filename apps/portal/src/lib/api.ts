@@ -471,7 +471,10 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  ticketId?: string | null;
   ticketNumber: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
   name: string | null;
   description: string;

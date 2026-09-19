@@ -1951,6 +1951,8 @@
       "unitPrice": "Preço unitário"
     },
     "terms": "Termos e condições",
+    "ticketHeader": "Chamado nº {{number}}",
+    "ticketWork": "Trabalho do chamado",
     "totals": {
       "amountDue": "Valor devido",
       "paid": "Paga",
