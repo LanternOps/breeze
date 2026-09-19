@@ -3790,7 +3790,8 @@
     "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
     "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
     "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
-    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
+    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer."
   },
   "roleManager": {
     "roles": "Rôles",

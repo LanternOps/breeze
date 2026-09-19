@@ -960,6 +960,31 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     return err instanceof Error ? err.message : t('profilePage.failedToAddPasskey');
   };
 
+  /**
+   * Sweep paper cut #3: a passkey registration 500 (e.g. a WebAuthn origin
+   * mismatch that isn't a `PasskeyChallengeError` on the API side) falls
+   * through to the API's generic `app.onError` handler, whose JSON body is
+   * always `{ error: 'Internal Server Error' }` in production — that literal
+   * string used to be echoed verbatim as `passkeyError`. A 4xx from this pair
+   * of routes DOES carry a meaningful `error`/`message` (bad password, expired
+   * challenge, etc.) and should still be shown; a 5xx never does, so show a
+   * translated "try again" message instead of the raw status text.
+   */
+  const resolvePasskeyRegistrationError = (
+    data: { error?: unknown; message?: unknown },
+    status: number,
+    fallbackKey: string
+  ): string => {
+    if (status >= 500) {
+      return t('profilePage.passkeyRegistrationServerError');
+    }
+    return (
+      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === 'string' && data.message) ||
+      t(fallbackKey, { status })
+    );
+  };
+
   const handleAddPasskey = async () => {
     if (isAddingPasskey) return;
     // #4018: a passwordless SSO account proves identity with a fresh forced IdP
@@ -1073,7 +1098,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           throw new Error(t('profilePage.ssoReauthProofExpired'));
         }
         throw new Error(
-          optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
+          resolvePasskeyRegistrationError(optionsData, optionsResponse.status, 'profilePage.failedToStartPasskeyHttp')
         );
       }
 
@@ -1098,7 +1123,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           throw new Error(t('profilePage.ssoReauthProofExpired'));
         }
         throw new Error(
-          verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
+          resolvePasskeyRegistrationError(verifyData, verifyResponse.status, 'profilePage.failedToSavePasskeyHttp')
         );
       }
 

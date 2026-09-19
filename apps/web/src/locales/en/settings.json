@@ -3787,7 +3787,8 @@
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
     "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
     "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
-    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again.",
+    "passkeyRegistrationServerError": "Passkey registration failed. Please try again."
   },
   "roleManager": {
     "roles": "Roles",

@@ -134,6 +134,39 @@ describe('ProfilePage passkey management', () => {
     await waitFor(() => expect(screen.getByText('MacBook Touch ID')).toBeTruthy());
   });
 
+  // Sweep paper cut #3: a passkey registration 500 (e.g. WebAuthn origin
+  // mismatch) falls through to the API's generic app.onError handler, whose
+  // body is always `{ error: 'Internal Server Error' }` in production. That
+  // literal string must never be echoed to the user as-is.
+  it('shows a localized try-again message instead of the raw "Internal Server Error" body on a registration 500', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'Internal Server Error' }, false, 500));
+
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: true,
+        }}
+      />,
+    );
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), {
+      target: { value: 'MacBook Touch ID' },
+    });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await screen.findByText(/Passkey registration failed\. Please try again\./i);
+    expect(screen.queryByText('Internal Server Error')).toBeNull();
+  });
+
   it('proves the current TOTP factor and sends an exact-resource grant when deleting a passkey', async () => {
     const passkeyId = '10000000-0000-4000-8000-000000000009';
     fetchWithAuthMock

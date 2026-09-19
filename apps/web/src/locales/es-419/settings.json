@@ -3790,7 +3790,8 @@
     "passkeyStepUpNoUsableFactor": "El factor actual de tu cuenta no se puede confirmar aquí. Comunícate con un administrador para agregar una clave de acceso.",
     "passkeyStepUpIncorrectCode": "Código incorrecto. Inténtalo de nuevo.",
     "passkeyStepUpTooManyAttempts": "Demasiados intentos. Inténtalo de nuevo en unos minutos.",
-    "passkeyStepUpVerificationExpired": "La verificación expiró. Vuelve a verificar."
+    "passkeyStepUpVerificationExpired": "La verificación expiró. Vuelve a verificar.",
+    "passkeyRegistrationServerError": "No se pudo registrar la clave de acceso. Vuelve a intentarlo."
   },
   "roleManager": {
     "roles": "Roles",

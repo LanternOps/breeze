@@ -3790,7 +3790,8 @@
     "passkeyStepUpNoUsableFactor": "Der aktuelle Faktor Ihres Kontos kann hier nicht bestätigt werden. Wenden Sie sich an einen Administrator, um einen Passkey hinzuzufügen.",
     "passkeyStepUpIncorrectCode": "Falscher Code. Bitte versuchen Sie es erneut.",
     "passkeyStepUpTooManyAttempts": "Zu viele Versuche. Bitte versuchen Sie es in ein paar Minuten erneut.",
-    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut."
+    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
+    "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut."
   },
   "roleManager": {
     "roles": "Rollen",
