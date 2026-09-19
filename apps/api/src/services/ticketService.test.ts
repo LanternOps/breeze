@@ -225,6 +225,7 @@ vi.mock('../db', () => ({
   }
 }));
 vi.mock('../db/schema', () => ({
+  auditLogs: { id: 'auditId' },
   tickets: {
     id: 'id',
     orgId: 'orgId',
@@ -275,7 +276,7 @@ import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
-  moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
+  moveTicketOrg, revalidateTicketAssignee, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
   listActiveTicketDrafts, sendTicketDraft, discardTicketDraft,
   postProposalNote,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
@@ -4358,5 +4359,77 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     expect(src).not.toMatch(/import\(['"]\.\/aiTimeEntryProposal['"]\)/);
     expect(src).not.toMatch(/^import (?!type ).*from ['"]\.\/aiTimeEntryProposal['"]/m);
     expect(src).not.toMatch(/from ['"]\.\/actionIntents\/intentService['"]/);
+  });
+});
+
+describe('assignee eligibility after ticket scope changes (#5551)', () => {
+  const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: 'd-old', assignedTo: 'tech' };
+  const assignee = { id: 'tech', partnerId: 'p-1', status: 'active', email: 'tech@example.test' };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResult.mockReset();
+    dbMocks.updateReturning.mockReset();
+    dbMocks.txUpdateReturning.mockReset();
+    assigneeEligibleMock.mockReset().mockResolvedValue(true);
+    guardMock.mockResolvedValue(null);
+  });
+
+  it.each([false, true])('rechecks the current device and preserves only eligible assignees (eligible=%s)', async (eligible) => {
+    const changed = { ...ticket, deviceId: 'd-new' };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ id: 'd-new', orgId: ticket.orgId }])
+      .mockResolvedValueOnce([assignee]);
+    dbMocks.updateReturning.mockResolvedValueOnce([changed]).mockResolvedValueOnce([{ ...changed, assignedTo: null }]);
+    assigneeEligibleMock.mockResolvedValue(eligible);
+    const result = await updateTicketFields(ticket.id, { deviceId: 'd-new' }, actor);
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(expect.objectContaining({ userId: 'tech' }), 'p-1', 'o-1', 'd-new', { bypassCache: true });
+    expect(result?.assignedTo).toBe(eligible ? 'tech' : null);
+    expect(setMock.mock.calls.filter(([patch]) => patch.assignedTo === null)).toHaveLength(eligible ? 0 : 1);
+    if (!eligible) expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.assign', details: { from: 'tech', to: null, reason: 'assignee_no_longer_eligible' },
+    }));
+  });
+
+  it('clears a missing assignee and attributes an AI unassignment without a user foreign key', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([]);
+    dbMocks.updateReturning.mockResolvedValueOnce([{ ...ticket, assignedTo: null }]);
+    await revalidateTicketAssignee(ticket.id, { userId: 'agent-id', principalKind: 'ai_agent' });
+    expect(assigneeEligibleMock).not.toHaveBeenCalled();
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      commentType: 'assignment', userId: null, authorType: 'ai_agent', oldValue: 'tech', newValue: null,
+    }));
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'agent-id', actorType: 'ai_agent' }));
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('does not audit an unassignment lost to a concurrent scope or assignee change', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([assignee]);
+    assigneeEligibleMock.mockResolvedValue(false);
+    dbMocks.updateReturning.mockResolvedValueOnce([]);
+    await expect(revalidateTicketAssignee(ticket.id, actor)).rejects.toMatchObject({ code: 'CONCURRENT_MODIFICATION' });
+    expect(auditMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the destination org with the detached device and audits automatic unassignment', async () => {
+    const moved = { ...ticket, orgId: 'o-2', deviceId: null };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'o-1', partnerId: 'p-1', name: 'Alpha', currencyCode: 'USD' },
+        { id: 'o-2', partnerId: 'p-1', name: 'Beta', currencyCode: 'USD' },
+      ])
+      .mockResolvedValueOnce([assignee]);
+    dbMocks.txUpdateReturning.mockResolvedValueOnce([moved]).mockResolvedValueOnce([{ ...moved, assignedTo: null }]);
+    assigneeEligibleMock.mockResolvedValue(false);
+    const result = await moveTicketOrg(ticket.id, 'o-2', actor);
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(expect.objectContaining({ userId: 'tech' }), 'p-1', 'o-2', null, { bypassCache: true });
+    expect(result.assignedTo).toBeNull();
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-2', action: 'ticket.assign', details: { from: 'tech', to: null, reason: 'assignee_no_longer_eligible' },
+    }));
   });
 });

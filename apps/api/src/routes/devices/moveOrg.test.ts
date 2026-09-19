@@ -148,6 +148,7 @@ vi.mock('../../extensions/tenancyRegistry', () => ({
 }));
 
 import { db } from '../../db';
+import { auditLogs, ticketComments, ticketOutbox, tickets } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
@@ -266,10 +267,14 @@ const collapseStmt = (s: string) => s.replace(/\s+/g, ' ').trim();
 function rigOrgAndSiteSelects(opts: {
   orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
+  assigneeRow?: { id: string; partnerId: string; status: string; email: string };
 }) {
   currentOrgRows = opts.orgRows;
   let call = 0;
-  vi.mocked(db.select).mockImplementation(() => {
+  vi.mocked(db.select).mockImplementation((cols?: any) => {
+    if (cols?.email && opts.assigneeRow) {
+      return { from: () => ({ where: () => ({ limit: async () => [opts.assigneeRow] }) }) } as never;
+    }
     const idx = call++;
     if (idx === 0) {
       // organizations lookup uses `.from(organizations).where(...)` (no limit).
@@ -312,6 +317,7 @@ const BOUND_TICKET_ID = '77777777-7777-4777-8777-777777777777';
 function rigTransactionSuccess(
   updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
   deviceUpdateError?: unknown,
+  ticketRow?: { id: string; orgId: string; partnerId: string; deviceId: string; assignedTo: string | null },
 ) {
   // Every `where(...)` predicate handed to a tx.update chain, in call order:
   // [0] the devices flip, [1] the #5128 cancel-on-move sweep. Captured as the
@@ -329,10 +335,18 @@ function rigTransactionSuccess(
   const statements: string[] = [];
   const deviceUpdateSets: any[] = [];
   let barrierReads = 0;
+  const ticketWrites: Array<{ table: unknown; values: any }> = [];
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
     const tx = {
-      update: vi.fn().mockImplementation(() => {
+      update: vi.fn().mockImplementation((table: unknown) => {
+        if (table === tickets && ticketRow) {
+          return { set: (values: any) => ({ where: () => ({ returning: async () => {
+            statements.push('CLEAR ticket assignee');
+            ticketWrites.push({ table, values });
+            return [{ ...ticketRow, ...values }];
+          } }) }) };
+        }
         statements.push('UPDATE devices');
         return {
         set: vi.fn().mockImplementation((vals: any) => {
@@ -350,6 +364,9 @@ function rigTransactionSuccess(
         }),
         };
       }),
+      insert: vi.fn((table: unknown) => ({ values: async (values: any) => {
+        ticketWrites.push({ table, values });
+      } })),
       execute: vi.fn().mockImplementation(async (sqlVal: any) => {
         const tableChunk = sqlVal?.queryChunks?.[1];
         if (tableChunk && typeof tableChunk.value === 'string') {
@@ -363,6 +380,9 @@ function rigTransactionSuccess(
       // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
       // position so lock-order assertions can place it against the UPDATEs.
       select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+        if (!cols && ticketRow) {
+          return { from: () => ({ where: () => ({ limit: async () => [ticketRow] }) }) };
+        }
         // #5128 — the org flip now also reads the device's PENDING commands
         // (id/type/payload) so their owning script_executions /
         // deployment_results rows can be cancelled in the same transaction.
@@ -428,6 +448,7 @@ function rigTransactionSuccess(
     deviceUpdateSets,
     updateWheres,
     commandSelectWheres,
+    ticketWrites,
     pinSelectWheres,
     tx: () => txHandle,
   };
@@ -1357,7 +1378,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1418,7 +1439,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });
@@ -1775,6 +1796,75 @@ describe('POST /devices/:id/move-org', () => {
         body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
+    });
+
+    it('clears and audits a partner-A assignee after moving tickets to partner B in the same transaction', async () => {
+      setAuth({ scope: 'system', canAccessOrg: () => true });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-A' },
+          { id: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-B' },
+        ],
+        siteRow: { id: TARGET_SITE },
+        assigneeRow: { id: 'tech-A', partnerId: 'partner-A', status: 'active', email: 'tech@example.com' },
+      });
+      executeResultFor = (stmt) => stmt.startsWith('UPDATE tickets SET org_id =')
+        ? [{ id: BOUND_TICKET_ID }] : null;
+      const { statements, ticketWrites } = rigTransactionSuccess(
+        { ...SAMPLE_DEVICE, orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE },
+        undefined,
+        { id: BOUND_TICKET_ID, orgId: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-B', deviceId: DEVICE_ID, assignedTo: 'tech-A' },
+      );
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+      expect(ticketWrites.find((write) => write.table === tickets)?.values).toEqual({ assignedTo: null, updatedAt: expect.any(Date) });
+      expect(ticketWrites).toContainEqual({ table: ticketComments, values: expect.objectContaining({
+        ticketId: BOUND_TICKET_ID, commentType: 'assignment', oldValue: 'tech-A', newValue: null,
+      }) });
+      expect(ticketWrites).toContainEqual({ table: ticketOutbox, values: expect.objectContaining({
+        orgId: OTHER_PARTNER_TARGET_ORG, ticketId: BOUND_TICKET_ID, eventType: 'ticket.assigned', payload: { assigneeId: null },
+      }) });
+      expect(ticketWrites).toContainEqual({ table: auditLogs, values: expect.objectContaining({
+        orgId: OTHER_PARTNER_TARGET_ORG, actorId: 'user-1', action: 'ticket.assign', resourceId: BOUND_TICKET_ID,
+        details: { from: 'tech-A', to: null, reason: 'assignee_no_longer_eligible' },
+      }) });
+      expect(statements.indexOf('CLEAR ticket assignee')).toBeGreaterThan(
+        statements.findIndex((s) => collapseStmt(s).startsWith('UPDATE tickets SET org_id =')),
+      );
+    });
+
+    it('restamps moved tickets from the live target partner and defers the composite FK', async () => {
+      setAuth({ scope: 'system', canAccessOrg: () => true });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-OTHER' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess({
+        ...SAMPLE_DEVICE, orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE,
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+      expect(statements.map(collapseStmt)).toContain(
+        `UPDATE tickets SET org_id = ${OTHER_PARTNER_TARGET_ORG}::uuid, partner_id = (SELECT partner_id FROM organizations WHERE id = ${OTHER_PARTNER_TARGET_ORG}::uuid) WHERE device_id = ${DEVICE_ID}::uuid RETURNING id`,
+      );
+      const deferIndex = statements.findIndex((s) => /SET CONSTRAINTS .*tickets_org_partner_fk.*DEFERRED/.test(s));
+      expect(deferIndex).toBeGreaterThanOrEqual(0);
+      expect(deferIndex).toBeLessThan(statements.indexOf('UPDATE devices'));
     });
 
     it('returns 400 when the target site does not belong to the target org', async () => {

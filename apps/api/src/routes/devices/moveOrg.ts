@@ -45,7 +45,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
-import { assertDeviceTicketsNotPinnedToDeliverable, TicketServiceError } from '../../services/ticketService';
+import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee, TicketServiceError } from '../../services/ticketService';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -297,10 +297,13 @@ moveOrgRoutes.post(
         // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third
         // composite (ticket_id, org_id) child FK, same shape and same reason.
         //
+        // The device-org cascade trigger restamps tickets.org_id before the
+        // loop below can align partner_id; defer their composite FK too.
+        //
         // Safe to precede the org lock below: SET CONSTRAINTS takes no table
         // locks, so it does not participate in this transaction's lock order.
         await tx.execute(
-          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`,
+          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
         );
         // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
         // transaction, deliberately BEFORE the organisation FOR SHARE reads
@@ -801,9 +804,21 @@ moveOrgRoutes.post(
           // ON UPDATE CASCADE, so the devices row flip above already performed
           // the trusted org-only restamp inside this transaction.
           if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
-          await tx.execute(
-            sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
-          );
+          if (table === 'tickets') {
+            // Read the target partner live under the org SHARE lock above.
+            const movedTickets = await tx.execute<{ id: string }>(
+              sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid,
+                  partner_id = (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)
+                  WHERE device_id = ${deviceId}::uuid RETURNING id`,
+            );
+            for (const ticket of movedTickets) {
+              await revalidateTicketAssignee(ticket.id, { userId: auth.user.id }, tx);
+            }
+          } else {
+            await tx.execute(
+              sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
+            );
+          }
         }
 
         // device_vulnerabilities.ticket_id (#4645): `device_vulnerabilities` IS

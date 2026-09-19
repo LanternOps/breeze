@@ -60,6 +60,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
+import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 
@@ -500,6 +501,9 @@ export default function PartnerSettingsPage() {
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
       setPartner(updated);
+      // Lets layout islands that read partner settings (MfaPolicyOffBanner)
+      // re-check without a page navigation.
+      window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // The just-sent values are now the persisted state.
       setBaseline(currentSnapshot);
     } catch (err) {

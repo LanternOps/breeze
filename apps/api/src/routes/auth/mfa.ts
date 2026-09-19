@@ -550,6 +550,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
+      mfaSrc: 'factor',
       // SR-001: bind to the mobile install id when present (MFA login path).
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     };
@@ -748,6 +749,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,
@@ -936,6 +938,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
         // `mfaSatisfied` in routes/auth/login.ts is vacuously true once
         // mfa_enabled is false and policy does not mandate a factor.)
         mfa: auth.token?.mfa === true,
+        mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
         // SR-001: this is a RE-MINT of an existing session, so the device binding
         // comes from the previously-signed `mdid` claim, never from the forgeable
         // request header — the same rule /auth/refresh follows. A bound mobile
@@ -1152,6 +1155,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
+        mfaSrc: 'factor',
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       },
       capability,
@@ -1470,6 +1474,7 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recover
         // recovery codes proves a password, not a factor. Enrollment can hard-code
         // `true` because it just installed the factor; this path cannot.
         mfa: auth.token?.mfa === true,
+        mfaSrc: auth.token?.mfa === true ? auth.token.mfa_src : undefined,
         // SR-001: this is a RE-MINT of an existing session, so the device
         // binding comes from the previously-signed `mdid` claim, never from the
         // forgeable request header — the same rule /auth/refresh follows. A
