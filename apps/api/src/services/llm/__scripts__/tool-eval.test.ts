@@ -14,7 +14,10 @@ vi.mock('../../streamingSessionManager', () => ({
 vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
 vi.mock('../toolCapture/runSurface', () => ({ runSurfaceCapture: vi.fn() }));
 vi.mock('../toolCapture/surfaces', () => ({
-  CAPTURE_SURFACES: { chat: { id: 'chat' }, 'helper-standard': { id: 'helper-standard' } },
+  CAPTURE_SURFACES: {
+    chat: { id: 'chat', allowedTools: ['mcp__breeze__query_devices'] },
+    'helper-standard': { id: 'helper-standard', allowedTools: ['mcp__breeze__query_devices'] },
+  },
 }));
 
 const capture = () => ({
@@ -43,7 +46,7 @@ it('writes JSON and markdown using only first-call usage, and closes the DB', as
   expect(await runCli(['--', '--cases', 'g01', '--model', 'chosen', '--tool-search', 'off',
     '--out', 'result.json', '--summary-md', 'result.md'])).toBe(0);
   expect(runSurfaceCapture).toHaveBeenCalledWith(expect.objectContaining({
-    surface: { id: 'chat' }, model: 'chosen', maxTurns: 1,
+    surface: expect.objectContaining({ id: 'chat' }), model: 'chosen', maxTurns: 1,
     env: { ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'false' },
   }));
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
@@ -85,7 +88,7 @@ it('bounds concurrency and preserves golden case order', async () => {
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
   expect(report.cases.map((c: { id: string }) => c.id)).toEqual(['g01', 'g02', 'g03', 'g04']);
   expect(vi.mocked(runSurfaceCapture).mock.calls[0]![0]).toMatchObject({
-    surface: { id: 'helper-standard' }, env: { ENABLE_TOOL_SEARCH: 'true' },
+    surface: expect.objectContaining({ id: 'helper-standard' }), env: { ENABLE_TOOL_SEARCH: 'true' },
   });
 });
 

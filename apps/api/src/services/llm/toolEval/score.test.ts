@@ -37,6 +37,26 @@ it('summarizes an empty run without NaN', () => {
   expect(summarize([])).toEqual({ total: 0, hits: 0, accuracy: 0, misses: [] });
 });
 
+describe('scoreFirstCall with allowedTools', () => {
+  const allowed = new Set(['mcp__breeze__manage_alerts', 'mcp__breeze__query_monitors']);
+
+  it('marks a hit against a tool the surface never exposed as unavailableTool, not a hit', () => {
+    const notAllowed = { ...c, expect: [{ tool: 'manage_alerts', action: 'list' }] };
+    const score = scoreFirstCall(notAllowed, { toolUses: [{ name: 'mcp__breeze__manage_tickets', input: {} }] }, allowed);
+    expect(score).toMatchObject({ hit: false, observedTool: 'manage_tickets', unavailableTool: true });
+  });
+
+  it('keeps a real hit when the tool IS allowed', () => {
+    const score = scoreFirstCall(c, { toolUses: [{ name: 'mcp__breeze__manage_alerts', input: { action: 'list' } }] }, allowed);
+    expect(score).toMatchObject({ hit: true, unavailableTool: false });
+  });
+
+  it('leaves existing calls without the param unchanged (unavailableTool false)', () => {
+    const score = scoreFirstCall(c, { toolUses: [{ name: 'mcp__breeze__manage_alerts', input: { action: 'list' } }] });
+    expect(score).toMatchObject({ hit: true, unavailableTool: false });
+  });
+});
+
 it('renders accuracy, missed prompts, expectations, observed actions and tokens', () => {
   const score = scoreFirstCall({ ...c, id: 'g04' }, {
     toolUses: [{ name: 'mcp__breeze__manage_alerts', input: { action: 'resolve' } }],
@@ -54,4 +74,17 @@ it('renders accuracy, missed prompts, expectations, observed actions and tokens'
   expect(markdown).toContain('manage_alerts.list');
   expect(markdown).toContain('manage_alerts.resolve');
   expect(markdown).toContain('456');
+});
+
+it('renders the observed cell as "<tool> (not exposed)" when unavailableTool is set', () => {
+  const allowed = new Set(['mcp__breeze__manage_alerts']);
+  const score = scoreFirstCall({ ...c, id: 'g05' }, { toolUses: [{ name: 'mcp__breeze__manage_tickets', input: {} }] }, allowed);
+  const markdown = renderMarkdownReport({
+    generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', toolSearch: 'off',
+    surface: 'chat', systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    cases: [{ ...score, expected: c.expect, inputTokens: 456, cacheReadInputTokens: 10,
+      cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false }],
+    summary: summarize([score]),
+  });
+  expect(markdown).toContain('manage_tickets (not exposed)');
 });

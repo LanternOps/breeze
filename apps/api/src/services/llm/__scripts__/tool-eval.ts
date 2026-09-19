@@ -66,6 +66,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     delete env.ENABLE_TOOL_SEARCH;
     if (args.toolSearch !== 'default') env.ENABLE_TOOL_SEARCH = args.toolSearch === 'on' ? 'true' : 'false';
 
+    const allowedTools = new Set(CAPTURE_SURFACES[args.surface].allowedTools);
+
     async function evaluate(c: GoldenCase): Promise<EvalCaseResult> {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -74,7 +76,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
           });
           const usage = observation.apiCalls[0];
           return {
-            ...scoreFirstCall(c, observation), expected: c.expect,
+            ...scoreFirstCall(c, observation, allowedTools), expected: c.expect,
             inputTokens: usage?.inputTokens ?? 0,
             cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
             cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,

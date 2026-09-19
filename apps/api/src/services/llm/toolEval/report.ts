@@ -38,7 +38,7 @@ export function renderMarkdownReport(input: EvalReport): string {
     const golden = GOLDEN_CASES.find((c) => c.id === miss.id);
     const expected = input.cases.find((c) => c.id === miss.id)?.expected ?? golden?.expect ?? [];
     const observed = miss.observedTool === null ? 'No tool call'
-      : `${miss.observedTool}${miss.observedAction === null ? '' : `.${miss.observedAction}`}`;
+      : `${miss.observedTool}${miss.observedAction === null ? '' : `.${miss.observedAction}`}${miss.unavailableTool ? ' (not exposed)' : ''}`;
     lines.push(`| ${[miss.id, golden?.prompt ?? '', expected.map((e) =>
       `${e.tool}${e.action === undefined ? '' : `.${e.action}`}`).join(', '), observed].map(cell).join(' | ')} |`);
   }
