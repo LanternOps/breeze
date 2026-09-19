@@ -168,6 +168,10 @@ func TestExecutePythonParameterValuesSurviveIntact(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
 	}
+	// On Windows, Python encodes stdout with the console code page unless told
+	// otherwise, so a non-ASCII value round-trips as mojibake (café → cafΘ).
+	// The executor's env lands in os.Environ() for the child, so pin UTF-8 here.
+	t.Setenv("PYTHONIOENCODING", "utf-8")
 	tests := []struct {
 		name   string
 		script string
