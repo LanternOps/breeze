@@ -602,6 +602,16 @@ export async function processRunScheduledReport(
           return { name: null, logoDataUrl: null, logoAspect: null };
         });
 
+        // The scheduled report IS a customer deliverable — partner lane,
+        // `general` stream (spec §8.2). Every job in this worker runs inside
+        // runWithSystemDbAccess, so this is a plain system-context read of an
+        // org row the job already owns.
+        const [orgRow] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, report.orgId))
+          .limit(1);
+
         await emailReportRun({
           reportName: report.name,
           reportType: report.type,
@@ -613,6 +623,7 @@ export async function processRunScheduledReport(
           trendLine: trendLineOf(result),
           timezone: timeZone,
           branding,
+          partnerId: orgRow?.partnerId ?? null,
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.

@@ -33,6 +33,7 @@ interface EvidenceCard {
     enrollmentIp: string | null;
   }>;
   denials24h: number;
+  sendingDomains: Array<{ domain: string; status: string; verifiedAt: string | null }>;
   matchedSuspendedAxes: Array<'email_domain' | 'billing_card_fingerprint'>;
 }
 
@@ -163,6 +164,14 @@ export default function TrustActionPage() {
           <div><dt className="text-muted-foreground">Signup IP class</dt><dd className="font-medium">{card.signup.ipClass}</dd></div>
           <div><dt className="text-muted-foreground">Signup ASN</dt><dd className="font-medium">{displayValue(card.signup.asn)}</dd></div>
           <div><dt className="text-muted-foreground">Denials in last 24 h</dt><dd className="font-medium">{card.denials24h}</dd></div>
+          <div data-testid="trust-action-sending-domains">
+            <dt className="text-muted-foreground">Sending domains</dt>
+            <dd className="font-medium">
+              {card.sendingDomains.length
+                ? card.sendingDomains.map((d) => `${d.domain} (${d.status})`).join(', ')
+                : 'None'}
+            </dd>
+          </div>
         </dl>
       </section>
 

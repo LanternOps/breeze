@@ -290,6 +290,18 @@ pending → running → completed / failed / cancelled
 
 ---
 
+## AI Patch Agent
+
+When [AI Agents](/features/ai-agents/) is enabled and a patch agent is moved to Act mode, it can respond to patch failures and reboot-pending devices without a technician working the alert manually:
+
+- **Retries failed installs.** A failed patch install is classified by why it failed; retryable causes (a transient error, low disk space, or a corrupted local update store) get up to two automatic attempts before the agent gives up on that device. Causes that a retry can't fix — the device needs a reboot first, a permanent failure, or an unrecognized error — are never retried.
+- **Escalates instead of looping.** Once retries are exhausted (or the failure wasn't retryable), the agent stops acting on that device and raises a digest notification instead of continuing to retry silently.
+- **Plans reboots around maintenance windows.** For a device stuck pending a reboot to finish patching, the agent schedules the reboot into an existing, resolved maintenance window rather than creating a new one, and staggers reboots across redundant-role devices so they don't all restart in the same window. If it can't resolve a maintenance window, policy, or redundancy information for a device, it escalates to a technician rather than guessing.
+
+The patch agent only acts on devices and organizations it has been explicitly granted, and — like every AI agent — starts in **Off** and requires a separate, MFA-confirmed move to **Act** before it can change anything.
+
+---
+
 ## Compliance Reporting
 
 ### Generating a Report

@@ -7,5 +7,6 @@
   "LIMIT_REACHED": "You've reached the limit for this action",
   "MFA_REQUIRED": "Multi-factor authentication is required",
   "INVALID_CREDENTIALS": "Invalid credentials",
-  "EXPIRED": "Expired"
+  "EXPIRED": "Expired",
+  "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor"
 }

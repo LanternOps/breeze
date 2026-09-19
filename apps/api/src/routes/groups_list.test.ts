@@ -81,6 +81,19 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     osType: 'osType'
   },
+  configPolicyAssignments: {
+    id: 'id',
+    configPolicyId: 'configPolicyId',
+    level: 'level',
+    targetId: 'targetId',
+    priority: 'priority',
+    createdAt: 'createdAt',
+  },
+  configurationPolicies: {
+    id: 'id',
+    name: 'name',
+    status: 'status',
+  },
   groupMembershipLog: {
     id: 'id',
     groupId: 'groupId',
@@ -129,6 +142,16 @@ function makeGroup(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const mockPolicySelect = (rows: any[] = []) => ({
+  from: vi.fn().mockReturnValue({
+    innerJoin: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  })
+});
+
 
 describe('groups routes', () => {
   let app: Hono;
@@ -173,7 +196,8 @@ describe('groups routes', () => {
               ])
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups', {
         method: 'GET',
@@ -184,6 +208,38 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(2);
       expect(body.total).toBe(2);
+    });
+
+    it('should include policy information when group has policy assigned', async () => {
+      const groups = [makeGroup()];
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue(groups)
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 1 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([
+          { groupId: GROUP_ID, policyId: 'policy-123', policyName: 'Server Baseline' }
+        ]) as any);
+
+      const res = await app.request('/groups', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].policy).toEqual({ id: 'policy-123', name: 'Server Baseline' });
     });
 
     it('should filter groups by type', async () => {
@@ -202,7 +258,8 @@ describe('groups routes', () => {
               groupBy: vi.fn().mockResolvedValue([])
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups?type=dynamic', {
         method: 'GET',
@@ -233,7 +290,8 @@ describe('groups routes', () => {
               groupBy: vi.fn().mockResolvedValue([])
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups?search=prod', {
         method: 'GET',
@@ -301,7 +359,9 @@ describe('groups routes', () => {
               { groupId: GROUP_ID_2, deviceId: DEVICE_ID }
             ])
           })
-        } as any);
+        } as any)
+        // Fourth call: policy assignments
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups?includeMemberships=true', {
         method: 'GET',
@@ -331,7 +391,8 @@ describe('groups routes', () => {
               groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 3 }])
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups', {
         method: 'GET',
@@ -359,7 +420,8 @@ describe('groups routes', () => {
               groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 3 }])
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPolicySelect([]) as any);
 
       const res = await app.request('/groups?includeMemberships=false', {
         method: 'GET',

@@ -1,22 +1,8 @@
 ---
-import DashboardLayout from '../../../../layouts/DashboardLayout.astro';
-import OrgBillingSettings from '../../../../components/billing/OrgBillingSettings';
-import { tServer } from '../../../../lib/i18n/server';
-
+// Standalone URL retired (M1) — the org settings page's own Billing tab is now
+// the single entry point (audit finding A2: "two URLs, no redirect between
+// them").
 const { id } = Astro.params;
 if (!id) return Astro.redirect('/organizations');
-const locale = Astro.locals.locale;
+return Astro.redirect(`/settings/organizations/${id}#billing`, 301);
 ---
-
-<DashboardLayout titleKey="titles.settingsOrganizationsDetailBilling">
-  <div class="space-y-6">
-    <div>
-      <a href={`/settings/organizations/${id}`} class="text-xs text-muted-foreground hover:underline">{tServer(locale, 'settingsOrganizationBillingPage.backLink')}</a>
-      <h1 class="text-xl font-semibold">{tServer(locale, 'settingsOrganizationBillingPage.heading')}</h1>
-      <p class="mt-1 text-sm text-muted-foreground">
-        {tServer(locale, 'settingsOrganizationBillingPage.description')}
-      </p>
-    </div>
-    <OrgBillingSettings orgId={id} client:load />
-  </div>
-</DashboardLayout>

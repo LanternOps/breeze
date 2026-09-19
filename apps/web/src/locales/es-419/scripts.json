@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilegios elevados",
     "relativeTime": {
       "justNow": "En este momento",
       "minutesAgo": "hace {{count}}m",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Esta acción no se puede deshacer."
     },
     "library": {
+      "target": "Importar en",
+      "allOrgs": "Todas las organizaciones del socio",
+      "chooseOrg": "Elige una organización",
+      "partnerPermission": "No puedes importar scripts para todas las organizaciones. Elige una organización.",
+      "importSuccess": "Se importó «{{name}}»",
       "title": "Biblioteca de secuencias de comandos del sistema",
       "description": "Importe scripts a su organización",
       "searchPlaceholder": "Buscar scripts del sistema...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} importados, {{renamed}} renombrados, {{versioned}} versionados, {{skipped}} omitidos, {{failed}} fallidos",
     "scriptCount": "{{count}} scripts en el paquete",
     "statusInvalid": "Inválido",
-    "exportLimit": "Puedes exportar hasta {{max}} scripts por paquete."
+    "exportLimit": "Puedes exportar hasta {{max}} scripts por paquete.",
+    "importDoneTitle": "Importación completada",
+    "importDoneNothing": "No se importó nada",
+    "importDoneOpen": "Abrir script",
+    "resultActionImported": "Importado",
+    "resultActionRenamed": "Renombrado desde {{name}}",
+    "resultActionVersioned": "Agregado como nueva versión",
+    "resultOpen": "Abrir"
   },
   "testRunner": {
     "title": "Ejecución de prueba",

@@ -10,7 +10,12 @@ import {
 import type { HardwareLifecycleDeviceRow, ReplacementStatus } from '@breeze/shared';
 import { withBase } from '@/lib/basePath';
 import { CELL, ROW, TH } from '../portal/ui';
-import { TimelineCell } from './TimelineCell';
+import { TimelineCell, timelineKeySentence } from './TimelineCell';
+
+/** Phone-card column label (DeviceList keeps the same one): below sm the
+ *  row reflows into a stacked card and the <thead> is hidden. */
+const PHONE_LABEL =
+  'mb-0.5 block text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:hidden';
 
 /** Second line under the OS name so support risk is a word, not just a colour.
  *  Reproduced locally: the PDF's map (hardwareLifecyclePdf.ts) is a private
@@ -84,7 +89,7 @@ export function LifecyclePlanTable({
       </div>
 
       <div className="mt-3 overflow-x-auto">
-        <table className="w-full min-w-[52rem] border-collapse text-sm sm:table">
+        <table className="w-full border-collapse text-sm sm:table sm:min-w-[52rem]">
           <thead className="hidden sm:table-header-group">
             <tr>
               <th scope="col" className={cn(TH, 'text-left')}>Computer</th>
@@ -104,7 +109,9 @@ export function LifecyclePlanTable({
               const warrantyPast = Boolean(row.warrantyEndDate && row.warrantyEndDate < new Date().toISOString().slice(0, 10));
               return (
                 <tr key={row.id} data-testid={`lifecycle-plan-row-${row.id}`} className={ROW}>
-                  <td className={cn(CELL, 'font-semibold text-foreground')}>
+                  {/* order-* re-ranks the phone card: name and status share the
+                      first line, the timeline follows, then one fact per line. */}
+                  <td className={cn(CELL, 'order-1 min-w-0 grow basis-0 font-semibold text-foreground sm:basis-auto')}>
                     {row.kind === 'device' && enableSelfService ? (
                       <a
                         href={withBase(`/devices#${row.id}`)}
@@ -118,7 +125,8 @@ export function LifecyclePlanTable({
                     )}
                     {secondary && <span className="block text-xs text-muted-foreground">{secondary}</span>}
                   </td>
-                  <td className={CELL}>
+                  <td className={cn(CELL, 'order-3 basis-full sm:basis-auto')}>
+                    <span className={PHONE_LABEL}>Operating system</span>
                     <span className="block">{row.os}</span>
                     {riskTag && (
                       <span
@@ -131,9 +139,16 @@ export function LifecyclePlanTable({
                       </span>
                     )}
                   </td>
-                  <td className={cn(CELL, 'sm:text-right')}>{ageCell(row)}</td>
-                  <td className={CELL}>{purchasedCell(row)}</td>
-                  <td className={CELL}>
+                  <td className={cn(CELL, 'order-4 basis-full sm:basis-auto sm:text-right')}>
+                    <span className={PHONE_LABEL}>Age</span>
+                    {ageCell(row)}
+                  </td>
+                  <td className={cn(CELL, 'order-5 basis-full sm:basis-auto')}>
+                    <span className={PHONE_LABEL}>Purchased</span>
+                    {purchasedCell(row)}
+                  </td>
+                  <td className={cn(CELL, 'order-6 basis-full sm:basis-auto')}>
+                    <span className={PHONE_LABEL}>Warranty</span>
                     {!row.warrantyEndDate ? (
                       '-'
                     ) : warrantyPast ? (
@@ -142,12 +157,17 @@ export function LifecyclePlanTable({
                       monthYear(row.warrantyEndDate)
                     )}
                   </td>
-                  <td className={CELL}>
+                  <td className={cn(CELL, 'order-2 shrink-0 sm:order-none')}>
+                    <span className={PHONE_LABEL}>Status</span>
                     <span className={cn('font-semibold', STATUS_TONE_CLASS[row.replacement])}>
                       {REPLACEMENT_LABELS[row.replacement]}
                     </span>
                   </td>
-                  <td className={CELL}>
+                  {/* nowrap so the auto table layout gives this column the
+                      grid + label's full width instead of clipping the label
+                      at the table's edge. */}
+                  <td className={cn(CELL, 'order-2 basis-full sm:order-none sm:basis-auto sm:whitespace-nowrap')}>
+                    <span className={PHONE_LABEL}>Replacement timeline</span>
                     <TimelineCell row={row} />
                   </td>
                 </tr>
@@ -157,6 +177,11 @@ export function LifecyclePlanTable({
         </table>
       </div>
 
+      {rows.some((r) => r.replaceBy) && (
+        <p data-testid={`lifecycle-plan-timeline-key-${sectionId}`} className="mt-2 text-xs text-muted-foreground">
+          {timelineKeySentence()}
+        </p>
+      )}
       {hasVendorSourcedDate && (
         <p data-testid={`lifecycle-plan-footnote-${sectionId}`} className="mt-2 text-xs text-muted-foreground">
           * Purchase date taken from the manufacturer&apos;s ship record.

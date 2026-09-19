@@ -196,7 +196,14 @@ vi.mock('../../services/cisHardening', () => ({ parseCisCollectorOutput: vi.fn()
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/cloudflareMtls', () => ({ CloudflareMtlsService: vi.fn() }));
 vi.mock('../../services/softwarePolicyService', () => ({ recordSoftwarePolicyAudit: vi.fn() }));
-vi.mock('../../services/featureConfigResolver', () => ({ resolvePatchConfigForDevice: vi.fn() }));
+vi.mock('../../services/featureConfigResolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/featureConfigResolver')>();
+  return {
+    ...actual,
+    resolvePatchConfigForDevice: vi.fn(),
+    buildRoleOsFilterConditions: vi.fn(() => []),
+  };
+});
 vi.mock('../../services/onedriveGraph', () => ({ resolveUserGroupMembershipCached: vi.fn() }));
 vi.mock('../../services/filesystemAnalysis', () => ({
   getFilesystemScanState: vi.fn(),
@@ -230,7 +237,7 @@ const ORG_ID = '00000000-0000-4000-8000-000000000002';
 const SITE_ID = '00000000-0000-4000-8000-000000000003';
 const PARTNER_ID = '00000000-0000-4000-8000-000000000004';
 
-const deviceRow = [{ orgId: ORG_ID, siteId: SITE_ID }];
+const deviceRow = [{ orgId: ORG_ID, siteId: SITE_ID, deviceRole: 'workstation', osType: 'windows' }];
 const orgWithPartner = [{ partnerId: PARTNER_ID }];
 const orgWithoutPartner = [{ partnerId: null }];
 
@@ -401,6 +408,44 @@ describe('partner-owned policies actually reach the agent payload', () => {
 
     expect(settings.collection_interval_minutes).toBe(5);
     expect(settings.max_events_per_cycle).toBe(10);
+  });
+
+  it('event_log: an assignment with a non-matching osFilter loses to a matching one', async () => {
+    // Org-level assignment has osFilter = ['linux'] (mismatch for windows device).
+    // Partner-level assignment has osFilter = ['windows'] (matches).
+    // The org-level assignment must be filtered out despite having higher level priority.
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [
+        { ...eventLogPolicyRow('partner'), osFilter: ['windows'], collectionIntervalMinutes: 30 },
+        { ...eventLogPolicyRow('organization'), osFilter: ['linux'], collectionIntervalMinutes: 5 },
+      ],
+    ]);
+
+    const settings = await buildEventLogConfigUpdate(DEVICE_ID);
+
+    expect(settings.collection_interval_minutes).toBe(30);
+  });
+
+  it('event_log: an assignment with empty osFilter array matches none', async () => {
+    // Org-level assignment has osFilter = [] (empty array = match-none).
+    // Partner-level assignment has osFilter = null (match-all).
+    // The org-level assignment must be filtered out.
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [
+        { ...eventLogPolicyRow('partner'), osFilter: null, collectionIntervalMinutes: 30 },
+        { ...eventLogPolicyRow('organization'), osFilter: [], collectionIntervalMinutes: 5 },
+      ],
+    ]);
+
+    const settings = await buildEventLogConfigUpdate(DEVICE_ID);
+
+    expect(settings.collection_interval_minutes).toBe(30);
   });
 
   it('pam: a partner-level policy enables UAC interception without any org row', async () => {

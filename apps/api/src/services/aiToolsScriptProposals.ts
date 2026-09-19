@@ -17,7 +17,7 @@ import { verifyDeviceAccess } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import {
   createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal,
-  scopedTargetDeviceIds, waitForReviewCompletion,
+  waitForReviewCompletion,
 } from './scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
@@ -170,7 +170,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         language: proposal.language,
         runAs: proposal.runAs,
         timeoutSeconds: proposal.timeoutSeconds,
-        targetDeviceIds: scopedTargetDeviceIds(auth, proposal.targetDeviceIds) ?? proposal.targetDeviceIds,
+        targetDeviceIds: proposal.scopedDeviceIds ?? proposal.targetDeviceIds,
         staticScan: {
           basicHits: proposal.basicHits, strictHits: proposal.strictHits,
           touchClasses: proposal.touchClasses, scannerVersion: proposal.scannerVersion,

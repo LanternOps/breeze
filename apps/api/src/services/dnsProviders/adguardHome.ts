@@ -38,7 +38,8 @@ export class AdGuardHomeProvider implements DnsProvider {
     private readonly username: string,
     private readonly password: string | null,
     private readonly config: AdGuardHomeConfig,
-    private readonly allowPrivateNetwork = false
+    private readonly allowPrivateNetwork = false,
+    private readonly allowCarrierNat = false
   ) {}
 
   private baseUrl(): string {
@@ -58,6 +59,7 @@ export class AdGuardHomeProvider implements DnsProvider {
     return requestJson<T>(`${this.baseUrl()}${path}`, {
       ...init,
       allowPrivateNetwork: this.allowPrivateNetwork,
+      allowCarrierNat: this.allowCarrierNat,
       headers: {
         Authorization: this.authHeader(),
         ...(init.headers ?? {})

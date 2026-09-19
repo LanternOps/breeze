@@ -14,6 +14,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { googleWorkspaceConnections } from '../db/schema/google';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -85,6 +86,14 @@ googleRoutes.post(
   zValidator('json', connectSchema),
   async (c) => {
     const auth = c.get('auth');
+    // Org-wide governance: this connection IS the organization's whole
+    // Workspace customer (the domain-wide-delegation service account behind
+    // every mutating google_* tool) — no per-site slice exists to narrow a
+    // site-restricted caller to. `organizations:write` + MFA are not enough
+    // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
@@ -169,6 +178,14 @@ googleRoutes.post(
 // ── Delete connection ─────────────────────────────────────────────────────────
 googleRoutes.delete('/connection', requireOrgsWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  // Org-wide governance: this connection IS the organization's whole
+  // Workspace customer (the domain-wide-delegation service account behind
+  // every mutating google_* tool) — no per-site slice exists to narrow a
+  // site-restricted caller to. `organizations:write` + MFA are not enough
+  // (services/siteCeilingAccess.ts, contract-site-ceiling-gate).
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 

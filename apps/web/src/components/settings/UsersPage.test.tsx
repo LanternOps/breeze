@@ -174,3 +174,40 @@ describe('UsersPage — mfaProtected mapping from GET /users (RMM-QA-166)', () =
     expect(screen.queryByRole('button', { name: 'Reset MFA' })).toBeNull();
   });
 });
+
+// #5690 — GET /users now reports `mfaStatus` + `mfaEnrollmentDeadline` per
+// row. The page must carry both through to UserList unchanged.
+describe('UsersPage — mfaStatus mapping from GET /users (#5690)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const seedListOnly = (row: Record<string, unknown>) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/users') return jsonResponse({ data: [row] });
+      if (url === '/users/roles') return jsonResponse({ data: [ROLE_ADMIN] });
+      return jsonResponse({});
+    });
+  };
+
+  it('carries mfaStatus=pending and the deadline through to the rendered column', async () => {
+    seedListOnly({
+      ...TREVOR,
+      mfaEnabled: false,
+      mfaProtected: false,
+      mfaStatus: 'pending',
+      mfaEnrollmentDeadline: '2026-11-15T00:00:00.000Z',
+    });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+
+    const expectedDate = new Date('2026-11-15T00:00:00.000Z').toLocaleDateString();
+    expect(await screen.findByText(`Pending — enroll by ${expectedDate}`)).toBeInTheDocument();
+  });
+
+  it('renders no MFA status text for a legacy payload with neither field', async () => {
+    seedListOnly({ ...TREVOR, mfaEnabled: false, mfaProtected: false });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+
+    expect(screen.queryByText(/Pending|Overdue|Enrolled|Not required/)).toBeNull();
+  });
+});

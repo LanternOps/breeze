@@ -57,14 +57,16 @@ function mockScriptDetails() {
   const captured: { stats?: unknown } = {};
   mockDb.select.mockImplementation((cols?: unknown) => {
     if (cols && typeof cols === 'object' && 'totalExecutions' in (cols as object)) {
-      return {
-        from: () => ({
-          where: (c: unknown) => {
-            captured.stats = c;
-            return Promise.resolve([{ totalExecutions: 7 }]);
-          },
-        }),
+      // The aggregate joins `devices` for the site axis; expose `where` both
+      // directly and behind `innerJoin` so the mock does not itself decide
+      // which shape the handler is allowed to use.
+      const tail = {
+        where: (c: unknown) => {
+          captured.stats = c;
+          return Promise.resolve([{ totalExecutions: 7 }]);
+        },
       };
+      return { from: () => ({ ...tail, innerJoin: () => tail }) };
     }
     return {
       from: () => ({
@@ -121,5 +123,92 @@ describe('get_script_details includeExecutionStats — org + exact-device narrow
     expect(sql).not.toMatch(/device_id/);
     expect(params).toContain('org-1');
     expect(JSON.parse(r).executionStats).toEqual({ totalExecutions: 7 });
+  });
+});
+
+describe('get_script_details includeExecutionStats — site axis', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('site-restricted human narrows the aggregate by the device site', async () => {
+    const captured = mockScriptDetails();
+    await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedSiteIds: ['site-1'] }),
+    );
+    const { sql, params } = renderWhere(captured.stats);
+    expect(sql).toMatch(/site_id/);
+    expect(params).toContain('site-1');
+    expect(params).toContain('org-1');
+    // The exact-device axis is absent for this caller and must not appear.
+    expect(sql).not.toMatch(/device_id/);
+  });
+
+  it('a site-restricted human with zero sites gets a false predicate, not org-wide stats', async () => {
+    const captured = mockScriptDetails();
+    await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedSiteIds: [] }),
+    );
+    // drizzle renders `inArray(col, [])` as the literal `false` — nothing
+    // matches, which is the intended denial (not an unnarrowed org-wide read).
+    const { sql } = renderWhere(captured.stats);
+    expect(sql).toMatch(/\bfalse\b/);
+    expect(sql).not.toMatch(/site_id" in \(\$/);
+  });
+
+  it('both axes apply together for a site-restricted, device-bound caller', async () => {
+    const captured = mockScriptDetails();
+    await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedDeviceIds: ['dev-1'], allowedSiteIds: ['site-1'] }),
+    );
+    const { sql, params } = renderWhere(captured.stats);
+    expect(sql).toMatch(/device_id/);
+    expect(sql).toMatch(/site_id/);
+    expect(params).toEqual(expect.arrayContaining(['dev-1', 'site-1', 'org-1']));
+  });
+
+  it('unrestricted caller gets no site predicate (no regression)', async () => {
+    const captured = mockScriptDetails();
+    await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({}),
+    );
+    const { sql } = renderWhere(captured.stats);
+    expect(sql).not.toMatch(/site_id/);
+  });
+});
+
+describe('get_script_details includeExecutionStats — scope annotation (review #6110)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // The aggregate is narrowed correctly, but the numbers come back looking
+  // org-wide. Without a note the model reports "this script ran 7 times" when
+  // it in fact ran 7 times *within the caller's sites*.
+  it('annotates the stats for a site-restricted caller', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedSiteIds: ['site-1'] }),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeTruthy();
+  });
+
+  it('annotates the stats for a device-bound run', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedDeviceIds: ['dev-1'] }),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeTruthy();
+  });
+
+  it('adds no annotation for an unrestricted caller', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({}),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeUndefined();
   });
 });

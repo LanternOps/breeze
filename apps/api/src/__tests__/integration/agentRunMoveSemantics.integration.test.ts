@@ -32,6 +32,7 @@ import { actionIntents, aiAgentRuns, aiAgents, aiSessions, alerts, devices, metr
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 // Lineage builders extracted for reuse by AI Operator P3-0/P3-1 (#5205, W02
 // #5207): see agentRunLineageFixtures.ts's header for what W02 added
 // (insertDeviceCommand) and what it deliberately left alone.
@@ -138,10 +139,11 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
 
     const app = new Hono();
     app.route('/devices', moveOrgRoutes);
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
     const res = await app.request(`/devices/${device.id}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
 
@@ -241,7 +243,7 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     const res = await app.request(`/devices/${device.id}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
 
@@ -293,7 +295,7 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     const res = await app.request(`/devices/${device.id}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
 

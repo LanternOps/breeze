@@ -1,7 +1,7 @@
 import type { DashboardDto, SecurityScoreBand, TileStatus } from '@breeze/shared';
 import type { ReactNode } from 'react';
 import { withBase } from '@/lib/basePath';
-import { formatDateTime, formatRelativeTime } from '@/lib/utils';
+import { cn, formatDateTime, formatRelativeTime } from '@/lib/utils';
 import { ErrorNotice, PageHeader, StatusMark } from './ui';
 
 /**
@@ -187,6 +187,45 @@ function AwaitingYou({ awaitingYou }: { awaitingYou: DashboardDto['awaitingYou']
   );
 }
 
+/** Ink per band. Fair is the firm's own workload, not a warning to the
+ *  customer, so it reads in plain ink; amber stays reserved (DESIGN.md). */
+const BAND_INK: Record<SecurityScoreBand, string> = {
+  strong: 'text-success',
+  good: 'text-success',
+  fair: 'text-foreground',
+  at_risk: 'text-destructive',
+};
+
+/**
+ * The score as a ruled 0–100 bar: a bare "56" tells the customer a number;
+ * the rule shows where it sits. SVG geometry, not a style attribute —
+ * production CSP refuses inline styles (lib/csp.ts).
+ */
+function ScoreRule({ score, band }: { score: number; band: SecurityScoreBand | null }) {
+  const clamped = Math.max(0, Math.min(100, Math.round(score)));
+  return (
+    <svg
+      viewBox="0 0 100 4"
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`Score ${clamped} of 100`}
+      data-testid="portal-score-rule"
+      className={cn('h-1 w-28 shrink-0', band ? BAND_INK[band] : 'text-foreground')}
+    >
+      <rect x="0" y="0" width="100" height="4" rx="2" className="fill-muted" />
+      <rect
+        data-testid="portal-score-rule-fill"
+        x="0"
+        y="0"
+        width={clamped}
+        height="4"
+        rx="2"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 function SecurityValue({ tile }: { tile: DashboardDto['securityScore'] }) {
   if (tile.score == null) return null;
 
@@ -202,6 +241,7 @@ function SecurityValue({ tile }: { tile: DashboardDto['securityScore'] }) {
 
   return (
     <>
+      <ScoreRule score={tile.score} band={tile.band} />
       <span className={FIGURE}>{tile.score}</span>
       {supporting.length > 0 && <span className={QUIET}>{supporting.join(', ')}</span>}
     </>

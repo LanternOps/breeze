@@ -274,16 +274,12 @@ vi.mock('../services/automationActionResults', () => ({
     applyAutomationActionTerminalMock(...(args as [])),
 }));
 
-// sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
-// with routes/agents/commands.ts) and mock only the deployment_results writer.
+// Keep the real software result module exports while mocking reconciliation.
 vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/softwareDeploymentResult')>();
   return {
     ...actual,
     applySoftwareInstallResult: vi.fn(),
-    // #5128 — a software_install now carries a real device_commands UUID, so
-    // its result lands on the GENERIC owned-command path and is reconciled
-    // here instead of by the sw-install-<...> regex branch.
     reconcileSoftwareInstallResult: vi.fn(),
   };
 });
@@ -1327,12 +1323,8 @@ describe('agent websocket command results', () => {
 
   // ── #5128: software_install results on the GENERIC owned-command path ────
   //
-  // Before #5128 a WS-pushed install carried the synthetic
-  // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
-  // regex branch. New dispatches persist a device_commands row FIRST and push
-  // with its UUID, so the result lands here — without this wiring the
-  // deployment_results row strands `pending` forever on the websocket
-  // transport.
+  // Dispatches persist a device_commands row and push with its UUID.
+  // The result must reconcile deployment_results on the WebSocket transport.
   it('reconciles a software_install result delivered under a real command UUID', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
@@ -5046,101 +5038,18 @@ describe('late terminal_start failure binds to the exact terminal generation', (
   });
 });
 
-describe('sw-install WS orphan-result branch', () => {
-  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-  const deviceUuid = '33333333-3333-4333-8333-333333333333';
-  const otherDeviceUuid = '55555555-5555-4555-8555-555555555555';
-  const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-
-  beforeEach(() => {
-    vi.mocked(applySoftwareInstallResult).mockReset();
-    vi.mocked(applySoftwareInstallResult).mockResolvedValue(null);
-  });
-
-  function swResult(overrides: Record<string, unknown> = {}) {
-    return {
-      type: 'command_result' as const,
-      commandId: swCommandId,
-      status: 'completed' as const,
-      exitCode: 0,
-      stdout: 'installed',
-      durationMs: 9_000,
-      ...overrides,
-    };
-  }
-
-  it('applies a sw-install result bound to the socket-authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult());
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledTimes(1);
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith({
-      deploymentId: deploymentUuid,
-      deviceId: deviceUuid,
+describe('retired software-install WS results', () => {
+  it.each(['', '-2'])('ignores IDs without a persisted command row (suffix %s)', async (suffix) => {
+    vi.mocked(applySoftwareInstallResult).mockClear();
+    const deviceId = '33333333-3333-4333-8333-333333333333';
+    await processOrphanedCommandResult('agent-sw', deviceId, {
+      type: 'command_result',
+      commandId: `sw-install-11111111-1111-4111-8111-111111111111-${deviceId}${suffix}`,
       status: 'completed',
       exitCode: 0,
       stdout: 'installed',
-      stderr: undefined,
-      error: undefined,
-      startedAt: undefined,
-      durationMs: 9_000,
-      attemptNumber: 0,
     });
-  });
-
-  it('parses the attempt suffix off a retried sw-install commandId and passes it through', async () => {
-    const retriedCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
-
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult({ commandId: retriedCommandId }));
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        attemptNumber: 2,
-      })
-    );
-  });
-
-  it('rejects a sw-install result whose embedded device id does not match the authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', otherDeviceUuid, swResult());
-
     expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('passes failure details through to the shared helper', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ status: 'failed', exitCode: 1603, error: 'msi fatal error', stdout: undefined })
-    );
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        status: 'failed',
-        exitCode: 1603,
-        error: 'msi fatal error',
-      })
-    );
-  });
-
-  it('does not treat non-sw-install command ids as software installs', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ commandId: 'dev-push-abc123' })
-    );
-
-    expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('survives a helper failure without throwing (logged + captured)', async () => {
-    vi.mocked(applySoftwareInstallResult).mockRejectedValueOnce(new Error('db down'));
-
-    await expect(
-      processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
-    ).resolves.toBeUndefined();
   });
 });
 

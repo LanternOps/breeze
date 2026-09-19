@@ -30,7 +30,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import ts from 'typescript';
-import parser from 'cron-parser';
+import { CronExpressionParser } from 'cron-parser';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -390,7 +390,7 @@ function fireTimes(pattern: string, days: number): number[] {
   const cached = fireTimeCache.get(cacheKey);
   if (cached) return cached;
   const end = REFERENCE_START.getTime() + days * 24 * 60 * 60 * 1000;
-  const it = parser.parseExpression(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
+  const it = CronExpressionParser.parse(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
   const out: number[] = [];
   for (;;) {
     const next = it.next().getTime();
@@ -407,7 +407,7 @@ const gapCache = new Map<string, number>();
 function minimumGapMs(pattern: string): number {
   const cached = gapCache.get(pattern);
   if (cached !== undefined) return cached;
-  const it = parser.parseExpression(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
+  const it = CronExpressionParser.parse(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
   let previous = it.next().getTime();
   let smallest = Infinity;
   for (let i = 0; i < GAP_PROBE_FIRES; i += 1) {
@@ -659,7 +659,7 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
     for (const pattern of shouldAccept) {
       let parserAccepts = true;
       try {
-        parser.parseExpression(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
+        CronExpressionParser.parse(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
       } catch {
         parserAccepts = false;
       }
@@ -695,10 +695,17 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
     // STRICTER than the parser is the safe direction. The override falls back
     // to the allocated slot with a loud error instead of quietly turning an
     // hourly sweep into a monthly one.
-    for (const pattern of ['*/5', '5', '* * * *', '', '   ']) {
+    //
+    // cron-parser 5 tightened its own validation for ONE of these patterns:
+    // a whitespace-only string ('   ') now throws ("Invalid characters") instead
+    // of silently padding to "every minute" the way 4.9.0 did. That is cron-parser
+    // narrowing the gap this test exists to document, not a regression — so it's
+    // asserted separately below instead of lumped into the "still silently
+    // accepts" list. Our own validator must keep rejecting it either way.
+    for (const pattern of ['*/5', '5', '* * * *', '']) {
       let parserAccepts = true;
       try {
-        parser.parseExpression(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
+        CronExpressionParser.parse(pattern, { currentDate: REFERENCE_START, tz: 'UTC' });
       } catch {
         parserAccepts = false;
       }
@@ -709,12 +716,25 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
       ).toBe(false);
     }
 
+    // Whitespace-only: cron-parser 5 now rejects this itself (a tightening, per
+    // the comment above). Our validator must reject it regardless of whether
+    // the underlying parser does — that invariant doesn't get to depend on a
+    // cron-parser implementation detail.
+    expect(
+      () => CronExpressionParser.parse('   ', { currentDate: REFERENCE_START, tz: 'UTC' }),
+      'cron-parser 5 was expected to now reject a whitespace-only pattern; if this starts passing, cron-parser regressed to the old silent-padding behavior',
+    ).toThrow();
+    expect(
+      isStructurallyValidCron('   '),
+      "'   ' must be rejected by our validator",
+    ).toBe(false);
+
     // Nail down the misreading, so this stays evidence rather than folklore.
     // An operator writing `*/5` means "every five minutes". cron-parser pads the
     // missing fields and lands the day-of-month constraint instead: the first
     // fire is FOUR DAYS out, and once there it repeats every minute. Wrong in
     // both directions, and completely silent.
-    const fiveOnly = parser.parseExpression('*/5', { currentDate: REFERENCE_START, tz: 'UTC' });
+    const fiveOnly = CronExpressionParser.parse('*/5', { currentDate: REFERENCE_START, tz: 'UTC' });
     const first = fiveOnly.next().getTime();
     const second = fiveOnly.next().getTime();
     expect(first - REFERENCE_START.getTime()).toBeGreaterThan(24 * 60 * 60 * 1000);

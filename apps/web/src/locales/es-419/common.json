@@ -95,7 +95,9 @@
     "aiRisk": "Riesgo de IA",
     "deviceBackup": "Respaldo de dispositivos",
     "sectionServiceDesk": "Mesa de servicio",
-    "serviceManagement": "Gestión de servicios"
+    "serviceManagement": "Gestión de servicios",
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Plantillas de entregables"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -2531,5 +2533,10 @@
     "message": "Tu rol requerirá autenticación de dos factores. Configúrala antes del {{date}}.",
     "cta": "Configurar 2FA",
     "dismiss": "Descartar el recordatorio de autenticación de dos factores"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "La autenticación multifactor no es obligatoria para su equipo. Las sesiones solo con contraseña pueden ejecutar scripts, mover dispositivos y cambiar políticas.",
+    "cta": "Exigir MFA",
+    "dismiss": "Descartar el recordatorio de la política de MFA por hoy"
   }
 }

@@ -32,19 +32,30 @@ export function isDesignProfile(run: { profile: AiAgentRunProfile }): boolean {
 }
 
 /**
- * Substitutes the design-specific budget/turn caps for the run-loop's
- * generic ones and zeroes `maxActionsPerRun` — a design run is device-less
- * and read-only by construction (Global Constraints), so it never has any
- * actions to spend. Tolerant `?? AI_AGENT_LIMIT_DEFAULTS...` reads for both
- * substituted fields, same posture as narrativeLimits()/sweepLimits(), so a
- * pre-v10 policy snapshot (missing `designBudgetCentsPerRun`/`designMaxTurns`)
- * still resolves to a sane cap rather than `undefined`.
+ * Substitutes the design-specific budget/turn/wall-clock caps for the
+ * run-loop's generic ones and zeroes `maxActionsPerRun` — a design run is
+ * device-less and read-only by construction (Global Constraints), so it
+ * never has any actions to spend. Tolerant `?? AI_AGENT_LIMIT_DEFAULTS...`
+ * reads for every substituted field, same posture as
+ * narrativeLimits()/sweepLimits(), so a pre-v10 policy snapshot (missing
+ * `designBudgetCentsPerRun`/`designMaxTurns`) — or a pre-#5870 snapshot
+ * missing `designWallClockSeconds` — still resolves to a sane cap rather
+ * than `undefined`.
+ *
+ * `wallClockSeconds` (#5870): without this override the run loop
+ * (`runLoop.ts`) falls back to the shared 600s default, which cut design
+ * runs mid-reasoning well before the raised `maxTurnsPerRun`/
+ * `maxBudgetCentsPerRun` ceilings above were ever reached — observed
+ * 36/60 turns, 98/300 cents, `wallClockExceeded=true`, yet the run still
+ * finalized `completed` because `outcome.fleetDesign` had been submitted.
+ * Same pinning shape as `analysisLimits()`'s `analysisWallClockSeconds`.
  */
 export function designLimits(limits: AiAgentLimits): AiAgentLimits {
   return {
     ...limits,
     maxTurnsPerRun: limits.designMaxTurns ?? AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
     maxBudgetCentsPerRun: limits.designBudgetCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
+    wallClockSeconds: limits.designWallClockSeconds ?? AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds,
     maxActionsPerRun: 0,
   };
 }

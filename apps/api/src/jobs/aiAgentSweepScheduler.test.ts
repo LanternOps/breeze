@@ -152,6 +152,10 @@ function baselineRow(over: Record<string, unknown> = {}) {
     sweepKinds: ['disk_pressure', 'stale_agents'],
     enabled: true,
     lastOccurrenceKey: null,
+    // Long before NOW, so the created_at guard (#6201) never masks a case that
+    // is about the occurrence math itself. Tests that exercise the guard pass
+    // their own createdAt.
+    createdAt: new Date('2026-01-01T00:00:00Z'),
     ...over,
   };
 }
@@ -251,6 +255,118 @@ describe('processSweepTick', () => {
 
     expect(result).toEqual({ scanned: 1, enqueued: 0 });
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // #6201 — a freshly created baseline must not catch up on the occurrence
+  // that already passed earlier the same day.
+  //
+  // Reproduces the US-prod incident exactly: `ensureDefaultPatchSchedule` ran
+  // during the 2026-09-17 23:37Z boot backfill and created a baseline with
+  // cron `0 2 * * *` / America/Denver and `last_occurrence_key NULL`. The next
+  // 5-minute tick at 23:40Z computed the LATEST past occurrence — 02:00 local,
+  // 15.6 h before the schedule existed — saw `key !== null`, and swept at 17:40
+  // local.
+  // -------------------------------------------------------------------------
+  describe('a baseline created after its own last occurrence (#6201)', () => {
+    /** 2026-09-17 17:37 America/Denver (MDT, UTC-6) — the prod creation time. */
+    const CREATED_AT = new Date('2026-09-17T23:37:00Z');
+    const denverBaseline = () => baselineRow({
+      cron: '0 2 * * *',
+      timezone: 'America/Denver',
+      lastOccurrenceKey: null,
+      createdAt: CREATED_AT,
+    });
+
+    it('does not enqueue on the next tick, and leaves the key NULL for the real occurrence', async () => {
+      // 17:40 local, 3 minutes after creation. Latest occurrence is 02:00
+      // local the SAME morning — before the schedule existed.
+      queueSelect([denverBaseline()]);
+
+      const result = await processSweepTick(new Date('2026-09-17T23:40:00Z'));
+
+      expect(result).toEqual({ scanned: 1, enqueued: 0 });
+      expect(addMock).not.toHaveBeenCalled();
+      // The key must stay NULL — stamping it here would ALSO consume the CAS's
+      // NULL previous-key, and the real 02:00 firing would then race itself.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('enqueues at the next 02:00 local, with the NULL-keyed CAS intact', async () => {
+      queueSelect([denverBaseline()]);
+      queueUpdate([{ id: SCHEDULE_ID }]);
+
+      // 02:03 local the following morning.
+      const result = await processSweepTick(new Date('2026-09-18T08:03:00Z'));
+
+      expect(result).toEqual({ scanned: 1, enqueued: 1 });
+      expect(addMock).toHaveBeenCalledTimes(1);
+      expect(addMock.mock.calls[0]![1]).toEqual({
+        scheduleId: SCHEDULE_ID,
+        occurrenceKey: '2026-09-18T02:00@America/Denver',
+      });
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns, rather than going quiet, when created_at is far in the FUTURE', async () => {
+      // A bogus/badly-skewed timestamp suppresses every occurrence until real
+      // time reaches it, because `latestCronOccurrence` never returns an
+      // instant after `now`. The suppression itself is correct; being silent
+      // about it is not — "why has this schedule never fired?" must be
+      // answerable at default log level.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueSelect([baselineRow({
+        cron: '0 2 * * *',
+        timezone: 'America/Denver',
+        createdAt: new Date('2027-01-01T00:00:00Z'),
+      })]);
+
+      const result = await processSweepTick(new Date('2026-09-17T23:40:00Z'));
+
+      expect(result).toEqual({ scanned: 1, enqueued: 0 });
+      expect(addMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('created_at is in the FUTURE'),
+        expect.objectContaining({ scheduleId: SCHEDULE_ID }),
+      );
+    });
+
+    it('runs WITHOUT the floor, loudly, when created_at is unreadable', async () => {
+      // NOT NULL and Drizzle-typed, so this is a corrupt row. Falling through
+      // to the old behaviour beats wedging the schedule out of every future
+      // tick via the per-schedule catch — but it must not be silent.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueSelect([baselineRow({ createdAt: 'not-a-timestamp' })]);
+      queueUpdate([{ id: SCHEDULE_ID }]);
+
+      const result = await processSweepTick(NOW);
+
+      expect(result).toEqual({ scanned: 1, enqueued: 1 });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('unreadable created_at'),
+        expect.objectContaining({ scheduleId: SCHEDULE_ID }),
+      );
+    });
+
+    it('still enqueues an occurrence in the SAME minute the schedule was created', async () => {
+      // Created exactly on its own occurrence minute: that firing is the one
+      // the operator just asked for, so the guard must not eat it.
+      queueSelect([baselineRow({
+        cron: '0 2 * * *',
+        timezone: 'America/Denver',
+        lastOccurrenceKey: null,
+        createdAt: new Date('2026-09-18T08:00:00Z'),
+      })]);
+      queueUpdate([{ id: SCHEDULE_ID }]);
+
+      const result = await processSweepTick(new Date('2026-09-18T08:00:30Z'));
+
+      expect(result).toEqual({ scanned: 1, enqueued: 1 });
+      expect(addMock.mock.calls[0]![1]).toEqual({
+        scheduleId: SCHEDULE_ID,
+        occurrenceKey: '2026-09-18T02:00@America/Denver',
+      });
+    });
   });
 
   it('a lost CAS (another replica won) is not an error', async () => {

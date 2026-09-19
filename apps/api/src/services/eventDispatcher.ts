@@ -1,6 +1,6 @@
 import Redis from 'ioredis';
 import type { WSContext } from 'hono/ws';
-import { resolveRedisUrl } from './redis';
+import { resolveRedisUrl, REDIS_CLIENT_BASE_OPTIONS } from './redis';
 
 const STREAM_PREFIX = 'breeze:events';
 
@@ -63,6 +63,7 @@ class EventDispatcher {
 
     const url = resolveRedisUrl();
     const sub = new Redis(url, {
+      ...REDIS_CLIENT_BASE_OPTIONS,
       maxRetriesPerRequest: 3,
     });
 

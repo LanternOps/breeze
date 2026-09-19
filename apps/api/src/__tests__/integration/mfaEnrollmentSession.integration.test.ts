@@ -83,6 +83,10 @@ async function fixture() {
     partnerId: partner.id,
     scope: 'partner',
     mfa: true,
+    // The factor the enrollment installs is what assures the replacement
+    // session, so its source is 'factor' — completeInitialMfaEnrollment
+    // rejects any other source (spec D6).
+    mfaSrc: 'factor',
   };
   const oldFamilyId = await mintRefreshTokenFamily(user.id);
   return { user, identity, oldFamilyId };

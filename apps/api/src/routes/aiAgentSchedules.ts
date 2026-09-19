@@ -16,6 +16,7 @@ import {
   updateAiAgentScheduleSchema,
   type AiAgentScheduleDto,
 } from '@breeze/shared';
+import { sweepActEnabled } from '../config/env';
 import { zValidator } from '../lib/validation';
 import type { AiAgentScheduleRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -141,6 +142,9 @@ aiAgentSchedulesRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    if (body.actMode === true && !sweepActEnabled()) {
+      return c.json({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' }, 409);
+    }
     try {
       const row = await createSchedule(auth, body);
       writeRouteAudit(c, {
@@ -179,6 +183,9 @@ aiAgentSchedulesRoutes.patch(
     const body = c.req.valid('json');
     const id = uuidParam(c, 'id');
     if (!id) return c.json({ error: 'Schedule not found' }, 404);
+    if (body.actMode === true && !sweepActEnabled()) {
+      return c.json({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' }, 409);
+    }
     try {
       const row = await updateSchedule(auth, id, body);
       writeRouteAudit(c, {
