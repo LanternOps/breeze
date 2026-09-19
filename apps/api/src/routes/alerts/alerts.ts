@@ -1360,7 +1360,9 @@ alertsRoutes.get(
         .orderBy(desc(alertNotifications.createdAt))
     ));
 
-    const [alertWithActorNames] = await withAlertActorNames([alert]);
+    // noUncheckedIndexedAccess: the single-row destructure is `T | undefined`;
+    // fall back to the bare alert so fillStoredAlertCopy sees a titled row.
+    const [alertWithActorNames = alert] = await withAlertActorNames([alert]);
 
     // Phase 2 wave P2-1 (alert verdicts), Task 14 — the alert's latest live
     // verdict, if any. A detail lookup is always single-org (`alert.orgId`,

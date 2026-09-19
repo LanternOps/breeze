@@ -93,7 +93,7 @@ describe('device alert routes', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json() as { data: Array<{ summary: string; message: string }> };
-    expect(body.data[0].summary).toBe('Front desk offline');
-    expect(body.data[0].message).toBe('Front desk has been offline');
+    expect(body.data[0]?.summary).toBe('Front desk offline');
+    expect(body.data[0]?.message).toBe('Front desk has been offline');
   });
 });
