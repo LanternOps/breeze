@@ -1,8 +1,25 @@
 import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { backupSnapshots, deviceCommands, drExecutions, drPlanGroups } from '../db/schema';
+import {
+  BARE_METAL_RECOVERY_TERMINAL,
+  backupSnapshots,
+  bareMetalRecoveries,
+  deviceCommands,
+  drExecutions,
+  drPlanGroups,
+  type BareMetalRecoveryStatus,
+} from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { createAuditLogAsync } from './auditService';
+import {
+  BareMetalRecoveryError,
+  cancelBareMetalRecovery,
+  createBareMetalRecovery,
+  mintRecoveryTokenForRecovery,
+} from './bareMetalRecoveryService';
+import { queueBareMetalRebuild } from './bareMetalRebuildCommand';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { resolveServerUrl } from './recoveryBootstrap';
 import {
   authorizeQueuedRecoveryWork,
   captureRecoveryAuthorizationSubject,
@@ -20,6 +37,7 @@ import {
   drBareMetalRebuildConfigSchema,
   isBareMetalRebuildConfig,
   resolveLatestRestorableSnapshotId as resolveLatestRestorableSnapshotIdWithDb,
+  type DrBareMetalRebuildConfig,
 } from './drBareMetalRebuildStep';
 
 const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
@@ -35,6 +53,7 @@ const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
 export type DrPlanGroupRecord = typeof drPlanGroups.$inferSelect;
 type DrExecutionRecord = typeof drExecutions.$inferSelect;
 type DeviceCommandRecord = typeof deviceCommands.$inferSelect;
+type BareMetalRecoveryRecord = typeof bareMetalRecoveries.$inferSelect;
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type DrDb = typeof db | DbTransaction;
 
@@ -69,6 +88,23 @@ type QueuedDrCommand = {
   status: string;
 };
 
+/**
+ * W05b: one entry per (group, device) whose step created a `bare_metal_recoveries`
+ * row instead of (failover/failback) or in addition to (rehearsal) a device
+ * command. The dedupe key at dispatch is `(groupId, deviceId)`, so reconcile
+ * can never mint a second recovery for a device. `commandId` is the
+ * rehearsal's `bare_metal_rebuild` command on the HOST, or null.
+ */
+export type QueuedDrRecovery = {
+  groupId: string;
+  groupName: string;
+  deviceId: string;
+  recoveryId: string;
+  executingDeviceId: string | null;
+  commandId: string | null;
+  createdAt: string;
+};
+
 type FailedDispatch = {
   groupId: string;
   groupName: string;
@@ -77,12 +113,18 @@ type FailedDispatch = {
   error: string;
 };
 
-type GroupDeviceStatus = {
+export type GroupDeviceStatus = {
   id: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   commandId?: string;
   commandType?: string;
   error?: string;
+  /** W05b — set when the device's status derives from a recovery row. */
+  recoveryId?: string;
+  recoveryStatus?: BareMetalRecoveryStatus | null;
+  executingDeviceId?: string | null;
+  /** `timeout` when `now - createdAt > waitTimeoutMinutes` while the recovery is still non-terminal. */
+  reason?: 'timeout';
 };
 
 type GroupResult = {
@@ -103,6 +145,8 @@ export type DrExecutionResults = {
   deviceCount: number;
   plannedGroups: PlannedGroup[];
   queuedCommands: QueuedDrCommand[];
+  /** W05b. Missing on executions persisted before the field existed — normalised to []. */
+  queuedRecoveries: QueuedDrRecovery[];
   failedDispatches: FailedDispatch[];
   groupResults: GroupResult[];
   activeGroupId?: string | null;
@@ -130,6 +174,22 @@ function normalizeQueuedCommands(value: unknown): QueuedDrCommand[] {
       status: String(entry.status ?? 'pending'),
     }))
     .filter((entry) => entry.groupId && entry.commandId && entry.deviceId);
+}
+
+function normalizeQueuedRecoveries(value: unknown): QueuedDrRecovery[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && !Array.isArray(entry))
+    .map((entry) => ({
+      groupId: String(entry.groupId ?? ''),
+      groupName: String(entry.groupName ?? ''),
+      deviceId: String(entry.deviceId ?? ''),
+      recoveryId: String(entry.recoveryId ?? ''),
+      executingDeviceId: typeof entry.executingDeviceId === 'string' ? entry.executingDeviceId : null,
+      commandId: typeof entry.commandId === 'string' ? entry.commandId : null,
+      createdAt: String(entry.createdAt ?? ''),
+    }))
+    .filter((entry) => entry.groupId && entry.recoveryId && entry.deviceId);
 }
 
 function normalizeFailedDispatches(value: unknown): FailedDispatch[] {
@@ -181,6 +241,7 @@ function buildInitialResults(groups: DrPlanGroupRecord[], queuedAt: Date): DrExe
     deviceCount: plannedGroups.reduce((sum, group) => sum + group.deviceCount, 0),
     plannedGroups,
     queuedCommands: [],
+    queuedRecoveries: [],
     failedDispatches: [],
     groupResults,
     activeGroupId: null,
@@ -202,19 +263,73 @@ function extractCommandError(command: DeviceCommandRecord | undefined): string |
   return undefined;
 }
 
-function computeGroupResults(
+/** The group's wait budget for a BARE_METAL_REBUILD step (schema default when unset/invalid). */
+function bareMetalRebuildWaitTimeoutMs(group: Pick<DrPlanGroupRecord, 'restoreConfig'>): number {
+  const parsed = drBareMetalRebuildConfigSchema.safeParse(asRecord(group.restoreConfig));
+  const minutes = parsed.success
+    ? parsed.data.waitTimeoutMinutes
+    : drBareMetalRebuildConfigSchema.parse({ commandType: DR_STEP_BARE_METAL_REBUILD }).waitTimeoutMinutes;
+  return minutes * 60_000;
+}
+
+function recoveryDeviceStatus(
+  deviceId: string,
+  queued: QueuedDrRecovery,
+  row: BareMetalRecoveryRecord | undefined,
+  waitTimeoutMs: number,
+  now: Date,
+): GroupDeviceStatus {
+  const base: GroupDeviceStatus = {
+    id: deviceId,
+    status: 'running',
+    commandType: DR_STEP_BARE_METAL_REBUILD,
+    recoveryId: queued.recoveryId,
+    recoveryStatus: row?.status ?? null,
+    executingDeviceId: queued.executingDeviceId,
+    ...(queued.commandId ? { commandId: queued.commandId } : {}),
+  };
+  const status = row?.status;
+  if (status === 'checked_in' || status === 'completed') {
+    return { ...base, status: 'completed' };
+  }
+  if (status === 'failed' || status === 'refused') {
+    return { ...base, status: 'failed', ...(row?.failureReason ? { error: row.failureReason } : {}) };
+  }
+  const createdAt = row?.createdAt ?? new Date(queued.createdAt);
+  if (!Number.isNaN(createdAt.getTime()) && now.getTime() - createdAt.getTime() > waitTimeoutMs) {
+    return {
+      ...base,
+      status: 'failed',
+      reason: 'timeout',
+      error: `Recovery did not complete within ${Math.round(waitTimeoutMs / 60_000)} minutes`,
+    };
+  }
+  return base;
+}
+
+function recoveryTerminalAt(row: BareMetalRecoveryRecord): Date {
+  return row.completedAt ?? row.checkedInAt ?? row.updatedAt;
+}
+
+export function computeGroupResults(
   groups: DrPlanGroupRecord[],
   queuedCommands: QueuedDrCommand[],
+  queuedRecoveries: QueuedDrRecovery[],
   failedDispatches: FailedDispatch[],
   commandMap: Map<string, DeviceCommandRecord>,
+  recoveryMap: Map<string, BareMetalRecoveryRecord>,
+  now: Date = new Date(),
 ): GroupResult[] {
   return groups.map((group) => {
     const devices = Array.isArray(group.devices) ? group.devices : [];
     const queuedForGroup = queuedCommands.filter((entry) => entry.groupId === group.id);
+    const recoveriesForGroup = queuedRecoveries.filter((entry) => entry.groupId === group.id);
     const dispatchFailures = failedDispatches.filter((entry) => entry.groupId === group.id);
+    const waitTimeoutMs = recoveriesForGroup.length > 0 ? bareMetalRebuildWaitTimeoutMs(group) : 0;
 
     const deviceStatuses: GroupDeviceStatus[] = devices.map((deviceId) => {
       const queued = queuedForGroup.find((entry) => entry.deviceId === deviceId);
+      const queuedRecovery = recoveriesForGroup.find((entry) => entry.deviceId === deviceId);
       const dispatchFailure = dispatchFailures.find((entry) => entry.deviceId === deviceId);
       const command = queued ? commandMap.get(queued.commandId) : undefined;
 
@@ -226,6 +341,10 @@ function computeGroupResults(
           commandType: queued?.commandType ?? dispatchFailure.commandType,
           error: dispatchFailure.error,
         };
+      }
+
+      if (queuedRecovery) {
+        return recoveryDeviceStatus(deviceId, queuedRecovery, recoveryMap.get(queuedRecovery.recoveryId), waitTimeoutMs, now);
       }
 
       if (!queued) {
@@ -244,14 +363,24 @@ function computeGroupResults(
     const commandRows = queuedForGroup
       .map((entry) => commandMap.get(entry.commandId))
       .filter((entry): entry is DeviceCommandRecord => !!entry);
-    const startedAt = commandRows
-      .map((entry) => entry.executedAt ?? entry.createdAt)
+    const recoveryRows = recoveriesForGroup
+      .map((entry) => recoveryMap.get(entry.recoveryId))
+      .filter((entry): entry is BareMetalRecoveryRecord => !!entry);
+    const startedAt = [
+      ...commandRows.map((entry) => entry.executedAt ?? entry.createdAt),
+      ...recoveryRows.map((entry) => entry.createdAt),
+    ]
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
-    const completedAt = commandRows.length > 0 && commandRows.every((entry) => entry.completedAt instanceof Date)
-      ? commandRows
-          .map((entry) => entry.completedAt as Date)
-          .sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+    const allCommandsDone = commandRows.length > 0 && commandRows.every((entry) => entry.completedAt instanceof Date);
+    const allRecoveriesDone = recoveryRows.length > 0 && recoveryRows.every((entry) => BARE_METAL_RECOVERY_TERMINAL.has(entry.status));
+    const completedAt = (commandRows.length === 0 || allCommandsDone)
+      && (recoveryRows.length === 0 || allRecoveriesDone)
+      && (commandRows.length > 0 || recoveryRows.length > 0)
+      ? [
+          ...commandRows.map((entry) => entry.completedAt as Date),
+          ...recoveryRows.map(recoveryTerminalAt),
+        ].sort((a, b) => b.getTime() - a.getTime())[0] ?? null
       : null;
 
     let status: GroupResult['status'] = 'pending';
@@ -342,8 +471,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 type DrAuthorizationRefDependencies = {
   resolveProviderSnapshotId(orgId: string, snapshotId: string): Promise<string>;
-  /** W05b: a device's newest bare-metal-restorable snapshot, or null when it has none. */
-  resolveLatestRestorableSnapshotId(orgId: string, deviceId: string): Promise<string | null>;
+  /**
+   * W05b: a device's newest bare-metal-restorable snapshot, or null when it
+   * has none. Optional so pre-W05b callers/tests keep their shape; the DB
+   * resolver is the fallback.
+   */
+  resolveLatestRestorableSnapshotId?(orgId: string, deviceId: string): Promise<string | null>;
 };
 
 function defaultAuthorizationRefDependencies(tx?: DrDb): DrAuthorizationRefDependencies {
@@ -431,8 +564,10 @@ export async function resolveDrGroupAuthorizationRefs(
     if (host && !deviceIds.includes(host)) {
       refs.push({ kind: 'device', id: host, role: 'target' });
     }
+    const resolveLatest = deps.resolveLatestRestorableSnapshotId
+      ?? ((ownerOrgId: string, deviceId: string) => resolveLatestRestorableSnapshotIdWithDb(ownerOrgId, deviceId));
     for (const deviceId of deviceIds) {
-      const snapshotId = await deps.resolveLatestRestorableSnapshotId(orgId, deviceId);
+      const snapshotId = await resolveLatest(orgId, deviceId);
       if (!snapshotId) {
         throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
       }
@@ -518,7 +653,175 @@ export async function createDrExecutionAndEnqueue(input: {
   return execution;
 }
 
-async function dispatchGroup(
+/**
+ * W05b BARE_METAL_REBUILD dispatch. Never a device command for
+ * failover/failback: one `bare_metal_recoveries` row per group device
+ * (identity `original`), and the operator boots media and types the code.
+ * A rehearsal creates the rows with identity `new` on the rebuild host, mints
+ * a token per recovery and queues one `bare_metal_rebuild` per device to the
+ * HOST, producing `${outputDir}/${deviceId}-${recoveryId}.vhdx`.
+ *
+ * Dedupe key is `(groupId, deviceId)` in `queuedRecoveries`, so reconcile can
+ * never mint a second recovery. Per-device service refusals
+ * (`recovery_in_progress`, no restorable snapshot) become `failedDispatches`
+ * entries; anything else propagates.
+ */
+async function dispatchBareMetalRebuildGroup(
+  execution: DrExecutionRecord,
+  group: DrPlanGroupRecord,
+  deviceIds: string[],
+  nextResults: DrExecutionResults,
+): Promise<DrExecutionResults> {
+  const commandType = DR_STEP_BARE_METAL_REBUILD;
+  const failGroup = (error: string): DrExecutionResults => {
+    nextResults.failedDispatches.push({ groupId: group.id, groupName: group.name, commandType, error });
+    nextResults.dispatchStatus = 'failed';
+    nextResults.haltReason = `Group ${group.name} did not dispatch cleanly`;
+    return nextResults;
+  };
+
+  const parsedConfig = drBareMetalRebuildConfigSchema.safeParse(asRecord(group.restoreConfig));
+  if (!parsedConfig.success) return failGroup('invalid_step_config');
+  const config: DrBareMetalRebuildConfig = parsedConfig.data;
+
+  const rehearsal = execution.executionType === 'rehearsal';
+  // Rehearsal invariant (§9): an engine-produced image never resumes the
+  // production identity. Not taken from the config — the schema has no field.
+  const identity: 'original' | 'new' = rehearsal ? 'new' : 'original';
+  const host = rehearsal ? config.rebuildHostDeviceId ?? null : null;
+  if (rehearsal && !host) return failGroup('rebuild_host_required');
+
+  // DR dispatch has no request to derive the origin from; the helper on the
+  // host needs a reachable server URL in the payload, so refuse before
+  // creating rows rather than queue a command that can only fail.
+  let serverUrl: string | null = null;
+  if (rehearsal) {
+    if (!process.env.BREEZE_SERVER && !process.env.PUBLIC_API_URL) return failGroup('server_url_unset');
+    serverUrl = resolveServerUrl();
+  }
+
+  const alreadyQueued = new Set(
+    nextResults.queuedRecoveries
+      .filter((entry) => entry.groupId === group.id)
+      .map((entry) => entry.deviceId),
+  );
+  const userId = execution.initiatedBy ?? null;
+  const createdRecoveryIds: string[] = [];
+
+  for (const deviceId of deviceIds) {
+    if (alreadyQueued.has(deviceId)) continue;
+
+    const failDevice = (error: string) => {
+      nextResults.failedDispatches.push({ groupId: group.id, groupName: group.name, deviceId, commandType, error });
+    };
+
+    // Re-resolved at dispatch (not taken from the authorization pass) so a
+    // snapshot published between trigger and dispatch is the one restored.
+    const snapshotId = await resolveLatestRestorableSnapshotIdWithDb(execution.orgId, deviceId);
+    if (!snapshotId) {
+      failDevice('no_restorable_snapshot');
+      continue;
+    }
+
+    let recoveryId: string;
+    let createdAt: Date;
+    try {
+      const created = await createBareMetalRecovery({
+        orgId: execution.orgId,
+        snapshotId,
+        identity,
+        createdBy: userId,
+        source: 'dr',
+        executingDeviceId: host,
+        drExecutionId: execution.id,
+        drGroupId: group.id,
+      });
+      recoveryId = created.row.id;
+      createdAt = created.row.createdAt;
+    } catch (error) {
+      if (error instanceof BareMetalRecoveryError) {
+        failDevice(error.code);
+        continue;
+      }
+      throw error;
+    }
+
+    let commandId: string | null = null;
+    if (rehearsal && host && serverUrl) {
+      const target = { kind: 'vhdx' as const, path: `${config.outputDir.replace(/\/+$/, '')}/${deviceId}-${recoveryId}.vhdx` };
+      let token: string;
+      try {
+        token = (await mintRecoveryTokenForRecovery({ recoveryId, orgId: execution.orgId, createdBy: userId })).token;
+      } catch (error) {
+        if (!(error instanceof BareMetalRecoveryError)) throw error;
+        await cancelBareMetalRecovery({ recoveryId, orgId: execution.orgId, userId, reason: error.code }).catch(() => {});
+        failDevice(error.code);
+        continue;
+      }
+      const { command, error } = await queueBareMetalRebuild({
+        orgId: execution.orgId,
+        hostDeviceId: host,
+        ...(userId ? { userId } : {}),
+        payload: { recoveryId, token, server: serverUrl, target, identity },
+      });
+      if (error || !command) {
+        const message = error ?? 'Failed to queue bare-metal rebuild';
+        // Free the "one non-terminal recovery per device" slot so a retry can proceed.
+        await cancelBareMetalRecovery({ recoveryId, orgId: execution.orgId, userId, reason: message }).catch(() => {});
+        failDevice(message);
+        continue;
+      }
+      commandId = command.id;
+    }
+
+    nextResults.queuedRecoveries.push({
+      groupId: group.id,
+      groupName: group.name,
+      deviceId,
+      recoveryId,
+      executingDeviceId: host,
+      commandId,
+      createdAt: createdAt.toISOString(),
+    });
+    createdRecoveryIds.push(recoveryId);
+    alreadyQueued.add(deviceId);
+  }
+
+  const groupFailures = nextResults.failedDispatches.filter((entry) => entry.groupId === group.id);
+  void createAuditLogAsync({
+    orgId: execution.orgId,
+    actorType: userId ? 'user' : 'system',
+    actorId: userId ?? '00000000-0000-0000-0000-000000000000',
+    action: 'dr.step.bare_metal_rebuild.dispatch',
+    resourceType: 'dr_execution',
+    resourceId: execution.id,
+    result: groupFailures.length > 0 ? 'failure' : 'success',
+    details: {
+      planId: execution.planId,
+      groupId: group.id,
+      groupName: group.name,
+      executionType: execution.executionType,
+      identity,
+      rebuildHostDeviceId: host,
+      recoveryIds: createdRecoveryIds,
+      failedDeviceIds: groupFailures.map((entry) => entry.deviceId).filter((id): id is string => !!id),
+    },
+  }).catch(() => {
+    // Already retried + Sentry-captured inside createAuditLogAsync.
+  });
+
+  if (groupFailures.length > 0) {
+    nextResults.dispatchStatus = nextResults.queuedRecoveries.some((entry) => entry.groupId === group.id)
+      ? 'partial'
+      : 'failed';
+    nextResults.haltReason = `Group ${group.name} did not dispatch cleanly`;
+  }
+
+  return nextResults;
+}
+
+/** @internal Exported for tests; reconcile is the only production caller. */
+export async function dispatchGroup(
   execution: DrExecutionRecord,
   group: DrPlanGroupRecord,
   currentResults: DrExecutionResults,
@@ -535,6 +838,7 @@ async function dispatchGroup(
   const nextResults: DrExecutionResults = {
     ...currentResults,
     queuedCommands: [...currentResults.queuedCommands],
+    queuedRecoveries: [...(currentResults.queuedRecoveries ?? [])],
     failedDispatches: [...currentResults.failedDispatches],
     activeGroupId: group.id,
     dispatchStatus: 'running',
@@ -574,6 +878,10 @@ async function dispatchGroup(
     nextResults.dispatchStatus = 'failed';
     nextResults.haltReason = `Group ${group.name} has no assigned devices`;
     return nextResults;
+  }
+
+  if (commandType === DR_STEP_BARE_METAL_REBUILD) {
+    return dispatchBareMetalRebuildGroup(execution, group, deviceIds, nextResults);
   }
 
   // Skip devices that already have a command queued for this group
@@ -734,6 +1042,7 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     ...currentResultsRecord,
     plannedGroups: normalizePlannedGroups(groups),
     queuedCommands: normalizeQueuedCommands(currentResultsRecord.queuedCommands),
+    queuedRecoveries: normalizeQueuedRecoveries(currentResultsRecord.queuedRecoveries),
     failedDispatches: normalizeFailedDispatches(currentResultsRecord.failedDispatches),
   };
 
@@ -746,7 +1055,34 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     : [];
   const commandMap = new Map(commands.map((command) => [command.id, command]));
 
-  results.groupResults = computeGroupResults(groups, results.queuedCommands, results.failedDispatches, commandMap);
+  // W05b: recovery rows are the source of truth for BARE_METAL_REBUILD devices.
+  const recoveries = results.queuedRecoveries.length > 0
+    ? await db
+        .select()
+        .from(bareMetalRecoveries)
+        .where(eq(bareMetalRecoveries.drExecutionId, execution.id))
+    : [];
+  const recoveryMap = new Map(recoveries.map((row) => [row.id, row]));
+
+  const now = new Date();
+  results.groupResults = computeGroupResults(
+    groups, results.queuedCommands, results.queuedRecoveries, results.failedDispatches, commandMap, recoveryMap, now,
+  );
+
+  // A device that ran out of its wait budget is failed in the results; make
+  // the row terminal too so the per-device in-flight slot is released and the
+  // helper/media cannot advance a recovery the plan has already given up on.
+  for (const group of results.groupResults) {
+    for (const device of group.devices) {
+      if (device.reason !== 'timeout' || !device.recoveryId) continue;
+      const row = recoveryMap.get(device.recoveryId);
+      if (row && BARE_METAL_RECOVERY_TERMINAL.has(row.status)) continue;
+      await cancelBareMetalRecovery({ recoveryId: device.recoveryId, orgId: execution.orgId, userId: null, reason: 'timeout' })
+        .catch(() => {
+          // Lost the race with a terminal progress post — the next tick reads the terminal row.
+        });
+    }
+  }
 
   const hasRunningGroup = results.groupResults.some((group) => group.status === 'running');
   const failedGroup = results.groupResults.find((group) => group.status === 'failed');
@@ -808,7 +1144,9 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
       }
       results = await dispatchGroup(execution, nextGroup, results);
       nextStatus = results.dispatchStatus === 'failed' ? 'failed' : 'running';
-      results.groupResults = computeGroupResults(groups, results.queuedCommands, results.failedDispatches, new Map(commands.map((command) => [command.id, command])));
+      results.groupResults = computeGroupResults(
+        groups, results.queuedCommands, results.queuedRecoveries, results.failedDispatches, commandMap, recoveryMap, now,
+      );
       if (results.dispatchStatus === 'failed') {
         completedAt = new Date();
       }

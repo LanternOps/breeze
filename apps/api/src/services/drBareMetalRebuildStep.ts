@@ -55,7 +55,7 @@ export const drRestoreConfigSchema = z
     if (!isBareMetalRebuildConfig(config)) return config;
     const parsed = drBareMetalRebuildConfigSchema.safeParse(config);
     if (parsed.success) return parsed.data;
-    for (const issue of parsed.error.issues) ctx.addIssue(issue);
+    for (const issue of parsed.error.issues) ctx.addIssue({ ...issue });
     return z.NEVER;
   });
 
