@@ -95,14 +95,25 @@ func restoreTree(ctx context.Context, r *run) error {
 	if err := ensureMountpoints(r.staging); err != nil {
 		return fmt.Errorf("ensure mount points: %w", err)
 	}
+	// System state: apply whatever preflight staged. StateApplied flips
+	// only on a nil return from the offline apply; with ExpectSystemState
+	// an apply that never ran (nothing staged) is as fatal as one that
+	// failed — the run must not reach "completed" without it (#5412).
+	staged := false
 	if r.stateStaging != "" {
 		if entries, _ := os.ReadDir(r.stateStaging); len(entries) > 0 {
+			staged = true
 			warnings, err := bmr.RestoreSystemStateOffline(ctx, r.staging, r.stateStaging)
 			r.warnings = append(r.warnings, warnings...)
 			if err != nil {
 				return fmt.Errorf("apply system state: %w", err)
 			}
+			r.result.StateApplied = true
+			r.state.StateApplied = true
 		}
+	}
+	if r.opts.ExpectSystemState && !staged {
+		return errors.New("apply system state: system state expected but no artifacts were staged by preflight")
 	}
 	return nil
 }

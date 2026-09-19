@@ -402,7 +402,7 @@ describe('GET /export/billables.csv', () => {
     const body = await res.text();
     const headerLine = body.split('\n')[0];
     const dataLine = body.split('\n')[1]?.replaceAll('"', '');
-    expect(headerLine).toBe('type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved');
+    expect(headerLine).toBe('"type","date","organization","ticket","description","technician","quantity","rate","amount","currency","billing_status","approved"');
     expect(body).toContain('T-2026-0001');
     expect(dataLine).toContain(',62.50,USD,not_billed,');
     expect(body).not.toContain('cost');
@@ -498,7 +498,7 @@ describe('GET /export/billables.csv', () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(
-      'type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved',
+      '"type","date","organization","ticket","description","technician","quantity","rate","amount","currency","billing_status","approved"',
     );
   });
 });

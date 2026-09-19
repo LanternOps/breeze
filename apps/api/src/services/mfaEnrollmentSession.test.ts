@@ -63,6 +63,7 @@ describe('completeInitialMfaEnrollment', () => {
     partnerId: 'partner-123',
     scope: 'organization',
     mfa: true,
+    mfaSrc: 'factor',
   };
   const issued = {
     accessToken: 'access',
@@ -215,6 +216,21 @@ describe('completeInitialMfaEnrollment', () => {
     expect(persistFactor).not.toHaveBeenCalled();
     expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
     expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalled();
+  });
+
+  it('completeInitialMfaEnrollment refuses an identity that is assured but not factor-sourced', async () => {
+    await expect(completeInitialMfaEnrollment({
+      userId: identity.userId,
+      identity: { ...identity, mfa: true, mfaSrc: 'policy' },
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'initial-mfa-enrollment',
+      recoveryCodes: ['code-1'],
+      recoveryCodeHashes: ['hash-1'],
+      persistFactor: async () => undefined,
+    })).rejects.toThrow('Replacement enrollment identity must be factor-sourced');
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
   });
 
   it('fails a stale or concurrent initial enrollment before family/session writes', async () => {
@@ -422,6 +438,7 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
     partnerId: 'partner-123',
     scope: 'organization',
     mfa: true,
+    mfaSrc: 'factor',
   };
   const issued = {
     accessToken: 'access',

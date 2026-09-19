@@ -43,6 +43,13 @@ export type StepUpOperation =
   // technician was shown, so a grant can never be replayed against a
   // different device set or a longer window.
   | 'device_maintenance'
+  // Device move-org step-up (spec 2026-09-18): relocating a device to another
+  // organization rewrites org_id on 64 device-scoped tables in one transaction
+  // and is cross-tenant by definition. Bound by resourceDigest to the exact
+  // { deviceId, targetOrgId, targetSiteId, acceptCurrencyMismatch } the
+  // operator was shown, so a grant can never be replayed against a different
+  // device, destination, or billing acknowledgement.
+  | 'device_move_org'
   // AI script authoring W04 (#5612): enabling the unattended lane on an org
   // is the same class of action as enabling agent act mode — a fresh MFA
   // proof, bound to the org AND to the value being set, so a grant minted to
@@ -169,6 +176,32 @@ export function maintenanceResourceDigest(input: {
     deviceIds: [...new Set(input.deviceIds)].sort(),
     durationHours: input.durationHours,
     reason: input.reason.trim(),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Canonical digest for a device move-org grant (spec 2026-09-18 D2).
+ *
+ * Same contract as maintenanceResourceDigest: the mint route and the move
+ * route must produce byte-identical input for the same operator intent, so
+ * `acceptCurrencyMismatch` is normalised to a boolean HERE (`undefined` and
+ * `false` are the same intent) and keys are emitted in fixed alphabetical
+ * order. Accepting a currency mismatch is a billing acknowledgement and part
+ * of the intent, so it is bound: a grant minted without it cannot authorise a
+ * move that sets it.
+ */
+export function moveOrgResourceDigest(input: {
+  deviceId: string;
+  targetOrgId: string;
+  targetSiteId: string;
+  acceptCurrencyMismatch?: boolean;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    acceptCurrencyMismatch: input.acceptCurrencyMismatch === true,
+    deviceId: input.deviceId,
+    targetOrgId: input.targetOrgId,
+    targetSiteId: input.targetSiteId,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

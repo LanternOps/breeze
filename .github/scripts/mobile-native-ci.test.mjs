@@ -15,12 +15,29 @@ const summary = job('ci-success');
 
 test('mobile compilation watches all native and workspace dependency inputs', () => {
   for (const input of [
-    'apps/mobile/**', 'packages/**', 'package.json', 'pnpm-lock.yaml',
+    'apps/mobile/**', 'packages/**',
     'pnpm-workspace.yaml', '.npmrc', '.node-version', '.nvmrc', 'patches/**',
     '.github/workflows/ci.yml', '.github/scripts/mobile-native-ci.test.mjs',
+    '.github/scripts/mobile-lockfile-closure.mjs',
   ]) {
     assert.ok(changes.includes(`- '${input}'`), `Missing native build input ${input}`);
   }
+  // The lockfile and root package.json are NOT direct inputs any more: they
+  // gate through the closure comparison so api/web-only bumps never allocate a
+  // macOS runner. Both must still be watched by the `lockfile` filter.
+  const mobileFilterMatch = changes.match(/mobile:\n([\s\S]*?)\n\s+lockfile:/u);
+  assert.ok(mobileFilterMatch, 'mobile: filter block followed by lockfile: block not found');
+  const mobileFilter = mobileFilterMatch[1];
+  assert.doesNotMatch(mobileFilter, /- 'pnpm-lock\.yaml'|- 'package\.json'/u, 'lockfile edits must go through the closure gate');
+  const lockfileFilterMatch = changes.match(/lockfile:\n([\s\S]*?)\n\n/u);
+  assert.ok(lockfileFilterMatch, 'lockfile: filter block not found');
+  const lockfileFilter = lockfileFilterMatch[1];
+  assert.match(lockfileFilter, /- 'pnpm-lock\.yaml'/u);
+  assert.match(lockfileFilter, /- 'package\.json'/u);
+  assert.match(changes, /id: lockfile\n\s+if: steps\.changes\.outputs\.lockfile == 'true'/u);
+  assert.match(changes, /node \.github\/scripts\/mobile-lockfile-closure\.mjs "\$\{RUNNER_TEMP\}\/pnpm-lock\.base\.yaml" pnpm-lock\.yaml \| tee -a "\$GITHUB_OUTPUT"/u);
+  assert.match(changes, /steps\.lockfile\.outputs\.changed == 'true'/u, 'closure result must feed the mobile output');
+  assert.match(changes, /github\.event\.pull_request\.base\.sha \|\| github\.event\.merge_group\.base_sha/u);
   assert.match(changes, /runs-on: ubuntu-latest/u);
   // ci.yml no longer runs on pushes to main (the merge queue evaluated every
   // landing on its merge-group ref), so there is no multi-commit push to span:
@@ -57,6 +74,15 @@ test('CI Success keeps existing required checks and requires both new jobs', () 
     assert.ok(dependencies?.includes(name), `Missing required dependency ${name}`);
   }
   assert.match(job('lint'), /node --test \.github\/scripts\/mobile-native-ci\.test\.mjs/u);
+  assert.match(job('lint'), /node --test \.github\/scripts\/mobile-lockfile-closure\.test\.mjs/u);
+});
+
+test('Test Web is sharded four ways like Test API', () => {
+  const web = job('test-web');
+  assert.match(web, /name: Test Web \(shard \$\{\{ matrix\.shard \}\}\/4\)/u);
+  assert.match(web, /shard: \[1, 2, 3, 4\]/u);
+  assert.match(web, /fail-fast: false/u);
+  assert.match(web, /pnpm --filter=@breeze\/web test --run --shard=\$\{\{ matrix\.shard \}\}\/4/u);
 });
 
 // Execute the real summary shell, with other required jobs successful. A path
@@ -90,6 +116,8 @@ for (const [label, detector, required, result, passes] of [
         // mobile-specific fixture below.
         AGENT_CHANGED: 'true',
         APP_CHANGED: 'true',
+        // Every per-area flag true (same fail-closed tri-state as AGENT_CHANGED).
+        API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
         TOPOLOGY_BROWSER_CHANGED: 'true',
         MOBILE_NATIVE_CHANGES_RESULT: detector,
         MOBILE_NATIVE_REQUIRED: required,

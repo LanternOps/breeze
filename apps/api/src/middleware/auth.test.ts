@@ -113,7 +113,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, hasSatisfiedMfa, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -1231,6 +1231,35 @@ describe('requireMfa', () => {
     expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: undefined } } as any)).toBe(false);
     expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: 'true' } } as any)).toBe(false);
     expect(hasSatisfiedMfa({ token: undefined } as any)).toBe(false);
+  });
+});
+
+describe('requireInteractiveSession', () => {
+  function appWith(auth: unknown) {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      if (auth !== undefined) c.set('auth', auth);
+      await next();
+    });
+    app.use(requireInteractiveSession());
+    app.get('/test', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('admits a user_session principal', async () => {
+    const res = await appWith({ ...baseAuth, principal: { kind: 'user_session' } }).request('/test');
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['api_key', 'oauth_grant', 'ai_agent', 'system', 'unknown'])('denies a %s principal with a written 403', async (kind) => {
+    const res = await appWith({ ...baseAuth, principal: { kind } }).request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+  });
+
+  it('denies when there is no auth context at all', async () => {
+    const res = await appWith(undefined).request('/test');
+    expect(res.status).toBe(403);
   });
 });
 

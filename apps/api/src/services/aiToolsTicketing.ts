@@ -33,6 +33,7 @@ import {
   editTicketComment,
   deleteTicketComment,
   moveTicketOrg,
+  revalidateTicketAssignee,
   type CreateTicketInput,
   type TicketStatus,
   type UpdateTicketFieldsInput
@@ -897,6 +898,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (updated.length === 0) {
           return JSON.stringify({ linked: false, reason: 'already_linked' });
         }
+        await revalidateTicketAssignee(String(input.ticketId), {
+          ...actor,
+          principalKind: isAiAgentPrincipal(auth) ? 'ai_agent' : 'user',
+        });
         return JSON.stringify({ linked: true, deviceId });
       }
 
