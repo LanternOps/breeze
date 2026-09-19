@@ -377,7 +377,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 			// Classification is pure (touches no shared state), so run it before
 			// taking the lock instead of holding every other worker off while we do.
-			category := classifyCleanupCategory(entryPath)
+			category, _, categorySafe := classifyCleanupPath(entryPath, info.ModTime(), now)
 			oldDownload := isOldDownload(entryPath, fileSize, info.ModTime(), oldDownloadsThreshold)
 			unrotated := isUnrotatedLog(entryPath, fileSize)
 
@@ -422,7 +422,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 					Path:       entryPath,
 					Category:   category,
 					SizeBytes:  fileSize,
-					Safe:       true,
+					Safe:       categorySafe,
 					Reason:     "temporary/cache file",
 					ModifiedAt: resolveModTime(),
 				}, maxFSCleanupCandidates)
@@ -997,33 +997,6 @@ func normalizePathForChecks(path string) string {
 	return strings.ToLower(path)
 }
 
-func classifyCleanupCategory(path string) string {
-	n := normalizePathForChecks(path)
-	switch {
-	case strings.Contains(n, "/tmp/"),
-		strings.HasSuffix(n, "/tmp"),
-		strings.Contains(n, "/windows/temp/"),
-		strings.Contains(n, "/appdata/local/temp/"),
-		strings.Contains(n, "/var/tmp/"):
-		return "temp_files"
-	case strings.Contains(n, "/google/chrome/user data/"),
-		strings.Contains(n, "/mozilla/firefox/"),
-		strings.Contains(n, "/library/caches/com.apple.safari/"),
-		strings.Contains(n, "/library/caches/"),
-		strings.Contains(n, "/.cache/"),
-		strings.Contains(n, "/edge/user data/"):
-		return "browser_cache"
-	case strings.Contains(n, "/var/cache/apt/"),
-		strings.Contains(n, "/var/cache/dnf/"),
-		strings.Contains(n, "/var/cache/yum/"),
-		strings.Contains(n, "/library/caches/homebrew/"),
-		strings.Contains(n, "/appdata/local/packages/"):
-		return "package_cache"
-	default:
-		return ""
-	}
-}
-
 func isOldDownload(path string, sizeBytes int64, modifiedAt time.Time, threshold time.Time) bool {
 	if sizeBytes <= 0 {
 		return false
@@ -1031,13 +1004,12 @@ func isOldDownload(path string, sizeBytes int64, modifiedAt time.Time, threshold
 	if modifiedAt.After(threshold) {
 		return false
 	}
-	n := normalizePathForChecks(path)
-	if strings.Contains(n, "/library/caches/") ||
-		strings.Contains(n, "/.cache/") ||
-		strings.Contains(n, "/appdata/local/temp/") {
+	// A file that a cleanup rule already claims is reported there, not twice.
+	if matchCleanupRule(path) != nil {
 		return false
 	}
 
+	n := normalizePathForChecks(path)
 	segments := strings.Split(strings.Trim(n, "/"), "/")
 	for i, segment := range segments {
 		if segment != "downloads" {
