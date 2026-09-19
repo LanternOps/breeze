@@ -26,8 +26,11 @@ const { dbMocks, emitMock, configMocks, workTypeMocks } = vi.hoisted(() => {
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
   };
+  type WorkTypeRow = { id: string; partnerId: string; name: string; isActive: boolean };
   const workTypeMocks = {
-    getActiveWorkType: vi.fn(async (id: string) => ({ id, partnerId: 'p-1', name: 'Remote', isActive: true })),
+    getActiveWorkType: vi.fn<(id: string, partnerId: string) => Promise<WorkTypeRow | null>>(
+      async (id: string) => ({ id, partnerId: 'p-1', name: 'Remote', isActive: true }),
+    ),
   };
   return { dbMocks, emitMock: vi.fn(), configMocks, workTypeMocks };
 });
@@ -39,7 +42,7 @@ vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
 // silently reorder every other fixture in this file, so it is mocked here and
 // covered directly in workTypeService.test.ts.
 vi.mock('./workTypeService', () => ({
-  getActiveWorkType: (...args: unknown[]) => workTypeMocks.getActiveWorkType(...args),
+  getActiveWorkType: (id: string, partnerId: string) => workTypeMocks.getActiveWorkType(id, partnerId),
 }));
 
 vi.mock('./ticketConfigService', () => ({
