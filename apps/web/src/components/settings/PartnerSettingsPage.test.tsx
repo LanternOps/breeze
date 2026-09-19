@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PartnerSettingsPage, { runPartnerSave } from './PartnerSettingsPage';
+import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
@@ -337,6 +338,43 @@ describe('PartnerSettingsPage Company tab', () => {
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.name).toBe('Acme MSP Inc.');
     expect(body.settings.address.city).toBe('Denver');
+  });
+
+  // Spec 2026-09-18 D4: MfaPolicyOffBanner (a layout island) re-checks the
+  // partner's requireMfa when this event fires, so turning MFA on here clears
+  // the banner without a navigation.
+  it('dispatches the partner-settings-saved event after a successful save', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'partner-1',
+        name: 'Acme MSP',
+        slug: 'acme',
+        type: 'partner',
+        plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: { timezone: 'UTC', contact: {}, address: {} },
+      })
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ id: 'partner-1', name: 'Acme MSP Inc.', settings: {} })
+    );
+    const onSaved = vi.fn();
+    window.addEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+    try {
+      render(<PartnerSettingsPage />);
+      const nameInput = await screen.findByLabelText(/company name/i) as HTMLInputElement;
+      const user = userEvent.setup();
+      await user.clear(nameInput);
+      await user.type(nameInput, 'Acme MSP Inc.');
+      expect(onSaved).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    } finally {
+      window.removeEventListener(PARTNER_SETTINGS_SAVED_EVENT, onSaved);
+    }
   });
 
   // #3430 — the Website field reached the API unvalidated. handleSave now blocks

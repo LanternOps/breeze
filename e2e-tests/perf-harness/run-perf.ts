@@ -44,7 +44,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Load parent .env (same convention as the Playwright suite) if present.
 const parentEnv = path.resolve(__dirname, '..', '..', '.env');
-if (existsSync(parentEnv)) loadEnv({ path: parentEnv });
+if (existsSync(parentEnv)) loadEnv({ path: parentEnv, quiet: true });
 
 function env(name: string, fallback: string): string {
   const v = process.env[name];

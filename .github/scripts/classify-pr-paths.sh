@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints four lines in
-# GITHUB_OUTPUT form: `code=true|false`, `docs=true|false`, `agent=true|false`,
-# `app=true|false`.
+# Reads changed-file paths on stdin (one per line) and prints ten lines in
+# GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, then the six area flags
+# `api`, `web`, `portal`, `addins`, `m365`, `rust` — each `true|false`.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -38,8 +38,27 @@
 # allowlisted. Adding a file under an allowlisted directory that a heavy job
 # runs? Add its carve-out here AND to the pinned list in the test.
 #
+# Area outputs (`api`, `web`, `portal`, `addins`, `m365`, `rust`) gate the
+# heavy jobs that exercise exactly one application area (test-api,
+# integration-test, test-web, the add-in and M365 suites, rust-check, ...).
+# A wrong area gate SILENTLY skips a whole area's tests, so they fail OPEN:
+#   - shared/global inputs (packages/**, the root manifests and lockfile,
+#     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
+#     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area;
+#   - a code path that matches no area rule (agent/**, e2e-tests/**, a new
+#     top-level dir or app, ...) sets EVERY area;
+#   - an area whose tests READ another area's files is also set when those
+#     files change (see the cross-area block below). test-api carries the
+#     repo-wide contract suites (Dockerfile/manifest enumeration over apps/*,
+#     exchangeRateBoundary over apps/web/src + apps/portal/src, tierConfig
+#     parity, the viewer input schema), so web/portal/viewer and every app's
+#     Dockerfile/package.json also set `api`. `ci-area-gating.test.mjs` scans
+#     the sources for such references and fails when one has no rule here.
+# Docs paths set no area. apps/mobile/** sets none either: mobile is gated by
+# its own `mobile-native-changes` filter and test-mobile rides `app`.
+#
 # Fail-closed: an empty file list is `code=true docs=true agent=true
-# app=true`. Deciding "nothing changed" from no evidence is how a broken
+# app=true` and every area true. Deciding "nothing changed" from no evidence is how a broken
 # listing would green a PR (or silently skip a job that should have run).
 set -euo pipefail
 
@@ -77,13 +96,44 @@ code=false
 docs=false
 agent=false
 app=false
+api=false
+web=false
+portal=false
+addins=false
+m365=false
+rust=false
 seen=false
+all_areas() {
+  api=true; web=true; portal=true; addins=true; m365=true; rust=true
+}
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
   seen=true
   case "${path}" in
     docs/*|apps/docs/*|*.md|*.mdx) docs=true; continue ;;
     *) code=true ;;
+  esac
+  # Area (first match wins). In a case pattern `*` also matches '/', so the
+  # root-only globals below are anchored by their leading literal.
+  case "${path}" in
+    packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
+    .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas ;;
+    apps/api/*) api=true ;;
+    apps/web/*) web=true ;;
+    apps/portal/*) portal=true ;;
+    apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*) addins=true ;;
+    apps/m365-graph-read-executor/*|apps/m365-graph-actions-executor/*|apps/m365-communications-executor/*) m365=true ;;
+    apps/viewer/*|apps/helper/*|Cargo.*|rust-toolchain*) rust=true ;;
+    apps/mobile/*) : ;;
+    *) all_areas ;;
+  esac
+  # Cross-area reads: the READING area must also run when these change.
+  case "${path}" in
+    apps/*/Dockerfile*|apps/*/package.json) api=true ;;
+  esac
+  case "${path}" in
+    apps/web/*|apps/portal/*|apps/viewer/src/*) api=true ;;
+    apps/api/src/routes/portal/*) portal=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
@@ -107,14 +157,21 @@ while IFS= read -r path; do
 done
 
 if [[ "${seen}" != "true" ]]; then
-  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app change (fail-closed)" >&2
+  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app change in every area (fail-closed)" >&2
   code=true
   docs=true
   agent=true
   app=true
+  all_areas
 fi
 
 echo "code=${code}"
 echo "docs=${docs}"
 echo "agent=${agent}"
 echo "app=${app}"
+echo "api=${api}"
+echo "web=${web}"
+echo "portal=${portal}"
+echo "addins=${addins}"
+echo "m365=${m365}"
+echo "rust=${rust}"

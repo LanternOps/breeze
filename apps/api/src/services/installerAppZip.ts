@@ -1,4 +1,4 @@
-import archiver from "archiver";
+import { ZipArchive } from "archiver";
 import StreamZip from "node-stream-zip";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ export async function renameAppInZip(
     const entries = await reader.entries();
     let matched = 0;
 
-    const out = archiver("zip", { zlib: { level: 0 } }); // store-only; .app contents already small or pre-compressed
+    const out = new ZipArchive({ zlib: { level: 0 } }); // store-only; .app contents already small or pre-compressed
     const chunks: Buffer[] = [];
     out.on("data", (c: Buffer) => chunks.push(c));
     const done = new Promise<void>((resolve, reject) => {

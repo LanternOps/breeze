@@ -34,6 +34,8 @@ export default defineConfig({
     },
   },
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     // This is a manual allowlist, not a broad glob — a new TZ-sensitive test

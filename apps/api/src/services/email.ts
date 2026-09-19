@@ -322,6 +322,16 @@ export class EmailService {
     });
   }
 
+  /**
+   * Which platform transport this instance resolved to. Callers that need to
+   * decide whether a real external send would occur (e.g. the sending-domains
+   * `fake` provider, which must never make an external call) branch on this
+   * instead of re-deriving provider selection themselves.
+   */
+  transportKind(): EmailProvider {
+    return this.provider;
+  }
+
   async sendEmail(params: SendEmailParams): Promise<void> {
     const { to, cc, subject, html, text, replyTo, headers, attachments } = params;
 

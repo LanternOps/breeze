@@ -170,11 +170,14 @@ export const JOB_SCHEDULES = {
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
+  // Share the :12 lane on alternate six-hour slots; no coarse collision.
+  'script-verify-reconcile': '12 0,6,12,18 * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
   'software-upload-session-cleanup': '15 * * * *',
   'audit-drift-evaluator': '17 * * * *',
   'abuse-signals-sweep': '22,37,52,7 * * * *',
   'partner-trust-promote': '*/15 * * * *',
+  'accounting-mapping-sweep': '4,19,34,49 * * * *',
   'backup-expired-snapshot-cleanup': '27 2,8,14,20 * * *',
   'software-remediation-request-cleanup': '35 * * * *',
   'backup-recovery-token-expiry': '37 * * * *',

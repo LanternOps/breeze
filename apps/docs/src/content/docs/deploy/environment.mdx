@@ -29,8 +29,9 @@ All configuration is done through environment variables, defined in your `.env.p
 | `DATABASE_URL` | — | Auto | Full connection string (constructed from above in Docker) |
 | `DATABASE_URL_APP` | — | One of these three (prod) | Explicit connection string for the **unprivileged request role** (`breeze_app`). Preferred for direct (non-Compose) deployments and for `deploy/docker-compose.prod.yml` (managed Postgres), and **required** for multi-host / high-availability `DATABASE_URL` values, which cannot be derived automatically. **Leave it empty on the bundled root `docker-compose.yml`** — see the callout below. |
 | `BREEZE_APP_DB_PASSWORD` | — | One of these three (prod) | Password for the `breeze_app` role, used to derive its connection string from `DATABASE_URL`. |
+| `BREEZE_ALLOW_UNSAFE_DB_ROLE` | — | | Local development escape hatch. Set to `true` to start even when the request role is `SUPERUSER`/`BYPASSRLS`, printing a loud warning banner every boot. **Ignored when `NODE_ENV=production`**, and never appropriate for a deployment holding real data. |
 
-In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This check runs whenever `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. The API also **refuses to start if it detects it is running as a `SUPERUSER` or `BYPASSRLS` role** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
+In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This configuration requirement applies when `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. Separately, the API verifies the capabilities of the role its request pool actually connected as **on every startup, in every environment** — `NODE_ENV` does not switch that check off — and **refuses to start if that role is `SUPERUSER` or `BYPASSRLS`** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
 
 :::caution[Bundled Docker Compose: leave `DATABASE_URL_APP` empty]
 The bundled root `docker-compose.yml` rebuilds `DATABASE_URL` as
@@ -168,6 +169,11 @@ deployment env vars.
 | `MAILGUN_FROM` | `noreply@breeze.local` | Mailgun-specific sender address |
 | `SMTP_TIMEOUT_MS` | `30000` | How long an outbound SMTP send may take before it is abandoned. Applies to **all** outbound mail. Without a bound, a wedged mail host can hold a send open for nodemailer's ten-minute default |
 | `MAILGUN_TIMEOUT_MS` | `120000` | The same bound for the Mailgun HTTP transport |
+
+Sending customer-facing mail from a partner's own domain, rather than from
+`EMAIL_FROM`, is set up separately — see [Custom sender
+addresses](/deploy/custom-sender-addresses/) for the `EMAIL_DOMAINS_*` variables
+and the three ways to configure them.
 
 ## SMS (Twilio)
 

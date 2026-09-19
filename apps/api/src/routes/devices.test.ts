@@ -264,7 +264,11 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Stubbed like the other gates: this suite's auth context carries no
+  // principal. The real gate is covered in middleware/auth.test.ts and
+  // routes/devices/{commands,moveOrg}.test.ts.
+  requireInteractiveSession: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';

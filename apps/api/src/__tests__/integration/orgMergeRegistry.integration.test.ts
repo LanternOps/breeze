@@ -290,6 +290,18 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // is still loser-owned) does not abort.
   'device_custom_field_values.device_custom_field_values_coherent':
     'merge fence: permits the repoint while the definition is still loser-owned, gated on same-partner status=\'merging\'',
+  // Cancels pending/queued CIS remediation actions for the moving device
+  // (2026-10-20-140000-cancel-cis-remediation-on-device-org-move.sql). It
+  // carries its own merge fence: `WHERE o.status::text = 'merging'` short-
+  // circuits to `RETURN NEW` before the cancellation UPDATE ever runs, so
+  // during a merge (which repoints devices.org_id set-based for the loser)
+  // it never touches cis_remediation_actions at all — same fence pattern as
+  // custom_field_definitions_no_shadow and device_custom_field_values_
+  // coherent above. Outside a merge it only ever writes
+  // cis_remediation_actions, never devices.org_id itself, and always
+  // `RETURN NEW` unconditionally — it neither RAISEs nor reverts the repoint.
+  'devices.breeze_cancel_cis_remediation_before_device_org_move':
+    'merge fence short-circuits during org merge; otherwise only cancels remediation rows and always RETURN NEW, never blocking or reverting the org_id write',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',

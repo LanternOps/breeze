@@ -1482,6 +1482,21 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // Status PRE-CHECK, before any revocation intent is written (#5611). The
+  // revocation below is irreversible — it expires the invoice's live Stripe
+  // pay links — and used to run before the draft/void validation inside the
+  // transaction, so a mistaken recordPayment on a draft or a void invoice
+  // killed its links and THEN 409'd. This unlocked read only decides whether
+  // to start the revocation at all; the check against the LOCKED row inside
+  // the transaction remains the authoritative one (an issued invoice never
+  // returns to draft, and a void that lands in between has already revoked
+  // its own sessions, so the in-tx 409 is the only thing that can change).
+  const [pre] = await db.select({ status: invoices.status }).from(invoices)
+    .where(eq(invoices.id, invoiceId)).limit(1);
+  if (!pre) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
+  if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+
   // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
   //
   // Recording an alternate payment clears the balance a Stripe Checkout session

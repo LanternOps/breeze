@@ -234,6 +234,10 @@ func (c *Console) Run(ctx context.Context) error {
 		Identity:            identity,
 		Marker:              marker,
 		RegenerateInitramfs: true,
+		// #5412: a system_image snapshot (or one advertising a state
+		// manifest) must apply its OS state; the engine refuses at
+		// preflight when it is missing rather than completing files-only.
+		ExpectSystemState: bmr.SnapshotExpectsSystemState(bs.Snapshot),
 	}
 
 	for {

@@ -91,8 +91,18 @@ function evaluateRemoteAccessLaunchAvailability(
     return { provider, idValue: null, skipReason: 'provider_disabled' };
   }
 
-  const idValue = device.customFields?.[provider.customFieldKey];
-  if (typeof idValue !== 'string' || idValue.length === 0) {
+  // Number/Boolean custom fields are stored as JSON primitives (#6191);
+  // coerce them so a populated numeric identifier isn't treated as missing.
+  const raw = device.customFields?.[provider.customFieldKey];
+  const idValue =
+    typeof raw === 'string'
+      ? raw
+      : typeof raw === 'number' && Number.isFinite(raw)
+        ? String(raw)
+        : typeof raw === 'boolean'
+          ? String(raw)
+          : null;
+  if (idValue === null || idValue.length === 0) {
     return { provider, idValue: null, skipReason: 'missing_device_identifier' };
   }
   if (!provider.urlTemplate) {

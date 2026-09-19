@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance.",
+    "empty_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance.",
+    "emptyWithDate_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance ({{date}}).",
+    "emptyWithDate_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance ({{date}}).",
     "evidence": "Justificatifs",
     "noEvidence": "Aucun justificatif joint",
     "late": "En retard",

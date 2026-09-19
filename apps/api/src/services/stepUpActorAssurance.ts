@@ -4,11 +4,19 @@ import { users } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { StepUpGrantBinding } from './mfaStepUpGrant';
 
-/** Hold the actor's auth state stable until the device transaction commits.
- * Factor resets update this row, so a reset that wins the lock invalidates
- * admission; one that follows the lock cannot complete before the write.
+/**
+ * Hold the actor's auth state stable until the step-up-gated transaction
+ * commits. Factor resets update this row, so a reset that wins the lock
+ * invalidates admission; one that follows the lock cannot complete before
+ * the write. Shared by every route that consumes a step-up grant inside its
+ * write transaction (device maintenance, device move-org); take it as the
+ * transaction's FIRST row lock so the lock order is `users` → everything else.
+ *
+ * True only when ALL hold: actor active; live epochs equal the grant binding;
+ * token epochs equal the live row. Any other answer — including a missing
+ * row — is a denial.
  */
-export async function lockMaintenanceAssurance(
+export async function lockActorAssurance(
   tx: Pick<typeof db, 'select'>,
   auth: AuthContext,
   binding: StepUpGrantBinding,

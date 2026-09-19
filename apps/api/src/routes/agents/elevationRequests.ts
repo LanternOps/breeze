@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   approvalRequests,
   devices,
@@ -289,8 +289,18 @@ elevationRequestsRoutes.post(
     const agentId = c.req.param('id');
     const payload = c.req.valid('json');
     const agent = c.get('agent') as
-      | { deviceId?: string; orgId?: string; agentId?: string; siteId?: string }
+      | { deviceId?: string; orgId?: string; agentId?: string; siteId?: string; partnerId?: string }
       | undefined;
+
+    // Fail fast on a token that authenticated but carries no org. This handler
+    // now builds its own RLS context (see below); a vacuous one (orgId '',
+    // accessibleOrgIds []) would make the device lookup RLS-deny and surface
+    // as a 404 with no signal. Mirrors eventlogs.ts.
+    if (!agent?.orgId) {
+      console.error(`[ElevationRequests] ingest with no org context agent=${agentId}`);
+      return c.json({ error: 'Agent context missing organization' }, 401);
+    }
+    const orgId = agent.orgId;
 
     // Rate limit per device. Keying on deviceId from the auth context
     // prevents a stolen token from inflating a different device's budget.
@@ -314,383 +324,404 @@ elevationRequestsRoutes.post(
       );
     }
 
-    const [device] = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        siteId: devices.siteId,
-        hostname: devices.hostname,
-      })
-      .from(devices)
-      .where(eq(devices.agentId, agentId))
-      .limit(1);
-
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-
-    const observedAt = payload.observed_at ? new Date(payload.observed_at) : new Date();
-    if (Number.isNaN(observedAt.getTime())) {
-      return c.json({ error: 'Invalid observed_at' }, 400);
-    }
-
-    const clientIp = getTrustedClientIpOrUndefined(c);
-    const userAgent = c.req.header('user-agent') ?? null;
-
-    // Reason: synthesized server-side. The agent only sends discovery data;
-    // it doesn't get to write arbitrary reason text.
-    const reason = `UAC consent UI observed for ${payload.target_executable_path}`;
-
-    // ------------------------------------------------------------------
-    // Decisioning (#1163). Both evaluators run inside the request's
-    // org-scoped withDbAccessContext (opened by agentAuthMiddleware), so
-    // policy/rule lookups are RLS-scoped to the device's org. Any error
-    // fails SAFE to 'pending' — an evaluator outage must never become an
-    // auto-approval, and degrading a blocklist deny to a pending row is
-    // preferable to dropping the observation entirely.
-    // ------------------------------------------------------------------
-    let bridgeVerdict: PamBridgeVerdict | null = null;
-    let decision: IngestDecision = { kind: 'pending' };
-    try {
-      bridgeVerdict = await evaluatePamBridge({
-        orgId: device.orgId,
-        deviceId: device.id,
-        targetExecutablePath: payload.target_executable_path,
-        targetExecutableHash: payload.target_executable_hash,
-        targetExecutableSigner: payload.target_executable_signer,
-      });
-
-      if (bridgeVerdict.match === 'blocklist') {
-        decision = { kind: 'denied', source: 'policy', policyId: bridgeVerdict.policyId };
-      } else if (bridgeVerdict.match === 'allowlist') {
-        decision = {
-          kind: 'auto_approved',
-          source: 'policy',
-          policyId: bridgeVerdict.policyId,
-          durationMinutes: PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
-        };
-      } else {
-        // No software policy bound — fall through to PAM-native rules.
-        const orgRules = await db
-          .select()
-          .from(pamRules)
-          .where(
-            and(
-              eq(pamRules.orgId, device.orgId),
-              eq(pamRules.enabled, true),
-              device.siteId
-                ? or(isNull(pamRules.siteId), eq(pamRules.siteId, device.siteId))
-                : isNull(pamRules.siteId),
-            ),
-          );
-        // Resolve any signer groups referenced by the candidate rules so the
-        // engine can match matchSignerGroupId against the group's members.
-        const signerGroupIds = [
-          ...new Set(
-            orgRules
-              .map((r) => r.matchSignerGroupId)
-              .filter((x): x is string => x != null),
-          ),
-        ];
-        let signerGroups: Map<string, SignerGroupEntry[]> | undefined;
-        if (signerGroupIds.length > 0) {
-          const groups = await db
-            .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
-            .from(pamSignerGroups)
-            .where(
-              and(
-                eq(pamSignerGroups.orgId, device.orgId),
-                inArray(pamSignerGroups.id, signerGroupIds),
-              ),
-            );
-          // Normalize the stored jsonb (legacy bare CNs and/or new entry
-          // objects) to canonical entries the engine matches against (#1776).
-          signerGroups = new Map(groups.map((g) => [g.id, normalizeSignerGroupEntries(g.signers)]));
-        }
-        const ruleMatch = evaluatePamRules(
-          orgRules,
-          {
-            targetExecutablePath: payload.target_executable_path,
-            targetExecutableHash: payload.target_executable_hash,
-            targetExecutableSigner: payload.target_executable_signer,
-            targetExecutableSignerThumbprint: payload.target_executable_signer_thumbprint,
-            subjectUsername: payload.subject_username,
-            parentImage: payload.parent_image,
-            commandLine: payload.command_line,
-            at: observedAt,
-          },
-          signerGroups,
-        );
-        if (!ruleMatch) {
-          // No software policy and no PAM rule matched — apply the org's
-          // default verdict for unmatched elevations. The historical default
-          // (and the default when no config row exists) is require_approval,
-          // i.e. leave the request pending; an org can opt into auto_deny.
-          const [cfg] = await db
-            .select({ verdict: pamOrgConfig.defaultUnmatchedVerdict })
-            .from(pamOrgConfig)
-            .where(eq(pamOrgConfig.orgId, device.orgId))
-            .limit(1);
-          if (cfg?.verdict === 'auto_deny') {
-            decision = { kind: 'denied', source: 'default' };
-          }
-        } else {
-          switch (ruleMatch.verdict) {
-            case 'auto_approve':
-              decision = {
-                kind: 'auto_approved',
-                source: 'rule',
-                rule: ruleMatch,
-                durationMinutes:
-                  ruleMatch.approvalDurationMinutes ??
-                  PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
-              };
-              break;
-            case 'auto_deny':
-              decision = { kind: 'denied', source: 'rule', rule: ruleMatch };
-              break;
-            case 'ignore':
-              decision = { kind: 'ignored', rule: ruleMatch };
-              break;
-            case 'require_approval':
-            default:
-              decision = { kind: 'pending' };
-              break;
-          }
-        }
-      }
-    } catch (err) {
-      console.error(
-        `[ElevationRequests] decisioning failed for device=${device.id} org=${device.orgId} (failing safe to pending):`,
-        err,
-      );
-      decision = { kind: 'pending' };
-    }
-
-    // 'ignore' rules suppress the request entirely: no elevation_requests
-    // row (the approval queue stays signal-only), but the observation is
-    // still recorded in the general audit log for forensics.
-    if (decision.kind === 'ignored') {
-      writeAuditEvent(c, {
-        orgId: agent?.orgId ?? device.orgId,
-        actorType: 'agent',
-        actorId: agent?.agentId ?? agentId,
-        action: 'agent.elevation_request.ignored',
-        resourceType: 'elevation_request',
-        resourceId: decision.rule.ruleId,
-        details: {
-          flow_type: 'uac_intercept',
-          subject_username: payload.subject_username,
-          target_executable_path: payload.target_executable_path,
-          pam_rule_id: decision.rule.ruleId,
-          pam_rule_name: decision.rule.ruleName,
-        },
-      });
-      // The agent treats any 200/201 as success and ignores the body.
-      return c.json({ id: null, status: 'ignored' }, 200);
-    }
-
-    const now = new Date();
-    const status =
-      decision.kind === 'auto_approved'
-        ? 'auto_approved'
-        : decision.kind === 'denied'
-          ? 'denied'
-          : 'pending';
-
-    try {
-      const row = await db.transaction(async (tx) => {
-        const expiresAt = decision.kind === 'auto_approved'
-          ? new Date(now.getTime() + decision.durationMinutes * 60_000)
-          : null;
-        const inserted = await tx.insert(elevationRequests)
-        .values({
-          orgId: device.orgId,
-          siteId: device.siteId ?? null,
-          deviceId: device.id,
-          flowType: 'uac_intercept',
-          subjectUserId: null,
-          subjectUsername: payload.subject_username,
-          reason,
-          targetExecutablePath: payload.target_executable_path,
-          targetExecutableHash: payload.target_executable_hash ?? null,
-          targetExecutableSigner: payload.target_executable_signer ?? null,
-          status,
-          requestedAt: observedAt,
-          approvedAt: decision.kind === 'auto_approved' ? now : null,
-          expiresAt,
-          denialReason:
-            decision.kind === 'denied'
-              ? decision.source === 'policy'
-                ? 'Blocked by software policy'
-                : decision.source === 'default'
-                  ? 'Blocked by org default (no matching policy or rule)'
-                  : `Blocked by PAM rule "${decision.rule?.ruleName ?? ''}"`
-              : null,
-          softwarePolicyMatchId:
-            decision.kind !== 'pending' && decision.source === 'policy'
-              ? (decision.policyId ?? null)
-              : null,
-          clientIp: clientIp ?? null,
-          userAgent,
-          metadata: {
-            pid: payload.pid,
-            parent_image: payload.parent_image,
-            command_line: payload.command_line,
-            ...(decision.kind !== 'pending' && decision.rule
-              ? { pam_rule_id: decision.rule.ruleId, pam_rule_name: decision.rule.ruleName }
-              : {}),
-          },
+    // #6130 / #1105 — everything below touches the DB, so it runs inside a
+    // context this handler opens ITSELF. `elevation-requests` is in
+    // SELF_MANAGED_DB_CONTEXT_ACTIONS (middleware/agentAuth.ts), so
+    // agentAuthMiddleware no longer wraps the whole request in a
+    // request-long transaction — which is what let the Redis rate-limit
+    // round-trip above run without pinning a pooled connection
+    // idle-in-transaction. The context mirrors the one the middleware used
+    // to build (see the wrap site there): org scope, no partner-AXIS write
+    // access, and the device org's owning partner on the read-only
+    // `currentPartnerId` axis.
+    return withDbAccessContext(
+      {
+        scope: 'organization' as const,
+        orgId,
+        accessibleOrgIds: [orgId],
+        accessiblePartnerIds: [],
+        currentPartnerId: agent?.partnerId ?? null,
+      },
+      async () => {
+      const [device] = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          siteId: devices.siteId,
+          hostname: devices.hostname,
         })
-        .returning({
-          id: elevationRequests.id,
-          status: elevationRequests.status,
-          revision: elevationRequests.revision,
+        .from(devices)
+        .where(eq(devices.agentId, agentId))
+        .limit(1);
+
+      if (!device) {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+
+      const observedAt = payload.observed_at ? new Date(payload.observed_at) : new Date();
+      if (Number.isNaN(observedAt.getTime())) {
+        return c.json({ error: 'Invalid observed_at' }, 400);
+      }
+
+      const clientIp = getTrustedClientIpOrUndefined(c);
+      const userAgent = c.req.header('user-agent') ?? null;
+
+      // Reason: synthesized server-side. The agent only sends discovery data;
+      // it doesn't get to write arbitrary reason text.
+      const reason = `UAC consent UI observed for ${payload.target_executable_path}`;
+
+      // ------------------------------------------------------------------
+      // Decisioning (#1163). Both evaluators run inside the request's
+      // org-scoped withDbAccessContext (opened by THIS handler since #6130), so
+      // policy/rule lookups are RLS-scoped to the device's org. Any error
+      // fails SAFE to 'pending' — an evaluator outage must never become an
+      // auto-approval, and degrading a blocklist deny to a pending row is
+      // preferable to dropping the observation entirely.
+      // ------------------------------------------------------------------
+      let bridgeVerdict: PamBridgeVerdict | null = null;
+      let decision: IngestDecision = { kind: 'pending' };
+      try {
+        bridgeVerdict = await evaluatePamBridge({
+          orgId: device.orgId,
+          deviceId: device.id,
+          targetExecutablePath: payload.target_executable_path,
+          targetExecutableHash: payload.target_executable_hash,
+          targetExecutableSigner: payload.target_executable_signer,
         });
 
-        const insertedRow = inserted[0];
-        if (!insertedRow) throw new Error('Insert returned no row');
-
-        // Request, audit chain, desired state, and outbox are one atomic write.
-        const auditRows: (typeof elevationAudit.$inferInsert)[] = [
-          {
-            orgId: device.orgId,
-            elevationRequestId: insertedRow.id,
-            eventType: 'requested',
-            actor: 'end_user',
-            details: {
-              subject_username: payload.subject_username,
-              target_executable_path: payload.target_executable_path,
-            },
-            occurredAt: observedAt,
-          },
-        ];
-        if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
-          auditRows.push({
-            orgId: device.orgId,
-            elevationRequestId: insertedRow.id,
-            eventType: decision.kind === 'auto_approved' ? 'auto_approved' : 'denied',
-            actor: 'policy',
-            details:
-              decision.source === 'policy'
-                ? { software_policy_id: decision.policyId }
-                : decision.source === 'default'
-                  ? { default_unmatched_verdict: 'auto_deny' }
-                  : {
-                      pam_rule_id: decision.rule?.ruleId,
-                      pam_rule_name: decision.rule?.ruleName,
-                    },
-            occurredAt: now,
-          });
-        }
-        for (const evidence of bridgeVerdict?.auditMatches ?? []) {
-          auditRows.push({
-            orgId: device.orgId,
-            elevationRequestId: insertedRow.id,
-            eventType: 'evidence_attached',
-            actor: 'policy',
-            details: {
-              software_policy_id: evidence.policyId,
-              rule_name: evidence.ruleName,
-              matched_field: evidence.matchedField,
-            },
-            occurredAt: now,
-          });
-        }
-        await tx.insert(elevationAudit).values(auditRows);
-
-        let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
-        if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
-          const actuation = await createPamDecisionIntent(tx, {
-            request: {
-              id: insertedRow.id,
-              orgId: device.orgId,
-              deviceId: device.id,
+        if (bridgeVerdict.match === 'blocklist') {
+          decision = { kind: 'denied', source: 'policy', policyId: bridgeVerdict.policyId };
+        } else if (bridgeVerdict.match === 'allowlist') {
+          decision = {
+            kind: 'auto_approved',
+            source: 'policy',
+            policyId: bridgeVerdict.policyId,
+            durationMinutes: PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
+          };
+        } else {
+          // No software policy bound — fall through to PAM-native rules.
+          const orgRules = await db
+            .select()
+            .from(pamRules)
+            .where(
+              and(
+                eq(pamRules.orgId, device.orgId),
+                eq(pamRules.enabled, true),
+                device.siteId
+                  ? or(isNull(pamRules.siteId), eq(pamRules.siteId, device.siteId))
+                  : isNull(pamRules.siteId),
+              ),
+            );
+          // Resolve any signer groups referenced by the candidate rules so the
+          // engine can match matchSignerGroupId against the group's members.
+          const signerGroupIds = [
+            ...new Set(
+              orgRules
+                .map((r) => r.matchSignerGroupId)
+                .filter((x): x is string => x != null),
+            ),
+          ];
+          let signerGroups: Map<string, SignerGroupEntry[]> | undefined;
+          if (signerGroupIds.length > 0) {
+            const groups = await db
+              .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
+              .from(pamSignerGroups)
+              .where(
+                and(
+                  eq(pamSignerGroups.orgId, device.orgId),
+                  inArray(pamSignerGroups.id, signerGroupIds),
+                ),
+              );
+            // Normalize the stored jsonb (legacy bare CNs and/or new entry
+            // objects) to canonical entries the engine matches against (#1776).
+            signerGroups = new Map(groups.map((g) => [g.id, normalizeSignerGroupEntries(g.signers)]));
+          }
+          const ruleMatch = evaluatePamRules(
+            orgRules,
+            {
               targetExecutablePath: payload.target_executable_path,
-              targetExecutableHash: payload.target_executable_hash ?? null,
+              targetExecutableHash: payload.target_executable_hash,
+              targetExecutableSigner: payload.target_executable_signer,
+              targetExecutableSignerThumbprint: payload.target_executable_signer_thumbprint,
               subjectUsername: payload.subject_username,
+              parentImage: payload.parent_image,
+              commandLine: payload.command_line,
+              at: observedAt,
             },
-            requestRevision: insertedRow.revision,
-            decision: decision.kind,
-            expiresAt,
-          });
-          enforcementStatus = actuation.desiredState === 'active'
-            ? 'pending_dispatch'
-            : 'cleanup_pending';
-        }
-        return { ...insertedRow, enforcementStatus };
-      });
-
-      writeAuditEvent(c, {
-        orgId: agent?.orgId ?? device.orgId,
-        actorType: 'agent',
-        actorId: agent?.agentId ?? agentId,
-        action: 'agent.elevation_request.submit',
-        resourceType: 'elevation_request',
-        resourceId: row.id,
-        details: {
-          flow_type: 'uac_intercept',
-          subject_username: payload.subject_username,
-          target_executable_path: payload.target_executable_path,
-          ingest_status: row.status,
-        },
-      });
-
-      const eventType: EventType =
-        decision.kind === 'auto_approved'
-          ? 'elevation.auto_approved'
-          : decision.kind === 'denied'
-            ? 'elevation.denied'
-            : 'elevation.requested';
-      await safePublish(eventType, device.orgId, {
-        elevationRequestId: row.id,
-        deviceId: device.id,
-        flowType: 'uac_intercept',
-        status: row.status,
-        subjectUsername: payload.subject_username,
-        targetExecutablePath: payload.target_executable_path,
-        ...(decision.kind !== 'pending' && decision.source === 'policy'
-          ? { softwarePolicyId: decision.policyId }
-          : {}),
-        ...(decision.kind !== 'pending' && 'rule' in decision && decision.rule
-          ? { pamRuleId: decision.rule.ruleId }
-          : {}),
-      });
-
-      // #1254: bridge a manually-pending uac_intercept to the mobile approval
-      // surface (fan-out to eligible technicians). Best-effort — the elevation
-      // row + audit are already committed and the agent must get its 201 even
-      // if the entire bridge fails. auto_approved / denied rows skip this (no
-      // human decision is needed).
-      if (decision.kind === 'pending') {
-        try {
-          await fanOutMobileApprovals({
-            elevationRequestId: row.id,
-            device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
-            payload,
-            reason,
-            bridgeVerdict,
-            expiresAt: new Date(now.getTime() + PAM_MOBILE_APPROVAL_TTL_MINUTES * 60_000),
-          });
-        } catch (bridgeErr) {
-          console.error(
-            `[ElevationRequests] mobile bridge failed for request=${row.id}:`,
-            bridgeErr,
+            signerGroups,
           );
+          if (!ruleMatch) {
+            // No software policy and no PAM rule matched — apply the org's
+            // default verdict for unmatched elevations. The historical default
+            // (and the default when no config row exists) is require_approval,
+            // i.e. leave the request pending; an org can opt into auto_deny.
+            const [cfg] = await db
+              .select({ verdict: pamOrgConfig.defaultUnmatchedVerdict })
+              .from(pamOrgConfig)
+              .where(eq(pamOrgConfig.orgId, device.orgId))
+              .limit(1);
+            if (cfg?.verdict === 'auto_deny') {
+              decision = { kind: 'denied', source: 'default' };
+            }
+          } else {
+            switch (ruleMatch.verdict) {
+              case 'auto_approve':
+                decision = {
+                  kind: 'auto_approved',
+                  source: 'rule',
+                  rule: ruleMatch,
+                  durationMinutes:
+                    ruleMatch.approvalDurationMinutes ??
+                    PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
+                };
+                break;
+              case 'auto_deny':
+                decision = { kind: 'denied', source: 'rule', rule: ruleMatch };
+                break;
+              case 'ignore':
+                decision = { kind: 'ignored', rule: ruleMatch };
+                break;
+              case 'require_approval':
+              default:
+                decision = { kind: 'pending' };
+                break;
+            }
+          }
         }
+      } catch (err) {
+        console.error(
+          `[ElevationRequests] decisioning failed for device=${device.id} org=${device.orgId} (failing safe to pending):`,
+          err,
+        );
+        decision = { kind: 'pending' };
       }
 
-      return c.json({
-        id: row.id,
-        status: row.status,
-        ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
-      }, 201);
-    } catch (err) {
-      console.error(
-        `[ElevationRequests] Failed to insert for device=${device.id} org=${device.orgId}:`,
-        err,
-      );
-      return c.json({ error: 'Failed to record elevation request' }, 500);
-    }
+      // 'ignore' rules suppress the request entirely: no elevation_requests
+      // row (the approval queue stays signal-only), but the observation is
+      // still recorded in the general audit log for forensics.
+      if (decision.kind === 'ignored') {
+        writeAuditEvent(c, {
+          orgId: agent?.orgId ?? device.orgId,
+          actorType: 'agent',
+          actorId: agent?.agentId ?? agentId,
+          action: 'agent.elevation_request.ignored',
+          resourceType: 'elevation_request',
+          resourceId: decision.rule.ruleId,
+          details: {
+            flow_type: 'uac_intercept',
+            subject_username: payload.subject_username,
+            target_executable_path: payload.target_executable_path,
+            pam_rule_id: decision.rule.ruleId,
+            pam_rule_name: decision.rule.ruleName,
+          },
+        });
+        // The agent treats any 200/201 as success and ignores the body.
+        return c.json({ id: null, status: 'ignored' }, 200);
+      }
+
+      const now = new Date();
+      const status =
+        decision.kind === 'auto_approved'
+          ? 'auto_approved'
+          : decision.kind === 'denied'
+            ? 'denied'
+            : 'pending';
+
+      try {
+        const row = await db.transaction(async (tx) => {
+          const expiresAt = decision.kind === 'auto_approved'
+            ? new Date(now.getTime() + decision.durationMinutes * 60_000)
+            : null;
+          const inserted = await tx.insert(elevationRequests)
+          .values({
+            orgId: device.orgId,
+            siteId: device.siteId ?? null,
+            deviceId: device.id,
+            flowType: 'uac_intercept',
+            subjectUserId: null,
+            subjectUsername: payload.subject_username,
+            reason,
+            targetExecutablePath: payload.target_executable_path,
+            targetExecutableHash: payload.target_executable_hash ?? null,
+            targetExecutableSigner: payload.target_executable_signer ?? null,
+            status,
+            requestedAt: observedAt,
+            approvedAt: decision.kind === 'auto_approved' ? now : null,
+            expiresAt,
+            denialReason:
+              decision.kind === 'denied'
+                ? decision.source === 'policy'
+                  ? 'Blocked by software policy'
+                  : decision.source === 'default'
+                    ? 'Blocked by org default (no matching policy or rule)'
+                    : `Blocked by PAM rule "${decision.rule?.ruleName ?? ''}"`
+                : null,
+            softwarePolicyMatchId:
+              decision.kind !== 'pending' && decision.source === 'policy'
+                ? (decision.policyId ?? null)
+                : null,
+            clientIp: clientIp ?? null,
+            userAgent,
+            metadata: {
+              pid: payload.pid,
+              parent_image: payload.parent_image,
+              command_line: payload.command_line,
+              ...(decision.kind !== 'pending' && decision.rule
+                ? { pam_rule_id: decision.rule.ruleId, pam_rule_name: decision.rule.ruleName }
+                : {}),
+            },
+          })
+          .returning({
+            id: elevationRequests.id,
+            status: elevationRequests.status,
+            revision: elevationRequests.revision,
+          });
+
+          const insertedRow = inserted[0];
+          if (!insertedRow) throw new Error('Insert returned no row');
+
+          // Request, audit chain, desired state, and outbox are one atomic write.
+          const auditRows: (typeof elevationAudit.$inferInsert)[] = [
+            {
+              orgId: device.orgId,
+              elevationRequestId: insertedRow.id,
+              eventType: 'requested',
+              actor: 'end_user',
+              details: {
+                subject_username: payload.subject_username,
+                target_executable_path: payload.target_executable_path,
+              },
+              occurredAt: observedAt,
+            },
+          ];
+          if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
+            auditRows.push({
+              orgId: device.orgId,
+              elevationRequestId: insertedRow.id,
+              eventType: decision.kind === 'auto_approved' ? 'auto_approved' : 'denied',
+              actor: 'policy',
+              details:
+                decision.source === 'policy'
+                  ? { software_policy_id: decision.policyId }
+                  : decision.source === 'default'
+                    ? { default_unmatched_verdict: 'auto_deny' }
+                    : {
+                        pam_rule_id: decision.rule?.ruleId,
+                        pam_rule_name: decision.rule?.ruleName,
+                      },
+              occurredAt: now,
+            });
+          }
+          for (const evidence of bridgeVerdict?.auditMatches ?? []) {
+            auditRows.push({
+              orgId: device.orgId,
+              elevationRequestId: insertedRow.id,
+              eventType: 'evidence_attached',
+              actor: 'policy',
+              details: {
+                software_policy_id: evidence.policyId,
+                rule_name: evidence.ruleName,
+                matched_field: evidence.matchedField,
+              },
+              occurredAt: now,
+            });
+          }
+          await tx.insert(elevationAudit).values(auditRows);
+
+          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
+          if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
+            const actuation = await createPamDecisionIntent(tx, {
+              request: {
+                id: insertedRow.id,
+                orgId: device.orgId,
+                deviceId: device.id,
+                targetExecutablePath: payload.target_executable_path,
+                targetExecutableHash: payload.target_executable_hash ?? null,
+                subjectUsername: payload.subject_username,
+              },
+              requestRevision: insertedRow.revision,
+              decision: decision.kind,
+              expiresAt,
+            });
+            enforcementStatus = actuation.desiredState === 'active'
+              ? 'pending_dispatch'
+              : 'cleanup_pending';
+          }
+          return { ...insertedRow, enforcementStatus };
+        });
+
+        writeAuditEvent(c, {
+          orgId: agent?.orgId ?? device.orgId,
+          actorType: 'agent',
+          actorId: agent?.agentId ?? agentId,
+          action: 'agent.elevation_request.submit',
+          resourceType: 'elevation_request',
+          resourceId: row.id,
+          details: {
+            flow_type: 'uac_intercept',
+            subject_username: payload.subject_username,
+            target_executable_path: payload.target_executable_path,
+            ingest_status: row.status,
+          },
+        });
+
+        const eventType: EventType =
+          decision.kind === 'auto_approved'
+            ? 'elevation.auto_approved'
+            : decision.kind === 'denied'
+              ? 'elevation.denied'
+              : 'elevation.requested';
+        await safePublish(eventType, device.orgId, {
+          elevationRequestId: row.id,
+          deviceId: device.id,
+          flowType: 'uac_intercept',
+          status: row.status,
+          subjectUsername: payload.subject_username,
+          targetExecutablePath: payload.target_executable_path,
+          ...(decision.kind !== 'pending' && decision.source === 'policy'
+            ? { softwarePolicyId: decision.policyId }
+            : {}),
+          ...(decision.kind !== 'pending' && 'rule' in decision && decision.rule
+            ? { pamRuleId: decision.rule.ruleId }
+            : {}),
+        });
+
+        // #1254: bridge a manually-pending uac_intercept to the mobile approval
+        // surface (fan-out to eligible technicians). Best-effort — the elevation
+        // row + audit are already committed and the agent must get its 201 even
+        // if the entire bridge fails. auto_approved / denied rows skip this (no
+        // human decision is needed).
+        if (decision.kind === 'pending') {
+          try {
+            await fanOutMobileApprovals({
+              elevationRequestId: row.id,
+              device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
+              payload,
+              reason,
+              bridgeVerdict,
+              expiresAt: new Date(now.getTime() + PAM_MOBILE_APPROVAL_TTL_MINUTES * 60_000),
+            });
+          } catch (bridgeErr) {
+            console.error(
+              `[ElevationRequests] mobile bridge failed for request=${row.id}:`,
+              bridgeErr,
+            );
+          }
+        }
+
+        return c.json({
+          id: row.id,
+          status: row.status,
+          ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
+        }, 201);
+      } catch (err) {
+        console.error(
+          `[ElevationRequests] Failed to insert for device=${device.id} org=${device.orgId}:`,
+          err,
+        );
+        return c.json({ error: 'Failed to record elevation request' }, 500);
+      }
+      },
+    );
   },
 );

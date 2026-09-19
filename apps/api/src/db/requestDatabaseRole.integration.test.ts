@@ -54,6 +54,7 @@ describe('request database role startup enforcement', () => {
     process.env.DATABASE_URL_APP = APP_DATABASE_URL;
     process.env.NODE_ENV = 'test';
     delete process.env.AUTO_MIGRATE;
+    delete process.env.BREEZE_ALLOW_UNSAFE_DB_ROLE;
   });
 
   afterAll(async () => {
@@ -106,5 +107,96 @@ describe('request database role startup enforcement', () => {
       }),
     ).rejects.toThrow(/SUPERUSER/);
     expect(migrate).not.toHaveBeenCalled();
+  });
+
+  // The startup role check is unconditional. NODE_ENV is operator-supplied
+  // configuration and can disagree with the deployment it describes, so it must
+  // not decide whether the check runs. These cases drive the real pool with a
+  // genuinely privileged connection while NODE_ENV says otherwise, and require
+  // refusal anyway.
+  it('rejects a SUPERUSER request pool at startup when NODE_ENV is not production', async () => {
+    const { getRequestDatabaseRole } = await loadFreshRequestPool(ADMIN_DATABASE_URL);
+    process.env.NODE_ENV = 'development';
+    // Control: this connection really is the privileged one, so the refusal below
+    // is the guard firing and not a vacuously-unreachable branch.
+    await expect(getRequestDatabaseRole()).resolves.toMatchObject({ isSuperuser: true });
+
+    const { initializeDatabaseForStartup } = await import('./databaseStartup');
+    const migrate = vi.fn();
+
+    await expect(
+      initializeDatabaseForStartup({
+        autoMigrateEnabled: false,
+        production: false,
+        migrate,
+      }),
+    ).rejects.toThrow(/SUPERUSER[\s\S]*BREEZE_ALLOW_UNSAFE_DB_ROLE/);
+    expect(migrate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a BYPASSRLS request pool at startup when NODE_ENV is not production', async () => {
+    const bypassUrl = new URL(ADMIN_DATABASE_URL);
+    bypassUrl.username = BYPASS_ROLE;
+    bypassUrl.password = BYPASS_PASSWORD;
+    const { getRequestDatabaseRole } = await loadFreshRequestPool(bypassUrl.toString());
+    process.env.NODE_ENV = 'test';
+    await expect(getRequestDatabaseRole()).resolves.toEqual({
+      currentUser: BYPASS_ROLE,
+      isSuperuser: false,
+      bypassesRls: true,
+    });
+
+    const { initializeDatabaseForStartup } = await import('./databaseStartup');
+
+    await expect(
+      initializeDatabaseForStartup({
+        autoMigrateEnabled: false,
+        production: false,
+        migrate: vi.fn(),
+      }),
+    ).rejects.toThrow(/BYPASSRLS/);
+  });
+
+  it('boots an unsafe request pool only under the explicit opt-out, logging loudly', async () => {
+    const bypassUrl = new URL(ADMIN_DATABASE_URL);
+    bypassUrl.username = BYPASS_ROLE;
+    bypassUrl.password = BYPASS_PASSWORD;
+    await loadFreshRequestPool(bypassUrl.toString());
+    process.env.NODE_ENV = 'development';
+    process.env.BREEZE_ALLOW_UNSAFE_DB_ROLE = 'true';
+
+    const { initializeDatabaseForStartup } = await import('./databaseStartup');
+    const errors: unknown[] = [];
+
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: false,
+      production: false,
+      migrate: vi.fn(),
+      logger: {
+        log: () => {},
+        warn: () => {},
+        error: (...args: unknown[]) => errors.push(args[0]),
+      },
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain('BYPASSRLS');
+    expect(String(errors[0])).toContain('BREEZE_ALLOW_UNSAFE_DB_ROLE');
+  });
+
+  it('ignores the opt-out in production', async () => {
+    await loadFreshRequestPool(ADMIN_DATABASE_URL);
+    process.env.NODE_ENV = 'production';
+    process.env.BREEZE_ALLOW_UNSAFE_DB_ROLE = 'true';
+
+    const { initializeDatabaseForStartup } = await import('./databaseStartup');
+
+    await expect(
+      initializeDatabaseForStartup({
+        autoMigrateEnabled: false,
+        production: true,
+        migrate: vi.fn(),
+      }),
+    ).rejects.toThrow(/SUPERUSER/);
   });
 });
