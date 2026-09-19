@@ -9,10 +9,12 @@ import { config } from 'dotenv';
 // and must never carry the truncate hazard.
 //
 // Run with: pnpm -F @breeze/api test:rls-coverage
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     include: ['src/__tests__/integration/rls-coverage.integration.test.ts'],

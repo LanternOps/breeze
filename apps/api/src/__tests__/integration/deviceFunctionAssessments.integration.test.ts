@@ -48,6 +48,7 @@ import {
   setupTestEnvironment,
 } from './db-utils';
 import { getTestDb } from './setup';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -307,10 +308,11 @@ describe('device_function_assessments — cascade, move and merge', () => {
     });
     const app = new Hono();
     app.route('/devices', moveOrgRoutes);
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
     const response = await app.request(`/devices/${deviceId}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: targetOrg.id, siteId: targetSite.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, deviceId, { orgId: targetOrg.id, siteId: targetSite.id })),
     });
     expect(response.status, await response.clone().text()).toBe(200);
 

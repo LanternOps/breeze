@@ -620,6 +620,28 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
 }
 
 /** Load the invoice, its lines, and branding (partner name + portal logo/colors). */
+/**
+ * The ONE footer/terms resolver (settings audit rule 5, finding 22).
+ * `invoiceTerms` is the invoice's own stamped `terms` column (set once, at
+ * issue — see invoiceService.issueInvoice); `partnerFooter` is
+ * `partners.invoiceFooter`; `brandingFooter` is `portal_branding.footerText`
+ * for the invoice's org.
+ *
+ * Pure — no DB access — so both DB-backed readers (this file's
+ * `loadInvoiceForRender` and `invoiceService.issueInvoice`, which runs inside
+ * its own locked system transaction) can share it without either opening a
+ * transaction on the other's behalf. Precedence matches the render-time chain
+ * that already existed at `loadInvoiceForRender` before this extraction —
+ * issue time is the side being brought into line with it.
+ */
+export function resolveInvoiceFooter(input: {
+  invoiceTerms: string | null;
+  partnerFooter: string | null;
+  brandingFooter: string | null;
+}): string | null {
+  return input.invoiceTerms ?? input.partnerFooter ?? input.brandingFooter ?? null;
+}
+
 async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
@@ -677,7 +699,11 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
       partnerName: partner?.name || (invoice.sellerSnapshot as SellerSnapshot | null)?.name || 'Invoice',
       logoUrl: branding?.logoUrl ?? null,
       primaryColor: branding?.primaryColor ?? null,
-      footerText: invoice.terms ?? partner?.invoiceFooter ?? branding?.footerText ?? null,
+      footerText: resolveInvoiceFooter({
+        invoiceTerms: invoice.terms,
+        partnerFooter: partner?.invoiceFooter ?? null,
+        brandingFooter: branding?.footerText ?? null,
+      }),
       currencyCode: invoice.currencyCode ?? partner?.currencyCode ?? 'USD',
       // Stamped snapshot wins; unstamped (draft/legacy) rows follow the
       // partner's current language.
@@ -944,10 +970,13 @@ async function deliverInvoiceEmail(
     await emailService.sendEmail({
       to: recipients,
       cc: cc.length > 0 ? cc : undefined,
-      // MSP-branded envelope, mirroring the quote send path: display name
-      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
-      // aligned), replies routed to the MSP's billing inbox.
-      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
+      // MSP-branded envelope, mirroring the quote send path: the registry's
+      // `partner_display_name` fallback renders "<Partner> via Breeze" on the
+      // platform address (SPF/DKIM stays aligned), replies routed to the MSP's
+      // billing inbox. Both values come from rows read above (spec §8.1).
+      purpose: 'invoice.sent',
+      partnerId: invoice.partnerId,
+      partnerName: partner?.name ?? null,
       replyTo: partner?.billingEmail?.trim() || undefined,
       subject: template.subject,
       html: template.html,

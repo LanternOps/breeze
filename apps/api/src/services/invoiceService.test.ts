@@ -132,6 +132,7 @@ import {
   enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
 } from '../jobs/accountingSyncWorker';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
+import { requestInvoiceSessionRevocation } from './stripeSessionRevocation';
 
 const requestPaymentPushMock = vi.mocked(requestPaymentPush);
 const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
@@ -239,12 +240,13 @@ describe('invoiceService guards', () => {
   });
 
   // recordPayment runs in ONE transaction (B10). In-tx query order:
+  //   0. status pre-check read (unlocked, #5611) → invoice row
   //   1. invoices lock select (FOR UPDATE) → invoice row
   //   2. invoice_payments sum select → prior payments (balance = total − sum)
   //   3. payment insert returning → payment row
   //   4-6. recomputeInvoiceStatus(tx): invoice re-read, payments re-read, update
   //   7. final invoice re-read (returned to the caller)
-  // Guard rejections consume only entries 1-2. The mock rows must carry `total`
+  // Guard rejections consume only entries 0-2. The mock rows must carry `total`
   // + `currencyCode` — the header's balance column is no longer read.
 
   it('recordPayment rejects payment on a draft (INVALID_STATE 409)', async () => {
@@ -255,7 +257,31 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
+  // #5611 item 2: the SEC-150 revocation (phases 1-2) used to run BEFORE the
+  // draft/void status check, so a mistaken recordPayment on a draft or a void
+  // invoice irreversibly expired its live pay links and THEN 409'd. The status is
+  // now pre-checked on an unlocked read before any revocation intent is written;
+  // the in-transaction check on the locked row stays authoritative.
+  it.each(['draft', 'void'])('recordPayment on a %s invoice 409s WITHOUT touching Stripe sessions', async (status) => {
+    queueResult([{ id: 'i1', status, orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '0.00' }]); // pre-check read
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+    expect(requestInvoiceSessionRevocation).not.toHaveBeenCalled();
+  });
+
+  it('recordPayment on an unknown invoice 404s WITHOUT touching Stripe sessions', async () => {
+    queueResult([]); // pre-check read → no row
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.recordPayment('missing', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+    expect(requestInvoiceSessionRevocation).not.toHaveBeenCalled();
+  });
+
   it('recordPayment rejects an overpayment against the in-tx balance (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // lock select
     queueResult([{ amount: '30.00' }]); // prior payments → balance 50.00, NOT the header column
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -265,6 +291,7 @@ describe('invoiceService guards', () => {
   });
 
   it('recordPayment rejects exact-cents overpayment at +0.01 (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // lock select
     queueResult([]); // no prior payments → balance 50.00
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -290,6 +317,7 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
+    queueResult([invoice]); // pre-check read (#5611)
     queueResult([invoice]); // lock select
     queueResult([]); // no prior payments → balance 2000 (representable JPY)
 
@@ -317,6 +345,7 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
+    queueResult([invoice]); // pre-check read (#5611)
     queueResult([invoice]); // lock select (guards + balance base)
     queueResult([]); // no prior payments → in-tx balance 1000.50 (non-representable)
     queueResult([{ id: 'pay1', amount: '1000.50', method: 'cash', reference: null, recordedBy: actor.userId }]); // payment insert
@@ -334,6 +363,10 @@ describe('invoiceService guards', () => {
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
     }]); // lock select
     queueResult([]); // no prior payments → in-tx balance 1000.50
     await expect(recordPayment(invoiceId, { amount: '500.50', method: 'cash', receivedAt: new Date() } as any, actor))
@@ -344,6 +377,10 @@ describe('invoiceService guards', () => {
     // JPY balance 1000.50: paying 500 (perfectly representable) would leave
     // '500.50' — a residue no later payment could clear. Only the exact payoff
     // may land on a non-representable balance.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
@@ -358,6 +395,10 @@ describe('invoiceService guards', () => {
     // payment of the exact payoff exists in invoice_payments. The re-derived
     // balance is 0.00 — representable — so this second exact-payoff attempt
     // must fall through to the overpay check, NOT ride the legacy escape hatch.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
@@ -749,15 +790,20 @@ describe('issueInvoice document_locale stamp', () => {
   });
 
   /** Queue the issue transaction's db calls for a manual-line-only draft. */
-  function queueIssuePath(inv: Record<string, unknown>, partner: Record<string, unknown>) {
+  function queueIssuePath(
+    inv: Record<string, unknown>,
+    partner: Record<string, unknown>,
+    branding: Record<string, unknown>[] = [],
+  ) {
     queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
     queueResult([inv]); // 1. invoice row lock
     queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
     queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null }]); // 3. org
     queueResult([partner]); // 4. partner (read inside the tx, after all locks)
-    queueResult([{ counter: 1 }]); // 5. counter upsert
-    queueResult([{ id: 'inv1' }]); // 6. guarded update ... returning
-    queueResult([{ ...inv, status: 'sent' }]); // 7. final re-select
+    queueResult(branding); // 5. portal branding for the invoice's org (W02-API: the shared footer chain's last resort)
+    queueResult([{ counter: 1 }]); // 6. counter upsert
+    queueResult([{ id: 'inv1' }]); // 7. guarded update ... returning
+    queueResult([{ ...inv, status: 'sent' }]); // 8. final re-select
   }
 
   function issueSet(): Record<string, unknown> {
@@ -797,6 +843,46 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
     enqueueAccountingInvoicePushMock.mockRejectedValueOnce(new Error('boom'));
     await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
+  });
+
+  /**
+   * Settings consolidation W02-API (M11, audit finding 22): the issue-time
+   * `terms` stamp now goes through the SHARED resolveInvoiceFooter, so it
+   * considers `portal_branding.footerText` — the fallback the render path has
+   * always had. Behaviour note: already-issued invoices are untouched (their
+   * `terms` column is written and this path never re-runs); a NEWLY issued
+   * invoice whose only configured footer is the portal-branding one now
+   * FREEZES that text at issue instead of tracking later portal-branding
+   * edits. That is the "one snapshot moment" direction rule 6 wants.
+   */
+  it('stamps terms from the portal-branding footer when the partner has none', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: null },
+      [{ footerText: 'Powered by Acme Portal' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Powered by Acme Portal');
+  });
+
+  it('prefers the partner footer over portal branding when both are set', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
+      [{ footerText: 'Portal footer' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Partner footer');
+  });
+
+  it('stamps a null terms when neither a partner footer nor a portal footer exists', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: null },
+      [],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBeNull();
   });
 });
 
@@ -1816,6 +1902,7 @@ describe('recordPayment -> QuickBooks push hook', () => {
 
   /** The reads recordPayment issues inside its one transaction, in order. */
   function queueRecordPayment() {
+    queueResult([invoice]);                                                    // pre-check read (#5611)
     queueResult([invoice]);                                                    // invoice FOR UPDATE
     queueResult([]);                                                           // prior payments (balance 100.00)
     queueResult([{ id: 'pay1', amount: '10.00', method: 'check', reference: null, recordedBy: 'u1' }]); // insert returning

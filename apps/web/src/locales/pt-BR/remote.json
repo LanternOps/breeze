@@ -67,6 +67,21 @@
     "openInBrowser": "Abrir no navegador",
     "policyDisabled": "A área de trabalho remota está desativada pela política",
     "policyDisabledNamed": "A área de trabalho remota foi desativada pela política \"{{name}}\"",
+    "revoked": {
+      "title": "Sessão revogada",
+      "setUpMfa": "Configurar MFA",
+      "reasons": {
+        "session_ended": "A sessão já havia terminado.",
+        "user_inactive": "Sua conta não está mais ativa.",
+        "epoch_baseline_missing": "Não foi possível verificar suas permissões. Tente se conectar novamente.",
+        "permissions_changed": "Suas permissões mudaram depois que esta sessão começou. Reconecte-se para continuar com seu acesso atual.",
+        "membership_removed": "Você não tem mais acesso a esta organização ou dispositivo.",
+        "site_scope_lost": "Este dispositivo está fora do escopo de site atribuído a você.",
+        "mfa_required": "A autenticação multifator agora é obrigatória para o acesso à área de trabalho remota.",
+        "hard_deadline": "Esta sessão atingiu a duração máxima permitida.",
+        "default": "A sessão foi encerrada por uma política de segurança. Tente se reconectar."
+      }
+    },
     "unavailable": {
       "default": "A área de trabalho não está disponível neste dispositivo",
       "headless": "Este dispositivo não tem tela; a área de trabalho remota está indisponível",

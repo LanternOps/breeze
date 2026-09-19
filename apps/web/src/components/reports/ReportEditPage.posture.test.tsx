@@ -127,6 +127,17 @@ describe('ReportEditPage posture options', () => {
     await waitFor(() => expect(lastBaseConfig().backupRequired).toBe(true));
   });
 
+  it('does not cap the page to a narrow max-w column (issue #6210)', async () => {
+    const { container } = render(<ReportEditPage reportId="report-1" />);
+
+    await screen.findByTestId('posture-backup-required');
+    // Regression: the page used to render `max-w-4xl mx-auto`, wasting ~40%
+    // of a wide viewport while sibling report pages (e.g. ReportBuilderPage)
+    // use the full available width.
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).not.toMatch(/\bmax-w-4xl\b/);
+  });
+
   it('leaves non-posture reports without the posture option but still config-safe', async () => {
     loadedReport = {
       ...report,

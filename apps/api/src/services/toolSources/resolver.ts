@@ -296,6 +296,80 @@ export async function resolveTenantToolByName(
   return all.find((d) => d.qualifiedName === qualifiedName) ?? null;
 }
 
+/** Outcome of {@link resolveTenantToolHealthByName} — see that function's doc. */
+export interface TenantToolHealthCheck {
+  found: boolean;
+  sourceStatus?: 'active' | 'error' | 'disabled';
+  lastError?: string | null;
+}
+
+/**
+ * Same owner predicate + `enabled`/`removedAt` filter as
+ * {@link buildResolveTenantToolsQuery}, but deliberately WITHOUT the
+ * `tool_sources.status = 'active'` filter — #6102's whole point. Used ONLY
+ * on the failure branch of a name resolve (after `resolveTenantToolByName`
+ * has already returned `null`) to tell "genuinely missing/inaccessible"
+ * (still `found: false`, still the generic 404 a caller without access gets
+ * today — the no-existence-oracle contract) apart from "exists, caller has
+ * access, but its source isn't `active` right now" (`found: true`, plus the
+ * source's live status/lastError for the caller to act on).
+ *
+ * Ordering matters: the caller MUST have already run the ordinary
+ * (status-filtered) resolve and gotten nothing back. This query alone
+ * decides nothing about access on its own that the ordinary resolver
+ * didn't already gate — it reuses the SAME `ownerPredicate`.
+ */
+export function buildResolveTenantToolHealthQuery(auth: AuthContext, qualifiedName: string, targetOrgId?: string | null) {
+  const predicate = ownerPredicate(auth, targetOrgId);
+  if (!predicate) return null;
+
+  return db
+    .select({ status: toolSources.status, lastError: toolSources.lastError })
+    .from(toolSourceTools)
+    .innerJoin(toolSources, eq(toolSourceTools.sourceId, toolSources.id))
+    .where(
+      and(
+        eq(toolSourceTools.qualifiedName, qualifiedName),
+        eq(toolSourceTools.enabled, true),
+        isNull(toolSourceTools.removedAt),
+        predicate,
+      ),
+    )
+    .limit(1);
+}
+
+/**
+ * Distinguishes "tool not found / caller has no access" from "tool exists,
+ * caller has access, but its source is not `active`" — see
+ * {@link buildResolveTenantToolHealthQuery}. Runs its own short SYSTEM-scope
+ * DB context, same pattern as `resolveTenantTools`/`loadTenantToolForExecution`
+ * (the owner predicate is derived explicitly from `auth`, never a bare read).
+ *
+ * `found: false` for the kill switch, system scope, or a scope missing its
+ * owner id — the exact same set of cases the ordinary resolver already
+ * treats as "resolves to nothing" — so a caller who genuinely lacks access
+ * gets an indistinguishable `found: false` here too.
+ */
+export async function resolveTenantToolHealthByName(
+  auth: AuthContext,
+  qualifiedName: string,
+  targetOrgId?: string | null,
+): Promise<TenantToolHealthCheck> {
+  if (!toolSourcesEnabled()) return { found: false };
+  if (!ownerPredicate(auth, targetOrgId)) return { found: false };
+
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const query = buildResolveTenantToolHealthQuery(auth, qualifiedName, targetOrgId);
+      return query ? await query : [];
+    }, 'resolveTenantToolHealthByName'),
+  );
+
+  const row = rows[0];
+  if (!row) return { found: false };
+  return { found: true, sourceStatus: row.status, lastError: row.lastError };
+}
+
 /**
  * Fresh, system-scoped, single-tool load by id for dispatch time — revocation
  * (disabled / removed / source gone inactive) is rechecked HERE rather than

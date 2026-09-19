@@ -143,6 +143,36 @@ describe('jwt service', () => {
     });
   });
 
+  describe('mfa assurance-source claim (mfa_src) — spec D6', () => {
+    it('round-trips mfa_src through access and refresh tokens', async () => {
+      const access = await verifyToken(await createAccessToken({ ...testPayload, mfa: true, mfa_src: 'factor' }));
+      const refresh = await verifyToken(await createRefreshToken({ ...testPayload, mfa: true, mfa_src: 'idp' }));
+      expect(access?.mfa_src).toBe('factor');
+      expect(refresh?.mfa_src).toBe('idp');
+    });
+
+    it('leaves mfa_src undefined on a token minted without it (legacy = policy by contract)', async () => {
+      const decoded = await verifyToken(await createAccessToken(testPayload));
+      expect(decoded?.mfa_src).toBeUndefined();
+      expect('mfa_src' in (decoded ?? {})).toBe(true); // key present, value undefined — same shape as mdid
+    });
+
+    it('drops an unknown mfa_src value instead of typing it through', async () => {
+      const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
+      const forged = await new SignJWT({ ...testPayload, mfa: true, mfa_src: 'bogus', type: 'access' })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('15m')
+        .setIssuer('breeze')
+        .setAudience('breeze-api')
+        .sign(secret);
+      const decoded = await verifyToken(forged);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.mfa).toBe(true);
+      expect(decoded?.mfa_src).toBeUndefined();
+    });
+  });
+
   describe('createTokenPair', () => {
     it('should create both access and refresh tokens', async () => {
       const result = await createTokenPair(testPayload);

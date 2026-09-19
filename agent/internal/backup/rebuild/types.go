@@ -137,6 +137,17 @@ type Options struct {
 	// console) must set it explicitly to get initramfs regeneration.
 	RegenerateInitramfs bool
 	SkipBoot            bool // tests/CI only: synthetic roots have no bootloader
+	// ExpectSystemState says the snapshot MUST carry system state
+	// (system-state/manifest.json with at least one artifact) and the run
+	// must apply it: preflight refuses when it is missing, and the run is
+	// never "completed" unless Result.StateApplied is true (#5412). Callers
+	// derive it from what they know about the snapshot — backupType ==
+	// "system_image" or a bootstrap advertising a state manifest (see
+	// bmr.SnapshotExpectsSystemState) — never from the snapshot's own
+	// contents, which is exactly what a broken capture would misreport.
+	// False keeps the soft path: a file-only snapshot rebuilds with a
+	// warning and StateApplied=false.
+	ExpectSystemState bool `json:"expectSystemState"`
 
 	System   System // nil → real system (system_linux.go)
 	Progress func(phase Phase, message string, current, total int64)
@@ -158,6 +169,13 @@ type Result struct {
 	BytesRestored int64         `json:"bytesRestored"`
 	DurationMs    int64         `json:"durationMs"`
 	Resumed       bool          `json:"resumed"`
+	// StateManifestFound is true once preflight downloaded and verified
+	// system-state/manifest.json; StateApplied only once
+	// bmr.RestoreSystemStateOffline returned nil for it (persisted across
+	// resumed runs). With Options.ExpectSystemState, Status is never
+	// "completed" while StateApplied is false (#5412).
+	StateManifestFound bool `json:"stateManifestFound"`
+	StateApplied       bool `json:"stateApplied"`
 }
 
 // RefusalError carries an operator-facing reason; Run maps it to Status

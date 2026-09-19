@@ -20,7 +20,7 @@
  */
 
 import { db } from '../db';
-import { devices } from '../db/schema';
+import { devices } from '../db/schema/devices';
 import { eq, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
@@ -53,6 +53,25 @@ export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
  */
 export function deviceScopeCondition(auth: AuthContext, column: PgColumn): SQL | undefined {
   return auth.allowedDeviceIds ? inArray(column, [...auth.allowedDeviceIds]) : undefined;
+}
+
+/**
+ * Site axis as a WHERE fragment over a DEVICE's `site_id` column (the joined
+ * `devices.siteId`, or a row's own denormalized site column).
+ *
+ * The exact-device counterpart of this is `deviceScopeCondition`; the two are
+ * INDEPENDENT and a query over device-attributable rows that a caller can reach
+ * without naming a device needs BOTH — a device-bound agent run carries only
+ * `allowedDeviceIds`, a site-restricted human only `allowedSiteIds`, and each
+ * guard is a silent no-op for the other shape (audit 2026-09-17 §1.1/§1.2).
+ *
+ * `undefined` for an unrestricted caller (no narrowing, no cost). An empty
+ * allowlist yields `inArray(col, [])`, which drizzle renders as `false`. A NULL
+ * `site_id` never matches `IN`, which is the intended denial: `canAccessSite`
+ * likewise denies a restricted caller a null site.
+ */
+export function siteScopeCondition(auth: AuthContext, siteColumn: PgColumn): SQL | undefined {
+  return auth.allowedSiteIds ? inArray(siteColumn, [...auth.allowedSiteIds]) : undefined;
 }
 
 /**
@@ -90,6 +109,40 @@ export async function resolveSiteAllowedDeviceIds(
   return orgDevices
     .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
     .map((d) => d.id);
+}
+
+/**
+ * Narrow a set of device ids a row already carries (an incident's
+ * `affected_devices`, a script proposal's `target_device_ids`, …) to the ones
+ * THIS caller may see, applying BOTH axes.
+ *
+ * Returns `null` only when the caller is restricted on neither axis (no
+ * narrowing at all — and no query). An empty array means "restricted, and none
+ * of these ids are reachable", which callers must treat as a denial rather than
+ * as an absence of data; the two must never be collapsed.
+ *
+ * This is the primitive for every guard that today intersects `allowedDeviceIds`
+ * alone: that narrows correctly for an agent run and is a complete no-op for a
+ * site-restricted human (audit 2026-09-17 §1.1). The device→site scan only runs
+ * for a site-restricted caller whose ids survived the exact-device filter, so a
+ * device-bound run and an unrestricted caller issue ZERO extra queries.
+ */
+export async function scopeDeviceIdsToCaller(
+  auth: AuthContext,
+  orgId: string,
+  deviceIds: unknown,
+): Promise<string[] | null> {
+  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return null;
+  const ids = (Array.isArray(deviceIds) ? deviceIds : [])
+    .filter((id): id is string => typeof id === 'string');
+  let scoped = ids;
+  if (auth.allowedDeviceIds) {
+    const exact = new Set(auth.allowedDeviceIds);
+    scoped = scoped.filter((id) => exact.has(id));
+  }
+  if (!auth.allowedSiteIds || scoped.length === 0) return scoped;
+  const siteAllowed = new Set((await resolveSiteAllowedDeviceIds(orgId, auth)) ?? []);
+  return scoped.filter((id) => siteAllowed.has(id));
 }
 
 /**

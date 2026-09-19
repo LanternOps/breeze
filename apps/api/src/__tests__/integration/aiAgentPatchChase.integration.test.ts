@@ -179,7 +179,9 @@ async function seedFixture(): Promise<Fixture> {
 
   const creator = await createUser({ partnerId: partner.id, orgId: org.id, email: `creator-${randomUUID()}@w03.test` });
   const role = await createRole({ scope: 'organization', orgId: org.id });
-  await grantRolePermissions(role.id, [{ resource: 'patches', action: 'execute' }]);
+  // manage_patches now maps onto the real routes' devices:* grants
+  // (2026-09-17 ROLE audit §2.6 — `patches` was never a catalog resource).
+  await grantRolePermissions(role.id, [{ resource: 'devices', action: 'execute' }]);
   const approver = await createUser({ partnerId: partner.id, orgId: org.id, email: `approver-${randomUUID()}@w03.test` });
   await assignUserToOrganization(approver.id, org.id, role.id);
 

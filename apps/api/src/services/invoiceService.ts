@@ -5,7 +5,7 @@ import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
-  accountingEntityMappings, accountingConnections
+  accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -16,6 +16,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { resolveInvoiceFooter } from './invoicePdf';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -1327,6 +1328,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     //    before the guarded write.
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+    // Portal-branding footer for the invoice's org — the last resort of the
+    // shared footer chain (resolveInvoiceFooter, invoicePdf.ts). Read here,
+    // after all locks, alongside the org/partner snapshot reads: a pure
+    // additional SELECT on a read-only table, no new lock class.
+    const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
+      .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
     const taxRate = resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: partner?.defaultTaxRate ?? null });
     const issueDate = new Date();
     const dueDate = new Date(issueDate.getTime() + (partner?.invoiceTermsDays ?? 30) * 86400000);
@@ -1362,7 +1369,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       billToTaxExempt: org?.taxExempt ?? false,
       // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
       // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
-      terms: partner?.invoiceFooter ?? null,
+      // Resolved through the SHARED chain (settings audit rule 5, finding 22)
+      // so issue time sees the portal-branding fallback the render path always
+      // had. `invoiceTerms: null` because a draft's `terms` is not yet
+      // stamped — this call is what establishes it.
+      terms: resolveInvoiceFooter({
+        invoiceTerms: null,
+        partnerFooter: partner?.invoiceFooter ?? null,
+        brandingFooter: issueBranding?.footerText ?? null,
+      }),
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
       // Render-locale snapshot (#3777): stamped ONCE at issue from the partner's
@@ -1494,6 +1509,21 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // Status PRE-CHECK, before any revocation intent is written (#5611). The
+  // revocation below is irreversible — it expires the invoice's live Stripe
+  // pay links — and used to run before the draft/void validation inside the
+  // transaction, so a mistaken recordPayment on a draft or a void invoice
+  // killed its links and THEN 409'd. This unlocked read only decides whether
+  // to start the revocation at all; the check against the LOCKED row inside
+  // the transaction remains the authoritative one (an issued invoice never
+  // returns to draft, and a void that lands in between has already revoked
+  // its own sessions, so the in-tx 409 is the only thing that can change).
+  const [pre] = await db.select({ status: invoices.status }).from(invoices)
+    .where(eq(invoices.id, invoiceId)).limit(1);
+  if (!pre) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
+  if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+
   // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
   //
   // Recording an alternate payment clears the balance a Stripe Checkout session

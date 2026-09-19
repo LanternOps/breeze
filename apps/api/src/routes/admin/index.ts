@@ -9,6 +9,7 @@ import { llmProviderCatalogAdminRoutes } from './llmProviderCatalog';
 import { aiKillStateAdminRoutes } from './aiKillState';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
+import { adminSendingDomainsRoutes } from './sendingDomains';
 
 export const adminRoutes = new Hono();
 
@@ -34,3 +35,8 @@ adminRoutes.route('/llm-provider-catalog', llmProviderCatalogAdminRoutes);
 // (including the SQL fallback for when no platform admin exists — true of
 // production today): docs/deploy/ai-kill-switch.md.
 adminRoutes.route('/ai-kill-state', aiKillStateAdminRoutes);
+// Partner sending domains W03: cross-partner list plus the kill switch
+// (suspend / unsuspend / force-release, spec §9.1). Mounted UNDER the
+// platform-admin gate above; the router adds its own requireMfa() on each
+// mutating verb.
+adminRoutes.route('/sending-domains', adminSendingDomainsRoutes);

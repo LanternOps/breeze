@@ -764,7 +764,8 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 | `excludeIps` | string[] | -- | IP addresses to skip |
 | `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
-| `snmpCommunities` | string[] | -- | SNMP community strings to try |
+| `snmpCommunities` | string[] | -- | SNMPv1/v2c community strings to try |
+| `snmpCredentials` | object | -- | Structured SNMP credential (`version`, `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` in ms, `retries`); tried before `snmpCommunities`. `public` is only used when neither is set |
 | `timeout` | int | `2` | Per-host timeout in seconds |
 | `concurrency` | int | `128` | Max concurrent scan workers |
 | `deepScan` | bool | `false` | Enable deep scanning (more ports, slower) |

@@ -163,3 +163,11 @@ describe('TicketList — the failure state', () => {
     expect(heading.className).toContain('font-display');
   });
 });
+
+describe('TicketList — phone card first line', () => {
+  it('lets a long subject wrap instead of pushing the status mark to the next line', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/portal/TicketList.tsx', 'utf8');
+    expect(src).toMatch(/order-1 min-w-0 grow basis-0 sm:basis-auto/);
+  });
+});

@@ -31,6 +31,10 @@ vi.mock('./ticketService', () => ({
   assignTicket: vi.fn(async () => ({ id: 't1', assignedTo: 'u2' })),
   addTicketComment: vi.fn(async () => ({ comment: { id: 'c1' } })),
   createTicketFromAlert: vi.fn(async () => ({ id: 't-from-alert' })),
+  // link_device revalidates the retained assignee after moving a ticket's
+  // device scope (#5551 partner-drift fix) — a no-op stub is enough here
+  // since these tests only assert on the link_device response itself.
+  revalidateTicketAssignee: vi.fn(async () => ({ id: 't1' })),
 }));
 
 import { db } from '../db';

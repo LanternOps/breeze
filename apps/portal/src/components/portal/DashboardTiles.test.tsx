@@ -353,3 +353,14 @@ describe('DashboardTiles — service delivery row (W04)', () => {
     expect(screen.getByTestId('portal-dashboard-tile-service')).toHaveTextContent('Not yet available');
   });
 });
+
+describe('security score rule', () => {
+  it('draws the score as a ruled 0–100 bar in the band ink beside the figure', () => {
+    render(<DashboardTiles dashboard={dashboard} />);
+    const rule = screen.getByTestId('portal-score-rule');
+    expect(rule).toHaveAttribute('role', 'img');
+    expect(rule.getAttribute('aria-label')).toMatch(/^Score \d+ of 100/);
+    const fill = rule.querySelector('[data-testid="portal-score-rule-fill"]');
+    expect(fill?.getAttribute('width')).toBe(String(dashboard.securityScore.score));
+  });
+});

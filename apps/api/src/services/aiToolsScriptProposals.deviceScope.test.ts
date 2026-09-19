@@ -57,7 +57,18 @@ function proposal(targetDeviceIds: string[]) {
 }
 
 function mockRead(row: ReturnType<typeof proposal>) {
-  mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([row]) }) }) });
+  // Awaiting the chain with no limit is the device->site scan the site axis
+  // added (resolveSiteAllowedDeviceIds): dev-1 in site-1, dev-2 in site-2.
+  mockDb.select.mockImplementation(() => {
+    const chain: any = {
+      from: () => chain,
+      where: () => chain,
+      limit: () => Promise.resolve([row]),
+      then: (resolve: (v: unknown) => unknown) =>
+        Promise.resolve([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-2' }]).then(resolve),
+    };
+    return chain;
+  });
 }
 
 describe('getScriptProposalForPrincipal — exact-device scope', () => {

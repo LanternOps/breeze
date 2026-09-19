@@ -1,14 +1,19 @@
-import admin from 'firebase-admin';
+import { initializeApp, getApp, getApps, cert, type App, type ServiceAccount } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 
 /**
  * Native Firebase Cloud Messaging (FCM) sender for Android. Mirrors apns.ts's
  * never-throws, structured-result contract so expoPush.ts's dispatcher can
  * treat both native providers identically (#3639).
+ *
+ * Uses the modular `firebase-admin/app` + `firebase-admin/messaging` API —
+ * firebase-admin 14 removed the legacy `admin.app`/`admin.messaging()`
+ * compat namespace from the package's default export.
  */
 
-let firebaseApp: admin.app.App | null = null;
+let firebaseApp: App | null = null;
 
-function parseServiceAccount(raw: string): admin.ServiceAccount {
+function parseServiceAccount(raw: string): ServiceAccount {
   let parsed: { privateKey?: string; private_key?: string };
   try {
     parsed = JSON.parse(raw);
@@ -21,7 +26,7 @@ function parseServiceAccount(raw: string): admin.ServiceAccount {
   if (typeof parsed.privateKey === 'string') {
     parsed.privateKey = parsed.privateKey.replace(/\\n/g, '\n');
   }
-  return parsed as admin.ServiceAccount;
+  return parsed as ServiceAccount;
 }
 
 /** True iff FIREBASE_SERVICE_ACCOUNT is present. Mirrors isApnsConfigured(). */
@@ -29,14 +34,14 @@ export function isFcmConfigured(): boolean {
   return !!process.env.FIREBASE_SERVICE_ACCOUNT;
 }
 
-function initFirebase(): admin.app.App {
+function initFirebase(): App {
   if (firebaseApp) return firebaseApp;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT is not set');
   const serviceAccount = parseServiceAccount(raw);
-  firebaseApp = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  firebaseApp = getApps().length
+    ? getApp()
+    : initializeApp({ credential: cert(serviceAccount) });
   return firebaseApp;
 }
 
@@ -91,8 +96,8 @@ export async function sendFcmNotification(token: string, payload: FcmPayload): P
     return { ok: false, reason: 'not_configured' };
   }
   try {
-    initFirebase();
-    const messageId = await admin.messaging().send({
+    const app = initFirebase();
+    const messageId = await getMessaging(app).send({
       token,
       notification: { title: payload.title, body: payload.body },
       data: stringifyData(payload.data),

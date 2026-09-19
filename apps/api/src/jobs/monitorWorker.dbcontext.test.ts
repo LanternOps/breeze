@@ -136,7 +136,7 @@ function selectLimitChain(rows: unknown[], label: string) {
 
 describe('processCheckMonitor DB-context scoping (final-review fix, #4084/#1105)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     ctxState.depth = 0;
     ctxState.events = [];
 
@@ -159,13 +159,15 @@ describe('processCheckMonitor DB-context scoping (final-review fix, #4084/#1105)
         ) as never
       )
       // selectExecutionAgentForMonitor: unbound monitor → org-wide online agent lookup
-      .mockReturnValueOnce(selectLimitChain([{ agentId: 'agent-1' }], 'agentSelect') as never);
+      .mockReturnValueOnce(selectLimitChain([{ agentId: 'agent-1' }], 'agentSelect') as never)
+      .mockReturnValueOnce(selectLimitChain([{ id: 'monitor-1', orgId: 'org-1', assetId: null, isActive: true, monitorType: 'icmp_ping', target: 'example.com' }], 'monitorRecheck') as never)
+      .mockReturnValueOnce(selectLimitChain([{ agentId: 'agent-1' }], 'agentRecheck') as never);
 
     const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
 
     expect(result).toEqual({ dispatched: true, agentId: 'agent-1' });
-    // The monitor read and the agent-selection read share ONE context; the
-    // connectivity check and the socket write happen only after it closes.
+    // Initial selection and final revalidation each use a short context;
+    // connectivity and the socket write run after their contexts close.
     // This is the #1105 fix: a blanket wrap here used to hold a pooled
     // connection idle-in-transaction across both of those facade calls.
     expect(ctxState.events).toEqual([
@@ -174,8 +176,30 @@ describe('processCheckMonitor DB-context scoping (final-review fix, #4084/#1105)
       'agentSelect@depth1',
       'ctx:exit',
       'isAgentConnected@depth0',
+      'ctx:enter',
+      'monitorRecheck@depth1',
+      'agentRecheck@depth1',
+      'ctx:exit',
       'wsDispatch@depth0',
     ]);
+  });
+
+  it.each([
+    { name: 'executor no longer eligible', monitorRows: [{ id: 'monitor-1', orgId: 'org-1', assetId: null, isActive: true }], agentRows: [] },
+    { name: 'monitor deleted', monitorRows: [], agentRows: null },
+    { name: 'monitor moved to another org', monitorRows: [{ id: 'monitor-1', orgId: 'org-2', assetId: null, isActive: true }], agentRows: null },
+    { name: 'monitor disabled', monitorRows: [{ id: 'monitor-1', orgId: 'org-1', assetId: null, isActive: false }], agentRows: null },
+  ])('does not dispatch after $name during connectivity I/O', async ({ monitorRows, agentRows }) => {
+    mockDb.select
+      .mockReturnValueOnce(selectLimitChain([{ id: 'monitor-1', orgId: 'org-1', assetId: null, isActive: true }], 'monitorSelect'))
+      .mockReturnValueOnce(selectLimitChain([{ agentId: 'agent-1' }], 'agentSelect'))
+      .mockReturnValueOnce(selectLimitChain(monitorRows, 'monitorRecheck'));
+    if (agentRows) mockDb.select.mockReturnValueOnce(selectLimitChain(agentRows, 'agentRecheck'));
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
+    expect(result).toEqual({ dispatched: false, agentId: null });
+    expect(agentRelayMock.isAgentConnectedAnywhere).toHaveBeenCalledOnce();
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(ctxState.depth).toBe(0);
   });
 
   it('does not dispatch — and holds no context open past the read — when the monitor is missing', async () => {

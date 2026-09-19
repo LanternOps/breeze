@@ -125,6 +125,7 @@ describe('invoiceService site-axis guard', () => {
   });
 
   it('recordPayment denies a payment on an out-of-site invoice (SITE_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB', balance: '50.00' }]);
     await expect(
       svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, restricted)
