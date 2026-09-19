@@ -2488,6 +2488,15 @@ const CONFIG_POLICY_TARGET_ORG_CHANGED =
   'device_org_changed: target device left the organization this configuration policy run was admitted for';
 
 /**
+ * A target device id that no longer resolves to any device row at all (hard
+ * deleted, not moved). `automation_run_device_results` needs a live device_id
+ * FK target, so there is nowhere to record this as a per-device result — the
+ * run log is the only audit trail. See `AutomationTargetAdmission.movedOut`.
+ */
+const AUTOMATION_TARGET_DELETED =
+  'Target device no longer exists and was dropped from the run';
+
+/**
  * Resolve the current device rows through the automation's CURRENT owner
  * boundary. A queued device id is only a locator: it is never authority to
  * cross an organization move. Re-reading the full row also prevents later
@@ -3265,6 +3274,11 @@ async function executeAutomationRunInner(
     loadAutomationTargetAdmission(automation, targetDeviceIds));
   const deviceRows = targetAdmission.admitted;
   const preRunDeniedDevices = targetAdmission.movedOut;
+  const knownDeviceIds = new Set([
+    ...deviceRows.map((device) => device.id),
+    ...preRunDeniedDevices.map((device) => device.id),
+  ]);
+  const deletedTargetIds = targetDeviceIds.filter((id) => !knownDeviceIds.has(id));
 
   const scriptsById = resolvedReferences.scriptsById;
   const channelsById = resolvedReferences.notificationChannelsById;
@@ -3329,6 +3343,14 @@ async function executeAutomationRunInner(
     logs.push(logEntry(AUTOMATION_TARGET_AUTHORITY_LOST, 'error', {
       details: {
         deviceIds: preRunDeniedDevices.map((device) => device.id),
+        phase: 'pre_run',
+      },
+    }));
+  }
+  if (deletedTargetIds.length > 0) {
+    logs.push(logEntry(AUTOMATION_TARGET_DELETED, 'warning', {
+      details: {
+        deviceIds: deletedTargetIds,
         phase: 'pre_run',
       },
     }));
