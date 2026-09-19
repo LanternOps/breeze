@@ -214,6 +214,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'comment',
       'assign',
       'update_status',
+      'list_work_types',
       'log_time_entry',
       'start_timer',
       'stop_timer',
@@ -261,6 +262,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
+    workType: z.string().optional(),
     // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
     fields: z.object({

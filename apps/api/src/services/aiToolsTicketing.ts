@@ -48,6 +48,7 @@ import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { listChecklist } from './ticketChecklistService';
+import { listWorkTypes } from './workTypeService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -135,6 +136,23 @@ function timeEntryActorFrom(auth: AuthContext) {
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
     manageAll: false as const
   };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Preserve undefined on omission so the service applies the category default. */
+async function resolveWorkTypeId(raw: string | undefined, partnerId: string): Promise<string | undefined> {
+  if (!raw) return undefined;
+  if (UUID_RE.test(raw)) return raw;
+  const active = await listWorkTypes(partnerId, { includeInactive: false });
+  const match = active.find((w) => w.name.toLowerCase() === raw.trim().toLowerCase());
+  if (!match) {
+    throw new TimeEntryServiceError(
+      `Unknown work type "${raw}". Valid work types: ${active.map((w) => w.name).join(', ') || '(none configured)'}`,
+      400,
+    );
+  }
+  return match.id;
 }
 
 /**
@@ -313,6 +331,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         'Use action "list" to search, "get" for full detail, "create" to open a new ticket, ' +
         '"comment" to add a reply or internal note, "assign" to set the assignee, ' +
         '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
+        '"list_work_types" to list active work types (id and name), ' +
         '"log_time_entry" to record a completed time block (requires startedAt + endedAt), ' +
         '"start_timer" to start a running timer (auto-stops any existing timer), ' +
         '"stop_timer" to stop the currently running timer, ' +
@@ -330,6 +349,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'comment',
               'assign',
               'update_status',
+              'list_work_types',
               'log_time_entry',
               'start_timer',
               'stop_timer',
@@ -441,6 +461,13 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           isBillable: {
             type: 'boolean',
             description: 'Whether this time is billable to the customer (log_time_entry / stop_timer; defaults from ticket category)'
+          },
+          workType: {
+            type: 'string',
+            description:
+              'Work type for log_time_entry / start_timer — the NAME (e.g. "On-site", "Remote", "After-hours") or its id. ' +
+              'Says WHAT the work was. Omit it to let the ticket category default apply. ' +
+              'Use list_work_types to see the options. Cannot be changed at stop_timer; edit the time entry instead.',
           },
           hourlyRate: {
             type: 'number',
@@ -980,6 +1007,18 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      if (action === 'list_work_types' ||
+          ((action === 'log_time_entry' || action === 'start_timer') && input.workType !== undefined)) {
+        if (auth.scope !== 'partner' || !auth.partnerId) {
+          return JSON.stringify({ error: 'Work types require partner scope' });
+        }
+      }
+
+      if (action === 'list_work_types') {
+        const rows = await listWorkTypes(auth.partnerId!, { includeInactive: false });
+        return JSON.stringify({ workTypes: rows.map(({ id, name }) => ({ id, name })) });
+      }
+
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
         // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
@@ -1009,6 +1048,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await createTimeEntry(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               startedAt: new Date(String(input.startedAt)),
               endedAt: new Date(String(input.endedAt)),
@@ -1041,6 +1084,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         try {
           const entry = await startTimer(
             {
+              workTypeId: await resolveWorkTypeId(
+                typeof input.workType === 'string' ? input.workType : undefined,
+                auth.partnerId!,
+              ),
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               description: input.description ? String(input.description) : undefined
             },
@@ -1057,6 +1104,13 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── stop_timer ────────────────────────────────────────────────────────
       if (action === 'stop_timer') {
+        // Spec §3.7: work types are stamped at start; stopping does not take
+        // the ticket lock needed for a work-type edit and its pricing changes.
+        if (input.workType !== undefined) {
+          return JSON.stringify({
+            error: 'Work type is set at timer start. Stop without workType, then edit the time entry to change it.',
+          });
+        }
         try {
           const entry = await stopTimer(
             {
