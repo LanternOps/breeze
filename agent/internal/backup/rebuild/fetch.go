@@ -3,6 +3,7 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -64,4 +65,41 @@ func fetchManifest(ctx context.Context, provider providers.BackupProvider, snaps
 		return nil, fmt.Errorf("decode manifest.json: %w", err)
 	}
 	return &s, nil
+}
+
+// SnapshotAdvertisesSystemState reports whether the snapshot in storage
+// looks like a whole-machine (system_image) capture that should carry
+// system state: it has snapshots/<id>/system-state/manifest.json, or a
+// layout.json (only ever written by the system_image profile). It is the
+// local-provider stand-in for bmr.SnapshotExpectsSystemState when there is
+// no server bootstrap to ask (breeze-backup rebuild --provider-config,
+// #5412). Only a positively confirmed absence (providers.ErrObjectNotFound)
+// of both objects yields false; any other download failure is returned so
+// a transport blip never silently downgrades the run to files-only.
+func SnapshotAdvertisesSystemState(ctx context.Context, provider providers.BackupProvider, snapshotID string) (bool, error) {
+	for _, key := range []string{
+		path.Join("snapshots", snapshotID, "system-state", "manifest.json"),
+		path.Join("snapshots", snapshotID, "layout.json"),
+	} {
+		if ctx != nil && ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		tmp, err := os.CreateTemp("", "breeze-probe-*.json")
+		if err != nil {
+			return false, err
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		err = provider.Download(key, tmpPath)
+		_ = os.Remove(tmpPath)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, providers.ErrObjectNotFound):
+			continue
+		default:
+			return false, fmt.Errorf("probe %s: %w", key, err)
+		}
+	}
+	return false, nil
 }

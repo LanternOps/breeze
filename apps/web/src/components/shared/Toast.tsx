@@ -9,6 +9,7 @@ import '../../lib/i18n';
 interface ToastData {
   id: string;
   message: string;
+  detail?: string;
   type: 'success' | 'error' | 'undo' | 'warning';
   onUndo?: () => void;
   duration?: number;
@@ -153,7 +154,12 @@ export default function ToastContainer() {
             ) : (
               <CheckCircle className="h-4 w-4 shrink-0 text-success" />
             )}
-            <span className={`flex-1 text-sm ${isError ? '' : 'text-foreground'}`}>{toast.message}</span>
+            <span className={`flex-1 text-sm ${isError ? '' : 'text-foreground'}`}>
+              {toast.message}
+              {toast.detail && (
+                <span className="mt-0.5 line-clamp-3 block text-xs opacity-80">{toast.detail}</span>
+              )}
+            </span>
             {toast.type === 'undo' && toast.onUndo && (
               <button
                 type="button"

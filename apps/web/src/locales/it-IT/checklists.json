@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Checklist",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Ancora nessun passaggio.",
+    "addPlaceholder": "Aggiungi un passaggio",
+    "add": "Aggiungi",
+    "internalOnly": "Interno — mai mostrato al cliente",
+    "detailPlaceholder": "Nota facoltativa per questo passaggio"
+  },
+  "actions": {
+    "moveUp": "Sposta su",
+    "moveDown": "Sposta giù",
+    "delete": "Elimina",
+    "edit": "Modifica",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "retry": "Riprova"
+  },
+  "source": {
+    "manual": "Manuale",
+    "deliverable": "Deliverable",
+    "checklist_template": "Modello"
+  },
+  "editDoneWarning": "Modificare un passaggio completato cancella chi lo ha completato e quando.",
+  "resolveConfirm": {
+    "title": "Checklist incompleta",
+    "body_one": "{{count}} passaggio su {{total}} non è spuntato. Risolvere comunque?",
+    "body_other": "{{count}} passaggi su {{total}} non sono spuntati. Risolvere comunque?",
+    "confirm": "Risolvi comunque",
+    "cancel": "Torna indietro"
+  },
+  "errors": {
+    "loadFailed": "Impossibile caricare la checklist.",
+    "saveFailed": "Impossibile salvare il passaggio della checklist.",
+    "reorderFailed": "Impossibile riordinare la checklist.",
+    "tickRequiresUser": "Spuntare un passaggio richiede una sessione utente autenticata."
+  },
+  "templates": {
+    "title": "Modelli di checklist",
+    "subtitle": "Procedure riutilizzabili che i tuoi tecnici possono applicare a qualsiasi ticket.",
+    "allOrganizations": "Tutte le org",
+    "partnerWideHint": "Si applica a ogni organizzazione che gestisci, ora e in futuro.",
+    "thisOrganizationOnly": "Solo questa organizzazione",
+    "scope": "Chi può usare questo modello",
+    "name": "Nome",
+    "description": "Descrizione",
+    "instructions": "Istruzioni interne",
+    "instructionsHint": "Interno — mai mostrato al cliente.",
+    "isActive": "Attivo",
+    "inactiveHint": "I modelli inattivi restano collegati dove sono già utilizzati, ma non compaiono più nei selettori.",
+    "steps": "Passaggi",
+    "addStep": "Aggiungi un passaggio",
+    "stepLabelPlaceholder": "Etichetta del passaggio",
+    "empty": "Ancora nessun modello.",
+    "create": "Nuovo modello",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "delete": "Elimina",
+    "apply": "Applica modello",
+    "applyCta": "Applica",
+    "choosePlaceholder": "Scegli un modello",
+    "applyMode": {
+      "append": "Aggiungi questi passaggi alla checklist esistente",
+      "replaceUnticked": "Sostituisci i passaggi non spuntati (i passaggi completati vengono mantenuti)"
+    },
+    "errors": {
+      "loadFailed": "Impossibile caricare i modelli di checklist.",
+      "saveFailed": "Impossibile salvare il modello di checklist.",
+      "applyFailed": "Impossibile applicare il modello di checklist."
+    }
+  }
+}

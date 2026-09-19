@@ -19,6 +19,9 @@ import { devices } from './devices';
 import { users } from './users';
 import { maintenanceWindows } from './maintenance';
 import { deploymentStatusEnum } from './deployments';
+// #5505 W03: one-way edge only — softwarePolicies.ts does not import ./software,
+// so this introduces no import cycle.
+import { softwarePolicies } from './softwarePolicies';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -107,11 +110,20 @@ export const softwareDeployments = pgTable('software_deployments', {
   // The scheduler claims rows via `SET dispatched_at = now() WHERE dispatched_at IS NULL`
   // so scheduled deployments are never double-dispatched across API instances.
   dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  // #5505 W03 (contract D7): set when this deployment was created BY a software
+  // policy's autoInstall remediation rather than by an operator. Stamped by the
+  // INSERT in createSoftwareDeployment, never patched afterwards. ON DELETE SET
+  // NULL (migration 2026-10-16-193100) is load-bearing: a partner-wide policy is
+  // referenced by deployments in every child org, so a NO ACTION FK would abort
+  // an org or partner erasure with 23503. The remediation worker dedupes
+  // in-flight policy-owned work on this column.
+  softwarePolicyId: uuid('software_policy_id').references(() => softwarePolicies.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdx: index('software_deployments_org_id_idx').on(table.orgId),
   versionIdx: index('software_deployments_version_id_idx').on(table.softwareVersionId),
   installMethodIdx: index('software_deployments_install_method_idx').on(table.installMethodId),
+  softwarePolicyIdx: index('software_deployments_software_policy_idx').on(table.softwarePolicyId),
   scheduleIdx: index('software_deployments_schedule_idx').on(table.scheduleType, table.scheduledAt)
 }));
 
@@ -132,7 +144,11 @@ export const deploymentResults = pgTable('deployment_results', {
 }, (table) => ({
   deploymentIdx: index('deployment_results_deployment_id_idx').on(table.deploymentId),
   deviceIdx: index('deployment_results_device_id_idx').on(table.deviceId),
-  statusIdx: index('deployment_results_status_idx').on(table.status)
+  statusIdx: index('deployment_results_status_idx').on(table.status),
+  // #5777: covers softwareDeploymentSiteScopePredicate's correlated
+  // EXISTS/NOT EXISTS over (deployment_id, device_id). See migration
+  // 2026-10-20-120000-deployment-results-deployment-device-index.sql.
+  deploymentDeviceIdx: index('deployment_results_deployment_id_device_id_idx').on(table.deploymentId, table.deviceId)
 }));
 
 export const softwareInventoryObservations = pgTable('software_inventory_observations', {

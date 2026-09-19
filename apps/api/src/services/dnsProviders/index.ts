@@ -66,6 +66,10 @@ export function createDnsProvider(input: DnsProviderFactoryInput): DnsProvider {
   // `!isHosted()` is implied by the falsey-set membership but kept explicit so
   // the truthy/falsey vocabularies can never drift apart silently.
   const allowPrivateNetwork = recognizedSelfHostSignal && !isHosted();
+  // The carrier-NAT (Tailscale, 100.64/10) opt-in is per-integration and only
+  // takes effect on a self-hosted deployment: it is ANDed with the self-host
+  // private-network allowance above, so it can never widen egress on hosted.
+  const allowCarrierNat = allowPrivateNetwork && input.config.allowCarrierNatEgress === true;
 
   switch (input.provider) {
     case 'umbrella':
@@ -78,10 +82,10 @@ export function createDnsProvider(input: DnsProviderFactoryInput): DnsProvider {
       // v6 reworked the admin API into a session-based REST surface; v5 (default
       // when unset) keeps the legacy /admin/api.php?...&auth= token endpoint.
       return input.config.piholeVersion === 'v6'
-        ? new PiHoleV6Provider(input.apiKey, input.config, allowPrivateNetwork)
-        : new PiHoleProvider(input.apiKey, input.config, allowPrivateNetwork);
+        ? new PiHoleV6Provider(input.apiKey, input.config, allowPrivateNetwork, allowCarrierNat)
+        : new PiHoleProvider(input.apiKey, input.config, allowPrivateNetwork, allowCarrierNat);
     case 'adguard_home':
-      return new AdGuardHomeProvider(input.apiKey, input.apiSecret, input.config, allowPrivateNetwork);
+      return new AdGuardHomeProvider(input.apiKey, input.apiSecret, input.config, allowPrivateNetwork, allowCarrierNat);
     case 'opendns':
     case 'quad9':
       throw new Error(`Provider ${input.provider} is not yet supported for API sync`);

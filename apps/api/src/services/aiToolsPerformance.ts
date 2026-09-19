@@ -15,7 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds, deviceScopeCondition } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -75,6 +75,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -392,6 +395,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // Site is an app-layer authz axis only (RLS does not cover it) — join
       // devices and narrow by siteId for a site-restricted caller.
       if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
+      // W04 (#5715): the device-LESS analysis run's frozen set — it has no site
+      // axis, so the narrowing above does nothing for it.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // The per-device fold runs in Postgres, not here. Selecting raw rollup
       // rows materialized (org devices) x (buckets in window) — a 168h window
@@ -530,6 +537,12 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086): the fleet form (no deviceId) is otherwise
+      // org-wide, so a device-bound run reads sibling devices' sessions. It is
+      // independent of the site ceiling above — a device-less analysis run has
+      // `allowedDeviceIds` and no `allowedSiteIds` at all.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({
@@ -652,6 +665,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (username) conditions.push(eq(deviceSessions.username, username));
       if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086) — see get_active_users above; the site axis
+      // alone does not constrain a device-less analysis run.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({

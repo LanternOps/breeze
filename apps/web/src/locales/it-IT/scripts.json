@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilegi elevati",
     "relativeTime": {
       "justNow": "Adesso",
       "minutesAgo": "{{count}} min fa",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Questa azione non può essere annullata."
     },
     "library": {
+      "target": "Importa in",
+      "allOrgs": "Tutte le organizzazioni del partner",
+      "chooseOrg": "Scegli un’organizzazione",
+      "partnerPermission": "Non puoi importare script per tutte le organizzazioni. Scegli un’organizzazione.",
+      "importSuccess": "«{{name}}» importato",
       "title": "Libreria script di sistema",
       "description": "Importa script nella tua organizzazione",
       "searchPlaceholder": "Cerca script di sistema...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} importati, {{renamed}} rinominati, {{versioned}} versionati, {{skipped}} saltati, {{failed}} non riusciti",
     "scriptCount": "{{count}} script nel bundle",
     "statusInvalid": "Non valido",
-    "exportLimit": "Puoi esportare fino a {{max}} script per bundle."
+    "exportLimit": "Puoi esportare fino a {{max}} script per bundle.",
+    "importDoneTitle": "Importazione completata",
+    "importDoneNothing": "Non è stato importato nulla",
+    "importDoneOpen": "Apri script",
+    "resultActionImported": "Importato",
+    "resultActionRenamed": "Rinominato da {{name}}",
+    "resultActionVersioned": "Aggiunto come nuova versione",
+    "resultOpen": "Apri"
   },
   "testRunner": {
     "title": "Esecuzione di prova",

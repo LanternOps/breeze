@@ -20,6 +20,7 @@ import { ActionError, handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
 import { runClientAction } from '../../lib/runClientAction';
+import TicketChecklistCard from '../tickets/TicketChecklistCard';
 
 export interface OccurrenceDrawerProps {
   fetcher: Fetcher;
@@ -86,6 +87,10 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const [dueAt, setDueAt] = useState('');
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // #5808 W03 — lazy checklist expansion: at most one occurrence's
+  // TicketChecklistCard is ever mounted at a time, so opening a fleet-sized
+  // deliverable never fires two dozen checklist fetches on drawer open.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,6 +196,18 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const remove = (id: string, evidenceId: string) =>
     void run(t('toast.evidenceRemoved'), () => removeEvidence(fetcher, orgId, id, evidenceId));
 
+  // Nothing is materialized until the sweep reaches the lead window, so the
+  // empty state names the next due date: the server-derived nextDue, else the
+  // anchor when it is still ahead of us (a past anchor of a recurring
+  // deliverable says nothing about the next period, so omit the date then).
+  // anchorDueDate/nextDue are plain dates (no timezone), so "today" must be
+  // the viewer's LOCAL calendar date, not UTC (see OrgServiceTab's todayIso) —
+  // otherwise this is off by a day near midnight for anyone not on UTC.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const firstDue =
+    deliverable.nextDue ?? (deliverable.anchorDueDate.slice(0, 10) >= today ? deliverable.anchorDueDate : null);
+
   const saveDisabled =
     busy ||
     !action ||
@@ -214,6 +231,12 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
         <div className="px-3 py-6 text-center text-sm text-destructive" data-testid="occurrence-drawer-error">
           {error}
         </div>
+      ) : rows.length === 0 ? (
+        <div className="px-3 py-8 text-center text-sm text-muted-foreground" data-testid="occurrence-empty">
+          {firstDue
+            ? t('drawer.emptyWithDate', { count: deliverable.leadDays, date: formatDate(firstDue) })
+            : t('drawer.empty', { count: deliverable.leadDays })}
+        </div>
       ) : (
         <ul className="divide-y" data-testid="occurrence-list">
           {rows.map((occ) => {
@@ -235,6 +258,14 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                   </div>
                   <div className="flex items-center gap-1.5">
                     {occ.late && <span className={LATE_PILL}>{t('drawer.late')}</span>}
+                    {occ.checklist !== null && (
+                      <span
+                        className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                        data-testid={`occurrence-checklist-chip-${occ.id}`}
+                      >
+                        {t('drawer.checklistProgress', { done: occ.checklist.done, total: occ.checklist.total })}
+                      </span>
+                    )}
                     <span
                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_PILL[occ.status]}`}
                       data-testid={`occurrence-status-${occ.id}`}
@@ -296,6 +327,22 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                       {t('drawer.upload')}
                     </button>
                     <span className="text-muted-foreground">{t('drawer.uploadEvidenceHint')}</span>
+                  </div>
+                )}
+
+                {occ.checklist !== null && occ.ticketId && (
+                  <div className="text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId((cur) => (cur === occ.id ? null : occ.id))}
+                      className="text-muted-foreground underline hover:text-foreground"
+                      data-testid={`occurrence-checklist-expand-${occ.id}`}
+                    >
+                      {expandedId === occ.id ? t('drawer.hideChecklist') : t('drawer.showChecklist')}
+                    </button>
+                    {expandedId === occ.id && (
+                      <TicketChecklistCard ticketId={occ.ticketId} mode="compact" />
+                    )}
                   </div>
                 )}
 

@@ -84,7 +84,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { AI_AGENT_ALERT_VERDICT_OP_KEY } from '@breeze/shared';
+import { ZodError } from 'zod';
+import { AI_AGENT_ALERT_VERDICT_OP_KEY, alertTriggerKey } from '@breeze/shared';
 import type {
   AlertAiVerdictSummaryDto, AlertVerdictOutcome, AlertVerdictSuggestionDisposition,
   AlertVerdictSuggestionReason, AiAgentRunAlertVerdictDto,
@@ -99,6 +100,7 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
 import { upsertVerdictFeedbackEvidence, verdictEvidenceSourceId } from './opEvidence';
 import { isToolAllowlisted } from './toolAllowlist';
 
@@ -412,6 +414,20 @@ export async function persistAlertVerdict(
   let intentId: string | null = null;
   if (canAttemptIntent && suggestion) {
     try {
+      // The run's triggering occurrence owns provenance, even when a
+      // correlation-group suggestion targets another alert. Read its metadata
+      // under the same org boundary as the verdict, before creating the intent.
+      const triggerAlertRows = run.alertId ? await inSystemDbContext(() => db
+        .select({ configItemName: alerts.configItemName, ruleId: alerts.ruleId })
+        .from(alerts)
+        .where(and(eq(alerts.id, run.alertId!), eq(alerts.orgId, run.orgId)))
+        .limit(1)) : [];
+      const [triggerAlert] = triggerAlertRows;
+      if (run.alertId && !triggerAlert) {
+        console.warn('[alertVerdicts] trigger alert lookup returned no row; falling back to an unkeyed trigger', {
+          runId: run.id, alertId: run.alertId,
+        });
+      }
       const intent = await createActionIntent(agentAuth, {
         toolName: 'manage_alerts',
         input: suggestion.action === 'suppress'
@@ -424,6 +440,11 @@ export async function persistAlertVerdict(
         orgId: run.orgId,
         reason: verdict.rationale,
         idempotencyKey: `verdict:${run.id}`,
+        trigger: {
+          kind: 'alert',
+          refId: run.alertId,
+          key: alertTriggerKey(triggerAlert?.configItemName ?? null, triggerAlert?.ruleId ?? null),
+        },
       });
       // CRITICAL fix (review round 1): createActionIntent does NOT throw
       // when nobody can approve — it commits the intent and immediately
@@ -443,14 +464,31 @@ export async function persistAlertVerdict(
         });
       }
     } catch (error) {
-      // agent_policy_denied, org_resolution_failed, … The VERDICT is
-      // already recorded above — losing the classification because the
-      // suggested mutation couldn't be submitted would throw away the
-      // useful half of the run's output.
-      suggestionReason = 'intent_error';
-      console.warn('[alertVerdicts] suggestion intent not created', {
-        runId: run.id, alertId: suggestion.alertId, error: (error as Error).message,
-      });
+      if (error instanceof ZodError) {
+        // `createActionIntent` validates `trigger` with
+        // `remediationTriggerSchema.parse(...)` (intentService.ts) — a
+        // ZodError here means THIS file built a malformed trigger, a code
+        // defect, not a business-outcome denial like the ones below. Loud in
+        // Sentry, and a distinct reason so it is never confused with an
+        // ordinary refused/cancelled intent.
+        suggestionReason = 'intent_invalid_provenance';
+        captureException(error, undefined, {
+          service: 'aiAgents', operation: 'persistAlertVerdict.createActionIntent',
+          runId: run.id, alertId: suggestion.alertId ?? '',
+        });
+        console.warn('[alertVerdicts] suggestion intent trigger failed schema validation', {
+          runId: run.id, alertId: suggestion.alertId, error: error.message,
+        });
+      } else {
+        // agent_policy_denied, org_resolution_failed, … The VERDICT is
+        // already recorded above — losing the classification because the
+        // suggested mutation couldn't be submitted would throw away the
+        // useful half of the run's output.
+        suggestionReason = 'intent_error';
+        console.warn('[alertVerdicts] suggestion intent not created', {
+          runId: run.id, alertId: suggestion.alertId, error: (error as Error).message,
+        });
+      }
     }
 
     if (intentId) {

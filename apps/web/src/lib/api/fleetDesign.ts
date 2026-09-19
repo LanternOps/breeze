@@ -5,7 +5,7 @@
 // ambient `fetchWithAuth` and either returns the raw Response (mutations,
 // so callers wrap them in `runAction`) or a parsed, typed body (reads). None
 // of these routes use a `{ data }` envelope — see routes/fleetDesign.ts.
-import type { FleetDesignApproval, FleetDesignApplyPreview, FleetDesignApplyResult, FleetDesignDrift, FleetDesignLedgerItem, FleetDesignOutcome, FleetDesignRollbackResult } from '@breeze/shared';
+import type { FleetDesignApproval, FleetDesignApplyPreview, FleetDesignApplyResult, FleetDesignDrift, FleetDesignLedgerItem, FleetDesignOutcome, FleetDesignRollbackResult, FleetDesignerSetup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
 export interface FleetDesignListItem {
@@ -56,6 +56,25 @@ export async function listApplied(reportRunId: string): Promise<FleetDesignLedge
     await fetchWithAuth(`${base(reportRunId)}/applied`),
   );
   return body.items;
+}
+
+/** GET /ai/fleet-design/designer — is there a runnable designer agent for
+ *  this org, and can THIS user fix it with one click (#6214)? Wrapped in a
+ *  `{ data }` envelope, unlike the report routes. */
+export async function getDesignerSetup(orgId: string): Promise<FleetDesignerSetup> {
+  const body = await parseJson<{ data: FleetDesignerSetup }>(
+    await fetchWithAuth(`/ai/fleet-design/designer?orgId=${encodeURIComponent(orgId)}`),
+  );
+  return body.data;
+}
+
+/** POST /ai/fleet-design/designer/enable — raw Response; wrap in runAction.
+ *  Creates the partner's designer agent in act (or turns an existing one on). */
+export function enableDesigner(orgId: string): Promise<Response> {
+  return fetchWithAuth('/ai/fleet-design/designer/enable', {
+    method: 'POST',
+    body: JSON.stringify({ orgId }),
+  });
 }
 
 /** POST /ai/fleet-design/runs — raw Response; wrap in runAction (202/200-skip/error). */

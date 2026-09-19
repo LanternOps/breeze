@@ -51,6 +51,8 @@ const mocks = vi.hoisted(() => {
     stopEventLoopMonitor: vi.fn(),
     startDbPoolHealthMonitor: vi.fn<() => number | null>(() => 30_000),
     stopDbPoolHealthMonitor: vi.fn(),
+    startWedgedBackendMonitor: vi.fn<() => number | null>(() => 60_000),
+    stopWedgedBackendMonitor: vi.fn(),
     updateRuntimeMetrics: vi.fn(),
     dbExecute: vi.fn(async () => [] as unknown[]),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -101,6 +103,10 @@ vi.mock('./config/env', () => ({
   abuseSignalsEnabled: mocks.abuseSignalsEnabled,
   eventDispatchMode: mocks.eventDispatchMode,
   AI_AGENTS_ENABLED: false,
+  // W03: bootWorker now passes sendingDomainsConfigured into
+  // declareExpectedConsumers, and isPartnerLaneConfigured() reads the
+  // EMAIL_DOMAINS_* config, which consults isHosted() for its send-cap default.
+  isHosted: () => false,
 }));
 vi.mock('./config/validate', () => ({ validateConfig: mocks.validateConfig }));
 vi.mock('./services/sentry', () => ({
@@ -131,6 +137,8 @@ vi.mock('./services/postgresConnectTimeout', () => ({
 vi.mock('./db/dbPoolHealthMonitor', () => ({
   startDbPoolHealthMonitor: mocks.startDbPoolHealthMonitor,
   stopDbPoolHealthMonitor: mocks.stopDbPoolHealthMonitor,
+  startWedgedBackendMonitor: mocks.startWedgedBackendMonitor,
+  stopWedgedBackendMonitor: mocks.stopWedgedBackendMonitor,
   getDbPoolHealthWindowMs: () => 60_000,
   getDbPoolHealthMinTimeouts: () => 3,
 }));

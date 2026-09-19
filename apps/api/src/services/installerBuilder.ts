@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import type { Readable } from 'node:stream';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
@@ -126,7 +126,7 @@ export async function buildWindowsInstallerZip(
 ): Promise<Buffer> {
   assertValidEnrollmentKey(values.enrollmentKey);
   return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 6 } });
+    const archive = new ZipArchive({ zlib: { level: 6 } });
     const chunks: Buffer[] = [];
 
     archive.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -284,7 +284,7 @@ export async function buildMacosInstallerZip(
 ): Promise<Buffer> {
   assertValidEnrollmentKey(values.enrollmentKey);
   return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 6 } });
+    const archive = new ZipArchive({ zlib: { level: 6 } });
     const chunks: Buffer[] = [];
 
     archive.on('data', (chunk: Buffer) => chunks.push(chunk));

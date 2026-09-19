@@ -600,6 +600,11 @@ describe('P2-5 graduation — ceiling, promote, grant, demote (real Postgres)', 
       const fresh = await evaluateGraduation(s.orgId, s.agentId, OP_KEY);
       expect(fresh.state).toBe('tracking');
       expect(fresh.blockedReason).toBe('too_recent');
+      // #4442 W05 (CI repair r2): this is an ALERT-lane key — nothing here
+      // carries sweep provenance — so the sweep bar never applies to it and
+      // the ladder below is exactly the pre-act-mode one.
+      expect(fresh.window.sweepExecuted).toBe(0);
+      expect(fresh.window.sweepVerified).toBe(0);
 
       await ageEarnedEvidence();
 
@@ -801,7 +806,8 @@ describe('P2-5 graduation — ceiling, promote, grant, demote (real Postgres)', 
       // -------------------------------------------------------------------
       const afterDemote = await refreshGraduationRow(s.orgId, s.agentId, OP_KEY);
       expect(afterDemote.window).toEqual({
-        executed: 0, verified: 0, failed: 0, recurred: 0, firstVerifiedAt: null,
+        executed: 0, verified: 0, sweepVerified: 0, sweepExecuted: 0, failed: 0, recurred: 0,
+        firstVerifiedAt: null,
       });
       // The stored `demoted` survives a refresh while the re-bounded window
       // holds no `verified` row — `refreshGraduationRow` never writes

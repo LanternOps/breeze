@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 // Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env' });
-config(); // Also try cwd
+config({ path: '../../.env', quiet: true });
+config({ quiet: true }); // Also try cwd
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';
@@ -13,7 +13,23 @@ import {
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
+import {
+  formatUnsafeRequestDatabaseRoleMessage,
+  REQUEST_DATABASE_ROLE_REMEDIATION,
+  unsafeRequestDatabaseRoleCapabilities,
+  type RequestDatabaseRole,
+} from './requestDatabaseRoleSafety';
 import { PG_UUID_REGEX } from '../utils/uuid';
+import {
+  getDbAccessContextPrologueTimeoutMs,
+  withPrologueDeadline,
+  type PrologueDeadline,
+} from './prologueDeadline';
+import { requestWedgedBackendReclaim } from './wedgedBackends';
+import {
+  claimDbPoolHealthCaptureSlot,
+  getDbPoolHealthCaptureThrottleMs,
+} from './dbPoolHealthMonitor';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
@@ -45,17 +61,14 @@ const client = postgres(requestDatabaseConfig.url, {
   // values are pinned together by a contract test in that classifier's suite,
   // so they cannot drift silently.
   connect_timeout: 10,
+  // Names the request pool in `pg_stat_activity`. Not decoration: #6048 was
+  // diagnosed by hand from that view, and without this every backend — request
+  // pool, health probe, reclaimer, psql — looked alike. The health probe and the
+  // wedged-backend side clients set their own names for the same reason.
+  connection: { application_name: 'breeze-api' },
 });
 
-export interface RequestDatabaseRole {
-  currentUser: string;
-  isSuperuser: boolean;
-  bypassesRls: boolean;
-}
-
-const REQUEST_DATABASE_ROLE_REMEDIATION =
-  'Set DATABASE_URL_APP to a NOSUPERUSER NOBYPASSRLS role, or configure ' +
-  'BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD so Breeze can derive the breeze_app URL.';
+export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
 
 /**
  * Reads the effective role from the exact module-scope postgres.js client that
@@ -92,16 +105,10 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
 
 export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRole> {
   const role = await getRequestDatabaseRole();
-  const unsafeCapabilities: string[] = [];
-  if (role.isSuperuser) unsafeCapabilities.push('SUPERUSER');
-  if (role.bypassesRls) unsafeCapabilities.push('BYPASSRLS');
+  const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length > 0) {
-    throw new Error(
-      `[database] Unsafe effective request database role "${role.currentUser}": ` +
-        `${unsafeCapabilities.join(' and ')}. Request handlers require a ` +
-        `NOSUPERUSER NOBYPASSRLS role. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
-    );
+    throw new Error(formatUnsafeRequestDatabaseRoleMessage(role, unsafeCapabilities));
   }
 
   return role;
@@ -457,17 +464,127 @@ interface GucExecutor {
 async function applyAccessContextGucs(
   executor: GucExecutor,
   context: DbAccessContext,
+  deadline?: PrologueDeadline,
 ): Promise<void> {
   const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
   const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
   const serializedUserId = context.userId ?? '';
 
-  await executor.execute(sql`select set_config('breeze.scope', ${context.scope}, true)`);
-  await executor.execute(sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`);
-  await executor.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
-  await executor.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
-  await executor.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
-  await executor.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
+  // `deadline.throwIfAborted()` at EVERY statement boundary, not just the first.
+  // `Promise.race` does not cancel its loser (#6048): once the budget has
+  // expired the caller has already been given a typed error and the connection
+  // is being reclaimed, so a statement that finally resolved late must not be
+  // allowed to queue the remaining five onto a connection that is being torn
+  // down — or worse, has already been recycled to a different tenant's request.
+  const statements: SQL[] = [
+    sql`select set_config('breeze.scope', ${context.scope}, true)`,
+    sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`,
+    sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`,
+    sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`,
+    sql`select set_config('breeze.user_id', ${serializedUserId}, true)`,
+    sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`,
+  ];
+
+  for (const statement of statements) {
+    deadline?.throwIfAborted();
+    await executor.execute(statement);
+  }
+  deadline?.throwIfAborted();
+}
+
+/**
+ * Label for the #6048 prologue deadline. Low cardinality by construction: the
+ * opener's name plus the context scope, never an org/device id.
+ */
+function prologueLabel(opener: string, context: DbAccessContext): string {
+  return context.label ? `${opener}(${context.label})` : `${opener}(scope=${context.scope})`;
+}
+
+/**
+ * The expiry handler shared by every context opener. Logs the structured
+ * warning the issue asks for and kicks off a single-flight reclamation pass.
+ * Never awaited — recovery must not extend the caller's bounded latency.
+ */
+function onPrologueDeadlineExpired(expiry: {
+  contextLabel: string;
+  elapsedMs: number;
+  timeoutMs: number;
+}): void {
+  console.warn(
+    `[db-prologue-deadline] RLS GUC prologue for ${expiry.contextLabel} exceeded `
+      + `${expiry.timeoutMs}ms (elapsed ${expiry.elapsedMs}ms). The pooled connection has been `
+      + 'abandoned; requesting a wedged-backend reclamation pass (#6048). If this fires without a '
+      + 'matching [db-wedged-backend] termination, suspect event-loop starvation rather than a '
+      + 'wedged connection (#3022).',
+  );
+  const pass = requestWedgedBackendReclaim({
+    // The reclaimer must not consider a backend wedged on a shorter clock than
+    // the one that just expired, or a merely slow prologue elsewhere in the
+    // fleet becomes a termination candidate.
+    minAgeMs: expiry.timeoutMs,
+  });
+  if (pass === null) {
+    console.warn(
+      '[db-prologue-deadline] reclamation pass declined (disabled, or inside the retry floor). '
+        + 'The pool slot stays lost until the next accepted pass.',
+    );
+    return;
+  }
+  void pass
+    .then((outcome) => {
+      if (outcome.error) {
+        console.warn('[db-wedged-backend] reclamation pass failed:', outcome.error);
+        // Sentry too, not console only. The detector alerts that something is
+        // wedged; THIS alerts that we cannot clear it — and a repair path broken
+        // for days while the pool bleeds slots is the same invisible failure
+        // #6048 was filed for, one layer up. Throttled on its own key (a broken
+        // reclaimer fails on every expiry, and this repo has twice blacked out
+        // Sentry with an unthrottled recurring warning) and wrapped, because the
+        // reporter may be what is failing.
+        if (
+          claimDbPoolHealthCaptureSlot(
+            'wedged-backend-reclaim-failed',
+            Date.now(),
+            getDbPoolHealthCaptureThrottleMs(),
+          )
+        ) {
+          try {
+            // Stable headline, no interpolated error text: Sentry groups by
+            // message, and a varying message mints a fresh issue per occurrence.
+            captureMessage('[db-wedged-backend] reclamation pass failed (#6048)', {
+              eventCode: 'db_wedged_backend_reclaim_failed',
+              tags: { db_pool_health_verdict: 'wedged-backend-reclaim-failed' },
+            });
+          } catch (captureErr) {
+            console.error('[db-wedged-backend] failed to report reclaim failure to Sentry:', captureErr);
+          }
+        }
+        return;
+      }
+      console.warn(
+        `[db-wedged-backend] reclamation pass: scanned=${outcome.scanned} `
+          + `confirmed=${outcome.confirmed} terminated=[${outcome.terminated.join(',')}] `
+          + `cappedAt=${outcome.cappedAt ?? 'none'} in ${outcome.elapsedMs}ms.`,
+      );
+    })
+    .catch((err: unknown) => {
+      console.warn('[db-wedged-backend] reclamation pass threw unexpectedly:', err);
+    });
+}
+
+/**
+ * Run a context-opening transaction under the #6048 prologue deadline, with the
+ * shared expiry reporting. Thin on purpose: every opener must get the SAME
+ * bound, and a new one that forgets it would reintroduce the leak.
+ */
+function withContextPrologueDeadline<T>(
+  opener: string,
+  context: DbAccessContext,
+  work: (deadline: PrologueDeadline) => Promise<T>,
+): Promise<T> {
+  return withPrologueDeadline(prologueLabel(opener, context), work, {
+    onExpired: onPrologueDeadlineExpired,
+  });
 }
 
 /**
@@ -551,27 +668,34 @@ export async function withDbAccessContext<T>(
   // serialization, and only when the tripwire is armed at all.
   const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
-  return baseDb.transaction(async (tx) => {
-    await applyAccessContextGucs(tx as unknown as GucExecutor, context);
+  return withContextPrologueDeadline('withDbAccessContext', context, (deadline) =>
+    baseDb.transaction(async (tx) => {
+      await applyAccessContextGucs(tx as unknown as GucExecutor, context, deadline);
+      // Disarmed the instant the prologue lands: `fn` below is the caller's own
+      // work and must never be bounded by the prologue budget (#6048). A context
+      // held too long is a different fault, already reported by the #1105
+      // tripwire underneath.
+      deadline.disarm();
 
-    // Timed from HERE, not from function entry: the hold being measured is the
-    // one on a pooled connection, which only starts once the transaction owns
-    // one. Time spent waiting for the pool is a different problem.
-    const startedAt = warnMs > 0 ? Date.now() : 0;
-    try {
-      return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
-        dbContextMetaStorage.run(context, fn),
-      );
-    } finally {
-      reportHeldContextIfNeeded({
-        scope: context.scope,
-        label: context.label,
-        opener,
-        startedAt,
-        warnMs,
-      });
-    }
-  });
+      // Timed from HERE, not from function entry: the hold being measured is the
+      // one on a pooled connection, which only starts once the transaction owns
+      // one. Time spent waiting for the pool is a different problem.
+      const startedAt = warnMs > 0 ? Date.now() : 0;
+      try {
+        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+          dbContextMetaStorage.run(context, fn),
+        );
+      } finally {
+        reportHeldContextIfNeeded({
+          scope: context.scope,
+          label: context.label,
+          opener,
+          startedAt,
+          warnMs,
+        });
+      }
+    }),
+  );
 }
 
 /**
@@ -626,7 +750,17 @@ export async function withResolvedDbAccessContext<T, R>(
   return withSystemDbAccessContext(async () => {
     const resolved = await resolve();
     const activeDb = getCurrentDb();
-    await applyAccessContextGucs(activeDb as unknown as GucExecutor, resolved.context);
+    // A SECOND prologue, on the connection the system-scope transaction already
+    // holds — so it gets its own #6048 bound. The reclaimer's predicate matches
+    // any `set_config` prologue, so a wedge here is recoverable the same way.
+    await withContextPrologueDeadline(
+      'withResolvedDbAccessContext',
+      resolved.context,
+      async (deadline) => {
+        await applyAccessContextGucs(activeDb as unknown as GucExecutor, resolved.context, deadline);
+        deadline.disarm();
+      },
+    );
     return dbContextMetaStorage.run(resolved.context, () => fn(resolved.value));
   });
 }
@@ -714,30 +848,34 @@ export async function withArchivedOrgReadContext<T>(
   // Captured at entry, before any await — see withDbAccessContext for why.
   const opener = warnMs > 0 ? new Error('withArchivedOrgReadContext opened here') : undefined;
 
-  return baseDb.transaction(async (tx) => {
-    const executor = tx as unknown as GucExecutor;
-    // FIRST statement in the transaction. `SET TRANSACTION` may not follow a
-    // query or data-modification statement, so it has to precede even the
-    // `set_config` SELECTs below (which are themselves fine in a read-only
-    // transaction — a GUC write is not a data write).
-    await executor.execute(sql`SET TRANSACTION READ ONLY`);
-    await applyAccessContextGucs(executor, context);
+  return withContextPrologueDeadline('withArchivedOrgReadContext', context, (deadline) =>
+    baseDb.transaction(async (tx) => {
+      const executor = tx as unknown as GucExecutor;
+      // FIRST statement in the transaction. `SET TRANSACTION` may not follow a
+      // query or data-modification statement, so it has to precede even the
+      // `set_config` SELECTs below (which are themselves fine in a read-only
+      // transaction — a GUC write is not a data write).
+      deadline.throwIfAborted();
+      await executor.execute(sql`SET TRANSACTION READ ONLY`);
+      await applyAccessContextGucs(executor, context, deadline);
+      deadline.disarm();
 
-    const startedAt = warnMs > 0 ? Date.now() : 0;
-    try {
-      return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
-        dbContextMetaStorage.run(context, fn),
-      );
-    } finally {
-      reportHeldContextIfNeeded({
-        scope: context.scope,
-        label: context.label,
-        opener,
-        startedAt,
-        warnMs,
-      });
-    }
-  });
+      const startedAt = warnMs > 0 ? Date.now() : 0;
+      try {
+        return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+          dbContextMetaStorage.run(context, fn),
+        );
+      } finally {
+        reportHeldContextIfNeeded({
+          scope: context.scope,
+          label: context.label,
+          opener,
+          startedAt,
+          warnMs,
+        });
+      }
+    }),
+  );
 }
 
 /**
@@ -1053,6 +1191,15 @@ export {
   closeAuditAdminPool,
   type AuditAdminDb,
 } from './auditAdminPool';
+
+// #6048 — the typed prologue-timeout error, re-exported so a caller that wants
+// to distinguish "our own GUC prologue budget expired" from a genuine driver
+// error has one import surface for the DB module.
+export {
+  DbAccessContextPrologueTimeoutError,
+  DbAccessContextPrologueAbortedError,
+  getDbAccessContextPrologueTimeoutMs,
+} from './prologueDeadline';
 
 import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
 

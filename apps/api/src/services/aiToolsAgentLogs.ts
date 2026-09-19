@@ -9,12 +9,12 @@
 
 import { db } from '../db';
 import { agentLogs, devices } from '../db/schema';
-import { and, eq, gte, lte, ilike, inArray, desc } from 'drizzle-orm';
+import { and, eq, gte, lte, ilike, inArray, desc, type SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
 
@@ -22,6 +22,56 @@ type AiToolTier = 1 | 2 | 3 | 4;
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+export interface AgentLogQueryFilters {
+  deviceIds?: string[];
+  level?: string;
+  component?: string;
+  startTime?: string;
+  endTime?: string;
+  message?: string;
+}
+
+/**
+ * The one predicate list for `agent_logs`, shared by `search_agent_logs` and
+ * `export_dataset`. Extracted rather than duplicated: the site-axis narrowing
+ * below is app-layer authz that RLS does NOT enforce, so a second copy would be
+ * a second place to forget it.
+ *
+ * Returns `null` when a site-restricted caller has zero in-scope devices —
+ * distinct from `[]` (an unrestricted caller with no filters).
+ */
+export async function buildAgentLogConditions(
+  orgId: string,
+  auth: AuthContext,
+  filters: AgentLogQueryFilters,
+): Promise<SQL[] | null> {
+  const conditions: SQL[] = [eq(agentLogs.orgId, orgId)];
+
+  if (filters.deviceIds && filters.deviceIds.length > 0) {
+    conditions.push(inArray(agentLogs.deviceId, filters.deviceIds));
+  }
+
+  // Exact-device axis: independent of the site axis. A device-LESS analysis run
+  // carries only `allowedDeviceIds`, so the site block below never fires for it
+  // and the search would read org-wide (#6096 RC3). No-op when unrestricted.
+  const deviceCond = deviceScopeCondition(auth, agentLogs.deviceId);
+  if (deviceCond) conditions.push(deviceCond);
+
+  if (auth.allowedSiteIds) {
+    const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+    if (!allowed || allowed.length === 0) return null;
+    conditions.push(inArray(agentLogs.deviceId, allowed));
+  }
+
+  if (filters.level) conditions.push(eq(agentLogs.level, filters.level as any));
+  if (filters.component) conditions.push(eq(agentLogs.component, filters.component));
+  if (filters.startTime) conditions.push(gte(agentLogs.timestamp, new Date(filters.startTime)));
+  if (filters.endTime) conditions.push(lte(agentLogs.timestamp, new Date(filters.endTime)));
+  if (filters.message) conditions.push(ilike(agentLogs.message, `%${escapeLike(filters.message)}%`));
+
+  return conditions;
 }
 
 export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
@@ -84,36 +134,16 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'No organization context available' });
         }
 
-        const filters = [eq(agentLogs.orgId, orgId)];
-
-        if (input.deviceIds && Array.isArray(input.deviceIds) && input.deviceIds.length > 0) {
-          filters.push(inArray(agentLogs.deviceId, input.deviceIds as string[]));
-        }
-
-        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
-        // caller may only read logs for devices in their allowed sites. Narrow to
-        // that device set; short-circuit to empty when there are none in scope.
-        if (auth.allowedSiteIds) {
-          const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
-          if (!allowed || allowed.length === 0) {
-            return JSON.stringify({ logs: [], count: 0 });
-          }
-          filters.push(inArray(agentLogs.deviceId, allowed));
-        }
-        if (input.level && typeof input.level === 'string') {
-          filters.push(eq(agentLogs.level, input.level as any));
-        }
-        if (input.component && typeof input.component === 'string') {
-          filters.push(eq(agentLogs.component, input.component as string));
-        }
-        if (input.startTime && typeof input.startTime === 'string') {
-          filters.push(gte(agentLogs.timestamp, new Date(input.startTime as string)));
-        }
-        if (input.endTime && typeof input.endTime === 'string') {
-          filters.push(lte(agentLogs.timestamp, new Date(input.endTime as string)));
-        }
-        if (input.message && typeof input.message === 'string') {
-          filters.push(ilike(agentLogs.message, `%${escapeLike(input.message)}%`));
+        const conditions = await buildAgentLogConditions(orgId, auth, {
+          deviceIds: Array.isArray(input.deviceIds) ? input.deviceIds as string[] : undefined,
+          level: typeof input.level === 'string' ? input.level : undefined,
+          component: typeof input.component === 'string' ? input.component : undefined,
+          startTime: typeof input.startTime === 'string' ? input.startTime : undefined,
+          endTime: typeof input.endTime === 'string' ? input.endTime : undefined,
+          message: typeof input.message === 'string' ? input.message : undefined,
+        });
+        if (conditions === null) {
+          return JSON.stringify({ logs: [], count: 0 });
         }
 
         const maxLimit = Math.min(Number(input.limit) || 100, 500);
@@ -121,7 +151,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         const results = await db
           .select()
           .from(agentLogs)
-          .where(and(...filters))
+          .where(and(...conditions))
           // Receipt time dominates. Ingest writes up to 100 rows in one INSERT,
           // so a whole batch shares created_at to the microsecond and the random
           // uuid id would shuffle it; agent event time only breaks ties WITHIN a
@@ -211,7 +241,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
@@ -296,7 +326,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 

@@ -24,6 +24,8 @@ import type { Script } from '../scripts/ScriptList';
 import type { ScriptParameter } from '../scripts/ScriptForm';
 import type { CancelState, ExecutionStatus, ScriptAdmissionResult } from '@breeze/shared';
 import { RunContextChip, type RunContextValue } from '../common/RunContext';
+import { AiInitiatorChip } from '../common/AiInitiatorChip';
+import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
 
 type ScriptExecution = {
   id?: string;
@@ -53,6 +55,10 @@ type ScriptExecution = {
   // ("your stop request arrived too late" / "stop failed"). Absent/null means
   // no cancel was ever requested.
   cancelState?: CancelState | null;
+  // #5022 W02 — who DECIDED this run, projected by GET /devices/:id/scripts.
+  // null/absent means "AI initiation not recorded", never "a human did this".
+  aiInitiatorKind?: AiInitiatorKind | null;
+  hasAiOrigin?: boolean;
 };
 
 type ScriptWithDetails = Script & {
@@ -299,6 +305,26 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
 
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+  // #5022 W02 — resolves one execution's authorized AI origin summary on
+  // demand (the chip calls this once, when opened). Read-only, so no
+  // runAction. A 404/non-OK response is treated the same as "no origin" --
+  // the chip's popover renders "origin not available" rather than throwing.
+  const fetchOrigin = useCallback(
+    async (source: 'execution' | 'command', sourceId: string): Promise<AiOriginSummaryDto | null> => {
+      try {
+        const response = await fetchWithAuth(
+          `/devices/${deviceId}/ai-origin?source=${source}&sourceId=${sourceId}`,
+        );
+        if (!response.ok) return null;
+        const json = await response.json();
+        return json?.data ?? null;
+      } catch {
+        return null;
+      }
+    },
+    [deviceId],
+  );
+
   const fetchHistory = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError(undefined);
@@ -507,12 +533,13 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                 <th className="px-4 py-3">{t('deviceScriptHistory.table.completed')}</th>
                 <th className="px-4 py-3">{t('deviceScriptHistory.table.duration')}</th>
                 <th className="px-4 py-3 w-10" />
+                <th className="px-4 py-3 w-10" />
               </tr>
             </thead>
             <tbody className="divide-y">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {t('deviceScriptHistory.empty')}
                   </td>
                 </tr>
@@ -541,6 +568,16 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.startedAt}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.completedAt}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.duration}</td>
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <AiInitiatorChip
+                        kind={row.raw.aiInitiatorKind ?? null}
+                        loadOrigin={
+                          row.raw.hasAiOrigin && row.raw.id
+                            ? () => fetchOrigin('execution', row.raw.id!)
+                            : undefined
+                        }
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
                         {canCancel && row.raw.id && row.executionStatus
@@ -671,8 +708,21 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
                   <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.runAs')}</p>
-                  <p className="text-sm font-medium mt-1">
+                  <p className="mt-1 flex flex-wrap items-center gap-1.5 text-sm font-medium">
+                    {/* #5022 W02 — the AI initiator chip renders BESIDE the
+                        run-context chip, never replacing it: one encodes OS
+                        execution privilege, the other who decided the run. */}
                     <RunContextChip runAs={selectedExecution.runAs} targetSessionId={selectedExecution.targetSessionId} />
+                    {selectedExecution.id && (
+                      <AiInitiatorChip
+                        kind={selectedExecution.aiInitiatorKind ?? null}
+                        loadOrigin={
+                          selectedExecution.hasAiOrigin
+                            ? () => fetchOrigin('execution', selectedExecution.id!)
+                            : undefined
+                        }
+                      />
+                    )}
                   </p>
                 </div>
               </div>

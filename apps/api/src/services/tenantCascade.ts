@@ -50,6 +50,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
 import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
+import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -537,6 +538,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'm365_license_skus',
   'm365_posture_rollups',
   'm365_secure_score_snapshots',
+  // #5784 W05. Append-only interactive sign-in events. Its only FK is
+  // org_id -> organizations, which is last in this array, so the
+  // children-before-parents property holds. DELETE is granted (the retention
+  // worker purges it), so no AUDIT_ADMIN_REQUIRED_TABLES entry either.
+  'm365_signin_events',
   'm365_sync_state',
   'm365_users',
   'maintenance_windows',
@@ -721,6 +727,29 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // S3 objects are cleared BEFORE this DELETE by the pre-step in
   // cascadeDeleteOrg — the rows are the only index to the object keys.
   'ticket_attachments',
+  // ticket_checklist_items (#5783 W01): one tickable step on a ticket. Shape 1
+  // (direct org_id, denormalised from tickets.org_id). The composite
+  // (ticket_id, org_id) FK is ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+  // done_by_user_id / created_by are ON DELETE SET NULL. Cascade leaf — nothing
+  // FK-references it. localeCompare: 'ticket_attachments' <
+  // 'ticket_checklist_items' < 'ticket_drafts' ('at' < 'ch' < 'dr'), and it
+  // precedes its FK parent 'tickets'. The FK would take the rows anyway, but
+  // the cascade walks this array explicitly and an unlisted org_id table fails
+  // tenantCascade.integration.test.ts.
+  'ticket_checklist_items',
+  // ticket_checklist_template_items before ticket_checklist_templates —
+  // children before parents. Both branch FKs (template_id, org_id) and
+  // (template_id, partner_id) are ON DELETE CASCADE, but the cascade list
+  // deletes explicitly, so the child must still come first. localeCompare
+  // already orders them that way ('_' < 's' at the diverging character, the
+  // same prefix-extension trap as contract_template_versions /
+  // contract_templates); verified with
+  // `node --eval "console.log('ticket_checklist_template_items'.localeCompare('ticket_checklist_templates'))"`
+  // => -1. Both sort after 'ticket_checklist_items' and before 'ticket_drafts'.
+  // Partner-wide rows carry org_id NULL, so an org erasure never touches them —
+  // only org-owned templates and their items.
+  'ticket_checklist_template_items',
+  'ticket_checklist_templates',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,
@@ -762,6 +791,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tickets',
   'time_entries',
   'time_series_metrics',
+  // Tool catalog (#5215 / #5216). Child before parent: tool_source_tools
+  // references tool_sources, so it must be deleted first. localeCompare agrees
+  // (verified: 'tool_source_tools'.localeCompare('tool_sources') === -1), so
+  // the alphabetical and FK-order properties do not fight here.
+  'tool_source_tools',
+  'tool_sources',
   'topology_layout',
   'topology_manual_nodes',
   'tunnel_allowlists',
@@ -1573,6 +1608,19 @@ export async function cascadeDeletePartner(
     details: { partnerId, startedAt },
     result: 'success',
   });
+
+  // Release provider-side sending domains BEFORE any delete (spec §3.5).
+  // partner_sending_domains carries a BEFORE DELETE guard that raises while the
+  // row still owns a provider_domain_id, so the partner-axis sweep below would
+  // abort the purge without this. It writes an email_provider_domain_releases
+  // row for every provider_managed domain — that table has no partner_id, so it
+  // survives the sweep and the worker drains it afterwards — and never one for
+  // a domain Breeze did not create. No provider call is made here.
+  //
+  // It runs after the forensic breadcrumb above on purpose: the purge_started
+  // audit must exist even if this step throws. It opens its own system context,
+  // like every other statement in this function (see the nesting warning below).
+  await releaseSendingDomainsForPartner(partnerId);
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.

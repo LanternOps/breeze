@@ -13,6 +13,13 @@ export class OrgBillingSettingsPage {
   constructor(private page: Page) {}
 
   url = (orgId: string) => `/settings/organizations/${orgId}/billing`;
+  /** The current canonical tab URL — where the old standalone URL now redirects to. */
+  tabUrl = (orgId: string) => `/settings/organizations/${orgId}#billing`;
+
+  async gotoLegacyUrlAndExpectRedirect(orgId: string) {
+    await this.page.goto(this.url(orgId));
+    await this.page.waitForURL(`**${this.tabUrl(orgId)}`);
+  }
 
   root = () => this.page.getByTestId('org-billing-settings');
   currencySelect = () => this.page.getByTestId('org-billing-currency');

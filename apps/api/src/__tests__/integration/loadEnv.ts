@@ -24,7 +24,7 @@ function thisDir(): string {
 
 // apps/api/src/__tests__/integration → monorepo root
 const envPath = path.resolve(thisDir(), '..', '..', '..', '..', '..', '.env.test');
-config({ path: envPath });
+config({ path: envPath, quiet: true });
 
 // Hard-coded defaults matching docker-compose.test.yml. These take effect
 // only if neither the host environment nor .env.test supplied a value

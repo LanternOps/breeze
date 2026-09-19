@@ -16,7 +16,7 @@
  *      storage, envelope AAD, canonical envelope JSON); a mocked db proves
  *      none of them agree.
  *   2. CLAIM — after a real agent downgrade (`script_secret_env_version` back
- *      to 0), the real claim batch + `decryptClaimedCommandsForDelivery`
+ *      to 0), the real claim batch + `prepareClaimedCommandsForDelivery`
  *      withholds the command AND drives both it and its linked execution row
  *      terminal, with the payload erased. The `status = 'sent'` guard on that
  *      terminal UPDATE only has meaning against a row the claim actually
@@ -53,7 +53,7 @@ import { encryptTenantVariableValue } from '../../services/tenantVariables';
 import { loadTenantVariableScope } from '../../services/tenantVariableResolution';
 import { dispatchScriptToDevice, type DispatchScriptInput } from '../../services/scriptDispatch';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { openSecretEnv } from '../../services/scriptSecretEnvelope';
 import { AGENT_UPGRADE_REQUIRED_MESSAGE } from '../../services/scriptSecretDelivery';
 
@@ -242,7 +242,7 @@ describe('script secret delivery (integration)', () => {
     const deliverable = await withSystemDbAccessContext(async () => {
       const claimed = await claimPendingCommandsForDevice(scn.deviceId);
       expect(claimed).toHaveLength(1);
-      return decryptClaimedCommandsForDelivery(
+      return prepareClaimedCommandsForDelivery(
         claimed.map((cmd) => ({
           id: cmd.id,
           type: cmd.type,

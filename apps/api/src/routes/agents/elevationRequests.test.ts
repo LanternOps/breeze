@@ -112,7 +112,7 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: () => '203.0.113.7',
 }));
 
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import { elevationRequestsRoutes } from './elevationRequests';
 import { writeAuditEvent } from '../../services/auditEvents';
 
@@ -886,5 +886,123 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
     expect(res.status).toBe(201);
     // Both approval rows still inserted despite the first push throwing.
     expect(approvalValueCalls(values)).toHaveLength(2);
+  });
+});
+
+// #6130 / #1105 — the ingest route used to run under agentAuthMiddleware's
+// request-long `withDbAccessContext`, so its per-device `rateLimiter` Redis
+// round-trip pinned a pooled Postgres connection idle-in-transaction on every
+// UAC observation. `runOutsideDbContext` cannot fix that (it only re-routes the
+// ALS lookup; the middleware's outer transaction stays open), so the action is
+// now in SELF_MANAGED_DB_CONTEXT_ACTIONS and the handler opens its own
+// org-scoped context AFTER the limiter has decided.
+describe('elevation-requests ingest #1105 context discipline (#6130)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.rateLimiter.mockResolvedValue({
+      allowed: true,
+      remaining: 599,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }]);
+    pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
+    pamMocks.publishEvent.mockResolvedValue('evt-1');
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.getUserPushTokens.mockResolvedValue([]);
+    bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ insert: db.insert }));
+    lifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx: unknown, input: any) => ({
+      actuationId: 'actuation-1',
+      elevationRequestId: input.request.id,
+      requestRevision: input.requestRevision,
+      generation: 1,
+      desiredState: input.decision === 'denied' ? 'cleanup' : 'active',
+    }));
+  });
+
+  async function postIngest() {
+    const app = buildApp();
+    return app.request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goodPayload),
+    });
+  }
+
+  it('checks the rate limit BEFORE opening any DB access context', async () => {
+    const order: string[] = [];
+    mocks.rateLimiter.mockImplementation(async () => {
+      order.push('rateLimiter');
+      return { allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) };
+    });
+    vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => {
+      order.push('withDbAccessContext');
+      return fn();
+    });
+    happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const res = await postIngest();
+
+    expect(res.status).toBe(201);
+    expect(order[0]).toBe('rateLimiter');
+    expect(order).toContain('withDbAccessContext');
+  });
+
+  it('opens its own org-scoped context around the DB work (the middleware no longer does)', async () => {
+    happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    await postIngest();
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'organization',
+        orgId: 'org-1',
+        accessibleOrgIds: ['org-1'],
+        // Agents hold no partner-AXIS write access; currentPartnerId is the
+        // read-only visibility axis the middleware used to supply.
+        accessiblePartnerIds: [],
+        currentPartnerId: 'partner-1',
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('never opens a DB context when the limiter rejects the request', async () => {
+    mocks.rateLimiter.mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await postIngest();
+
+    expect(res.status).toBe(429);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('401s without opening a context when the agent token carries no org', async () => {
+    const app = new Hono();
+    app.use('/agents/*', async (c, next) => {
+      // AgentAuthContext types orgId as required, so this shape is only
+      // reachable at runtime (a middleware change, an extension mount). The
+      // cast is the point of the test: prove the handler refuses rather than
+      // building a vacuous RLS context that reads as a 404.
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('agent', {
+        deviceId: 'device-1',
+        agentId: 'agent-123',
+        role: 'agent',
+      });
+      await next();
+    });
+    app.route('/agents', elevationRequestsRoutes);
+
+    const res = await app.request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goodPayload),
+    });
+
+    expect(res.status).toBe(401);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 });

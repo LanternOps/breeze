@@ -211,7 +211,8 @@
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    }
+    },
+    "overridesOrgTab": "Burada belirlediğiniz alanlar, her kuruluşun yapay zeka sekmesindeki aynı alanın üzerine yazar ve onu kilitler."
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -547,8 +548,10 @@
       },
       "ticketing": {
         "label": "Biletleme",
-        "description": "Durumlar, SLA'lar, dışa aktarmalar"
+        "description": "Durumlar, SLA'lar, kategoriler, formlar",
+        "linkCta": "Bilet ayarlarını yönet →"
       },
+      "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
@@ -564,6 +567,10 @@
       "loginBranding": {
         "label": "Oturum Aç Markalama",
         "description": "Giriş sayfasının görünümü"
+      },
+      "modules": {
+        "label": "Modüller",
+        "description": "Servis masası ve faturalandırma açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -594,6 +601,107 @@
       "saved": "Modüller güncellendi",
       "saveFailed": "Modüller güncellenemedi"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Özel gönderen adresleri",
+    "description": "Müşterilere giden e-postaları Breeze'in standart adresi yerine kendi alan adınızdan gönderin.",
+    "loadFailed": "Gönderim alan adlarınız yüklenemedi.",
+    "staticNote": "Bu sunucudaki gönderim alan adlarını sunucunun posta yapılandırması yönetir; bunlar için SPF ve DKIM Breeze dışında kurulur.",
+    "staticNotAllowed": "Bu alan adına izin vermesi için Breeze yöneticinize başvurun.",
+    "staticVerifyHint": "Bu alan adı, posta sunucunuz ondan gönderilen bir deneme iletisini kabul ettiği anda kullanılabilir olur.",
+    "lockedTitle": "Özel gönderen adresleri henüz kullanılamıyor",
+    "lockedProbation": "Hesabınız hâlâ doğrulanıyor. Özel gönderen adresleri doğrulama bitince açılır.",
+    "lockedRestricted": "Hesabınız kısıtlı olduğundan özel gönderen adresleri kullanılamıyor.",
+    "lockedNotAllowlisted": "Özel gönderen adresleri aşamalı olarak açılıyor ve hesabınızda henüz etkin değil.",
+    "lockedPartnerInactive": "Hesabınız etkin olmadığından özel gönderen adresleri kullanılamıyor.",
+    "lockedProviderKeySendOnly": "Bu sunucudaki posta anahtarı ileti gönderebilir ama alan adı yönetemez. Breeze yöneticinizden tam erişimli bir anahtar isteyin.",
+    "lockedShowVerification": "Doğrulama durumunu göster",
+    "addTitle": "Gönderim alan adı ekle",
+    "addLabel": "Alan adı",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addInvalid": "mail.yourcompany.com gibi bir alan adı girin.",
+    "addSubmit": "Alan adı ekle",
+    "added": "Alan adı eklendi. DNS kayıtları hazırlanıyor.",
+    "recommendTitle": "Ayrı bir alt alan adı öneriyoruz",
+    "recommendReason1": "Breeze postanızın gönderim itibarını diğer postalarınızdan ayrı tutar.",
+    "recommendReason2": "Başka bir yerde e-posta sağlayıcımızda zaten doğrulanmış bir kök alan adı buraya eklenemez — başka bir hesaptan asla alan adı almayız.",
+    "recommendReason3": "Bazı posta filtreleri, DKIM geçse bile alıcının kendi alan adını kullanan dış gönderenleri işaretler. Alt alan adı bu birebir eşleşme kuralını aşar; bu da müşterileri kendi çalışma arkadaşları olan iç ekipler için en çok önem taşır.",
+    "statusProvisioning": "DNS kayıtları hazırlanıyor…",
+    "statusPending": "DNS bekleniyor",
+    "statusVerified": "Doğrulandı",
+    "statusAtRisk": "İlgi gerekiyor",
+    "statusFailed": "Başarısız",
+    "statusSuspended": "Askıya alındı",
+    "statusRemoving": "Kaldırılıyor…",
+    "provisioningSlow": "Bu her zamankinden uzun sürüyor. Denemeyi sürdürüyoruz — bu sayfadan ayrılıp sonra geri dönebilirsiniz.",
+    "recordsTitle": "Bu DNS kayıtlarını yayımlayın",
+    "recordsNote": "DNS değişikliklerinin bize ulaşması 72 saati bulabilir ve biz denetlemeyi sürdürürüz. Kayıtlar o süre sonunda hâlâ görünmüyorsa alan adı başarısız olarak işaretlenir ve yeniden deneyebilirsiniz.",
+    "recordsType": "Kayıt türü",
+    "recordsHost": "Ana bilgisayar etiketi",
+    "recordsFqdn": "Tam ad",
+    "recordsValue": "Değer",
+    "recordsPriority": "Öncelik",
+    "recordsCopied": "Panoya kopyalandı",
+    "checkNow": "Şimdi denetle",
+    "checkStarted": "DNS şimdi denetleniyor.",
+    "atRiskBanner": "{{fqdn}} adresindeki {{type}} kaydını artık göremiyoruz. Posta bu alan adından çıkmayı sürdürüyor, ancak o kaydı 72 saat içinde yeniden yayımlayın, yoksa alan adı başarısız olur.",
+    "failedProviderConflict": "Bu alan adı Breeze'de veya e-posta sağlayıcımızda kayıtlı olabilir. Ayrı bir alt alan adı kullanın ya da destek ekibine yazın.",
+    "failedProviderRejected": "E-posta sağlayıcımız bu alan adını reddetti.",
+    "failedQuotaExhausted": "Bu Breeze sunucusu e-posta sağlayıcısındaki alan adı sınırına ulaştı. Destek ekibine yazın.",
+    "failedDnsNotDetected": "DNS kayıtlarını 72 saat içinde bulamadık.",
+    "failedDnsRemoved": "DNS kayıtları kaldırıldı.",
+    "failedUnknown": "Doğrulama tamamlanmadı.",
+    "retry": "Yeniden dene",
+    "removeConfirm": "{{domain}} kaldırılsın mı? Bu alan adının postası Breeze'in standart göndereni üzerinden gider.",
+    "removeConfirmUnmanaged": "{{domain}} Breeze'den kaldırılsın mı? Alan adı e-posta sağlayıcısı hesabınızda kalır — Breeze kendi oluşturmadığı bir alan adını asla silmez.",
+    "removeStarted": "Alan adı kaldırılıyor.",
+    "suspendedNotice": "Breeze bu alan adını askıya aldı. Destek ekibine yazın.",
+    "lastSendError": "Son teslim sorunu: {{error}}",
+    "identitiesTitle": "Gönderen adresleri",
+    "identitiesDescription": "Her e-posta türünün hangi adresten çıkacağını seçin. Boş bıraktığınız tür Breeze'in standart göndereninde kalır.",
+    "identitiesNoDomain": "Önce bir alan adı doğrulayın, sonra gönderen adreslerini seçin.",
+    "streamSupportName": "Müşteri desteği",
+    "streamBillingName": "Faturalama",
+    "streamGeneralName": "Genel bildirimler",
+    "streamSupportMail": "Müşterilere giden talep güncellemeleri, portal davetleri ve portal parola sıfırlamaları.",
+    "streamBillingMail": "Teklifler ve faturalar.",
+    "streamGeneralMail": "Zamanlanmış rapor gönderimleri.",
+    "repliesSupport": "Talep postası Reply-To alanını {{inbound}} olarak ayarlar, böylece müşterinin yanıtı talebe geri döner. Portal davetleri ve parola sıfırlamaları Reply-To ayarlamaz, dolayısıyla o yanıtlar aşağıdaki adrese gider.",
+    "repliesSupportNoInbound": "Bu sunucunun gelen posta adresi yok, bu yüzden talep postasına gelen yanıtlar aşağıdaki adrese gider. Birinin okuduğu bir posta kutusu ya da Breeze'e ileten bir takma ad kullanın.",
+    "repliesBilling": "Teklifler ve faturalar Reply-To alanını faturalama e-postanız olarak ayarlar, yanıtlar oraya gider.",
+    "repliesGeneral": "Burada hiçbiri kendi Reply-To alanını ayarlamaz; yanıtlar aşağıdaki adrese ya da belirlediğiniz Reply-To adresine gider.",
+    "repliesMailboxHint": "İnsanlar ve otomatik yanıtlayıcılar bazen gönderen adresine yanıt verir, bu yüzden her birini gerçek bir posta kutusu ya da takma ad yapın.",
+    "identityDomain": "Doğrulanmış alan adı",
+    "identityLocalPart": "Adres",
+    "identityDisplayName": "Görünen ad",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Reply-To adresi (isteğe bağlı)",
+    "identityFrom": "{{address}} adresinden gönderir",
+    "identityClear": "Standart göndereni kullan",
+    "identitySaved": "Gönderen adresi kaydedildi.",
+    "identityCleared": "Breeze'in standart gönderenine dönüldü.",
+    "identityLocalPartInvalid": "Harf, rakam, nokta, tire, artı ve alt çizgi kullanın; noktalama işaretiyle başlamayın ya da bitirmeyin.",
+    "identityLocalPartReserved": "postmaster, abuse ve mailer-daemon ayrılmıştır.",
+    "identityDisplayNameInvalid": "Görünen ad bir e-posta adresi ya da bağlantı içeremez.",
+    "identityReplyToInvalid": "Eksiksiz bir e-posta adresi girin.",
+    "testTitle": "Deneme e-postası gönder",
+    "testDescription": "Bu alan adından kendi oturum açma adresinize tek bir ileti göndeririz.",
+    "testSubmit": "Deneme e-postası gönder",
+    "testQueued": "Deneme e-postası kuyruğa alındı.",
+    "testPending": "Deneme e-postası sürüyor…",
+    "testLastSent": "Son deneme {{when}} tarihinde gönderildi.",
+    "testLastFailed": "Son deneme {{when}} tarihinde başarısız oldu: {{error}}",
+    "errorDomainUnavailable": "Bu alan adı Breeze'de veya e-posta sağlayıcımızda kayıtlı olabilir. Ayrı bir alt alan adı kullanın ya da destek ekibine yazın.",
+    "errorDomainLimitReached": "En fazla {{max}} gönderim alan adı tutabilirsiniz. Önce birini kaldırın.",
+    "errorRateLimited": "Çok fazla deneme. Biraz bekleyip yeniden deneyin.",
+    "errorNotFound": "O alan adı artık yok. Sayfayı yenileyin.",
+    "errorDomainNotSendable": "O alan adı henüz doğrulanmadı, bu yüzden gönderen adresi olamaz.",
+    "errorUnsupported": "Bu sunucuda özel gönderen adresleri etkin değil.",
+    "errorAddFailed": "Alan adı eklenemedi.",
+    "errorCheckFailed": "DNS denetimi başlatılamadı.",
+    "errorRemoveFailed": "Alan adı kaldırılamadı.",
+    "errorIdentityFailed": "Gönderen adresi kaydedilemedi.",
+    "errorTestFailed": "Deneme e-postası gönderilemedi."
   },
   "loginBranding": {
     "saved": "Giriş markası kaydedildi",
@@ -896,7 +1004,10 @@
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
-      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın."
+      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
+      "saveError": "Özel CSS kaydedilemedi.",
+      "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
+      "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
     },
     "preview": {
       "action": "Önizleme",
@@ -1130,6 +1241,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
@@ -1162,6 +1277,20 @@
           "label": "Donanım yaşam döngüsü",
           "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
         }
+      }
+    },
+    "accent": {
+      "title": "Portal vurgusu",
+      "description": "Müşteri portalınızdaki düğmelerin ve bağlantıların rengi. Durum renkleri asla değişmez.",
+      "options": {
+        "spruce": "Ladin",
+        "ink": "Mürekkep",
+        "oxblood": "Boğa kanı",
+        "navy": "Lacivert",
+        "plum": "Erik",
+        "bronze": "Bronz",
+        "teal": "Petrol",
+        "forest": "Orman yeşili"
       }
     },
     "support": {
@@ -1441,7 +1570,7 @@
     "completeReview": "İncelemeyi Tamamla"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aIUsageBudget": "Yapay Zeka Kullanımı",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
@@ -1491,7 +1620,19 @@
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
     "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
+    "defaultValue": "Varsayılan ({{value}})",
+    "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
+    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "effectiveBudget": "Geçerli bütçe",
+    "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
+    "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
+    "sourcePartner": "İş ortağı tarafından belirlendi",
+    "sourceOrganization": "Kuruluş tarafından belirlendi",
+    "sourceDefault": "Varsayılan",
+    "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
+    "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
+    "thresholdsOff": "Kapalı"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1515,14 +1656,25 @@
       "kinds": {
         "sweep": "Tarama",
         "narrative": "Haftalık rapor",
-        "design": "Filo tasarımı"
+        "design": "Filo tasarımı",
+        "patch": "Yama planı"
       },
       "kindsLabel": "Çalıştırılacak denetimler",
       "kind": "Zamanlama türü",
       "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
       "monthlyOrRarerHint": "Filo tasarımı ayda en fazla bir kez çalışır: sabit dakika, saat ve ayın-günü (1-28), ay için * veya virgülle ayrılmış sabit aylar listesi, ve haftanın günü için *. Örneğin 0 6 1 1,4,7,10 * her çeyrekte 1'inde saat 06:00'da çalışır.",
+      "dailyOrRarerHint": "Yama planı günde en fazla bir kez çalışır: sabit dakika ve saat, ayın-günü, ay ve haftanın günü için ise * veya sabit bir liste. Örneğin 0 2 * * * her gece saat 02:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
+      "actMode": {
+        "label": "Eylem modu",
+        "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "deploymentDisabledHint": "Bu dağıtımda BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED kapalı olduğundan eylem modu kullanılamıyor. Etkinleştirmek için yöneticinizle iletişime geçin.",
+        "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
+        "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
+        "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
+        "disableForOrgHint": "Bu kuruluş, burada devre dışı bırakılmadıkça her zaman iş ortağı temel çizgisinin eylem modu ayarını devralır — bağımsız olarak asla etkinleştirilemez."
+      },
       "override": "Bu kuruluş için geçersiz kıl",
       "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
       "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
@@ -1541,7 +1693,8 @@
         "pending_reboots": "Bekleyen yeniden başlatmalar",
         "failed_backups": "Başarısız yedeklemeler",
         "service_down": "Durdurulmuş hizmet",
-        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları"
+        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları",
+        "expiring_certs": "Süresi dolan sertifikalar"
       },
       "toasts": {
         "saved": "Zamanlama kaydedildi",
@@ -1561,8 +1714,10 @@
         "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
         "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
         "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
+        "agentKindNotPatch": "Bir yama planı zamanlaması bir Yama aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
-        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın.",
+        "actModeOrgCannotArm": "Eylem modu iş ortağı temel çizgisinde etkin; bir kuruluş geçersiz kılması bunu yalnızca devre dışı bırakabilir, asla etkinleştiremez."
       }
     },
     "title": "Yapay Zeka Aracıları",
@@ -1588,7 +1743,9 @@
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
-      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
+      "designerAct": "Açık",
+      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -1622,6 +1779,8 @@
       "never": "Hiç çalıştırılmadı",
       "at": "Son çalıştırma {{at}}"
     },
+    "nextOccurrence": "Sonraki çalışma {{at}}",
+    "runNowNoOrg": "Bir yama planı çalıştırmak için bir kuruluş seçin.",
     "disableDialog": {
       "title": "{{name}} devre dışı bırakılsın mı?",
       "message": "Gelecekteki çalıştırmalar durur, bağlı zamanlamalar tetiklenmez ve bu aracının kuruluş geçersiz kılmaları uygulanmaz. Hâlihazırda süren bir çalıştırma, süre sınırına kadar devam eder.",
@@ -1653,6 +1812,7 @@
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Bu aracı zaten etkin.",
+      "noPatchAgent": "Bu kuruluş için geçerli bir yama aracısı yok.",
       "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin.",
       "invalidScriptIds": "Bir veya daha fazla betik bu aracı için yetkilendirilemiyor.",
       "scriptRejected": "Betik {{id}}: {{reason}}",
@@ -1670,7 +1830,8 @@
       "disable": "Devre dışı bırak",
       "confirmDisable": "Devre dışı bırakmayı onayla",
       "reenable": "Yeniden etkinleştir",
-      "runs": "Çalıştırmalar"
+      "runs": "Çalıştırmalar",
+      "runNow": "Şimdi çalıştır"
     },
     "toasts": {
       "saved": "Aracı kaydedildi",
@@ -1678,7 +1839,9 @@
       "disabled": "Aracı devre dışı bırakıldı",
       "disableFailed": "Aracı devre dışı bırakılamadı.",
       "reenabled": "Aracı yeniden etkinleştirildi",
-      "reenableFailed": "Aracı yeniden etkinleştirilemedi."
+      "reenableFailed": "Aracı yeniden etkinleştirilemedi.",
+      "runNowQueued": "Yama planı çalıştırması kuyruğa alındı",
+      "runNowFailed": "Yama planı çalıştırması başlatılamadı."
     },
     "issues": {
       "name": "Aracıya bir ad verin.",
@@ -1767,6 +1930,9 @@
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
       "ticketAutonomousWrites": "Otonom talep yazmaları",
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "alertCategories": "Uyarı kategorileri",
+      "alertCategoriesHint": "Yalnızca şablon kategorisi burada listelenen uyarılar bu aracıyı uyandırır. Herhangi bir kategori için boş bırakın. Yama uyarıları \"patching\" taşır.",
+      "alertCategoriesPlaceholder": "örn. patching, monitor",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
@@ -1854,6 +2020,20 @@
         "empty": "Bildirilen bulgu yok.",
         "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
         "proposalCreated": "Onay istendi",
+        "actSummary": "{{proposed}} cihazdan {{acted}} tanesinde gözetimsiz işlem yapıldı; kalanlar onay bekliyor.",
+        "outcomes": {
+          "auto_executing": "Gözetimsiz çalışıyor",
+          "executed": "Tamamlandı",
+          "failed": "Başarısız",
+          "declined": "Reddedildi",
+          "expired": "Süresi doldu",
+          "unknown": "Sonuç bilinmiyor"
+        },
+        "stoppedBy": {
+          "fleet_cap": "günlük filo sınırına ulaşıldı",
+          "day_cap": "günlük işlem sınırına ulaşıldı",
+          "occurrence_cap": "tarama başına cihaz sınırına ulaşıldı"
+        },
         "columns": {
           "kind": "Kontrol",
           "severity": "Önem düzeyi",
@@ -1868,7 +2048,8 @@
           "pending_reboots": "Bekleyen yeniden başlatmalar",
           "failed_backups": "Başarısız yedeklemeler",
           "service_down": "Servis durdu",
-          "unpatched_critical": "Yamalanmamış kritik açıklar"
+          "unpatched_critical": "Yamalanmamış kritik açıklar",
+          "expiring_certs": "Süresi dolmak üzere olan sertifikalar"
         },
         "severities": {
           "critical": "Kritik",
@@ -1879,11 +2060,90 @@
         },
         "reasons": {
           "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "subject_not_in_evidence": "Öğe tarama kanıtlarında yok",
           "device_not_in_org": "Cihaz bu organizasyona ait değil",
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",
           "intent_error": "Onay oluşturulamadı",
-          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı",
+          "intent_invalid_provenance": "Onay doğrulanamadı (dahili hata)"
+        }
+      },
+      "patch": {
+        "title": "Yama planı",
+        "empty": "Aracı herhangi bir yama işi önermedi.",
+        "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
+        "posture": "{{compliance}}% uyumlu · {{count}} cihaz risk altında",
+        "posture_other": "{{compliance}}% uyumlu · {{count}} cihaz risk altında",
+        "patchCount": "{{count}} güncelleme",
+        "patchCount_other": "{{count}} güncelleme",
+        "refused": "Kaydedilmedi: {{reason}}",
+        "unconfirmed": "Bu plan hiçbir zaman onaylanmadı — aracı öğelerini kanıtlarla yeniden karşılaştıramadı, bu nedenle aşağıdakilerin hiçbiri doğrulanmadı.",
+        "unconfirmedItem": "Onaylanmadı — bu öğe hiçbir zaman yeniden kontrol edilmedi.",
+        "intentCreated": "Onay bekleniyor — kartı aç",
+        "suppressed": "Zaten önerildi: {{reason}}",
+        "capReached": "Önerilmedi: {{reason}}",
+        "intentError": "Onay kartı oluşturulamadı: {{reason}}",
+        "dropped": "{{count}} güncelleme karttan çıkarıldı",
+        "dropped_other": "{{count}} güncelleme karttan çıkarıldı",
+        "counts": "{{created}} onay bekliyor · {{suppressed}} zaten önerildi",
+        "failureClass": "Hata sınıfı: {{label}}",
+        "attempts": "{{count}} başarısız deneme",
+        "attempts_other": "{{count}} başarısız deneme",
+        "rebootWindow": "Pencere: {{start}} – {{end}}",
+        "redundancyGroup": "Yedeklilik grubu: {{group}}",
+        "escalation": "Bir kişinin bakması gerekiyor — bu otomatik olarak yeniden denenmeyecek.",
+        "escalations": "{{count}} yükseltme",
+        "escalations_other": "{{count}} yükseltme",
+        "classes": {
+          "install": "Kurulum",
+          "approval_advisory": "Onay tavsiyesi",
+          "reboot_plan": "Yeniden başlatma planı",
+          "chase": "Hata takibi",
+          "escalation": "Yükseltme"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Cihaz yama kanıtlarında yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil",
+          "patch_not_in_evidence": "Güncelleme yama kanıtlarında yok",
+          "window_not_resolved": "Bakım penceresi çözülemedi",
+          "job_result_not_in_evidence": "Yama işi sonucu kanıtlarda yok",
+          "no_eligible_patches": "Şu anda bu cihaz için uygun bir güncelleme yok",
+          "not_allowlisted": "Aracının kurulum önerme izni yok",
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı",
+          "no_eligible_approvers": "Bu eylemi kimse onaylayamaz",
+          "intent_error": "Onay oluşturulamadı",
+          "live_intent_exists": "Bu güncelleme için zaten açık bir onay kartı var",
+          "recently_rejected": "Bu güncelleme yakın zamanda reddedildi",
+          "recently_cancelled": "Bu güncellemenin kartı yakın zamanda iptal edildi",
+          "recently_completed": "Bu güncelleme yakın zamanda kuruldu",
+          "failure_class_mismatch": "Belirtilen hata sınıfı kanıtlarla eşleşmiyor",
+          "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
+          "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
+          "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor",
+          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi",
+          "reboot_policy_not_window_gated": "Cihazın yeniden başlatma politikası bakım pencereleri dışında yeniden başlatıyor, bu nedenle bir pencere planı uygulanmaz",
+          "redundancy_unknown": "Cihazın yedeklilik grubu bilinmiyor, bu nedenle sıralama kontrol edilemedi",
+          "redundancy_collision": "Aynı yedeklilik grubundaki başka bir cihaz bu pencere için zaten planlandı"
+        },
+        "ineligible": {
+          "not_outstanding": "Bu cihazda bekleyen değil",
+          "superseded": "Daha yeni bir güncellemeyle değiştirildi",
+          "blocked_by_source": "Politikanın güncelleme kaynakları tarafından hariç tutuldu",
+          "held_by_deferral": "Erteleme penceresi tarafından tutuluyor",
+          "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
+          "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
+          "awaiting_manual_approval": "Manuel onay bekleniyor",
+          "no_ring_resolved": "Cihazın güncelleme halkası yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil"
+        },
+        "failureClasses": {
+          "transient": "Geçici",
+          "needs_reboot": "Yeniden başlatma gerekli",
+          "disk_space": "Disk alanı",
+          "store_corrupt": "Güncelleme deposu bozuk",
+          "permanent": "Kalıcı",
+          "unknown": "Bilinmiyor"
         }
       },
       "narrative": {
@@ -1892,7 +2152,17 @@
         "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
         "openReport": "Raporu aç",
         "download": "PDF'yi indir",
-        "downloadFailed": "PDF indirilemedi."
+        "downloadFailed": "PDF indirilemedi.",
+        "delivery": {
+          "sent": "{{total}} alıcıdan {{sent}} tanesine e-posta gönderildi",
+          "refused_one": "{{count}} alıcıya e-posta gönderilmedi — rapor yetkisi, eksik adres veya sağlayıcı reddetti.",
+          "refused_other": "{{count}} alıcıya e-posta gönderilmedi — rapor yetkisi, eksik adres veya sağlayıcı reddetti.",
+          "pending_one": "{{count}} teslimat henüz gönderilmedi — yeniden denenecek.",
+          "pending_other": "{{count}} teslimat henüz gönderilmedi — yeniden denenecek.",
+          "unknown_one": "{{count}} teslimat doğrulanamadı — e-posta sağlayıcısı kesin bir yanıt vermedi.",
+          "unknown_other": "{{count}} teslimat doğrulanamadı — e-posta sağlayıcısı kesin bir yanıt vermedi.",
+          "recipientsUnresolved": "Alıcı araması başarısız oldu, bu nedenle bu anlatı kimseye e-postayla gönderilmedi. Raporun kendisi kaydedildi."
+        }
       },
       "fleetDesign": {
         "title": "Filo tasarımı",
@@ -1934,7 +2204,9 @@
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",
           "turnCount": "Tur sayısı",
-          "summary": "Özet"
+          "summary": "Özet",
+          "computeCost": "Hesaplama",
+          "computeEstimated": "(tahmini)"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -1966,6 +2238,34 @@
             "skipped": "Doğrulama atlandı"
           },
           "viewApproval": "Onaylar'da incele"
+        },
+        "artifacts": {
+          "title": "Bu çalıştırmanın oluşturduğu dosyalar",
+          "download": "İndir",
+          "preview": "Önizleme",
+          "attachToTicket": "Dahili not olarak ekle",
+          "attach": "{{name}} dosyasını dahili not olarak ekle",
+          "ticketIdPlaceholder": "Bilet No",
+          "attachedToTicket": "Bilete dahili not olarak eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi",
+          "attachedButCommentFailed": "Dosya eklendi, ancak bilete not eklenemedi",
+          "downloadExpired": "Bu dosyanın süresi doldu ve artık indirilemiyor."
+        },
+        "workspace": {
+          "title": "Korumalı alanda ne çalıştı",
+          "region": "Bölge",
+          "status": "Korumalı alan",
+          "cpu": "İşlemci süresi",
+          "steps": "Adımlar",
+          "script": "Betik",
+          "stdout": "Çıktı",
+          "exitCode": "çıkış",
+          "timedOut": "zaman aşımı",
+          "noExitCode": "çıkış kodu yok",
+          "artifactExpired": "süresi doldu"
+        },
+        "progress": {
+          "title": "İlerleme"
         },
         "ledger": {
           "title": "Araç yürütmeleri",
@@ -2067,6 +2367,7 @@
       "emptyState": {
         "title": "Bu dönemde henüz yapay zekâ sonucu yok",
         "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "descriptionWidestWindow": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. En geniş raporlama döneminde bile henüz yeterli veri yok — başlamak için bir ajan kurun.",
         "action": "Ajan kur"
       },
       "tileGroups": {
@@ -2172,6 +2473,31 @@
         },
         "weightRowLabel": "{{label}} (kredilendirilen dakika)",
         "neverRebuilt": "Hiç yeniden oluşturulmadı"
+      },
+      "measured": {
+        "heading": "Ölçülen (korelasyonel)",
+        "caption": "Aynı türden ve aynı dönemdeki, yapay zekânın dokunduğu işler ile dokunmadıklarının karşılaştırması. Önce/sonra karşılaştırması değildir ve nedensellik iddiası taşımaz — yapay zekâ genellikle önce daha kolay işlere ulaşır.",
+        "alertResolution": "Uyarı çözümü, kurala göre",
+        "ticketFirstResponse": "Talebe ilk yanıt, önceliğe ve kategoriye göre",
+        "technicianMinutes": "Kaydedilen teknisyen dakikaları",
+        "armAiTouched": "Yapay zekânın dokunduğu",
+        "armUntouched": "Dokunulmamış",
+        "withinHorizonAlerts": "24 saat içinde çözülen",
+        "withinHorizonTickets": "4 saat içinde ilk yanıt",
+        "cohortSize": "Kohortta {n}",
+        "percentileP50": "p50: {minutes} dk",
+        "percentileP90": "p90: {minutes} dk",
+        "recordedMinutesValue": "{minutes} dk ortanca",
+        "loggingCoverage": "Yapay zekânın dokunduğu taleplerin {ai} kadarında, diğerlerinin {untouched} kadarında süre kaydı var. Kısmen kaydedilmiş talepler üzerinden alınan ortanca, emeğin ortancası değildir.",
+        "censoredNote": "Gösterilen her yüzdelik sağdan sansürlüdür: hâlâ açık olan işler elenmek yerine tamamlanmamış sayılır.",
+        "loading": "Ölçülen karşılaştırma yükleniyor…",
+        "error": "Ölçülen karşılaştırma yüklenemedi.",
+        "omitted": {
+          "insufficientData": "Yeterli veri yok: karşılaştırılabilir hiçbir iş grubunda her iki tarafta en az 20 kayıt bulunmuyor.",
+          "insufficientFollowup": "Bu dönem, yeterli sayıda kaydın sonucunu gözlemek için çok kısa. Daha uzun bir dönem deneyin.",
+          "insufficientAuthority": "Kaydedilen teknisyen dakikalarını görmek için gereken süre kaydı iznine sahip değilsiniz.",
+          "siteRestricted": "Siteye kısıtlı erişimde ölçülen karşılaştırma gösterilmez, çünkü tüm bir organizasyonu toplar."
+        }
       }
     },
     "graduation": {
@@ -2229,7 +2555,8 @@
         "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
         "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
         "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
-        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez.",
+        "below_sweep_threshold": "Hedefi zamanlanmış bir taramanın seçtiği daha fazla doğrulanmış düzeltme gerekiyor."
       },
       "confirm": {
         "title": "Ön yetki isteği oluştur",
@@ -2318,6 +2645,10 @@
         "tenancy": {
           "label": "Kiracı yönetimi",
           "description": "Organizasyonları, siteleri ve kiracılar arası entegrasyonları yönetin."
+        },
+        "workspace": {
+          "label": "Veri analizi korumalı alanı",
+          "description": "Filo veri kümelerini dışa aktarın ve analiz kodunu ağ erişimi ve cihaz erişimi olmayan yalıtılmış bir korumalı alanda çalıştırın. Bulgular, bir teknisyenin onayladığı öneriler olarak döner."
         }
       },
       "tools": {
@@ -2853,6 +3184,11 @@
       "searchPlaceholder": "Betik ara…",
       "selectedCount_one": "{{count}} betik yetkilendirildi",
       "selectedCount_other": "{{count}} betik yetkilendirildi"
+    },
+    "designerNote": {
+      "title": "Bu aracı yalnızca okur ve rapor yazar",
+      "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
+      "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
     }
   },
   "apiKeyForm": {
@@ -3195,7 +3531,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın.",
+    "distributorsLink": "Distribütör bağlantılarını yönet →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Geçerli şifre gerekli",
@@ -3893,6 +4230,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",
@@ -3994,7 +4332,10 @@
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
     "checkingAccess": "Erişiminiz kontrol ediliyor...",
-    "timeTracking": "Zaman Takibi"
+    "timeTracking": "Zaman Takibi",
+    "email": "E-posta",
+    "templates": "Şablonlar",
+    "timeCapture": "Zaman kaydı"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -4148,6 +4489,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Yapay zeka bütçesi",
+    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
+  },
   "orgSettingsPage": {
     "loading": "Organizasyon ayarları yükleniyor...",
     "confirmDiscard": "Bu bölümde kaydedilmemiş değişiklikleriniz var. Geçiş yapmak onları ortadan kaldıracaktır. Devam etmek?",
@@ -4201,7 +4547,9 @@
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",
       "ticketing": "Biletleme",
-      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma"
+      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
+      "ai": "Yapay Zeka",
+      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -4222,6 +4570,12 @@
       "organizationId": "Kuruluş Kimliği",
       "copyOrganizationId": "Kuruluş Kimliğini Kopyala",
       "organizationIdHelp": "Kullanıcıları davet ederken veya entegrasyonları yapılandırırken bu kimliği kullanın."
+    },
+    "ai": {
+      "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
+      "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
+      "externalProcessingSaved": "Kaydedildi",
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
     },
     "breadcrumbs": {
       "settings": "Ayarlar",
@@ -4956,7 +5310,15 @@
     "columns": {
       "email": "E-posta",
       "role": "Rol",
-      "lastLogin": "Son giriş"
+      "lastLogin": "Son giriş",
+      "mfaStatus": "MFA durumu"
+    },
+    "mfaStatus": {
+      "enrolled": "Kayıtlı",
+      "pending": "Beklemede",
+      "pendingByDate": "Beklemede — {{date}} tarihine kadar kaydolun",
+      "overdue": "Gecikti",
+      "notRequired": "Gerekli değil"
     },
     "status": {
       "active": "Aktif",
@@ -5022,6 +5384,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",
@@ -5061,6 +5424,16 @@
     "empty": {
       "title": "Henüz değişken yok",
       "description": "Aynı jetonu her müşterinin komut dosyalarına yapıştırmayı durdurmak için bir tane oluşturun."
+    },
+    "filters": {
+      "searchLabel": "Değişkenleri ara",
+      "searchPlaceholder": "Anahtar veya açıklamaya göre ara",
+      "scopeGroupLabel": "Kapsama göre filtrele",
+      "scopeAll": "Tüm kapsamlar"
+    },
+    "noMatches": {
+      "title": "Filtrelerinize uyan değişken yok",
+      "description": "Farklı bir arama terimi deneyin veya kapsam filtresini temizleyin."
     },
     "errors": {
       "load": "Değişkenler yüklenemedi."
@@ -5355,5 +5728,18 @@
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
     "loadFailed": "Betik yazımı ayarları yüklenemedi."
+  },
+  "ticketingHubPage": {
+    "heading": "Bilet Ayarları",
+    "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog varsayılanları",
+    "description": "Katalog içe aktarmalarını ve teklif düzenleyicisinin otomatik doldurmasını önceden doldurmak için kullanılır — fiyat çözümlemesini doğrudan etkilemez.",
+    "loading": "Katalog varsayılanları yükleniyor...",
+    "loadError": "Katalog varsayılanları yüklenemedi.",
+    "saveError": "Katalog varsayılanları kaydedilemedi",
+    "saveSuccess": "Katalog varsayılanları kaydedildi",
+    "saveButton": "Kaydet"
   }
 }

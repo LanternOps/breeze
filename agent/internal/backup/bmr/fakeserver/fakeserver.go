@@ -246,7 +246,8 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 // Deps.Provider re-authenticates; not exercised by the console's own
 // Exchange->Provider flow directly (which uses the exchange response's
 // bootstrap in-memory), but kept for parity with real recovery tokens and
-// for recoveryDownloadProvider's re-auth-on-401/403 path.
+// for recoveryDownloadProvider's session refresh (proactive before
+// expiresAt, reactive on 401).
 func (s *Server) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")

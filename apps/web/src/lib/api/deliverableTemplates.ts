@@ -16,6 +16,7 @@ import type {
   ApplyTemplateSetInput,
   CreateTemplateItemInput,
   CreateTemplateSetInput,
+  ManagedEvidenceReportType,
   UpdateTemplateItemInput,
   UpdateTemplateSetInput,
 } from '@breeze/shared';
@@ -33,7 +34,15 @@ export interface TemplateItem {
   graceDays: number;
   artifactRequired: boolean;
   completionMode: 'explicit' | 'on_ticket_resolve';
+  /** #5808 W03 — copied onto the deliverable by applyTemplateSet. Internal
+   *  runbook prose; never shown to the customer. */
+  instructions: string | null;
+  /** #5808 W03 — a live pointer to a checklist template. The owner-axis rule
+   *  (a partner-wide item may point only at a partner-wide template of the
+   *  same partner) is enforced server-side, not expressible here. */
+  checklistTemplateId: string | null;
   sortOrder: number;
+  autoEvidenceReportType: ManagedEvidenceReportType | null;
 }
 
 export interface TemplateSet {

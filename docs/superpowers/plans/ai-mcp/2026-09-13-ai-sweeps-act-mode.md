@@ -20,13 +20,15 @@ branch: feature/5751-ai-sweeps-act-mode/wave-<sub-issue>
 
 | Wave | Plan file | Migration slot | Depends on |
 |---|---|---|---|
-| **W01 — trigger provenance** (#5744) | `2026-09-13-ai-sweeps-act-mode-01-trigger-provenance.md` | `2026-10-16-181500-remediation-trigger-provenance.sql` | — |
-| **W02 — sweep-condition fix watches** | `2026-09-13-ai-sweeps-act-mode-02-sweep-fix-watches.md` | `2026-10-16-181505-sweep-condition-fix-watches.sql` | W01 (needs `action_intents.trigger_kind`) |
+| **W01 — trigger provenance** (#5744) | `2026-09-13-ai-sweeps-act-mode-01-trigger-provenance.md` | `2026-10-16-182900-remediation-trigger-provenance.sql` | — |
+| **W02 — sweep-condition fix watches** | `2026-09-13-ai-sweeps-act-mode-02-sweep-fix-watches.md` | `2026-10-16-182300-sweep-condition-fix-watches.sql` | W01 (needs `action_intents.trigger_kind`) |
 | **W03 — `expiring_certs`** (#4230) | `2026-09-13-ai-sweeps-act-mode-03-expiring-certs.md` | `2026-10-16-181510-network-monitor-tls-observation.sql` | **nothing** — fully independent, can ship in parallel with W01/W02 |
 | **W04 — the act gate** (#4442) | `2026-09-13-ai-sweeps-act-mode-04-act-gate.md` | `2026-10-16-181520-ai-agent-schedules-act-mode.sql` | W01 **and** W02 |
 | **W05 — fan-out, budget, graduation, visibility** | `2026-09-13-ai-sweeps-act-mode-05-fanout-graduation-ui.md` | none | W04 |
 
 W01–W03 ship dark and are independently useful with act mode off. W04–W05 ship behind `BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED` (default off).
+
+**W02 slot note (added post-W01 merge):** W01 actually shipped as `2026-10-16-182900-remediation-trigger-provenance.sql`, which sorts *after* the `181505` slot originally reserved for W02 above — a W02 migration filed at `181505` would replay before its own dependency (`action_intents.trigger_kind`) exists. The table above is corrected to `182300`, but re-verify at dispatch time per the "Migration slot block" rule below (`ls apps/api/migrations | sort | tail -1` against `origin/main`) rather than trusting this doc — more migrations may have landed in the block since.
 
 ## Migration slot block (read before renaming anything)
 

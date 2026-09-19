@@ -68,6 +68,24 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
 
+// #6214: designer setup/enable. Mocked whole (the real module imports
+// agentService and its dependency tree); the error class is defined IN the
+// factory so the route's `instanceof` and this file's `new` share identity.
+const { describeDesignerSetupMock, enableDesignerMock } = vi.hoisted(() => ({
+  describeDesignerSetupMock: vi.fn(),
+  enableDesignerMock: vi.fn(),
+}));
+vi.mock('../services/fleetDesign/designerSetup', () => ({
+  describeDesignerSetup: describeDesignerSetupMock,
+  enableDesigner: enableDesignerMock,
+  DesignerEnableError: class DesignerEnableError extends Error {
+    constructor(readonly code: string, readonly detail: Record<string, unknown> = {}) {
+      super(code);
+      this.name = 'DesignerEnableError';
+    }
+  },
+}));
+
 vi.mock('../db', () => ({
   db: { select: selectMock },
 }));
@@ -119,6 +137,7 @@ vi.mock('../services/fleetDesign/ledger', async (importOriginal) => {
 // dependencies (vi.mock calls are hoisted, but the import must still come
 // after them textually is not required — kept here for readability).
 const { fleetDesignRoutes } = await import('./fleetDesign');
+const { DesignerEnableError } = await import('../services/fleetDesign/designerSetup');
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -201,6 +220,118 @@ beforeEach(() => {
   mfaOkMock.mockReturnValue(true);
   resolveEffectiveAgentMock.mockResolvedValue({ agentId: AGENT_ID, kind: 'designer', effective: { enabled: true, mode: 'act' } });
   createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: RUN_ID, status: 'queued' } });
+});
+
+// Every other suite in this file mounts `fleetDesignRoutes` behind a
+// test-only middleware that pre-sets `c.set('auth', ...)` (see `buildApp`
+// below) — that masks whether the router itself ever applies
+// `authMiddleware`, because `authMiddleware` no-ops when `auth` is already
+// on the context (middleware/auth.ts:522-526). This suite mounts the router
+// bare, the way `index.ts` actually does (`api.route('/ai/fleet-design',
+// fleetDesignRoutes)`, no upstream auth), so it exercises the router's own
+// gate — same shape as `routes/aiAgents.test.ts`'s "is behind authMiddleware".
+describe('router auth gate', () => {
+  it('is behind authMiddleware', async () => {
+    const app = new Hono();
+    app.route('/ai/fleet-design', fleetDesignRoutes);
+
+    const res = await app.request('/ai/fleet-design/runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /ai/fleet-design/designer (#6214)', () => {
+  it('returns the setup status for an accessible org', async () => {
+    describeDesignerSetupMock.mockResolvedValue({ status: 'missing', agentId: null, canEnable: true });
+    const app = buildApp();
+    const res = await app.request(`/ai/fleet-design/designer?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ data: { status: 'missing', agentId: null, canEnable: true } });
+    expect(describeDesignerSetupMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }), ORG_ID);
+  });
+
+  it('404s a cross-tenant or malformed orgId without touching the service', async () => {
+    const app = buildApp();
+    expect((await app.request(`/ai/fleet-design/designer?orgId=${OTHER_ORG_ID}`)).status).toBe(404);
+    expect((await app.request('/ai/fleet-design/designer?orgId=nope')).status).toBe(404);
+    expect((await app.request('/ai/fleet-design/designer')).status).toBe(400);
+    expect(describeDesignerSetupMock).not.toHaveBeenCalled();
+  });
+
+  it('is a read: ai_agents:read suffices, ai_agents:write is not consulted', async () => {
+    describeDesignerSetupMock.mockResolvedValue({ status: 'ready', agentId: AGENT_ID, canEnable: false });
+    hasPermMock.mockImplementation((_resource, action) => action === 'read');
+    const app = buildApp();
+    expect((await app.request(`/ai/fleet-design/designer?orgId=${ORG_ID}`)).status).toBe(200);
+  });
+});
+
+describe('POST /ai/fleet-design/designer/enable (#6214)', () => {
+  function postEnable(app: Hono, body: unknown) {
+    return app.request('/ai/fleet-design/designer/enable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('enables, audits, and returns the fresh status', async () => {
+    enableDesignerMock.mockResolvedValue({ status: 'ready', agentId: AGENT_ID, canEnable: false });
+    const app = buildApp();
+    const res = await postEnable(app, { orgId: ORG_ID });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ data: { status: 'ready', agentId: AGENT_ID, canEnable: false } });
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      orgId: ORG_ID,
+      action: 'ai_fleet_design.designer.enable',
+      resourceType: 'ai_agent',
+      resourceId: AGENT_ID,
+      result: 'success',
+    });
+  });
+
+  it('requires ai_agents:write and MFA, 404s a cross-tenant org, 400s extra keys', async () => {
+    hasPermMock.mockImplementation((_resource, action) => action === 'read');
+    expect((await postEnable(buildApp(), { orgId: ORG_ID })).status).toBe(403);
+    hasPermMock.mockReturnValue(true);
+
+    mfaOkMock.mockReturnValue(false);
+    expect((await postEnable(buildApp(), { orgId: ORG_ID })).status).toBe(403);
+    mfaOkMock.mockReturnValue(true);
+
+    expect((await postEnable(buildApp(), { orgId: OTHER_ORG_ID })).status).toBe(404);
+    expect((await postEnable(buildApp(), { orgId: ORG_ID, siteId: SITE_ID })).status).toBe(400);
+    expect(enableDesignerMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['partner_scope_required', 403],
+    ['partner_admin_required', 403],
+    ['kill_switch_off', 409],
+    ['agent_kind_exists', 409],
+    ['act_prerequisites_not_met', 422],
+    ['invalid_recipients', 422],
+  ] as const)('maps DesignerEnableError %s to %i with the code and detail, and audits the failure', async (code, status) => {
+    enableDesignerMock.mockRejectedValue(new DesignerEnableError(code, { missing: ['recipient'] }));
+    const res = await postEnable(buildApp(), { orgId: ORG_ID });
+
+    expect(res.status).toBe(status);
+    await expect(res.json()).resolves.toEqual({ error: code, missing: ['recipient'] });
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      action: 'ai_fleet_design.designer.enable',
+      result: 'failure',
+      details: { error: code },
+    });
+  });
 });
 
 describe('POST /ai/fleet-design/runs', () => {

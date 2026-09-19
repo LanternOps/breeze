@@ -48,6 +48,15 @@
  *     old "both must be set and equal" reading refused valid proposals
  *     whenever the model omitted `finding.deviceId`, silently, since a
  *     refusal is recorded on the outcome rather than surfaced as an error).
+ *  1b. `subject_not_in_evidence` (#4442 W04) — the device is not the whole
+ *     subject. A `service_down` observation is about (device, service NAME),
+ *     so the proposal's own subject key (`sweepSubjectKey`) must resolve to a
+ *     row the system loaded (`run.evidenceSubjects`, built by
+ *     `indexEvidenceSubjects` from the same per-kind rule). Without this,
+ *     evidence about service A would authorize an unattended restart of
+ *     service B on the same device. The matched SYSTEM subject is recorded on
+ *     the proposal and is what the act gate compares the intent's arguments
+ *     against — the model never supplies it.
  *  2. `device_not_in_org` — the device must still resolve inside `run.orgId`
  *     and must not be an ephemeral (Quick Support) enrolment. Evidence is a
  *     point-in-time snapshot; a device can be deleted or moved to another org
@@ -82,12 +91,16 @@
  * caps a run at 50 findings.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { ZodError } from 'zod';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_SWEEP_KINDS,
+  sweepTriggerKey,
   type AiAgentRunSweepDto,
   type AiAgentRunSweepFindingDto,
+  type AiAgentRunSweepActSummaryDto,
+  type AiAgentRunSweepProposalOutcome,
   type AiSweepKind,
   type SweepFinding,
   type SweepFindingsOutcome,
@@ -100,7 +113,19 @@ import {
 // Direct module import, not the schema barrel — same note as runLoop.ts.
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
+import { computeExposureBudget } from '../actionIntents/exposureBudget';
 import { createActionIntent } from '../actionIntents/intentService';
+// From `intentTargetScope`, deliberately NOT from `intentService`: it is the
+// pure home of the creation-time argument gates, and importing it here keeps
+// this module's one comparison out of the heavy service module.
+import { subjectMatchesArguments } from '../actionIntents/intentTargetScope';
+import { captureException } from '../sentry';
+import {
+  orderCohortCandidates, selectCohort,
+  type CohortCandidate, type CohortStopReason,
+} from './sweepActCohort';
+import { resolveEffectiveScheduleActMode } from './sweepActMode';
+import { sweepSubjectIndexKey, type SweepEvidenceSubject } from './sweepEvidence';
 import { isToolAllowlisted } from './toolAllowlist';
 
 /**
@@ -156,8 +181,32 @@ export interface SweepProposalRecord {
   deviceId: string;
   disposition: SweepProposalDisposition;
   reason?: SweepProposalReason;
+  /**
+   * #4442 W04 — the SYSTEM's own subject for the evidence row this proposal
+   * matched (gate 1b). Present only when gate 1b passed; written from
+   * `evidenceSubjects`, NEVER from the model's text. Scalars only (three
+   * strings, one flat object): this is persisted into the run's `outcome`
+   * jsonb, which is already `excludedOpen` in the export registry, so it
+   * needs no registry change — but nesting anything richer here would be a
+   * new shape inside an opaque column.
+   */
+  subject?: { kind: AiSweepKind; key: string; observedAt: string | null };
   /** Present ONLY for `disposition: 'intent_created'` — a pending-approval id. */
   intentId?: string;
+  /**
+   * #4442 W05 — was this proposal inside the occurrence's readiness cohort,
+   * i.e. minted act-eligible? Present only when the schedule was armed (a
+   * disarmed occurrence computes no cohort at all and this stays undefined,
+   * which is what keeps a pre-act-mode run rendering exactly as before).
+   * `false` means the proposal is an ORDINARY supervised card — it was never
+   * dropped.
+   */
+  cohort?: boolean;
+  /**
+   * #4442 W05 — which cap ended the cohort walk, so the run detail can say
+   * WHY the rest are waiting for approval. Null when nothing bound.
+   */
+  stoppedBy?: CohortStopReason | null;
 }
 
 /** The run fields `persistSweepFindings` needs, all already loaded by the
@@ -176,8 +225,33 @@ export interface SweepPersistRunInput {
   toolAllowlist: string[];
   /** The AGENT's effective `limits.maxActionsPerRun` — see gate 4. */
   maxActionsPerRun: number;
-  /** The device ids the SYSTEM loaded evidence for — see gate 1. */
+  /** The device ids the SYSTEM loaded evidence for — see gate 1. Kept as its
+   *  own field rather than derived from `evidenceSubjects` below: the
+   *  device-level kinds (`stale_agents`, `pending_reboots`, `failed_backups`)
+   *  produce NO subject, so deriving would silently narrow gate 1 and report
+   *  the wrong refusal reason for a proposal on such a device. */
   evidenceDeviceIds: ReadonlySet<string>;
+  /**
+   * #4442 W04 — the SYSTEM's own subjects for those same rows, keyed
+   * `kind|deviceId|key` (`indexEvidenceSubjects`, sweepEvidence.ts). Gate 1b
+   * matches each proposal against this, so evidence about one service can
+   * never authorize acting on another. The run outcome does NOT store the
+   * evidence itself (`runLoopTypes.ts`: "the evidence itself is never stored
+   * on the run"), so this map is assembled in memory by `finalizeSweep` and
+   * discarded with the run.
+   */
+  evidenceSubjects: ReadonlyMap<string, SweepEvidenceSubject>;
+  /**
+   * #4442 W05 — the three caps the readiness cohort walks against. The first
+   * two are the AGENT's effective exposure-ledger limits, identical to the
+   * ones `runAuthorizeTransaction` enforces per intent (this walk only
+   * bounds over-subscription across the occurrence; it reserves nothing).
+   * The third is the new per-OCCURRENCE device cap. All three are read only
+   * when the schedule is armed.
+   */
+  maxFleetPercentPerDay: number;
+  maxPolicyDecisionsPerDay: number;
+  maxUnattendedDevicesPerSweep: number;
 }
 
 /** `action` for the record/projection: only `manage_services` carries one. */
@@ -231,6 +305,8 @@ export async function persistSweepFindings(
   const candidates: Array<{ index: number; finding: SweepFinding; proposal: SweepProposedAction }> = [];
   const proposals: SweepProposalRecord[] = [];
   const refusals = new Map<number, SweepProposalReason>();
+  /** The SYSTEM's matched subject per surviving candidate (gate 1b). */
+  const subjects = new Map<number, SweepEvidenceSubject>();
 
   for (const [index, finding] of findings.entries()) {
     const proposal = finding.proposedAction;
@@ -246,9 +322,33 @@ export async function persistSweepFindings(
         findingDeviceId, proposalDeviceId: deviceId,
       });
       refusals.set(index, 'device_not_in_evidence');
+    } else {
+      // Gate 1b (#4442 W04) — evaluated HERE, in the same pre-DB pass as gate
+      // 1, so a proposal whose subject the system never observed never reaches
+      // the batched device read either. See the header.
+      const proposalSubjectKey = sweepSubjectKey(finding);
+      const subject = proposalSubjectKey === null
+        ? undefined
+        : run.evidenceSubjects.get(sweepSubjectIndexKey(finding.kind, deviceId, proposalSubjectKey));
+      if (subject) {
+        subjects.set(index, subject);
+      } else {
+        console.warn('[sweepFindings] proposal refused — the subject it names is not in the run\'s evidence', {
+          runId: run.id, agentId: run.agentId, findingIndex: index, kind: finding.kind, deviceId,
+        });
+        refusals.set(index, 'subject_not_in_evidence');
+      }
     }
     candidates.push({ index, finding, proposal });
   }
+
+  // #4442 W04 — the schedule brake, resolved ONCE for the whole occurrence and
+  // before the device read so a disarmed schedule costs nothing per proposal.
+  // Resolved ONCE for the whole occurrence, and before the device read so a
+  // disarmed schedule costs nothing per proposal. Shared with the
+  // RELEASE-time brake (`sweepActMode.ts`) so creation and release can never
+  // disagree about whether this org is armed.
+  const scheduleActMode = await resolveEffectiveScheduleActMode(run.scheduleId, run.orgId);
 
   // Gate 2, batched: ONE org-pinned, non-ephemeral existence read for every
   // device that cleared gate 1 — never a query per finding.
@@ -270,6 +370,94 @@ export async function persistSweepFindings(
     inOrg = new Set(rows.map((row) => row.id));
   }
 
+  // #4442 W05 §3.5 — the READINESS cohort. Deliberately NOT a reservation:
+  // see `sweepActCohort.ts`'s header (a `sweep_fanout` exposure row would be
+  // excluded from the day count, `runAuthorizeTransaction` would insert its
+  // own anyway, and its rollback cannot undo a prior transaction). Each
+  // intent's own `attemptPolicyDecision` performs the single, idempotent
+  // reservation exactly as today; this walk only bounds over-subscription
+  // across the occurrence.
+  //
+  // Read-only, but under the SAME per-org advisory lock the authorize path
+  // takes, so the snapshot this walk sees cannot be split by a concurrent
+  // authorization mid-occurrence. The lock is released by ending that
+  // transaction BEFORE the mint loop starts — `createActionIntent` opens its
+  // own transaction via `runOutsideDbContext`, and holding a pooled
+  // connection across N of those is the double-hold hang CLAUDE.md warns
+  // about.
+  //
+  // A cohort member can STILL individually lose the authorize race or fail
+  // decide-time revalidation and degrade to `human_required`. This is a
+  // bound, not a promise of atomic execution.
+  //
+  // A DISARMED schedule computes no cohort at all: nothing here can make a
+  // proposal act-eligible, so the ledger read is pure cost.
+  const cohortEligible = new Map<number, CohortCandidate>();
+  /** Gate-3/act-gate results reused by the mint loop — computed once. */
+  const argumentsMatch = new Map<number, boolean>();
+  if (scheduleActMode) {
+    for (const { index, finding, proposal } of candidates) {
+      if (refusals.has(index)) continue;
+      const subject = subjects.get(index);
+      const deviceId = proposal.deviceId;
+      if (!subject || !inOrg.has(deviceId)) continue;
+      if (!isToolAllowlisted(run.toolAllowlist, proposal.tool, proposedActionName(proposal))) continue;
+      const matches = subjectMatchesArguments(
+        subject, proposal.tool, proposalToolInput(proposal), deviceId,
+      );
+      argumentsMatch.set(index, matches);
+      // A proposal whose arguments do not match the system's subject can
+      // never be act-eligible (`resolvePolicyDecisionState`), so it must not
+      // consume a cohort slot a genuinely eligible sibling could use.
+      if (!matches) continue;
+      cohortEligible.set(index, {
+        findingIndex: index,
+        deviceId,
+        severity: finding.severity,
+        kind: finding.kind,
+        subjectKey: subject.key,
+      });
+    }
+  }
+
+  let cohortMembers: ReadonlySet<number> = new Set<number>();
+  let cohortStoppedBy: CohortStopReason | null = null;
+  if (cohortEligible.size > 0) {
+    const ordered = orderCohortCandidates([...cohortEligible.values()]);
+    const budget = await inSystemDbContext(async () => {
+      await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-exposure:${run.orgId}`}, 0))`);
+      return computeExposureBudget({
+        orgId: run.orgId,
+        agentId: run.agentId,
+        maxFleetPercentPerDay: run.maxFleetPercentPerDay,
+        maxPolicyDecisionsPerDay: run.maxPolicyDecisionsPerDay,
+        // No `deviceId`: this wants the WINDOW as it stands, with no
+        // hypothetical device projected into it — the cohort walk does the
+        // projecting, as a set union.
+      });
+    });
+    const selected = selectCohort({
+      ordered,
+      existingExposedDevices: budget.exposedDeviceIds,
+      allowance: budget.allowance,
+      // `policyDecisionsToday` is null ONLY under `shortCircuitOnFleetCapExceeded`,
+      // which this call never sets. Treated as "cap already spent" rather than
+      // zero if it ever were null: fail closed, never open.
+      policyDecisionsToday: budget.policyDecisionsToday ?? run.maxPolicyDecisionsPerDay,
+      maxPolicyDecisionsPerDay: run.maxPolicyDecisionsPerDay,
+      maxUnattendedDevicesPerSweep: run.maxUnattendedDevicesPerSweep,
+    });
+    cohortMembers = new Set(selected.admitted.map((c) => c.findingIndex));
+    cohortStoppedBy = selected.stoppedBy;
+    console.info('[sweepFindings] readiness cohort selected', {
+      runId: run.id, agentId: run.agentId, orgId: run.orgId,
+      eligible: cohortEligible.size, admitted: cohortMembers.size,
+      stoppedBy: cohortStoppedBy, allowance: budget.allowance,
+      exposedDevices: budget.exposedDeviceIds.size,
+      maxUnattendedDevicesPerSweep: run.maxUnattendedDevicesPerSweep,
+    });
+  }
+
   const intentIds: string[] = [];
   let created = 0;
 
@@ -289,6 +477,42 @@ export async function persistSweepFindings(
       record.reason = gate1Reason;
       proposals.push(record);
       continue;
+    }
+
+    // The SYSTEM's subject for this proposal, matched in the pre-DB pass above
+    // (gate 1b). Expected to be present — a candidate with no subject was
+    // recorded in `refusals` and returned by the branch above — but the
+    // invariant spans two loops and two maps, so it is CHECKED rather than
+    // asserted: if a later edit to gate 1b's `continue` ever breaks the
+    // pairing, this must refuse the proposal (the same refusal gate 1b would
+    // have made), never throw a TypeError deep inside intent creation and
+    // never fall through to an intent carrying no trusted subject at all.
+    const subject = subjects.get(index);
+    if (!subject) {
+      console.warn('[sweepFindings] proposal refused — no matched subject survived the gate pass (invariant)', {
+        runId: run.id, agentId: run.agentId, findingIndex: index, kind: finding.kind, deviceId,
+      });
+      record.reason = 'subject_not_in_evidence';
+      proposals.push(record);
+      continue;
+    }
+    record.subject = { kind: subject.kind, key: subject.key, observedAt: subject.observedAt };
+    if (scheduleActMode) {
+      // Recorded for EVERY surviving proposal, member or not: `false` is the
+      // signal the run detail needs to say "waiting for approval". Left
+      // undefined for a disarmed occurrence so a pre-act-mode run renders
+      // exactly as before.
+      record.cohort = cohortMembers.has(index);
+      // `stoppedBy` is the CAPACITY explanation, so it is attached only to a
+      // proposal the walk actually turned away — one that was cohort-ELIGIBLE
+      // and fell beyond the prefix. A proposal that was never eligible (its
+      // tool is not allowlisted, its arguments do not match the system's
+      // subject, its device no longer resolves) is waiting on a human for a
+      // reason that has nothing to do with the caps, and labelling it with
+      // one would be a plainly wrong explanation on the run detail.
+      record.stoppedBy = cohortEligible.has(index) && !cohortMembers.has(index)
+        ? cohortStoppedBy
+        : null;
     }
 
     if (!inOrg.has(deviceId)) {
@@ -321,6 +545,7 @@ export async function persistSweepFindings(
 
     try {
       const intent = await createActionIntent(agentAuth, {
+        trigger: { kind: 'sweep_finding', refId: run.id, key: sweepTriggerKey(finding.kind, sweepSubjectKey(finding) ?? '') },
         toolName: proposal.tool,
         input: proposalToolInput(proposal),
         source: 'ai_agent',
@@ -333,6 +558,37 @@ export async function persistSweepFindings(
         // intent for the same finding.
         idempotencyKey: `sweep:${run.id}:${index}`,
         scope: { deviceId },
+        // #4442 W04 — everything CREATION needs to decide act eligibility,
+        // assembled from SYSTEM state only. `argumentsMatchSubject` compares
+        // the arguments built above against the subject gate 1b matched,
+        // through the one shared comparison in `intentService.ts` so the gate
+        // and any later re-check cannot drift.
+        //
+        // #4442 W05 — WITHHELD from a cohort non-member. A proposal that was
+        // otherwise act-eligible but fell beyond the canary prefix simply gets
+        // no `sweepAct`, and `resolvePolicyDecisionState` returns
+        // `human_required` through the gate that already exists: it becomes an
+        // ordinary supervised card, exactly as before act mode. Nothing is
+        // dropped — the cohort decides act-ELIGIBILITY, not existence.
+        //
+        // A proposal that was never cohort-ELIGIBLE (disarmed schedule,
+        // arguments that do not match the system's subject, …) still carries
+        // its descriptor, unchanged from W04: the descriptor is the honest
+        // report of what creation observed, and those cases are already
+        // refused by the W04 gates it feeds. Withholding it there would hide
+        // the reason rather than add a bound.
+        sweepAct: cohortEligible.has(index) && !cohortMembers.has(index)
+          ? undefined
+          : {
+            scheduleActMode,
+            subject: { kind: subject.kind, key: subject.key, observedAt: subject.observedAt },
+            argumentsMatchSubject: argumentsMatch.get(index) ?? subjectMatchesArguments(
+              subject,
+              proposal.tool,
+              proposalToolInput(proposal),
+              deviceId,
+            ),
+          },
       });
       if (intent.status === 'pending_approval') {
         record.disposition = 'intent_created';
@@ -350,14 +606,32 @@ export async function persistSweepFindings(
         });
       }
     } catch (error) {
-      // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
-      // The message is LOGGED, never persisted (it can echo tool input).
-      record.disposition = 'error';
-      record.reason = 'intent_error';
-      console.warn('[sweepFindings] proposal intent not created', {
-        runId: run.id, findingIndex: index, tool: proposal.tool,
-        error: (error as Error).message,
-      });
+      if (error instanceof ZodError) {
+        // `createActionIntent` validates `trigger` with
+        // `remediationTriggerSchema.parse(...)` (intentService.ts) — a
+        // ZodError here means THIS file built a malformed trigger, a code
+        // defect, not a business-outcome denial like the ones below. Loud in
+        // Sentry, and a distinct reason so it is never confused with an
+        // ordinary refused/cancelled intent.
+        record.disposition = 'error';
+        record.reason = 'intent_invalid_provenance';
+        captureException(error, undefined, {
+          service: 'aiAgents', operation: 'sweepProposals.createActionIntent',
+          runId: run.id, findingIndex: String(index),
+        });
+        console.warn('[sweepFindings] proposal intent trigger failed schema validation', {
+          runId: run.id, findingIndex: index, tool: proposal.tool, error: error.message,
+        });
+      } else {
+        // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
+        // The message is LOGGED, never persisted (it can echo tool input).
+        record.disposition = 'error';
+        record.reason = 'intent_error';
+        console.warn('[sweepFindings] proposal intent not created', {
+          runId: run.id, findingIndex: index, tool: proposal.tool,
+          error: (error as Error).message,
+        });
+      }
     }
 
     proposals.push(record);
@@ -460,6 +734,14 @@ export function projectSweep(
     sweepEvidenceTruncated?: boolean;
   },
   hostnames: ReadonlyMap<string, string>,
+  /**
+   * #4442 W05 — LIVE outcomes for the intents this run minted, keyed by
+   * intent id, built by the route from a `requesting_agent_run_id` read.
+   * Deliberately not derived from `run.intentIds`, which is pending-only: act
+   * mode makes the interesting outcomes non-pending, so a run's most
+   * important proposals would simply vanish from this projection.
+   */
+  intentOutcomes: ReadonlyMap<string, AiAgentRunSweepProposalOutcome> = new Map(),
 ): AiAgentRunSweepDto | null {
   const sweep = outcome.sweepFindings;
   if (!sweep) return null;
@@ -474,6 +756,7 @@ export function projectSweep(
   return {
     scheduleId: run.scheduleId,
     occurrenceKey,
+    actSummary: projectActSummary(outcome.sweepProposals ?? []),
     kinds: readSweepKinds(triggerRef),
     // Defensive `?? ''`/`?? {}` below for the same reason `runTrace.ts`
     // defaults every outcome field: this is a jsonb column with no
@@ -507,9 +790,55 @@ export function projectSweep(
             disposition: record.disposition,
             reason: record.reason ?? null,
             intentId: record.intentId ?? null,
+            outcome: record.intentId ? intentOutcomes.get(record.intentId) ?? null : null,
+            // `?? null`, never `?? false`: "this occurrence computed no
+            // cohort" (disarmed, or a pre-act-mode run) is a different
+            // statement from "this proposal was outside the cohort", and the
+            // UI must not render the second when it only knows the first.
+            cohort: record.cohort ?? null,
+            stoppedBy: record.stoppedBy ?? null,
           }
           : null,
       };
     }),
   };
+}
+
+
+/**
+ * #4442 W05 — the per-occurrence act roll-up. Counts DISTINCT DEVICES, not
+ * proposals: two proposals on one machine are one machine acted on. `null`
+ * when no record carries a cohort verdict at all — a disarmed occurrence or a
+ * pre-act-mode run, where there is nothing truthful to say.
+ */
+function projectActSummary(records: readonly SweepProposalRecord[]): AiAgentRunSweepActSummaryDto | null {
+  const scored = records.filter((r) => r.cohort !== undefined);
+  if (scored.length === 0) return null;
+
+  const acted = new Set<string>();
+  const proposed = new Set<string>();
+  let stoppedBy: string | null = null;
+  for (const record of scored) {
+    proposed.add(record.deviceId);
+    if (record.cohort) acted.add(record.deviceId);
+    if (stoppedBy === null && record.stoppedBy) stoppedBy = record.stoppedBy;
+  }
+  return { devicesActed: acted.size, devicesProposed: proposed.size, stoppedBy };
+}
+
+/** Subject of the finding from structured evidence/proposal, never its prose.
+ * This is provenance, not proof that a model-authored subject is trusted. */
+export function sweepSubjectKey(finding: SweepFinding): string | null {
+  const proposal = finding.proposedAction;
+  switch (finding.kind) {
+    case 'service_down':
+      return proposal?.tool === 'manage_services' ? proposal.serviceName
+        : typeof finding.evidence.name === 'string' ? finding.evidence.name : null;
+    case 'disk_pressure':
+      return typeof finding.evidence.mountPoint === 'string' ? finding.evidence.mountPoint : null;
+    case 'unpatched_critical':
+      return proposal?.tool === 'remediate_vulnerability'
+        ? [...proposal.deviceVulnerabilityIds].sort().join(',') || null : null;
+    default: return null;
+  }
 }

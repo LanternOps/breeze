@@ -133,7 +133,7 @@ export function DocumentLibrary({ documents }: { documents: PortalDocumentsDto }
         </div>
       )}
 
-      <p className="text-figures mt-6 border-t border-border/70 pt-4 text-xs text-muted-foreground">
+      <p className="text-figures mt-5 text-xs text-muted-foreground">
         {`As of ${formatDateTime(asOf, timezone)} (${timezone}).`}
       </p>
     </div>

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -18,10 +19,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-const (
-	backupHelperSpawnTimeout = 15 * time.Second
-	backupHelperIdleTimeout  = 30 * time.Minute
-)
+// backupHelperSpawnTimeout bounds how long spawnBackupHelper waits for a
+// freshly started helper to connect back over IPC before killing it. Package
+// var, not a const, so tests can shrink it; production leaves it at 15s.
+var backupHelperSpawnTimeout = 15 * time.Second
 
 // backupHelperStopGrace bounds how long StopBackupHelper waits for in-flight
 // backup runs to drain before killing the helper anyway (D3). It is a
@@ -29,6 +30,13 @@ const (
 // its full 5s, comfortably inside the 20s whole-agent shutdown budget
 // (agent/internal/agentapp/shutdown_budget.go).
 var backupHelperStopGrace = 5 * time.Second
+
+// backupHelperExitGrace bounds how long a helper whose IPC session dropped is
+// given to finish exiting on its own before it is killed (see reapExiting).
+// The helper closes its connection only after draining its log shipper, so in
+// practice it has already exited; the grace exists for a hung helper. Package
+// var so tests can shrink it.
+var backupHelperExitGrace = 10 * time.Second
 
 // backupHelperStopPollInterval is how often StopBackupHelper re-checks
 // activeRuns while waiting out backupHelperStopGrace.
@@ -86,9 +94,26 @@ func backupBinaryName(goos string) string {
 
 // backupHelper tracks the backup helper process and session.
 type backupHelper struct {
-	mu         sync.Mutex
-	session    *Session
-	process    *os.Process
+	mu      sync.Mutex
+	session *Session
+	process *os.Process
+	// cmd is the exec.Cmd that started process, retained solely so the
+	// helper can be reaped after a kill: os.Process alone exposes Wait, but
+	// exec.Cmd.Wait additionally releases the Cmd's own resources. Nil for a
+	// helper adopted from elsewhere (tests), in which case killAndReap falls
+	// back to process.Wait.
+	cmd *exec.Cmd
+	// reapOnce makes the kill-and-reap of THIS child single-owner. Two kill
+	// sites can legitimately reach the same process: spawnBackupHelper's
+	// connect-timeout path holds its own cmd reference for the whole 15s
+	// wait, during which an agent shutdown (StopBackupHelper) or a binary
+	// swap (StopBackupHelperIfIdle) may kill and reap it and clear the
+	// fields below. Without a shared once both paths would call Wait on the
+	// same exec.Cmd concurrently, which is a data race inside os/exec, not
+	// merely a redundant call. Created per spawned process; the spawning
+	// goroutine keeps its own reference so it still reaps exactly once after
+	// the fields have been cleared out from under it.
+	reapOnce   *sync.Once
 	binaryPath string
 
 	// spawnDone is non-nil exactly while a spawn attempt for this helper is
@@ -213,6 +238,17 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 		bh.mu.Unlock()
 		return waitForBackupHelperSpawn(bh, done)
 	}
+	if bh.process != nil {
+		// A predecessor child is still referenced but no session owns it:
+		// it exited on its own (crash, panic, OOM-kill) or is alive but
+		// disconnected. Publishing the new child below overwrites
+		// process/cmd/reapOnce, after which nothing could ever reap the old
+		// one, so kill it if it is still alive and reap it now (#5980).
+		// killAndReapLocked does not block on the exit, and its reapOnce is
+		// shared with any other site holding the same child.
+		log.Warn("reaping stale backup helper before respawn", "pid", bh.process.Pid)
+		bh.killAndReapLocked()
+	}
 	done := make(chan struct{})
 	bh.spawnDone = done
 	reservation := &backupSpawnReservation{ready: make(chan struct{})}
@@ -268,6 +304,9 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 
 	bh.mu.Lock()
 	bh.process = cmd.Process
+	bh.cmd = cmd
+	reapOnce := &sync.Once{}
+	bh.reapOnce = reapOnce
 	reservation.pid = uint32(cmd.Process.Pid)
 	reservation.published = true
 	close(reservation.ready)
@@ -286,7 +325,19 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	_ = cmd.Process.Kill()
+	log.Warn("backup helper did not connect, killing it", "pid", cmd.Process.Pid, "timeout", backupHelperSpawnTimeout)
+	bh.mu.Lock()
+	if bh.process != cmd.Process {
+		// A Stop path already cleared (and very likely already reaped) this
+		// child while we were waiting. reapOnce is the one shared with that
+		// path, so this call is a no-op rather than a second concurrent
+		// Wait on the same exec.Cmd.
+		bh.mu.Unlock()
+		killAndReap(reapOnce, cmd, cmd.Process)
+		return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
+	}
+	bh.killAndReapLocked()
+	bh.mu.Unlock()
 	return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
 }
 
@@ -381,6 +432,16 @@ func (b *Broker) SetBackupSession(s *Session) {
 // only when session still owns the singleton -- reporting whether it did so.
 // A delayed disconnect from a superseded helper must not clear a newer
 // owner's session out from under it.
+//
+// When it does clear, it also reaps the helper process that session belonged
+// to (see reapExiting: wait first, and kill only a helper still running after
+// backupHelperExitGrace). A backup helper's connection drops when the helper
+// exits -- on its own (idle timeout, crash, panic, OOM-kill) or after one of
+// the agent's own kill sites -- and nothing else ever waits on a self-exited
+// child, so without this it stays a zombie (#5980). The process is only touched when the
+// session's kernel-verified peer PID matches the tracked child; admission
+// binds the two (claimBackupHelperAdmission), so a mismatch means the
+// process is not this session's and is left for the respawn-time reap.
 func (b *Broker) ClearBackupSession(session *Session) bool {
 	b.mu.RLock()
 	bh := b.backup
@@ -395,6 +456,16 @@ func (b *Broker) ClearBackupSession(session *Session) bool {
 		return false
 	}
 	bh.session = nil
+	if bh.process != nil && session != nil && session.PID > 0 && bh.process.Pid == session.PID {
+		log.Info("reaping disconnected backup helper", "pid", bh.process.Pid, "sessionId", session.SessionID)
+		bh.reapDisconnectedLocked()
+	} else if bh.process != nil && session != nil {
+		// Admission binds the owning session to the tracked child, so this
+		// should not happen. The process is left for the respawn-time or
+		// shutdown reap; log it so an unreaped helper is traceable.
+		log.Warn("backup helper session pid does not match tracked process, deferring reap",
+			"trackedPid", bh.process.Pid, "sessionPid", session.PID, "sessionId", session.SessionID)
+	}
 	return true
 }
 
@@ -429,8 +500,7 @@ func (b *Broker) StopBackupHelper() {
 			}
 			if bh.process != nil {
 				log.Info("stopping backup helper", "pid", bh.process.Pid)
-				_ = bh.process.Kill()
-				bh.process = nil
+				bh.killAndReapLocked()
 			}
 			bh.session = nil
 			bh.mu.Unlock()
@@ -440,6 +510,137 @@ func (b *Broker) StopBackupHelper() {
 		time.Sleep(backupHelperStopPollInterval)
 	}
 }
+
+// killAndReapLocked kills the resident backup helper process and reaps it,
+// then clears the process/cmd/reapOnce fields. The caller must hold bh.mu.
+func (bh *backupHelper) killAndReapLocked() {
+	proc, cmd, once := bh.takeProcessLocked()
+	killAndReap(once, cmd, proc)
+}
+
+// reapDisconnectedLocked reaps the resident backup helper process after its
+// session disconnected, then clears the process/cmd/reapOnce fields. Unlike
+// killAndReapLocked it waits before killing (see reapExiting). The caller
+// must hold bh.mu.
+func (bh *backupHelper) reapDisconnectedLocked() {
+	proc, cmd, once := bh.takeProcessLocked()
+	reapExiting(once, cmd, proc, backupHelperExitGrace)
+}
+
+// takeProcessLocked detaches the resident helper process from bh, returning
+// what a reap needs. The caller must hold bh.mu.
+func (bh *backupHelper) takeProcessLocked() (*os.Process, *exec.Cmd, *sync.Once) {
+	proc, cmd, once := bh.process, bh.cmd, bh.reapOnce
+	bh.process = nil
+	bh.cmd = nil
+	bh.reapOnce = nil
+	if once == nil {
+		// Helper adopted without going through spawnBackupHelper (tests):
+		// nothing else can hold a reference to it, so a fresh once is
+		// equivalent to the spawned case.
+		once = &sync.Once{}
+	}
+	return proc, cmd, once
+}
+
+// killAndReap kills a backup helper child and waits on it in the background
+// so the OS releases its process-table entry. Without the wait the killed
+// child stays a zombie for the whole lifetime of the (long-running) agent on
+// POSIX, and repeated spawn-timeout / binary-swap / shutdown cycles leak
+// PID-table entries (#5420).
+//
+// once makes this single-owner: whichever kill site gets there first kills
+// and reaps, and any other site holding the same child is a no-op (see
+// backupHelper.reapOnce -- a second concurrent exec.Cmd.Wait is a data race,
+// not just a redundant call). The wait itself runs in its own goroutine
+// because Kill is asynchronous and callers hold bh.mu (StopBackupHelperIfIdle
+// holds it for its whole body), so they must not block on the child's exit.
+func killAndReap(once *sync.Once, cmd *exec.Cmd, proc *os.Process) {
+	if once == nil || proc == nil {
+		return
+	}
+	once.Do(func() {
+		// A kill that fails for any reason other than "already exited" means
+		// the helper may still be running and holding the backup IPC socket:
+		// the wait below then blocks until it eventually exits, so this log
+		// line is the only signal an operator gets.
+		if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Warn("failed to kill backup helper", "pid", proc.Pid, "error", err.Error())
+		}
+		go func() {
+			reportReap(cmd, proc, waitBackupHelper(cmd, proc))
+		}()
+	})
+}
+
+// reapExiting reaps a backup helper whose IPC session has already dropped. A
+// disconnect almost always means the helper is exiting on its own -- its
+// 30-minute idle timeout (cmd/breeze-backup/main.go commandLoop) or a crash
+// -- so it waits first rather than killing: a kill would race the helper's
+// own shutdown, and on Windows TerminateProcess on an already-exited child
+// fails, which would log a spurious "failed to kill" warning on every idle
+// cycle. Only a helper still running after grace (disconnected but hung) is
+// killed; nothing else will ever do so once its fields have been cleared.
+//
+// once is shared with every other kill site for the same child, exactly as
+// in killAndReap. Nothing here blocks the caller, which holds bh.mu.
+func reapExiting(once *sync.Once, cmd *exec.Cmd, proc *os.Process, grace time.Duration) {
+	if once == nil || proc == nil {
+		return
+	}
+	once.Do(func() {
+		go func() {
+			waited := make(chan error, 1)
+			go func() { waited <- waitBackupHelper(cmd, proc) }()
+			var err error
+			select {
+			case err = <-waited:
+			case <-time.After(grace):
+				log.Warn("disconnected backup helper still running, killing it", "pid", proc.Pid, "grace", grace)
+				// Killing while Wait is in flight is the pattern
+				// exec.CommandContext itself uses; os.Process makes it safe.
+				if killErr := proc.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+					log.Warn("failed to kill backup helper", "pid", proc.Pid, "error", killErr.Error())
+				}
+				err = <-waited
+			}
+			reportReap(cmd, proc, err)
+		}()
+	})
+}
+
+// waitBackupHelper waits on a helper child so the OS releases its
+// process-table entry, preferring exec.Cmd.Wait (which also releases the
+// Cmd's own resources) when the Cmd is known.
+func waitBackupHelper(cmd *exec.Cmd, proc *os.Process) error {
+	if cmd != nil {
+		return cmd.Wait()
+	}
+	_, err := proc.Wait()
+	return err
+}
+
+// reportReap logs a failed reap and fires the test observation hook.
+func reportReap(cmd *exec.Cmd, proc *os.Process, err error) {
+	// A killed child always reports a non-zero exit (*exec.ExitError,
+	// "signal: killed"), and a crashed one a non-zero status -- both are
+	// expected. Anything else means the reap itself failed and the zombie
+	// #5420 / #5980 are about may still be there, so it must not be
+	// swallowed.
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		log.Warn("failed to reap backup helper", "pid", proc.Pid, "error", err.Error())
+	}
+	if hook := backupHelperReapedHook.Load(); hook != nil {
+		(*hook)(cmd, proc)
+	}
+}
+
+// backupHelperReapedHook is a test-only observation point. It fires from the
+// reaping goroutine once the killed helper has actually been waited on, which
+// is what lets a test prove the child was reaped rather than left a zombie.
+// Production never sets it.
+var backupHelperReapedHook atomic.Pointer[func(*exec.Cmd, *os.Process)]
 
 // ActiveBackupRunCount returns the number of backup_run commands the backup
 // helper is currently tracking (see activeRuns on backupHelper) -- pending-
@@ -486,8 +687,7 @@ func (b *Broker) StopBackupHelperIfIdle() bool {
 	}
 	if bh.process != nil {
 		log.Info("stopping idle backup helper for binary swap", "pid", bh.process.Pid)
-		_ = bh.process.Kill()
-		bh.process = nil
+		bh.killAndReapLocked()
 	}
 	bh.session = nil
 	return true
@@ -527,6 +727,9 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 
 	tracked := async && (commandType == backupRunCommandType || req.QueueAsync) && bh != nil
 	if !tracked {
+		if isCancelableBackupVerification(commandType) {
+			return forwardCancelableBackupVerification(session, req, timeout)
+		}
 		return session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
 	}
 
@@ -583,6 +786,97 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		bh.activeRuns[commandID] = backupRunExecuting
 		bh.mu.Unlock()
 		return env, nil
+	}
+}
+
+// isCancelableBackupVerification limits timeout-driven helper cancellation
+// to the long-running verification commands from #5860. Other synchronous
+// backup commands retain their existing forwarding behaviour.
+func isCancelableBackupVerification(commandType string) bool {
+	switch commandType {
+	case "backup_verify", "backup_test_restore":
+		return true
+	default:
+		return false
+	}
+}
+
+// forwardCancelableBackupVerification keeps the original request registered
+// after a timeout so its eventual reply is consumed as a correlated response,
+// not forwarded to the server as an unsolicited second terminal result.
+func forwardCancelableBackupVerification(session *Session, req backupipc.BackupCommandRequest, timeout time.Duration) (*ipc.Envelope, error) {
+	env, _, err := session.sendCommandWithQuiescence(
+		req.CommandID,
+		backupipc.TypeBackupCommand,
+		req,
+		timeout,
+	)
+	if errors.Is(err, ErrCommandTimeout) {
+		// Return the timeout to the command path immediately. Cancellation runs
+		// independently so it cannot extend the server-visible command budget.
+		go cancelTimedOutBackupVerification(session, req.CommandID)
+	}
+	return env, err
+}
+
+// cancelTimedOutBackupVerification asks the helper to cancel exactly the
+// verification command that exceeded the agent-side budget. The helper's
+// targeted backup_stop path waits for that command to unwind before replying.
+func cancelTimedOutBackupVerification(session *Session, commandID string) {
+	payload, err := json.Marshal(struct {
+		JobID string `json:"jobId"`
+	}{JobID: commandID})
+	if err != nil {
+		backupLog.Warn("failed to marshal timed-out backup cancellation",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	stopID := fmt.Sprintf("%s-timeout-cancel-%d", commandID, time.Now().UnixNano())
+	req := backupipc.BackupCommandRequest{
+		CommandID:   stopID,
+		CommandType: "backup_stop",
+		Payload:     payload,
+		TimeoutMs:   backupipc.BackupStopForwardTimeout.Milliseconds(),
+	}
+
+	env, err := session.SendCommand(
+		stopID,
+		backupipc.TypeBackupCommand,
+		req,
+		backupipc.BackupStopForwardTimeout,
+	)
+	if err != nil {
+		backupLog.Warn("timed-out backup verification cancellation failed",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	var result backupipc.BackupCommandResult
+	if err := json.Unmarshal(env.Payload, &result); err != nil {
+		backupLog.Warn("invalid timed-out backup cancellation result",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+	if !result.Success {
+		backupLog.Warn("timed-out backup verification cancellation was rejected",
+			"commandId", commandID, "error", result.Stderr)
+		return
+	}
+
+	var state struct {
+		Stopped bool `json:"stopped"`
+		Drained bool `json:"drained"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &state); err != nil {
+		backupLog.Warn("invalid timed-out backup cancellation state",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	if state.Stopped && !state.Drained {
+		backupLog.Warn("timed-out backup verification still unwinding after cancellation",
+			"commandId", commandID)
 	}
 }
 

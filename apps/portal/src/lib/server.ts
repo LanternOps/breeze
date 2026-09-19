@@ -2,7 +2,8 @@ import {
   buildServerForwardHeaders,
   portalApi,
   type ApiRequestConfig,
-  type BrandingConfig
+  type BrandingConfig,
+  type Profile
 } from './api';
 import { hasPortalSessionCookie } from './session';
 import { isAccountDisabledResponse } from './accountStatus';
@@ -113,4 +114,33 @@ async function fetchPortalBrandingWithStatus(
     console.error('[portal] branding load failed', { statusCode: response.statusCode, error: response.error });
   }
   return { branding: { ...defaultBranding, ...(response.data ?? {}) }, accountDisabled };
+}
+
+/**
+ * The signed-in customer, for the shell header's account line ("Acme Co ·
+ * Signed in as Jane"). Per-request memo like branding; null without a session
+ * cookie (no request made) and null on any failure — the header simply has
+ * no left side then, it never breaks the page.
+ */
+const profileByRequest = new WeakMap<Request, Promise<Profile | null>>();
+
+export function loadPortalProfile(request: Request): Promise<Profile | null> {
+  const cached = profileByRequest.get(request);
+  if (cached) return cached;
+  const pending = fetchPortalProfile(request);
+  profileByRequest.set(request, pending);
+  return pending;
+}
+
+async function fetchPortalProfile(request: Request): Promise<Profile | null> {
+  if (!hasPortalSessionCookie(request)) return null;
+  try {
+    const response = await portalApi.getProfile({
+      ...buildServerApiConfig(request),
+      timeoutMs: BRANDING_FETCH_TIMEOUT_MS
+    });
+    return response.data ?? null;
+  } catch {
+    return null;
+  }
 }

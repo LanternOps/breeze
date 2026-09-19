@@ -4,8 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import OccurrenceDrawer from './OccurrenceDrawer';
 import type { Deliverable, Occurrence } from '../../lib/api/serviceDeliverables';
 import { showToast } from '../shared/Toast';
+// TicketChecklistCard (mounted lazily by OccurrenceDrawer's checklist expansion,
+// #5808 W03) reaches the ambient `fetchWithAuth` directly rather than through
+// the `fetcher` prop the drawer itself uses, so it needs its own mock here.
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+
+const checklistFetchMock = vi.mocked(fetchWithAuth);
 
 const jsonResp = (status: number, payload: unknown): Response =>
   ({
@@ -32,6 +39,8 @@ const deliverable: Deliverable = {
   autoEvidenceReportId: null,
   ownerUserId: null,
   ticketCategoryId: null,
+  instructions: null,
+  checklistTemplateId: null,
   portalVisible: true,
   active: true,
   sortOrder: 0,
@@ -69,6 +78,7 @@ const occurrence: Occurrence = {
   evidence: [
     { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', createdAt: '2026-09-02T00:00:00Z' },
   ],
+  checklist: null,
 };
 
 beforeEach(() => {
@@ -157,6 +167,46 @@ describe('OccurrenceDrawer', () => {
     expect(row).toHaveTextContent('Open');
     expect(row).toHaveTextContent(/Rescheduled from/);
     expect(screen.getByTestId('evidence-remove-ev-1')).toBeInTheDocument();
+  });
+
+  it('shows an empty state with the lead days and next due date when no occurrence exists yet (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).toHaveTextContent('7 days');
+    expect(empty).toHaveTextContent('(');
+    expect(screen.queryByTestId('occurrence-list')).toBeNull();
+  });
+
+  it('uses the singular plural form when leadDays is 1 (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, leadDays: 1 }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent('1 day');
+    expect(empty).not.toHaveTextContent('1 days');
+  });
+
+  it('omits the date clause when the next due date is unknown (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, nextDue: null, anchorDueDate: '2000-01-01' }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).not.toHaveTextContent(/\(/);
+  });
+
+  it('falls back to the anchor due date when nextDue is unknown but the anchor is still upcoming (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, nextDue: null, anchorDueDate: '2099-01-05' }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).toHaveTextContent('(');
   });
 
   it('surfaces the EVIDENCE_REQUIRED message inline when Deliver is rejected with a 400', async () => {
@@ -253,5 +303,116 @@ describe('OccurrenceDrawer', () => {
       ),
     );
     await waitFor(() => expect(screen.queryByTestId('evidence-remove-ev-1')).not.toBeInTheDocument());
+  });
+});
+
+describe('OccurrenceDrawer checklist progress (#5808 W03)', () => {
+  const checklistSummary = (done: number, total: number) => ({
+    items: Array.from({ length: total }, (_, i) => ({
+      id: `ci-${i}`,
+      ticketId: 'tk-1',
+      label: `Step ${i}`,
+      detail: null,
+      position: i,
+      done: i < done,
+      doneAt: null,
+      doneByUserId: null,
+      source: 'manual',
+      sourceTemplateItemId: null,
+      createdAt: '2026-09-01T00:00:00Z',
+    })),
+    done,
+    total,
+  });
+
+  beforeEach(() => {
+    // Default: any TicketChecklistCard that mounts sees a small checklist. Tests
+    // that need to observe failures or count calls override this per-call.
+    checklistFetchMock.mockImplementation(async (path: string) => {
+      if (String(path).endsWith('/checklist')) return jsonResp(200, { data: checklistSummary(1, 2) });
+      return jsonResp(200, { data: [] });
+    });
+  });
+
+  it('renders a progress chip for an occurrence with a checklist', async () => {
+    const occ: Occurrence = { ...occurrence, ticketId: 'tk-1', checklist: { done: 2, total: 5 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occ] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const chip = await screen.findByTestId('occurrence-checklist-chip-oc-1');
+    expect(chip).toHaveTextContent('2 / 5');
+  });
+
+  it('renders no chip for an occurrence whose checklist is null', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occurrence] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    await screen.findByTestId('occurrence-row-oc-1');
+    expect(screen.queryByTestId('occurrence-checklist-chip-oc-1')).toBeNull();
+  });
+
+  it('mounts no ticket-checklist-card until a row is expanded', async () => {
+    const occ: Occurrence = { ...occurrence, ticketId: 'tk-1', checklist: { done: 1, total: 3 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occ] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    await screen.findByTestId('occurrence-checklist-chip-oc-1');
+    expect(screen.queryByTestId('ticket-checklist-card')).toBeNull();
+    expect(checklistFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('expanding one row mounts exactly one card and issues exactly one /checklist fetch', async () => {
+    const occA: Occurrence = { ...occurrence, id: 'oc-1', ticketId: 'tk-1', checklist: { done: 1, total: 2 } };
+    const occB: Occurrence = { ...occurrence, id: 'oc-2', ticketId: 'tk-2', checklist: { done: 0, total: 1 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occA, occB] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
+
+    expect(await screen.findAllByTestId('ticket-checklist-card')).toHaveLength(1);
+    await waitFor(() => {
+      const checklistCalls = checklistFetchMock.mock.calls.filter(([path]) => String(path).endsWith('/checklist'));
+      expect(checklistCalls).toHaveLength(1);
+    });
+  });
+
+  it('expanding a second row unmounts the first', async () => {
+    const occA: Occurrence = { ...occurrence, id: 'oc-1', ticketId: 'tk-1', checklist: { done: 1, total: 2 } };
+    const occB: Occurrence = { ...occurrence, id: 'oc-2', ticketId: 'tk-2', checklist: { done: 0, total: 1 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occA, occB] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
+    await waitFor(() => expect(screen.getAllByTestId('ticket-checklist-card')).toHaveLength(1));
+
+    fireEvent.click(screen.getByTestId('occurrence-checklist-expand-oc-2'));
+    await waitFor(() => expect(screen.getAllByTestId('ticket-checklist-card')).toHaveLength(1));
+    // Still exactly one card mounted, and it now belongs to the second row —
+    // verified indirectly by the second row's fetch having fired.
+    await waitFor(() => {
+      const checklistCalls = checklistFetchMock.mock.calls.filter(([path]) => String(path) === '/tickets/tk-2/checklist');
+      expect(checklistCalls.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('collapsing the expanded row unmounts its card', async () => {
+    const occ: Occurrence = { ...occurrence, ticketId: 'tk-1', checklist: { done: 1, total: 2 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occ] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
+    await waitFor(() => expect(screen.getByTestId('ticket-checklist-card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('occurrence-checklist-expand-oc-1'));
+    expect(screen.queryByTestId('ticket-checklist-card')).toBeNull();
+  });
+
+  it('does not toast when the lazily-loaded checklist fails to load (e.g. a 403 without tickets:read)', async () => {
+    const occ: Occurrence = { ...occurrence, ticketId: 'tk-1', checklist: { done: 1, total: 2 } };
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [occ] }));
+    checklistFetchMock.mockImplementation(async (path: string) =>
+      String(path).endsWith('/checklist') ? jsonResp(403, { error: 'forbidden' }) : jsonResp(200, { data: [] }),
+    );
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
+    await screen.findByTestId('ticket-checklist-error');
+    expect(showToast).not.toHaveBeenCalled();
   });
 });

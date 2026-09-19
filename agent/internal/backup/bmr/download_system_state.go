@@ -19,6 +19,12 @@ import (
 // false — "this snapshot never captured system state", not an error.
 var ErrNoSystemState = errors.New("bmr: no system state found in snapshot")
 
+// ErrNoSystemStateArtifacts is returned by DownloadSystemState when expect
+// was true and the manifest decoded to zero artifacts — a contradiction
+// with the caller's knowledge that the snapshot carries system state, so
+// the caller can name it distinctly from a missing manifest (#5412).
+var ErrNoSystemStateArtifacts = errors.New("bmr: system-state manifest has no artifacts")
+
 // DownloadSystemState fetches snapshots/<id>/system-state/manifest.json and
 // every artifact into stagingDir, verifying each checksum before returning.
 //
@@ -80,7 +86,7 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 		warnings = append(warnings, fmt.Sprintf("system state capture incomplete for non-required steps: %s", strings.Join(nonRequired, ", ")))
 	}
 	if expect && len(stateManifest.Artifacts) == 0 {
-		return nil, nil, fmt.Errorf("bmr: system-state manifest has no artifacts")
+		return nil, nil, ErrNoSystemStateArtifacts
 	}
 
 	for _, artifact := range stateManifest.Artifacts {
