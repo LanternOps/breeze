@@ -84,6 +84,7 @@ ticketCategoriesRoutes.get(
               color: ticketCategories.color,
               parentId: ticketCategories.parentId,
               defaultPriority: ticketCategories.defaultPriority,
+              defaultWorkTypeId: ticketCategories.defaultWorkTypeId,
               sortOrder: ticketCategories.sortOrder,
               isActive: ticketCategories.isActive
             })

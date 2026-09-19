@@ -88,6 +88,7 @@ vi.mock('../db/schema', () => ({
     partnerId: 'partnerId',
     name: 'name',
     defaultHourlyRate: 'defaultHourlyRate',
+    defaultWorkTypeId: 'defaultWorkTypeId',
     rateCurrency: 'rateCurrency',
     sortOrder: 'sortOrder',
     isActive: 'isActive',
@@ -257,6 +258,7 @@ describe('GET /ticket-categories', () => {
       color: '#1c8a9e',
       parentId: null,
       defaultPriority: 'normal',
+      defaultWorkTypeId: '9a8b7c6d-2222-4333-8444-555566667777',
       sortOrder: 0,
       isActive: true
     };
@@ -281,7 +283,7 @@ describe('GET /ticket-categories', () => {
     const projectionArg = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
     expect(projectionArg).toBeDefined();
     expect(Object.keys(projectionArg!).sort()).toEqual(
-      ['color', 'defaultPriority', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
+      ['color', 'defaultPriority', 'defaultWorkTypeId', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
     );
     // The WHERE must filter to active categories (isActive condition present).
     const whereArg = vi.mocked(db.select).mock.results[1]?.value.from.mock.results[0]?.value.where.mock.calls[0]?.[0];
@@ -836,5 +838,81 @@ describe('category default time entry minutes', () => {
         : vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
       expect(write).not.toHaveProperty('defaultTimeEntryMinutes');
     });
+  });
+});
+
+
+describe('category default work type', () => {
+  const WORK_TYPE_ID = '9a8b7c6d-2222-4333-8444-555566667777';
+
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
+
+  it.each([WORK_TYPE_ID, null])('PATCH accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {
+    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId }]);
+    const res = await makeApp().request(`/ticket-categories/${CATEGORY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultWorkTypeId }),
+    });
+    expect(res.status).toBe(200);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update).mock.results[0]?.value.set).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultWorkTypeId }),
+    );
+    expect((await res.json()).data.defaultWorkTypeId).toBe(defaultWorkTypeId);
+  });
+
+  it('W01 keeps the legacy pricing fields round-tripping', async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
+    const pricing = { defaultBillable: true, defaultHourlyRate: '150', rateCurrency: 'CAD' };
+    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', ...pricing }]);
+    const res = await makeApp().request(`/ticket-categories/${CATEGORY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultBillable: true, defaultHourlyRate: 150 }),
+    });
+    expect(res.status).toBe(200);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update).mock.results[0]?.value.set).toHaveBeenCalledWith(
+      expect.objectContaining(pricing),
+    );
+    expect((await res.json()).data).toMatchObject(pricing);
+  });
+
+  it.each([WORK_TYPE_ID, null])('POST accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {
+    dbInsertReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId }),
+    });
+    expect(res.status).toBe(201);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert).mock.results[0]?.value.values).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultWorkTypeId }),
+    );
+    expect((await res.json()).data.defaultWorkTypeId).toBe(defaultWorkTypeId);
+  });
+
+  it.each(['POST', 'PATCH'])('%s rejects malformed defaultWorkTypeId before writing', async (method) => {
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: 'wt-1' }),
+    });
+    expect(res.status).toBe(400);
+    const { db } = await import('../db');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('GET returns defaultWorkTypeId for partner scope', async () => {
+    dbSelectResult.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: WORK_TYPE_ID }]);
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].defaultWorkTypeId).toBe(WORK_TYPE_ID);
   });
 });
