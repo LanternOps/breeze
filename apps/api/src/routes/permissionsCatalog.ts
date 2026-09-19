@@ -18,6 +18,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   tickets: 'Tickets',
   ticket_mailbox: 'Ticket Mailbox (Microsoft 365)',
   time_entries: 'Time Entries',
+  billing_profiles: 'Rates & Work Types',
   users: 'Users',
   organizations: 'Organizations',
   connected_apps: 'Connected Applications',

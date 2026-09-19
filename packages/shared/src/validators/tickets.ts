@@ -200,6 +200,9 @@ export const ticketCategoryInputSchema = z.object({
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
   defaultBillable: z.boolean().optional(),
   defaultHourlyRate: z.number().nonnegative().nullable().optional(),
+  // #4615 / spec §3.1: applied server-side at stamp time when the entry has
+  // no workTypeId. A label pointer; W01 leaves legacy pricing unchanged.
+  defaultWorkTypeId: z.string().uuid().nullable().optional(),
   defaultTimeEntryMinutes: z.number().int().min(1).max(1440).nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional()

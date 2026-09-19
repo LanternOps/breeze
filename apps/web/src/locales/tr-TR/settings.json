@@ -555,7 +555,10 @@
         "label": "E-posta şablonları",
         "description": "Biletler, teklifler, faturalar, davetler"
       },
-      "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
+      "sendingDomains": {
+        "label": "Gönderen adresleri",
+        "description": "E-postaları kendi alan adınızdan gönderin"
+      },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
@@ -5786,5 +5789,25 @@
     "saveError": "Katalog varsayılanları kaydedilemedi",
     "saveSuccess": "Katalog varsayılanları kaydedildi",
     "saveButton": "Kaydet"
+  },
+  "workTypes": {
+    "title": "İş türleri",
+    "description": "Süre kayıtlarında yapılan işi belirtin. Kategori varsayılanları, teknisyenlerin iş türü seçmesine yardımcı olur.",
+    "newName": "Yeni iş türü",
+    "create": "İş türü ekle",
+    "archive": "Arşivle",
+    "archived": "Arşivlendi",
+    "archivedClearedDefaults_one": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "archivedClearedDefaults_other": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "saveError": "İş türü kaydedilemedi. Lütfen tekrar deneyin.",
+    "saveSuccess": "İş türü kaydedildi.",
+    "nameTaken": "Bu ada sahip bir iş türü zaten var.",
+    "rename": "Yeniden adlandır",
+    "loadError": "İş türleri yüklenemedi.",
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Varsayılan iş türü",
+    "defaultWorkTypeHelp": "Bu kategori için iş türü belirtilmeden süre kaydedildiğinde kullanılır."
   }
 }

@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Tipo de trabalho"
+  },
+  "workType": {
+    "label": "Tipo de trabalho",
+    "none": "Nenhum tipo de trabalho",
+    "archivedSuffix": "{{name}} (arquivado)",
+    "loadError": "Tipos de trabalho indisponíveis"
+  },
   "slaChip": {
     "pausedLeft": "Pausado · restam {{relative}}",
     "left": "restam {{relative}}",

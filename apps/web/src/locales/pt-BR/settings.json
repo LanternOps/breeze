@@ -555,7 +555,10 @@
         "label": "Modelos de e-mail",
         "description": "Chamados, orçamentos, faturas, convites"
       },
-      "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
+      "sendingDomains": {
+        "label": "Endereços de envio",
+        "description": "Envie e-mails do seu próprio domínio"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -5786,5 +5789,25 @@
     "saveError": "Falha ao salvar os padrões do catálogo",
     "saveSuccess": "Padrões do catálogo salvos",
     "saveButton": "Salvar"
+  },
+  "workTypes": {
+    "title": "Tipos de trabalho",
+    "description": "Identifique o trabalho realizado nos registros de tempo. Os padrões das categorias ajudam os técnicos a escolher um tipo de trabalho.",
+    "newName": "Novo tipo de trabalho",
+    "create": "Adicionar tipo de trabalho",
+    "archive": "Arquivar",
+    "archived": "Arquivado",
+    "archivedClearedDefaults_one": "Arquivado. Removido como padrão de {{count}} categoria.",
+    "archivedClearedDefaults_other": "Arquivado. Removido como padrão de {{count}} categorias.",
+    "saveError": "Não foi possível salvar o tipo de trabalho. Tente novamente.",
+    "saveSuccess": "Tipo de trabalho salvo.",
+    "nameTaken": "Já existe um tipo de trabalho com esse nome.",
+    "rename": "Renomear",
+    "loadError": "Não foi possível carregar os tipos de trabalho.",
+    "empty": "Ainda não há tipos de trabalho. Adicione o primeiro acima."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Tipo de trabalho padrão",
+    "defaultWorkTypeHelp": "Usado quando o tempo é registrado para esta categoria sem um tipo de trabalho."
   }
 }

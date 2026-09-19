@@ -555,7 +555,10 @@
         "label": "E-Mail-Vorlagen",
         "description": "Tickets, Angebote, Rechnungen, Einladungen"
       },
-      "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
+      "sendingDomains": {
+        "label": "Absenderadressen",
+        "description": "E-Mails von Ihrer eigenen Domain senden"
+      },
       "aiBudgets": {
         "label": "KI-Budgets",
         "description": "KI-Ausgabenlimits"
@@ -5786,5 +5789,25 @@
     "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
     "saveSuccess": "Katalog-Standardwerte gespeichert",
     "saveButton": "Speichern"
+  },
+  "workTypes": {
+    "title": "Arbeitsarten",
+    "description": "Kennzeichnen Sie die ausgeführten Tätigkeiten in Zeiteinträgen. Kategorievorgaben helfen Technikern bei der Auswahl einer Arbeitsart.",
+    "newName": "Neue Arbeitsart",
+    "create": "Arbeitsart hinzufügen",
+    "archive": "Archivieren",
+    "archived": "Archiviert",
+    "archivedClearedDefaults_one": "Archiviert. Als Vorgabe in {{count}} Kategorie entfernt.",
+    "archivedClearedDefaults_other": "Archiviert. Als Vorgabe in {{count}} Kategorien entfernt.",
+    "saveError": "Die Arbeitsart konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+    "saveSuccess": "Arbeitsart gespeichert.",
+    "nameTaken": "Eine Arbeitsart mit diesem Namen existiert bereits.",
+    "rename": "Umbenennen",
+    "loadError": "Die Arbeitsarten konnten nicht geladen werden.",
+    "empty": "Noch keine Arbeitsarten. Fügen Sie oben Ihre erste Arbeitsart hinzu."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Standard-Arbeitsart",
+    "defaultWorkTypeHelp": "Wird verwendet, wenn für diese Kategorie Zeit ohne Arbeitsart erfasst wird."
   }
 }

@@ -41,6 +41,8 @@ describe('TimerWidget', () => {
     fetchWithAuth.mockResolvedValue(jsonRes(makeRunning()));
     render(<TimerWidget />);
     fireEvent.click(await screen.findByTestId('timer-widget-stop'));
+    // Work types are selected at start, never when stopping a running timer.
+    expect(screen.queryByTestId('timer-work-type')).toBeNull();
     fireEvent.change(screen.getByTestId('timer-stop-description'), { target: { value: 'fixed it' } });
     fireEvent.click(screen.getByTestId('timer-stop-billable'));
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: 'te-1' }))

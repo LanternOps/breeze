@@ -33,6 +33,9 @@ vi.mock('./ticketConfigService', async () => {
   return { ...actual, ...ticketConfigMocks };
 });
 
+const workTypeMocks = vi.hoisted(() => ({ listWorkTypes: vi.fn() }));
+vi.mock('./workTypeService', () => workTypeMocks);
+
 // #5808 W03 — `get` now returns a READ-ONLY checklist summary. Mocked so these
 // cases pin exactly WHAT is exposed (labels + progress) and what is not
 // (per-step detail, and the completer's id — an attestation, not context).
@@ -97,7 +100,7 @@ vi.mock('../db/schema', async (importOriginal) => {
 import { registerTicketingTools } from './aiToolsTicketing';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
-import { validateToolInput } from './aiToolSchemas';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 
 // Default auth: partner scope with access to 'o-1'.
 const auth: AuthContext = {
@@ -823,5 +826,131 @@ describe('manage_tickets — validateToolInput schema registry', () => {
       hourlyRate: -5
     });
     expect(result.success).toBe(false);
+  });
+});
+
+
+describe('work types in the ticketing tool', () => {
+  const timeInput = {
+    ticketId: '00000000-0000-0000-0000-000000000001',
+    startedAt: '2026-06-11T09:00:00Z',
+    endedAt: '2026-06-11T09:30:00Z',
+  };
+  const workTypeId = 'aaaaaaaa-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1' });
+    timeEntryMocks.startTimer.mockResolvedValue({ id: 'te-1' });
+    workTypeMocks.listWorkTypes.mockResolvedValue([{ id: workTypeId, name: 'On-site', isActive: true }]);
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s resolves a workType name case-insensitively for the acting partner', async (action) => {
+    await getTool().handler({ ...timeInput, action, workType: ' ON-SITE ' }, auth);
+    const service = action === 'log_time_entry' ? timeEntryMocks.createTimeEntry : timeEntryMocks.startTimer;
+    expect(service.mock.calls[0]?.[0]).toMatchObject({ workTypeId });
+    expect(workTypeMocks.listWorkTypes).toHaveBeenCalledWith('p-1', { includeInactive: false });
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s accepts a UUID that IS in the partner\'s active list', async (action) => {
+    await getTool().handler({ ...timeInput, action, workType: workTypeId }, auth);
+    expect(workTypeMocks.listWorkTypes).toHaveBeenCalledWith('p-1', { includeInactive: false });
+    const service = action === 'log_time_entry' ? timeEntryMocks.createTimeEntry : timeEntryMocks.startTimer;
+    expect(service.mock.calls[0]?.[0]).toMatchObject({ workTypeId });
+  });
+
+  // A model hallucinates well-formed UUIDs. Passing one through unchecked put it
+  // straight into the composite FK, which raises 23503 INSIDE the request
+  // transaction -- the tool's own catch can only report a raw 500 by then.
+  it.each(['log_time_entry', 'start_timer'])('%s REFUSES a well-formed UUID that is not the partner\'s', async (action) => {
+    const hallucinated = 'ffffffff-9999-4999-8999-999999999999';
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: hallucinated }, auth));
+    expect(out.error).toMatch(/Unknown work type/);
+    expect(out.error).toMatch(/On-site/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s REFUSES an ARCHIVED work type id (absent from the active list)', async (action) => {
+    const archived = 'bbbbbbbb-2222-4222-8222-222222222222';
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: archived }, auth));
+    expect(out.error).toMatch(/Unknown work type/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s rejects unknown work types and names the valid options', async (action) => {
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: 'Teleportation' }, auth));
+    expect(out.error).toMatch(/Teleportation/);
+    expect(out.error).toMatch(/On-site/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s preserves undefined when omitted so category defaults apply', async (action) => {
+    await getTool().handler({ ...timeInput, action }, auth);
+    const service = action === 'log_time_entry' ? timeEntryMocks.createTimeEntry : timeEntryMocks.startTimer;
+    expect(service).toHaveBeenCalled();
+    expect(service.mock.calls[0]?.[0].workTypeId).toBeUndefined();
+    expect(workTypeMocks.listWorkTypes).not.toHaveBeenCalled();
+  });
+
+  it('lists active work types as id and name only', async () => {
+    const out = JSON.parse(await getTool().handler({ action: 'list_work_types' }, auth));
+    expect(out.workTypes).toEqual([{ id: workTypeId, name: 'On-site' }]);
+    expect(workTypeMocks.listWorkTypes).toHaveBeenCalledWith('p-1', { includeInactive: false });
+  });
+
+  it.each(['On-site', workTypeId, 'Teleportation', ''])('stop_timer rejects workType %j before stopping or looking up types', async (workType) => {
+    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-1', workTypeId });
+    const out = JSON.parse(await getTool().handler({ action: 'stop_timer', workType }, auth));
+    expect(out.error).toMatch(/work type.*timer start/i);
+    expect(out.error).toMatch(/edit.*entry/i);
+    expect(timeEntryMocks.stopTimer).not.toHaveBeenCalled();
+    expect(workTypeMocks.listWorkTypes).not.toHaveBeenCalled();
+  });
+
+  it('stop_timer without workType preserves the work type stamped at start', async () => {
+    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-1', workTypeId });
+    const out = JSON.parse(await getTool().handler({ action: 'stop_timer', description: 'Completed' }, auth));
+    expect(out.timeEntry.workTypeId).toBe(workTypeId);
+    expect(timeEntryMocks.stopTimer).toHaveBeenCalledWith(
+      { description: 'Completed', isBillable: undefined },
+      expect.objectContaining({ partnerId: 'p-1', userId: 'u-1' }),
+    );
+    expect(workTypeMocks.listWorkTypes).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty list when no active work types exist', async () => {
+    workTypeMocks.listWorkTypes.mockResolvedValue([]);
+    expect(JSON.parse(await getTool().handler({ action: 'list_work_types' }, auth))).toEqual({ workTypes: [] });
+  });
+
+  it('explains when an unmatched name has no configured alternatives', async () => {
+    workTypeMocks.listWorkTypes.mockResolvedValue([]);
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action: 'log_time_entry', workType: 'Remote' }, auth));
+    expect(out.error).toMatch(/Unknown work type "Remote".*none configured/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it.each(['list_work_types', 'log_time_entry', 'start_timer'])('%s refuses organization scope before reading work types', async (action) => {
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: 'On-site' }, makeSiteAuth()));
+    expect(out.error).toMatch(/partner/i);
+    expect(workTypeMocks.listWorkTypes).not.toHaveBeenCalled();
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it('registers list_work_types in both tool schemas', () => {
+    const properties = getTool().definition.input_schema.properties as Record<string, { enum?: string[]; type?: string }>;
+    expect(properties.action?.enum).toContain('list_work_types');
+    expect(properties.workType?.type).toBe('string');
+    expect(validateToolInput('manage_tickets', { action: 'list_work_types' }).success).toBe(true);
+  });
+
+  it('preserves workType through input validation', () => {
+    const result = toolInputSchemas.manage_tickets!.safeParse({ ...timeInput, action: 'log_time_entry', workType: 'On-site' });
+    expect(result).toMatchObject({ success: true, data: { workType: 'On-site' } });
   });
 });

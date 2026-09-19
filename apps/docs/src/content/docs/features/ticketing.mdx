@@ -308,6 +308,22 @@ The organization's default hourly rate is always in **that organization's billin
 
 Breeze lets technicians log time and record parts against any ticket. These records feed the billing summary on the ticket's properties rail and the weekly Timesheet view -- but are **never shown in the customer portal**.
 
+### Work types
+
+A **work type** says *what* the work was -- Remote, On-site, Project, After hours -- not what it costs. It is a label on a time entry, nothing more: adding one to an entry does not change its rate, its billable flag or its total. Work types are partner-wide, so one list covers every customer organization you manage.
+
+Manage them under **Settings → Ticketing → Categories**, in the **Work types** card. Add a work type by typing its name and clicking **Add work type**; rename one in place at any time. Names are case-insensitive within your partner, so "On-site" and "ON-SITE" cannot both exist.
+
+Once you have work types, the picker appears in all three places technicians log time: the ticket's **Log time** quick-add, the **Start timer** form, and the row editor on **/timesheet**, which also gains a **Work Type** column. Choosing nothing is always allowed -- an entry with no work type is valid.
+
+**Category defaults.** Each ticket category can name a **Default work type**, set in the category editor on the same page. When time is logged against a ticket in that category and the technician left the picker blank, Breeze stamps the category's default on the entry as it is saved -- on the server, so it applies however the entry was created. Picking a work type explicitly always wins. Clearing the work type on an entry that already has one removes it outright; it does not re-apply the category default.
+
+**Archiving preserves history.** A work type you no longer use is **archived**, never deleted. It disappears from the pickers for new entries, but every historical entry keeps the label it was stamped with, and archived work types still render (marked *(archived)*) on the entries that carry them. Archived work types stay listed in the **Work types** card with an **Archived** badge, so you can always see what a historical label meant.
+
+<Aside>
+  Work types are descriptive only in this release. They are the dimension a future **Rates** screen will price against -- until then, time entries keep being priced exactly as described under [Per-organization SLA tiers](#per-organization-sla-tiers).
+</Aside>
+
 ### Timer widget
 
 When you are working a ticket, click **Start timer** in the Time & Billing rail to begin tracking. A live clock appears in the top navigation bar, anchored to the ticket number, so the timer follows you across the queue. Only one timer can run per technician at a time -- starting a new timer automatically stops the previous one.

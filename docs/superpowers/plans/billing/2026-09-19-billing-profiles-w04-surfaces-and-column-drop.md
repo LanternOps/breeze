@@ -1070,7 +1070,7 @@ Attach it as `.passthrough().superRefine(rejectRemovedLabourFields)` on both sch
 
 - [ ] **Step 3: Work the sweep table top to bottom**
 
-Delete each reader. After every few files: `cd apps/api && npx tsc --noEmit` — TypeScript is the cheap half of this sweep, and the Drizzle schema deletions will surface most of it.
+Delete each reader. After every few files: `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit` — TypeScript is the cheap half of this sweep, and the Drizzle schema deletions will surface most of it.
 
 - [ ] **Step 4: Verify the sweep is complete**
 
@@ -1085,7 +1085,7 @@ Expected: **empty**, except for any copy kept deliberately inside the W02 parity
 
 ```bash
 pnpm --filter @breeze/shared build
-cd apps/api && npx tsc --noEmit
+cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit
 cd ../web && npx tsc --noEmit
 cd ../.. && pnpm --filter @breeze/shared test --run
 pnpm --filter @breeze/api test --run
@@ -1242,7 +1242,7 @@ git commit -m "feat(billing)!: drop the six legacy labour-pricing columns (#4628
 
 ```bash
 pnpm --filter @breeze/shared build
-cd apps/api && npx tsc --noEmit
+cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit
 cd ../web && npx tsc --noEmit
 cd ../mobile && npx tsc --noEmit
 cd ../outlook-addin && npx tsc --noEmit

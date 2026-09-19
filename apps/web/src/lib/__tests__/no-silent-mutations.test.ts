@@ -43,6 +43,11 @@ const TARGET_GLOBS = [
   // runAction-wrapped POST both the list row and the detail page call — a
   // future bare mutation added here would ship unguarded to both.
   'src/components/alerts/AlertVerdictBadge.tsx',
+  // Work types (#4628 W01): create/rename/archive all mutate partner-wide
+  // billing configuration, and archiving also rewrites ticket-category
+  // defaults -- a silent failure here leaves the tech believing a work type is
+  // gone when it is still being stamped.
+  'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
@@ -700,7 +705,8 @@ describe('no silent mutations in targeted set', () => {
     // Bare-metal W05a adds backup/VMRestoreWizard.tsx (rebuild engine): 146 → 147.
     // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
     // and EmailTemplateEditor.tsx: 147 → 149.
-    expect(absoluteFiles.length).toBe(149);
+    // Work types (#4628 W01) add WorkTypesCard.tsx: 149 → 150.
+    expect(absoluteFiles.length).toBe(150);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

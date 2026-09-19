@@ -7,6 +7,7 @@ const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
 import TimesheetPage from './TimesheetPage';
+import { resetWorkTypeCache } from '../shared/WorkTypeSelect';
 
 const entry = { id: 'te-1', startedAt: '2026-06-08T09:00:00Z', endedAt: '2026-06-08T10:30:00Z', durationMinutes: 90, description: 'patching', isBillable: true, hourlyRate: '100.00', currencyCode: 'EUR', isApproved: false, ticketId: 'tk-1', ticketNumber: 'T-2026-0042', ticketSubject: 'x', userName: 'Todd', billingStatus: 'not_billed' };
 const week = {
@@ -20,9 +21,11 @@ const week = {
 const jsonRes = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
 beforeEach(() => {
+  resetWorkTypeCache();
   window.location.hash = '#week=2026-06-08';
   fetchWithAuth.mockReset();
   fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [{ id: 'wt-2', name: 'On-site', isActive: true }] }) } as Response;
     if (url.startsWith('/time-entries/timesheet')) return jsonRes(week);
     if (url.startsWith('/users')) return jsonRes([{ id: 'u-1', name: 'Todd', email: 't@x' }]);
     return jsonRes({});
@@ -128,6 +131,7 @@ describe('TimesheetPage', () => {
     });
     render(<TimesheetPage />);
     fireEvent.click(await screen.findByTestId('timesheet-edit-te-b'));
+    expect(screen.getByTestId('timesheet-edit-work-type')).toBeDisabled();
     expect((screen.getByTestId('timesheet-edit-billable-te-b') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByTestId('timesheet-edit-rate-te-b') as HTMLInputElement).disabled).toBe(true);
     fireEvent.change(screen.getByTestId('timesheet-edit-description-te-b'), { target: { value: 'patching (rebooted twice)' } });
@@ -188,5 +192,42 @@ describe('TimesheetPage', () => {
     render(<TimesheetPage />);
     expect(await screen.findByTestId('timesheet-admin-notice')).toBeTruthy();
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(expect.not.stringContaining('userId=u-2')));
+  });
+});
+
+it('MOUNT: timesheet shows the Work Type column and PATCHes the selected workTypeId', async () => {
+  render(<TimesheetPage />);
+  expect(await screen.findByTestId('timesheet-header-work-type')).toHaveTextContent('Work Type');
+  fireEvent.click(await screen.findByTestId('timesheet-edit-te-1'));
+  const picker = screen.getByTestId('timesheet-edit-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  fireEvent.change(picker, { target: { value: 'wt-2' } });
+  fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
+  await waitFor(() => {
+    const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries/te-1' && args[1]?.method === 'PATCH');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call![1].body).workTypeId).toBe('wt-2');
+  });
+});
+
+it('MOUNT: displays an archived row label and can explicitly clear it', async () => {
+  const priorRoute = fetchWithAuth.getMockImplementation()!;
+  fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, days: [{ ...week.days[0], entries: [{ ...entry, workTypeId: 'wt-old', workType: { id: 'wt-old', name: 'Legacy', isActive: false } }] }] });
+    return priorRoute(url);
+  });
+  render(<TimesheetPage />);
+  expect(await screen.findByTestId('timesheet-work-type-te-1')).toHaveTextContent('Legacy');
+  fireEvent.click(screen.getByTestId('timesheet-edit-te-1'));
+  const picker = screen.getByTestId('timesheet-edit-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  expect(picker).toHaveValue('wt-old');
+  expect(picker).toHaveTextContent('Legacy (archived)');
+  fireEvent.change(picker, { target: { value: '' } });
+  fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
+  await waitFor(() => {
+    const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries/te-1' && args[1]?.method === 'PATCH');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call![1].body).workTypeId).toBeNull();
   });
 });

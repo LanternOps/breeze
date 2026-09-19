@@ -555,7 +555,10 @@
         "label": "Email templates",
         "description": "Tickets, quotes, invoices, invites"
       },
-      "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
+      "sendingDomains": {
+        "label": "Sender Addresses",
+        "description": "Send email from your own domain"
+      },
       "aiBudgets": {
         "label": "AI Budgets",
         "description": "AI spending limits"
@@ -5786,5 +5789,25 @@
     "saveError": "Failed to save catalog defaults",
     "saveSuccess": "Catalog defaults saved",
     "saveButton": "Save"
+  },
+  "workTypes": {
+    "title": "Work types",
+    "description": "Label the work performed on time entries. Category defaults help technicians choose a work type.",
+    "newName": "New work type",
+    "create": "Add work type",
+    "archive": "Archive",
+    "archived": "Archived",
+    "archivedClearedDefaults_one": "Archived. Cleared as the default on {{count}} category.",
+    "archivedClearedDefaults_other": "Archived. Cleared as the default on {{count}} categories.",
+    "saveError": "Could not save the work type. Please try again.",
+    "saveSuccess": "Work type saved.",
+    "nameTaken": "A work type with this name already exists.",
+    "rename": "Rename",
+    "loadError": "Could not load work types.",
+    "empty": "No work types yet. Add your first work type above."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Default work type",
+    "defaultWorkTypeHelp": "Used when time is logged for this category without a work type."
   }
 }

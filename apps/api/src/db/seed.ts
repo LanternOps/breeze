@@ -170,6 +170,9 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
   { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
 
+  { resource: 'billing_profiles', action: 'read', description: 'View work types and billing profiles (rate cards)' },
+  { resource: 'billing_profiles', action: 'write', description: 'Create and manage work types and billing profiles' },
+
   // Microsoft 365 partner-global ticket mailbox administration
   { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 ticket mailbox connection status' },
   { resource: 'ticket_mailbox', action: 'admin', description: 'Connect, verify, retest, and disable Microsoft 365 ticket mailboxes' },
@@ -333,6 +336,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // (reassign org, edit any author's comment) stays an admin action.
       'tickets:read', 'tickets:write',
       'time_entries:read', 'time_entries:write',
+      // Technicians can see work types; rate-card writes are granted explicitly.
+      'billing_profiles:read',
       'ticket_mailbox:read',
       'reports:read', 'reports:write',
       'sites:read',

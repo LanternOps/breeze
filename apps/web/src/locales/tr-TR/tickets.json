@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "İş türü"
+  },
+  "workType": {
+    "label": "İş türü",
+    "none": "İş türü yok",
+    "archivedSuffix": "{{name}} (arşivlendi)",
+    "loadError": "İş türleri kullanılamıyor"
+  },
   "slaChip": {
     "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
     "left": "{{relative}} kaldı",

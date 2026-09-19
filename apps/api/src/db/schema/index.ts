@@ -129,6 +129,7 @@ export * from './ticketDrafts';
 export * from './ticketChecklists';
 export * from './catalog';
 export * from './timeTracking';
+export * from './workTypes';
 export * from './invoices';
 export * from './stripePayments';
 export * from './partnerLlmConfigs';

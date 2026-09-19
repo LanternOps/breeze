@@ -1,4 +1,13 @@
 {
+  "timesheet": {
+    "workTypeColumn": "Arbeitsart"
+  },
+  "workType": {
+    "label": "Arbeitsart",
+    "none": "Keine Arbeitsart",
+    "archivedSuffix": "{{name}} (archiviert)",
+    "loadError": "Arbeitsarten nicht verfügbar"
+  },
   "slaChip": {
     "pausedLeft": "Pausiert · {{relative}} übrig",
     "left": "{{relative}} übrig",

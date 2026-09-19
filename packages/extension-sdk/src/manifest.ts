@@ -30,7 +30,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'approvals', 'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-  'backup', 'billing', 'browser-security', 'c2c', 'catalog', 'changes',
+  'backup', 'billing', 'billing-profiles', 'browser-security', 'c2c', 'catalog', 'changes',
   'cis',
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deliverable-templates', 'deployments', 'desktop-ws', 'dev', 'device-groups',
