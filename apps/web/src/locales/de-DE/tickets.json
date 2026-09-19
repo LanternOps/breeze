@@ -132,7 +132,9 @@
       "retry": "Erneut versuchen",
       "remove": "Datei entfernen",
       "tooMany": "Sie können höchstens {{max}} Dateien an einen Kommentar anhängen.",
-      "tooLarge": "{{name}} ist größer als 10 MB."
+      "tooLarge": "{{name}} ist größer als 10 MB.",
+      "sentWithoutAttachment_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "sentWithoutAttachment_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen."
     }
   },
   "ticketFeed": {

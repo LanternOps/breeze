@@ -67,6 +67,35 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_remove_license: 3,
 };
 
+/** One-line tool-search hints for session-aware Google tools. Keys mirror googleToolTiers. */
+export const googleToolSearchHints: Readonly<Record<string, string>> = {
+  google_lookup_user: 'Find a Google Workspace user by email, profile and account status',
+  google_reset_password: 'Reset a Google Workspace user password',
+  google_suspend_user: 'Suspend a Google Workspace user account and block access',
+  google_restore_user: 'Restore access to a suspended Google Workspace user account',
+  google_signout: 'Sign a Google Workspace user out of active sessions',
+  google_set_forwarding: 'Forward Gmail messages to another email address',
+  google_disable_forwarding: 'Turn off Gmail automatic email forwarding',
+  google_set_vacation: 'Set a Gmail vacation responder or out-of-office message',
+  google_update_user: 'Update a Google Workspace user profile and directory details',
+  google_share_calendar: 'Share a Google Calendar and set calendar access permissions',
+  google_offboard_user: 'Offboard a Google Workspace employee and secure their account',
+  google_wipe_mobile_device: 'Remotely wipe a Google Workspace managed mobile device',
+  google_security_drift: 'Check Google Workspace user security settings for drift from policy',
+  google_email_report: 'Review Gmail delivery activity and email usage reports',
+  google_list_user_groups: 'List Google Workspace group memberships for a user',
+  google_add_to_group: 'Add a Google Workspace user to a group',
+  google_remove_from_group: 'Remove a Google Workspace user from a group',
+  google_move_ou: 'Move a Google Workspace user to another organizational unit',
+  google_rename_user: 'Rename a Google Workspace user and change their primary email address',
+  google_reset_2sv: 'Reset Google Workspace two-step verification for a user',
+  google_add_mail_delegate: 'Grant delegated access to a Gmail mailbox',
+  google_remove_mail_delegate: 'Revoke delegated access to a Gmail mailbox',
+  google_list_licenses: 'List Google Workspace license assignments for a user',
+  google_assign_license: 'Assign a Google Workspace product license to a user',
+  google_remove_license: 'Remove a Google Workspace product license from a user',
+};
+
 const CALENDAR_ROLES = ['freeBusyReader', 'reader', 'writer', 'owner'] as const;
 type CalendarRole = (typeof CALENDAR_ROLES)[number];
 

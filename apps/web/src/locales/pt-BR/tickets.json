@@ -132,7 +132,9 @@
       "retry": "Tentar novamente",
       "remove": "Remover arquivo",
       "tooMany": "Você pode anexar no máximo {{max}} arquivos a um comentário.",
-      "tooLarge": "{{name}} é maior que 10 MB."
+      "tooLarge": "{{name}} é maior que 10 MB.",
+      "sentWithoutAttachment_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
+      "sentWithoutAttachment_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
     }
   },
   "ticketFeed": {

@@ -95,7 +95,7 @@
     "loading": "Caricamento delle entità servizio...",
     "loadFailed": "Impossibile caricare le entità servizio.",
     "retry": "Riprova",
-    "empty": "Non sono ancora presenti entità servizio.",
+    "empty": "Non sono ancora presenti entità servizio. Creane una per iniziare.",
     "name": "Nome",
     "principalDescription": "Descrizione",
     "scopes": "Ambiti",
@@ -708,7 +708,8 @@
     "errorCheckFailed": "Non è stato possibile avviare il controllo DNS.",
     "errorRemoveFailed": "Non è stato possibile rimuovere il dominio.",
     "errorIdentityFailed": "Non è stato possibile salvare l'indirizzo mittente.",
-    "errorTestFailed": "Non è stato possibile inviare l'email di prova."
+    "errorTestFailed": "Non è stato possibile inviare l'email di prova.",
+    "removeTitle": "Rimuovere il dominio di invio?"
   },
   "loginBranding": {
     "saved": "Branding di accesso salvato",
@@ -3829,7 +3830,10 @@
     "passkeyStepUpNoUsableFactor": "Il fattore attuale del tuo account non può essere confermato qui. Contatta un amministratore per aggiungere una passkey.",
     "passkeyStepUpIncorrectCode": "Codice errato. Riprova.",
     "passkeyStepUpTooManyAttempts": "Troppi tentativi. Riprova tra qualche minuto.",
-    "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo."
+    "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo.",
+    "passkeyRegistrationServerError": "Registrazione della passkey non riuscita. Riprova.",
+    "deletePasskeyVerifyHeading": "Verifica per eliminare una passkey",
+    "deletePasskeyVerifyHint": "Inserisci qui un codice MFA attuale prima di rimuovere una delle passkey sopra. Questo codice non ha alcun effetto sull'aggiunta di una nuova passkey."
   },
   "roleManager": {
     "roles": "Ruoli",

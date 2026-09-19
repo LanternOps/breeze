@@ -34,6 +34,7 @@
     "policiesCount_one": "{{count}} Richtlinie",
     "policiesCount_other": "{{count}} Richtlinien",
     "notDeployed": "Nicht bereitgestellt",
+    "toggleEnabled": "Aktiviert: {{name}}",
     "errors": {
       "fetch": "Monitore konnten nicht geladen werden",
       "delete": "Monitor konnte nicht gelöscht werden",

@@ -90,6 +90,15 @@ const filterConditionGroupSchema: z.ZodType<FilterConditionGroup> = z.lazy(() =>
 ) as z.ZodType<FilterConditionGroup>;
 
 const listGroupsQuerySchema = z.object({
+  /**
+   * Narrows the result to one org, for callers (e.g. the configuration-policy
+   * assignments target picker) that need only the groups belonging to one
+   * org they can already access — never widens access beyond what
+   * `getOrgIdsForAuth` already computed from the caller's own scope; an
+   * `orgId` outside that set returns an empty list rather than 403ing, so a
+   * partner-scoped caller can't use this to probe org existence.
+   */
+  orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
   parentId: z.string().guid().optional(),
@@ -285,13 +294,30 @@ groupRoutes.get(
       return c.json({ data: [], total: 0 });
     }
 
+    // Intersect with the requested org, never widen: `orgIds` is null only for
+    // system scope (unrestricted), so a system caller's `?orgId=` is used
+    // as-is; every other scope already computed the exact set it may see, and
+    // a requested org outside that set yields nothing rather than a 403 that
+    // would confirm the org exists.
+    let effectiveOrgIds = orgIds;
+    if (query.orgId) {
+      if (orgIds) {
+        if (!orgIds.includes(query.orgId)) {
+          return c.json({ data: [], total: 0 });
+        }
+        effectiveOrgIds = [query.orgId];
+      } else {
+        effectiveOrgIds = [query.orgId];
+      }
+    }
+
     if (query.siteId && perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
       return c.json({ error: 'Device not found or access denied' }, 403);
     }
 
     const conditions: SQL[] = [];
-    if (orgIds) {
-      conditions.push(inArray(deviceGroups.orgId, orgIds));
+    if (effectiveOrgIds) {
+      conditions.push(inArray(deviceGroups.orgId, effectiveOrgIds));
     }
     if (perms?.allowedSiteIds) {
       if (perms.allowedSiteIds.length === 0) return c.json({ data: [], total: 0 });

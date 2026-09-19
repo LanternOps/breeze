@@ -17,6 +17,7 @@ import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import {
   deviceCommands,
+  devices,
   discoveryJobs,
   scriptExecutions,
   scriptExecutionBatches,
@@ -934,6 +935,43 @@ async function handleScriptCancelResult({ agentId, commandId, result }: Paramete
   }
 }
 
+/**
+ * §13 row 9: filesystem_analysis results delivered over the WebSocket were
+ * never persisted. The scan is dispatched with `preferHeartbeat: false`, so the
+ * socket is the NORMAL leg — the handler existed only on the HTTP route
+ * (routes/agents/commands.ts:525), and a completed scan silently wrote nothing.
+ *
+ * The HTTP leg keeps its direct call: its registry dispatch is gated on the
+ * separate REGISTRY_DISPATCHED_COMMAND_TYPES allowlist, which this type is
+ * deliberately NOT added to, so nothing is saved twice.
+ *
+ * `orgId` is not a handler parameter, so it is read from the device the
+ * transport already authorized — the same shape handleDiscoveryResult uses for
+ * its job lookup.
+ */
+async function handleFilesystemAnalysisResult({
+  command,
+  result,
+  resolvedDeviceId,
+  commandId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleFilesystemAnalysisCommandResult } = await import('../routes/agents/helpers');
+  const [device] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, resolvedDeviceId))
+    .limit(1);
+  if (!device) {
+    const message = `[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`;
+    console.warn(message);
+    // A dropped scan result is silent data loss otherwise: nothing but this
+    // console line (which most deployments don't ship) ever showed it.
+    captureException(new Error(message), undefined, { commandId, resolvedDeviceId });
+    return;
+  }
+  await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -959,4 +997,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,
   install_patches: handleInstallPatchesResult,
+  filesystem_analysis: handleFilesystemAnalysisResult,
 };

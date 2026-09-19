@@ -132,7 +132,9 @@
       "retry": "Réessayer",
       "remove": "Retirer le fichier",
       "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
-      "tooLarge": "{{name}} dépasse 10 Mo."
+      "tooLarge": "{{name}} dépasse 10 Mo.",
+      "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
     }
   },
   "ticketFeed": {

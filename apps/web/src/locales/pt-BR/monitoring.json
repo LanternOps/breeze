@@ -34,6 +34,7 @@
     "policiesCount_one": "{{count}} política",
     "policiesCount_other": "{{count}} políticas",
     "notDeployed": "Não implantado",
+    "toggleEnabled": "Ativado: {{name}}",
     "errors": {
       "fetch": "Falha ao carregar os monitores",
       "delete": "Falha ao excluir o monitor",

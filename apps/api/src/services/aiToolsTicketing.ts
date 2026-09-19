@@ -332,6 +332,8 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'tickets',
+    searchHint: 'tickets: list, get, create, update, assign, comment, link alerts or devices, log time, start/stop timer',
     definition: {
       name: 'manage_tickets',
       description:

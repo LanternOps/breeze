@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "ai:tool-capture": "tsx src/services/llm/__scripts__/tool-capture.ts",
+    "ai:tool-eval": "tsx src/services/llm/__scripts__/tool-eval.ts",
     "build": "tsup",
     "clean": "rm -rf dist",
     "db:check-drift": "tsx scripts/check-drift.ts",

@@ -3,6 +3,7 @@ import {
   buildCleanupPreview,
   mergeFilesystemAnalysisPayload,
   readPlanPreviewCandidates,
+  readExecutedActions,
 } from './filesystemAnalysis';
 
 describe('filesystemAnalysis service', () => {
@@ -86,5 +87,48 @@ describe('filesystemAnalysis service', () => {
       const merged = mergeFilesystemAnalysisPayload(existing, incoming);
       expect(merged.checkpoint).toEqual({ pendingDirs: [{ path: '/b', depth: 2 }] });
     });
+  });
+});
+
+describe('readExecutedActions', () => {
+  it('reads the new envelope', () => {
+    expect(readExecutedActions({ partial: true, budgetMs: 240_000, actions: [{ path: '/tmp/a' }] })).toEqual({
+      partial: true,
+      budgetMs: 240_000,
+      actions: [{ path: '/tmp/a' }],
+    });
+  });
+
+  it('reads a legacy bare array, so pre-W01 runs still render', () => {
+    expect(readExecutedActions([{ path: '/tmp/a', status: 'completed' }])).toEqual({
+      partial: false,
+      budgetMs: 0,
+      actions: [{ path: '/tmp/a', status: 'completed' }],
+    });
+  });
+
+  it('is total over junk', () => {
+    expect(readExecutedActions(null)).toEqual({ partial: false, budgetMs: 0, actions: [] });
+    expect(readExecutedActions('nope')).toEqual({ partial: false, budgetMs: 0, actions: [] });
+    expect(readExecutedActions({ partial: 'yes', actions: 'nope' })).toEqual({ partial: false, budgetMs: 0, actions: [] });
+  });
+});
+
+describe('mergeFilesystemAnalysisPayload summary', () => {
+  it('carries duplicateTrackingTruncated across a checkpoint-resumed baseline', () => {
+    const merged = mergeFilesystemAnalysisPayload(
+      { summary: { filesScanned: 1, duplicateTrackingTruncated: true } },
+      { summary: { filesScanned: 2 } },
+    );
+    const summary = merged.summary as Record<string, unknown>;
+    expect(summary.filesScanned).toBe(3);
+    // The five-field rebuild used to drop this, so a resumed baseline reported
+    // "no duplicates" where the agent had actually stopped looking.
+    expect(summary.duplicateTrackingTruncated).toBe(true);
+  });
+
+  it('leaves the flag off when neither half set it', () => {
+    const merged = mergeFilesystemAnalysisPayload({ summary: {} }, { summary: {} });
+    expect((merged.summary as Record<string, unknown>).duplicateTrackingTruncated).toBe(false);
   });
 });

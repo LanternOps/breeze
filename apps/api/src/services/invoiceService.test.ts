@@ -1662,6 +1662,54 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
   });
 });
 
+// Sweep paper cut #16: a draft has no bill-to snapshot yet, so the detail
+// card must fall back to the live org's name (+ billing contact email)
+// instead of showing "No billing contact set" for an org that plainly has
+// one. An issued invoice's own frozen billToName must never be touched.
+describe('getInvoice — draft BILL TO fallback (sweep paper cut #16)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('falls back to the org name + billing contact email on a draft with a blank billToName', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: null }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    queueResult([{ name: 'Sweep Org B', billingContact: { email: 'ap@sweeporgb.example' } }]); // org read for the fallback
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBe('Sweep Org B');
+    expect(detail.billToEmail).toBe('ap@sweeporgb.example');
+  });
+
+  it('does not touch billToName or read the org when the draft already has its own bill-to name', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: 'Custom Bill-To' }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    // No queued org row — a fallback read here would consume a result meant
+    // for nothing and this test would fail with a confusing downstream error.
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBe('Custom Bill-To');
+    expect(detail.billToEmail).toBeNull();
+  });
+
+  it('never falls back on an issued invoice, even with a null billToName', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', billToName: null }]);
+    queueResult([]); // lines
+    queueResult([]); // evidence counts
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.invoice.billToName).toBeNull();
+    expect(detail.billToEmail).toBeNull();
+  });
+});
+
 describe('getInvoice — billing evidence counts (#3205 W07)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 

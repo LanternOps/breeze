@@ -91,6 +91,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup SLA configurations, active breaches and compliance state',
     definition: {
       name: 'query_backup_sla',
       description: 'List backup SLA configurations with active breach counts and compliance state.',
@@ -184,6 +186,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup SLA breach events by device, configuration, event type or time range',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_sla_breaches',
@@ -265,6 +269,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'backup SLA compliance summary and historical breach reporting for an organization',
     definition: {
       name: 'get_sla_compliance_report',
       description: 'Get a backup SLA compliance summary for the accessible organization scope.',
@@ -388,6 +394,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'backup SLA configurations: create, update recovery targets, device scope and breach alerts',
     deviceArgs: ['targetDevices'],
     definition: {
       name: 'configure_backup_sla',

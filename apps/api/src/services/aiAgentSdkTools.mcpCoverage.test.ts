@@ -459,3 +459,10 @@ describe("get_quote's MCP declaration matches its canonical schema (#3485)", () 
     expect(declaredKeys).toEqual([...canonicalKeys].sort());
   });
 });
+
+describe('search_documentation reaches the chat model (A-W02, #3300 class)', () => {
+  it('is declared on the breeze SDK server and tiered', () => {
+    expect(declaredToolNames().has('search_documentation')).toBe(true);
+    expect(TOOL_TIERS.search_documentation).toBe(1);
+  });
+});

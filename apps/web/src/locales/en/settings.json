@@ -95,7 +95,7 @@
     "loading": "Loading service principals…",
     "loadFailed": "Failed to load service principals.",
     "retry": "Try again",
-    "empty": "No service principals yet.",
+    "empty": "No service principals yet. Create one to get started.",
     "name": "Name",
     "principalDescription": "Description",
     "scopes": "Scopes",
@@ -659,6 +659,7 @@
     "failedDnsRemoved": "The DNS records were removed.",
     "failedUnknown": "Verification did not finish.",
     "retry": "Try again",
+    "removeTitle": "Remove sending domain?",
     "removeConfirm": "Remove {{domain}}? Email for it goes back to the standard Breeze sender.",
     "removeConfirmUnmanaged": "Remove {{domain}} from Breeze? The domain stays in your email provider account — Breeze never deletes a domain it did not create.",
     "removeStarted": "Removing the domain.",
@@ -3834,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
     "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
     "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
-    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again.",
+    "passkeyRegistrationServerError": "Passkey registration failed. Please try again.",
+    "deletePasskeyVerifyHeading": "Verify to delete a passkey",
+    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey."
   },
   "roleManager": {
     "roles": "Roles",

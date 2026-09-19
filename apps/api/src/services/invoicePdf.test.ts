@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
-import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveInvoiceFooter, type InvoiceBranding } from './invoicePdf';
+import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveInvoiceFooter, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
 import { invoices, invoiceLines } from '../db/schema';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -350,5 +350,70 @@ describe('resolveInvoiceFooter', () => {
     ['all three null — no footer at all', { invoiceTerms: null, partnerFooter: null, brandingFooter: null }, null],
   ])('%s', (_name, input, expected) => {
     expect(resolveInvoiceFooter(input)).toBe(expected);
+  });
+});
+
+// Sweep paper cut #16: a DRAFT invoice has no bill-to snapshot yet
+// (billToName/billToAddress/billToTaxId are stamped only at issue —
+// invoiceService.issueInvoice), so before issue the BILL TO block would
+// otherwise render completely blank — not even the organization name, which
+// the quote PDF prints for the same draft state. Fall back to the org's name
+// (and its billing-contact email) for DISPLAY only; an issued invoice's own
+// frozen billToName is never touched.
+describe('resolveDraftBillTo', () => {
+  it('falls back to the org name + billing contact email on a draft with no bill-to name', () => {
+    expect(resolveDraftBillTo({
+      status: 'draft', billToName: null, orgName: 'Sweep Org B',
+      orgBillingContact: { email: 'ap@sweeporgb.example' },
+    })).toEqual({ billToName: 'Sweep Org B', billToEmail: 'ap@sweeporgb.example' });
+  });
+
+  it('falls back to the org name with a null email when the org has a contact with no email', () => {
+    expect(resolveDraftBillTo({
+      status: 'draft', billToName: null, orgName: 'Sweep Org B', orgBillingContact: null,
+    })).toEqual({ billToName: 'Sweep Org B', billToEmail: null });
+  });
+
+  it('treats a blank/whitespace billToName as absent, same as null', () => {
+    expect(resolveDraftBillTo({
+      status: 'draft', billToName: '   ', orgName: 'Sweep Org B', orgBillingContact: null,
+    })).toEqual({ billToName: 'Sweep Org B', billToEmail: null });
+  });
+
+  it('a tech-entered billToName on a draft wins over the org name, and no email is surfaced', () => {
+    expect(resolveDraftBillTo({
+      status: 'draft', billToName: 'Custom Bill-To', orgName: 'Sweep Org B',
+      orgBillingContact: { email: 'ap@sweeporgb.example' },
+    })).toEqual({ billToName: 'Custom Bill-To', billToEmail: null });
+  });
+
+  it('never falls back once issued — the frozen billToName (even null) is returned verbatim', () => {
+    expect(resolveDraftBillTo({
+      status: 'sent', billToName: null, orgName: 'Sweep Org B', orgBillingContact: { email: 'ap@sweeporgb.example' },
+    })).toEqual({ billToName: null, billToEmail: null });
+  });
+});
+
+// Renderer-level check that the fallback email actually prints under BILL TO
+// when a caller (loadInvoiceForRender) supplies it via branding — never
+// printed when absent (every issued-invoice fixture in this file omits it).
+describe('BILL TO email fallback rendering (sweep paper cut #16)', () => {
+  it('renderInvoiceHtml prints the fallback email under Bill To when billToName is blank', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice({ billToName: null, billToAddress: null, billToTaxId: null }),
+      [makeLine()],
+      { ...branding, billToEmailFallback: 'ap@sweeporgb.example' },
+    );
+    expect(html).toContain('ap@sweeporgb.example');
+  });
+
+  it('renderInvoicePdfBuffer draws the fallback email under BILL TO when billToName is blank', async () => {
+    const pdf = await renderInvoicePdfBuffer(
+      makeInvoice({ billToName: null, billToAddress: null, billToTaxId: null }),
+      [makeLine()],
+      { ...branding, billToEmailFallback: 'ap@sweeporgb.example' },
+    );
+    const text = extractPositionedPdfText(pdf).map((f) => f.text).join('|');
+    expect(text).toContain('ap@sweeporgb.example');
   });
 });

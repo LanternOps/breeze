@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "category": "temp_files",
+      "os": "windows",
+      "patterns": ["<vol>/windows/temp/**", "<vol>/users/*/appdata/local/temp/**"],
+      "exclude": [],
+      "minAgeHours": 24,
+      "granularity": "file"
+    },
+    {
+      "category": "temp_files",
+      "os": "darwin",
+      "patterns": ["/tmp/**", "/private/tmp/**", "/private/var/tmp/**", "/private/var/folders/*/*/t/**"],
+      "exclude": [],
+      "minAgeHours": 24,
+      "granularity": "file"
+    },
+    {
+      "category": "temp_files",
+      "os": "linux",
+      "patterns": ["/tmp/**", "/var/tmp/**"],
+      "exclude": ["/tmp/.X11-unix/**", "/tmp/.ICE-unix/**", "/tmp/systemd-private-*/**"],
+      "minAgeHours": 24,
+      "granularity": "file"
+    },
+    {
+      "category": "browser_cache",
+      "os": "windows",
+      "patterns": [
+        "<vol>/users/*/appdata/local/{google/chrome,microsoft/edge,bravesoftware/brave-browser,chromium}/user data/*/{cache,code cache,gpucache,dawncache,graphitedawncache,shadercache}/**",
+        "<vol>/users/*/appdata/local/{google/chrome,microsoft/edge,bravesoftware/brave-browser,chromium}/user data/*/service worker/{cachestorage,scriptcache}/**",
+        "<vol>/users/*/appdata/local/mozilla/firefox/profiles/*/{cache2,startupcache,shader-cache}/**"
+      ],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "browser_cache",
+      "os": "darwin",
+      "patterns": ["/users/*/library/caches/**", "/library/caches/**"],
+      "exclude": [
+        "/users/*/library/caches/homebrew/**",
+        "/users/*/library/caches/com.apple.bird/**",
+        "/users/*/library/caches/cloudkit/**",
+        "/users/*/library/caches/com.apple.icloud*/**"
+      ],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "browser_cache",
+      "os": "linux",
+      "patterns": ["/home/*/.cache/**", "/root/.cache/**"],
+      "exclude": ["/home/*/.cache/pip/**", "/root/.cache/pip/**"],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "package_cache",
+      "os": "linux",
+      "patterns": [
+        "/var/cache/apt/archives/**",
+        "/var/cache/dnf/**",
+        "/var/cache/yum/**",
+        "/home/*/.cache/pip/**",
+        "/root/.cache/pip/**",
+        "/home/*/.npm/_cacache/**",
+        "/root/.npm/_cacache/**"
+      ],
+      "exclude": ["/var/cache/apt/archives/lock", "/var/cache/apt/archives/partial/**"],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "package_cache",
+      "os": "darwin",
+      "patterns": [
+        "/users/*/library/caches/homebrew/**",
+        "/users/*/.npm/_cacache/**",
+        "/users/*/.cache/pip/**",
+        "/users/*/.nuget/packages/**/*.nupkg"
+      ],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "package_cache",
+      "os": "windows",
+      "patterns": [
+        "<vol>/users/*/appdata/local/pip/cache/**",
+        "<vol>/users/*/appdata/local/npm-cache/_cacache/**",
+        "<vol>/programdata/chocolatey/cache/**",
+        "<vol>/users/*/.nuget/packages/**/*.nupkg",
+        "<vol>/users/*/appdata/local/packages/*/{ac/inetcache,ac/temp,tempstate}/**"
+      ],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "file"
+    },
+    {
+      "category": "trash",
+      "os": "windows",
+      "patterns": ["<vol>/$recycle.bin/*"],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "contents"
+    },
+    {
+      "category": "trash",
+      "os": "darwin",
+      "patterns": ["/users/*/.trash"],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "contents"
+    },
+    {
+      "category": "trash",
+      "os": "linux",
+      "patterns": ["/home/*/.local/share/Trash", "/root/.local/share/Trash"],
+      "exclude": [],
+      "minAgeHours": 0,
+      "granularity": "contents"
+    }
+  ],
+  "deniedRoots": [
+    {
+      "os": "windows",
+      "roots": ["<vol>/windows/system32", "<vol>/windows/winsxs", "<vol>/program files", "<vol>/program files (x86)"]
+    },
+    {
+      "os": "darwin",
+      "roots": ["/system", "/usr", "/bin", "/sbin", "/etc", "/private/var/db", "/library/apple"]
+    },
+    {
+      "os": "linux",
+      "roots": ["/usr", "/bin", "/sbin", "/etc"]
+    }
+  ]
+}

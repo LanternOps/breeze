@@ -81,6 +81,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server instances and database inventory by device or discovery status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_mssql_instances',
@@ -156,6 +158,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server backup chains, active chain metadata and latest full database snapshots',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_mssql_backup_status',
@@ -261,6 +265,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server database backup: full, differential, transaction log',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_mssql_backup',
@@ -389,6 +395,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server database recovery from a backup snapshot to a target database',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_mssql_database',
@@ -515,6 +523,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'Microsoft SQL Server backup snapshot verification',
     definition: {
       name: 'verify_mssql_backup',
       description: 'Dispatch an MSSQL backup verification command for a provider-backed MSSQL snapshot.',

@@ -237,6 +237,9 @@
         "trash": "Cestino"
       },
       "cleanupPreview": "Anteprima pulizia",
+      "cleanupOutcomeBreakdown": "{{failed}} non riusciti · {{partial}} parziali · {{rejected}} rifiutati · {{locked}} bloccati · {{skipped}} non raggiunti",
+      "cleanupChildIssues": "{{failedChildren}} file nel cestino non eliminati · {{skippedLinks}} link ignorati",
+      "cleanupBudgetExhausted": "Il tempo a disposizione è terminato prima di raggiungere tutti gli elementi. Esegui di nuovo la pulizia per continuare.",
       "cleanupResult": "Pulizia {{status}}: recuperati {{size}} da {{count}} destinazioni, {{failed}} non riuscite.",
       "data": "Dati: {{size}}",
       "deleteFiles": "Elimina file",
@@ -257,7 +260,10 @@
       "selected": "Selezionati: {{count}} · {{size}}",
       "threshold": "Soglia",
       "title": "Analisi disco",
-      "trigger": "Attivazione: {{value}}"
+      "trigger": "Attivazione: {{value}}",
+      "cleanupExecuteFailed": "Esecuzione della pulizia non riuscita",
+      "agentUpdateRequiredToast": "L'agente deve essere aggiornato prima di eseguire questa pulizia.",
+      "agentUpdateRequired": "L'agente deve essere aggiornato alla versione {{minAgentVersion}} o successiva prima di eseguire questa pulizia."
     },
     "dismiss": "Chiudi",
     "dropFiles": "Trascina i file",

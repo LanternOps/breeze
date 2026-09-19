@@ -552,6 +552,9 @@ async function handleAddContact(
 export function registerOrgTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_organizations', {
     tier: 1 as AiToolTier,
+    domain: 'core',
+    searchHint: 'organizations, customers, sites, organization IDs and site IDs by name',
+    alwaysLoad: true,
     deviceArgs: [],
     definition: {
       name: 'list_organizations',
@@ -581,6 +584,8 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
 
   aiTools.set('manage_organizations', {
     tier: 2 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'customer intake: create or update organizations, create sites, add contacts',
     deviceArgs: [],
     definition: {
       name: 'manage_organizations',

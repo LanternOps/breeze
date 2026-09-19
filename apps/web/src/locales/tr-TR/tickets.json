@@ -132,7 +132,9 @@
       "retry": "Yeniden dene",
       "remove": "Dosyayı kaldır",
       "tooMany": "Bir yoruma en fazla {{max}} dosya ekleyebilirsiniz.",
-      "tooLarge": "{{name}} 10 MB sınırını aşıyor."
+      "tooLarge": "{{name}} 10 MB sınırını aşıyor.",
+      "sentWithoutAttachment_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "sentWithoutAttachment_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
     }
   },
   "ticketFeed": {

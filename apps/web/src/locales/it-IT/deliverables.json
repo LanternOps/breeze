@@ -174,7 +174,7 @@
   "templates": {
     "pageTitle": "Modelli di deliverable",
     "pageDescription": "Definisci un livello di servizio una volta sola e applicalo a qualsiasi cliente. I set validi per tutto il partner sono disponibili per ogni organizzazione che gestisci.",
-    "empty": "Nessun set di modelli ancora.",
+    "empty": "Nessun set di modelli ancora. Creane uno per definire un livello di servizio riutilizzabile per i tuoi clienti.",
     "allOrganizations": "Tutte le org",
     "actions": {
       "newSet": "Nuovo set di modelli",

@@ -95,7 +95,7 @@
     "loading": "Dienstprinzipale werden geladen…",
     "loadFailed": "Dienstprinzipale konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
-    "empty": "Noch keine Dienstprinzipale.",
+    "empty": "Noch keine Dienstprinzipale. Erstellen Sie eines, um loszulegen.",
     "name": "Name",
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",
@@ -708,7 +708,8 @@
     "errorCheckFailed": "Die DNS-Prüfung konnte nicht gestartet werden.",
     "errorRemoveFailed": "Die Domain konnte nicht entfernt werden.",
     "errorIdentityFailed": "Die Absenderadresse konnte nicht gespeichert werden.",
-    "errorTestFailed": "Die Test-E-Mail konnte nicht gesendet werden."
+    "errorTestFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
+    "removeTitle": "Sendedomain entfernen?"
   },
   "loginBranding": {
     "saved": "Login-Branding gespeichert",
@@ -3834,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "Der aktuelle Faktor Ihres Kontos kann hier nicht bestätigt werden. Wenden Sie sich an einen Administrator, um einen Passkey hinzuzufügen.",
     "passkeyStepUpIncorrectCode": "Falscher Code. Bitte versuchen Sie es erneut.",
     "passkeyStepUpTooManyAttempts": "Zu viele Versuche. Bitte versuchen Sie es in ein paar Minuten erneut.",
-    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut."
+    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
+    "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "deletePasskeyVerifyHeading": "Zum Löschen eines Passkeys bestätigen",
+    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys."
   },
   "roleManager": {
     "roles": "Rollen",

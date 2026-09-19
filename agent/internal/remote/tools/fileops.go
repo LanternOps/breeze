@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -591,6 +593,343 @@ func WriteFile(payload map[string]any) CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// sumTreeSizeAt totals the regular-file bytes under `rel`, through the confined
+// root handle. These are LOGICAL bytes (the sum of Lstat sizes): sparse files,
+// compression, dedup and cluster slack all make the real free-space delta
+// differ. The measured figure arrives with the native cleaners in W04.
+//
+// fs.WalkDir over root.FS() uses ReadDir entries, so it never follows a link,
+// and the Root confines every lookup to the anchor.
+func sumTreeSizeAt(root *os.Root, rel string) int64 {
+	var total int64
+	_ = fs.WalkDir(root.FS(), filepath.ToSlash(rel), func(_ string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() || isReparsePoint(info) {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
+}
+
+// cleanupTarget is a cleanup victim addressed by a DIRECTORY HANDLE plus a
+// relative name, never by a pathname (spec §13 row 1).
+type cleanupTarget struct {
+	root  *os.Root
+	rel   string
+	match *cleanupRuleMatch
+}
+
+func (t *cleanupTarget) close() {
+	if t != nil && t.root != nil {
+		_ = t.root.Close()
+	}
+}
+
+// openCleanupTarget resolves cleanPath into a confined handle.
+//
+// Lstat-then-Remove on a literal path confines nothing: preview
+// `~/.cache/sub/x`, swap `sub` for a symlink to /etc before execute, and the
+// leaf Lstat sees an ordinary file at /etc/x. So the agent opens the matched
+// rule's ANCHOR — the wildcard-free literal prefix of the pattern, which the
+// rule author fixed and no attacker can choose — and every later operation goes
+// through that *os.Root. The runtime then refuses an absolute symlink, and any
+// relative symlink or reparse point that escapes the anchor, at EVERY component
+// of the traversal.
+//
+// The anchor's own real path must also sit on the dispatched volumeRoot, so a
+// junction at the anchor itself cannot relocate the whole operation.
+func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, error) {
+	if isCleanupDeniedRootFor(goos, cleanPath) {
+		return nil, fmt.Errorf("%s %s is under a cleanup-denied root", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	match := matchCleanupRuleFor(goos, cleanPath)
+	if match == nil {
+		return nil, fmt.Errorf("%s %s matches no cleanup rule", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	anchor, ok := cleanupRuleAnchorFor(goos, cleanPath)
+	if !ok {
+		return nil, fmt.Errorf("%s %s has no confinement anchor", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	if volumeRoot == "" {
+		// Keep the field additive for callers that omit volumeRoot; derive
+		// the filesystem root rather than skipping the check.
+		if goos == "windows" {
+			volumeRoot = filepath.VolumeName(filepath.Clean(cleanPath)) + string(filepath.Separator)
+		} else {
+			volumeRoot = string(filepath.Separator)
+		}
+	}
+	// Unlike the scanner's isRealPathUnderRoot, execution must preserve missing
+	// paths as I/O errors rather than classifying them as off-volume decisions.
+	realVolume, err := filepath.EvalSymlinks(volumeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot resolve volume %s: %w", volumeRoot, err)
+	}
+	realAnchor, err := filepath.EvalSymlinks(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot resolve anchor %s: %w", anchor, err)
+	}
+	volumePrefix := strings.TrimSuffix(realVolume, string(filepath.Separator)) + string(filepath.Separator)
+	underRoot := realAnchor == realVolume || strings.HasPrefix(realAnchor, volumePrefix)
+	if !underRoot {
+		return nil, fmt.Errorf("%s anchor %s is not on volume %s", CleanupGuardRejectedPrefix, anchor, volumeRoot)
+	}
+
+	rel, err := filepath.Rel(anchor, filepath.Clean(cleanPath))
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot resolve %s relative to anchor %s: %w", cleanPath, anchor, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("%s %s is not inside its anchor %s", CleanupGuardRejectedPrefix, cleanPath, anchor)
+	}
+
+	root, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: cannot open anchor %s: %w", anchor, err)
+	}
+	if err := refuseLinkedAncestors(root, rel); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	if _, err := root.Lstat(rel); err != nil {
+		_ = root.Close()
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("cleanup: path does not exist: %s: %w", cleanPath, err)
+		}
+		return nil, fmt.Errorf("cleanup: failed to stat %s inside its anchor: %w", cleanPath, err)
+	}
+	return &cleanupTarget{root: root, rel: rel, match: match}, nil
+}
+
+// refuseLinkedAncestors Lstats EVERY intermediate component of rel through the
+// Root and refuses a symlink or reparse point at any of them.
+//
+// The Root confines a traversal to the anchor, and the anchor is the rule's
+// wildcard-free literal prefix — `/tmp`, `/home`, `C:\Users`. A symlink whose
+// target also lives under that anchor therefore does not escape the Root and is
+// followed: `ln -s /home/bob/Documents /home/alice/.cache/x` deletes bob's
+// files from inside alice's own rule match. Confinement to the anchor is not
+// confinement to the previewed path, so identity is checked per component.
+//
+// The leaf is left to cleanupGuardRejection, which refuses a symlink there with
+// a reason naming the kind rather than the traversal.
+//
+// A component that cannot be inspected is an I/O failure, not a guard decision,
+// so it carries no CleanupGuardRejectedPrefix (the API maps that prefix onto
+// `rejected`, which would mislabel a permissions problem as a policy refusal).
+func refuseLinkedAncestors(root *os.Root, rel string) error {
+	components := strings.Split(rel, string(filepath.Separator))
+	if len(components) < 2 {
+		return nil
+	}
+	prefix := ""
+	for _, component := range components[:len(components)-1] {
+		if component == "" {
+			continue
+		}
+		prefix = filepath.Join(prefix, component)
+		info, err := root.Lstat(prefix)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("cleanup: path does not exist: %s: %w", prefix, err)
+			}
+			return fmt.Errorf("cleanup: failed to stat %s inside its anchor: %w", prefix, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s %s traverses a symlink at %s", CleanupGuardRejectedPrefix, rel, prefix)
+		}
+		if isReparsePoint(info) {
+			return fmt.Errorf("%s %s traverses a reparse point at %s", CleanupGuardRejectedPrefix, rel, prefix)
+		}
+	}
+	return nil
+}
+
+// cleanupGuardRejection is the live re-check (spec §13 row 2). Pinning a path
+// pins a STRING; between preview and execute the thing at that path can change
+// type, age or contents.
+//
+// Order matters: link checks come first, so a symlink is refused by identity
+// even when its path would otherwise match a rule.
+func cleanupGuardRejection(
+	info os.FileInfo,
+	match *cleanupRuleMatch,
+	recursive bool,
+	contentsOnly bool,
+	previewedAt time.Time,
+	now time.Time,
+) error {
+	if info == nil || match == nil {
+		return fmt.Errorf("%s target could not be inspected", CleanupGuardRejectedPrefix)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s %s is a symlink", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if isReparsePoint(info) {
+		return fmt.Errorf("%s %s is a reparse point", CleanupGuardRejectedPrefix, info.Name())
+	}
+	// File-granularity rules dispatch recursive:false. A target that has become
+	// a directory since the preview is refused rather than deleted as a subtree.
+	if !recursive && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if recursive && !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file or directory", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if match.MinAge > 0 && now.Sub(info.ModTime()) < match.MinAge {
+		return fmt.Errorf("%s %s is newer than the rule's minimum age", CleanupGuardRejectedPrefix, info.Name())
+	}
+	// A contentsOnly CONTAINER is exempt: a bin/trash directory's mtime bumps on
+	// every add, so any trash activity since the scan would reject the whole
+	// cleanup. deleteDirectoryContents applies the check per CHILD instead.
+	if !contentsOnly && !previewedAt.IsZero() && info.ModTime().After(previewedAt) {
+		return fmt.Errorf("%s %s was modified after the preview", CleanupGuardRejectedPrefix, info.Name())
+	}
+	return nil
+}
+
+// sharingViolationCheck is the seam over isSharingViolation, which is
+// build-tagged and always false on POSIX. Tests override it to reach both
+// branches of the lock handling from any host.
+var sharingViolationCheck = isSharingViolation
+
+// newLockedDeleteResult reports a Windows file lock as a SUCCESS carrying
+// `deleted: false` rather than as a failure, because skippedLocked only exists
+// on the success envelope (NewErrorResult carries no body). The API maps
+// bytesFreed == 0 with a non-empty skippedLocked onto `skipped_locked`, which
+// is a different operator action from "it failed" — close the app and re-run.
+func newLockedDeleteResult(cleanPath string, start time.Time) CommandResult {
+	return NewSuccessResult(map[string]any{
+		"path":          cleanPath,
+		"deleted":       false,
+		"permanent":     true,
+		"bytesFreed":    int64(0),
+		"skippedLocked": []string{cleanPath},
+	}, time.Since(start).Milliseconds())
+}
+
+// deleteDirectoryContents empties the target directory without removing it,
+// entirely through the confined root handle (spec §13 row 1).
+//
+// This exists because the only reachable Windows recycle bin is one level below
+// the volume root (C:\$Recycle.Bin is depth 1 and isRecursiveDeleteBoundary
+// refuses it), and because deleting a .Trash / Trash directory outright is the
+// wrong operation even where it is allowed: the OS owns those directory nodes.
+//
+// Link handling:
+//   - The directory is re-opened as its OWN Root, so every child lookup is
+//     confined to it and an ancestor swapped mid-operation cannot be traversed.
+//   - Immediate children are Lstat'ed through that Root. A symlink or
+//     reparse-point child is SKIPPED and reported; never removed, never
+//     traversed.
+//   - Everything else goes through Root.RemoveAll, which unlinks rather than
+//     follows at any depth AND stays inside the root.
+//   - desktop.ini is preserved: Explorer needs it to render the bin.
+//
+// A locked child is reported in skippedLocked, never forced. Any child that
+// fails for another reason lands in failedChildren, which makes the action
+// `partial` on the API side — never `completed` with positive bytes
+// (spec §13 row 13).
+func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, previewedAt time.Time, start time.Time) CommandResult {
+	if !info.IsDir() {
+		return NewErrorResult(
+			fmt.Errorf("%s contentsOnly target is not a directory: %s", CleanupGuardRejectedPrefix, cleanPath),
+			time.Since(start).Milliseconds(),
+		)
+	}
+
+	dirRoot, err := target.root.OpenRoot(target.rel)
+	if err != nil {
+		return NewErrorResult(
+			// An OpenRoot failure here is I/O (EACCES, EBUSY, ENOTDIR), not a
+			// guard decision, so it must not carry the prefix the API maps
+			// onto `rejected`.
+			fmt.Errorf("failed to open %s inside its anchor: %w", cleanPath, err),
+			time.Since(start).Milliseconds(),
+		)
+	}
+	defer func() { _ = dirRoot.Close() }()
+
+	dirFile, err := dirRoot.Open(".")
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to open directory: %w", err), time.Since(start).Milliseconds())
+	}
+	entries, readErr := dirFile.ReadDir(-1)
+	_ = dirFile.Close()
+	if readErr != nil {
+		return NewErrorResult(fmt.Errorf("failed to read directory: %w", readErr), time.Since(start).Milliseconds())
+	}
+
+	var bytesFreed int64
+	skippedLocked := make([]string, 0)
+	skippedLinks := make([]string, 0)
+	skippedRecent := make([]string, 0)
+	failedChildren := make([]string, 0)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.EqualFold(name, "desktop.ini") {
+			continue
+		}
+		childPath := filepath.Join(cleanPath, name)
+		childInfo, lstatErr := dirRoot.Lstat(name)
+		if lstatErr != nil {
+			if os.IsNotExist(lstatErr) {
+				continue
+			}
+			failedChildren = append(failedChildren, childPath)
+			continue
+		}
+		if childInfo.Mode()&os.ModeSymlink != 0 || isReparsePoint(childInfo) {
+			skippedLinks = append(skippedLinks, childPath)
+			continue
+		}
+		// The container's own mtime is not a usable freshness signal (it bumps
+		// on every add), so the since-preview check lands here: a child that
+		// arrived or changed after the operator looked is not what they
+		// approved, and is reported rather than deleted.
+		if !previewedAt.IsZero() && childInfo.ModTime().After(previewedAt) {
+			skippedRecent = append(skippedRecent, childPath)
+			continue
+		}
+
+		size := childInfo.Size()
+		if childInfo.IsDir() {
+			size = sumTreeSizeAt(dirRoot, name)
+		}
+		if rmErr := dirRoot.RemoveAll(name); rmErr != nil {
+			if sharingViolationCheck(rmErr) {
+				skippedLocked = append(skippedLocked, childPath)
+			} else {
+				failedChildren = append(failedChildren, childPath)
+			}
+			continue
+		}
+		bytesFreed += size
+	}
+
+	return NewSuccessResult(map[string]any{
+		"path": cleanPath,
+		// A link or a changed-since-preview child left behind means the
+		// directory is NOT emptied. Reporting deleted:true with an empty
+		// failedChildren made the API call the action `completed`.
+		"deleted": len(failedChildren) == 0 && len(skippedLocked) == 0 &&
+			len(skippedLinks) == 0 && len(skippedRecent) == 0,
+		"permanent":      true,
+		"contentsOnly":   true,
+		"bytesFreed":     bytesFreed,
+		"skippedLocked":  skippedLocked,
+		"skippedLinks":   skippedLinks,
+		"skippedRecent":  skippedRecent,
+		"failedChildren": failedChildren,
+	}, time.Since(start).Milliseconds())
+}
+
 // DeleteFile deletes a file or directory. By default it moves the item to the
 // .breeze-trash directory for later restore. Pass "permanent": true to bypass
 // the trash and delete immediately.
@@ -604,6 +943,33 @@ func DeleteFile(payload map[string]any) CommandResult {
 
 	recursive := GetPayloadBool(payload, "recursive", false)
 	permanent := GetPayloadBool(payload, "permanent", false)
+	// Cleanup-only flags. Absent on every non-cleanup caller, and no OLD agent
+	// ever receives them: cleanup-execute refuses any agent below
+	// MIN_AGENT_VERSION_CLEANUP_GUARD with 409 agent_update_required, because
+	// an agent that ignores `cleanupGuard` while honouring `permanent` would
+	// perform an UNGUARDED permanent delete (spec §13 row 3).
+	cleanupGuard := GetPayloadBool(payload, "cleanupGuard", false)
+	if cleanupGuard && !permanent {
+		return NewErrorResult(fmt.Errorf("%s cleanupGuard requires permanent", CleanupGuardRejectedPrefix), time.Since(start).Milliseconds())
+	}
+	contentsOnly := GetPayloadBool(payload, "contentsOnly", false)
+	volumeRoot := GetPayloadString(payload, "volumeRoot", "")
+	previewedAtRaw := GetPayloadString(payload, "previewedAt", "")
+	if contentsOnly && !permanent {
+		return NewErrorResult(fmt.Errorf("contentsOnly requires permanent"), time.Since(start).Milliseconds())
+	}
+	var previewedAt time.Time
+	if previewedAtRaw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, previewedAtRaw)
+		if parseErr != nil {
+			// Present-but-garbage is a dispatcher bug, not an absent field.
+			return NewErrorResult(
+				fmt.Errorf("%s previewedAt is not RFC3339: %q", CleanupGuardRejectedPrefix, previewedAtRaw),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		previewedAt = parsed
+	}
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
@@ -637,30 +1003,86 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
-	// Check if path exists
-	info, err := os.Stat(cleanPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+	// The cleanup path never addresses a file by pathname. Every other caller
+	// keeps os.Stat, which is what the file browser has always used.
+	var info os.FileInfo
+	var err error
+	var target *cleanupTarget
+	if cleanupGuard {
+		target, err = openCleanupTarget(runtime.GOOS, cleanPath, volumeRoot)
+		if err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
 		}
-		return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
+		defer target.close()
+		info, err = target.root.Lstat(target.rel)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			// openCleanupTarget already refused a symlink or reparse point at
+			// every component, so anything left here is I/O (EACCES, EIO) and
+			// must stay `failed` rather than being mislabelled `rejected`.
+			return NewErrorResult(
+				fmt.Errorf("failed to stat %s inside its anchor: %w", cleanPath, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		if guardErr := cleanupGuardRejection(info, target.match, recursive, contentsOnly, previewedAt, time.Now()); guardErr != nil {
+			return NewErrorResult(guardErr, time.Since(start).Milliseconds())
+		}
+	} else {
+		info, err = os.Stat(cleanPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
+		}
 	}
 
 	// Permanent delete — bypass trash
 	if permanent {
-		if info.IsDir() && recursive {
-			if err := os.RemoveAll(cleanPath); err != nil {
-				return NewErrorResult(fmt.Errorf("failed to remove directory: %w", err), time.Since(start).Milliseconds())
+		if contentsOnly {
+			if target == nil {
+				return NewErrorResult(fmt.Errorf("contentsOnly requires cleanupGuard"), time.Since(start).Milliseconds())
 			}
+			return deleteDirectoryContents(target, cleanPath, info, previewedAt, start)
+		}
+
+		var bytesFreed int64
+		if target != nil {
+			if info.IsDir() && recursive {
+				bytesFreed = sumTreeSizeAt(target.root, target.rel)
+				err = target.root.RemoveAll(target.rel)
+			} else {
+				bytesFreed = info.Size()
+				err = target.root.Remove(target.rel)
+			}
+		} else if info.IsDir() && recursive {
+			// No pre-walk on the un-guarded File Manager lane: bytesFreed is a
+			// CLEANUP affordance, and an OpenRoot failure here would fail a
+			// delete that RemoveAll alone would have completed.
+			err = os.RemoveAll(cleanPath)
 		} else {
-			if err := os.Remove(cleanPath); err != nil {
-				return NewErrorResult(fmt.Errorf("failed to remove file: %w", err), time.Since(start).Milliseconds())
+			bytesFreed = info.Size()
+			err = os.Remove(cleanPath)
+		}
+		if err != nil {
+			// `skippedLocked` is a CLEANUP affordance ("close the app and
+			// re-run"). The ordinary File Browser delete checks only
+			// isCommandFailure, so reporting a lock as a success there would
+			// tell the user the file is gone while it is still on disk.
+			if target != nil && sharingViolationCheck(err) {
+				return newLockedDeleteResult(cleanPath, start)
 			}
+			return NewErrorResult(fmt.Errorf("failed to remove path: %w", err), time.Since(start).Milliseconds())
 		}
 		return NewSuccessResult(map[string]any{
-			"path":      cleanPath,
-			"deleted":   true,
-			"permanent": true,
+			"path":          cleanPath,
+			"deleted":       true,
+			"permanent":     true,
+			"bytesFreed":    bytesFreed,
+			"skippedLocked": []string{},
 		}, time.Since(start).Milliseconds())
 	}
 

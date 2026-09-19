@@ -72,6 +72,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import { db } from '../../db';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { filesystemRoutes } from './filesystem';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
@@ -84,6 +85,8 @@ import {
   buildCleanupPreview,
   readPlanPreviewCandidates,
 } from '../../services/filesystemAnalysis';
+
+const AGED = new Date(Date.now() - 72 * 3600_000).toISOString();
 
 describe('device filesystem routes', () => {
   let app: Hono;
@@ -192,7 +195,7 @@ describe('device filesystem routes', () => {
   });
 
   it('executes cleanup only for selected valid candidates', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue({ id: 'snap-4', cleanupCandidates: [] } as never);
     vi.mocked(buildCleanupPreview).mockReturnValue({
       snapshotId: 'snap-4',
@@ -200,12 +203,12 @@ describe('device filesystem routes', () => {
       candidateCount: 2,
       categories: [{ category: 'temp_files', count: 2, estimatedBytes: 8192 }],
       candidates: [
-        { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
-        { path: '/tmp/b.tmp', category: 'temp_files', sizeBytes: 4096, safe: true }
+        { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+        { path: '/tmp/b.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED }
       ]
     } as never);
     vi.mocked(executeCommand).mockResolvedValue({
-      status: 'completed'
+      status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] })
     } as never);
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
@@ -227,13 +230,21 @@ describe('device filesystem routes', () => {
     expect(executeCommand).toHaveBeenCalledWith(
       deviceId,
       'file_delete',
-      { path: '/tmp/a.tmp', recursive: true },
+      expect.objectContaining({
+        path: '/tmp/a.tmp',
+        // File-granularity rules are never recursive (spec §13 row 2).
+        recursive: false,
+        permanent: true,
+        cleanupGuard: true,
+        contentsOnly: false,
+        volumeRoot: '/',
+      }),
       expect.objectContaining({ userId: 'user-123' })
     );
   });
 
   it('pins cleanup-execute to the previewed run when cleanupRunId is provided', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     // db.select resolves the pinned cleanup run's stored plan.
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -243,9 +254,9 @@ describe('device filesystem routes', () => {
       }),
     } as never);
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
-      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{ id: 'run-9' }]),
@@ -270,7 +281,7 @@ describe('device filesystem routes', () => {
   });
 
   it('returns 404 when cleanupRunId does not resolve to a run', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -292,7 +303,7 @@ describe('device filesystem routes', () => {
   });
 
   it('rejects a path not in the pinned run and never deletes it', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -303,7 +314,7 @@ describe('device filesystem routes', () => {
     // Pinned run only previewed /tmp/a.tmp; the caller asks to delete a path
     // that was never previewed — it must not widen the deletion set.
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
-      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
 
     const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
@@ -320,7 +331,7 @@ describe('device filesystem routes', () => {
   });
 
   it('returns a distinct 400 when the pinned run has no previewable candidates', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -367,5 +378,260 @@ describe('device filesystem routes', () => {
 
     expect(res.status).toBe(403);
     expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('wraps every 2xx in { success, data } and every failure in { success: false, error }', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null as never);
+
+    const missing = await app.request(`/devices/${deviceId}/filesystem`);
+    expect(missing.status).toBe(404);
+    const missingBody = await missing.json();
+    expect(missingBody.success).toBe(false);
+    expect(missingBody.error).toBe('No filesystem analysis available yet');
+
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({
+      id: 'snap-1', deviceId, capturedAt: new Date('2026-02-09T00:00:00Z'), trigger: 'on_demand',
+      partial: false, summary: {}, largestFiles: [], largestDirs: [], tempAccumulation: [],
+      oldDownloads: [], unrotatedLogs: [], trashUsage: [], duplicateCandidates: [],
+      cleanupCandidates: [], errors: [],
+    } as never);
+    const found = await app.request(`/devices/${deviceId}/filesystem`);
+    expect(found.status).toBe(200);
+    const foundBody = await found.json();
+    expect(foundBody.success).toBe(true);
+    expect(foundBody.data.id).toBe('snap-1');
+  });
+
+  it('reports a path outside the pinned plan in rejectedPaths and still executes the rest', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
+    } as never);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-11' }]) }),
+    } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/a.tmp', '/home/bob/taxes.pdf'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.rejectedPaths).toEqual(['/home/bob/taxes.pdf']);
+    expect(body.data.bytesReclaimed).toBe(4096);
+    expect(body.data.partial).toBe(false);
+    expect(body.data.budgetMs).toBe(240_000);
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    const statuses = body.data.actions.map((a: { path: string; status: string }) => [a.path, a.status]);
+    expect(statuses).toEqual([['/tmp/a.tmp', 'completed'], ['/home/bob/taxes.pdf', 'rejected']]);
+  });
+
+  it('refuses an agent older than the cleanupGuard release with 409 (spec §13 row 3)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.114.0',
+    } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } }, requestedAt: new Date() }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    // An agent that ignores cleanupGuard while honouring `permanent` performs
+    // an UNGUARDED recursive permanent delete. Never dispatch to one.
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('agent_update_required');
+    expect(body.data.minAgentVersion).toBe('0.115.0');
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('dispatches previewedAt so the agent can refuse a file touched since the preview', async () => {
+    const requestedAt = new Date('2026-09-19T12:00:00.000Z');
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0',
+    } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } }, requestedAt }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
+    } as never);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-14' }]) }),
+    } as never);
+
+    await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith(
+      deviceId,
+      'file_delete',
+      expect.objectContaining({
+        permanent: true,
+        cleanupGuard: true,
+        // A temp_files rule is file-granularity, so the delete is NOT recursive.
+        recursive: false,
+        volumeRoot: '/',
+        previewedAt: requestedAt.toISOString(),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('returns 500 with an error when every dispatched action failed', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({ status: 'failed', error: 'device offline' } as never);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-12' }]) }),
+    } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    // Before W01 an all-fail returned 500 with NO `error` at all, so runAction
+    // had nothing to show the user (defect 4).
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('all cleanup actions failed');
+    expect(body.data.actions[0].status).toBe('failed');
+  });
+
+  // Defect: `dispatchedPaths` counted an agent-guard rejection as
+  // never-dispatched, so an all-rejected run returned 400 BEFORE the run insert
+  // and the audit — commands had reached the device with no row and no trail.
+  it('persists and audits a run when every dispatched path came back rejected by the agent guard', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'failed',
+      error: 'cleanup guard rejected: a.tmp is a symlink',
+    } as never);
+    const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-guard' }]) });
+    vi.mocked(db.insert).mockReturnValue({ values } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    // Consistent with runCleanupExecution's own outcome: nothing completed or
+    // partial, so the run is `failed` and takes the existing all-failed shape.
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.data.cleanupRunId).toBe('run-guard');
+    expect(body.data.counts.rejected).toBe(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'device.filesystem.cleanup.execute' }),
+    );
+  });
+
+  it('still returns 400 without a run or an audit when nothing was ever dispatched', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/NEVER-PREVIEWED.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('records the executedActions envelope, not a bare array', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
+    } as never);
+    const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-13' }]) });
+    vi.mocked(db.insert).mockReturnValue({ values } as never);
+
+    await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    const row = values.mock.calls[0]?.[0] as { executedActions: { partial: boolean; budgetMs: number; actions: unknown[] } };
+    expect(row.executedActions.partial).toBe(false);
+    expect(row.executedActions.budgetMs).toBe(240_000);
+    expect(row.executedActions.actions).toHaveLength(1);
   });
 });

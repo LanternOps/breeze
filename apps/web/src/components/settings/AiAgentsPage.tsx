@@ -372,11 +372,24 @@ export default function AiAgentsPage() {
       <span className="inline-flex flex-wrap items-center gap-1.5" data-testid={`ai-agent-lastrun-${agent.id}`}>
         {agent.lastRunAt && agent.lastRunStatus ? (
           <>
-            <span
-              className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}
-              aria-label={`${t('aiAgentsPage.chipLabels.lastRunStatus')}: ${RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}`}
-            >
-              {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
+            {/* Paper cut 22: this badge's word can coincide with the row's own
+                on/off badge (both read "Running" for a live agent mid-run).
+                A visible caption — not just the aria-label — is what tells a
+                sighted user which "Running" is which. */}
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                aria-hidden="true"
+                data-testid={`ai-agent-lastrun-badge-label-${agent.id}`}
+              >
+                {t('aiAgentsPage.chipLabels.lastRunStatus')}
+              </span>
+              <span
+                className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}
+                aria-label={`${t('aiAgentsPage.chipLabels.lastRunStatus')}: ${RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}`}
+              >
+                {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
+              </span>
             </span>
             <span>{t('aiAgentsPage.lastRun.at', { at: formatDateTime(agent.lastRunAt) })}</span>
           </>
@@ -734,12 +747,24 @@ export default function AiAgentsPage() {
                       is off is NOT running — it reported "Running" for hours
                       on US prod while every trigger was a no-op. The third
                       state says the row is on AND that nothing will fire. */}
-                  <span
-                    className={badgeClass(runningTone(agent.enabled), { size: 'sm' })}
-                    aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${runningLabel(agent.enabled)}`}
-                    data-testid={`ai-agent-running-badge-${agent.id}`}
-                  >
-                    {runningLabel(agent.enabled)}
+                  {/* Paper cut 22: paired with the last-run badge below, this
+                      can print the same word ("Running") with nothing visibly
+                      telling them apart — a caption, not only an aria-label. */}
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                      aria-hidden="true"
+                      data-testid={`ai-agent-running-badge-label-${agent.id}`}
+                    >
+                      {t('aiAgentsPage.chipLabels.running')}
+                    </span>
+                    <span
+                      className={badgeClass(runningTone(agent.enabled), { size: 'sm' })}
+                      aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${runningLabel(agent.enabled)}`}
+                      data-testid={`ai-agent-running-badge-${agent.id}`}
+                    >
+                      {runningLabel(agent.enabled)}
+                    </span>
                   </span>
                   {/* #4170: an org-only row is an override of a partner
                       baseline, never a standalone policy — with no baseline
