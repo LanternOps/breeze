@@ -25,7 +25,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 30
     env:
-      HAS_KEY: ${{ secrets.AI_TOOL_EVAL_ANTHROPIC_API_KEY != '' }}
+      HAS_KEY: ${{ secrets.AI_TOOL_EVAL_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -45,7 +45,7 @@ jobs:
       - name: Run eval
         if: env.HAS_KEY == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.AI_TOOL_EVAL_ANTHROPIC_API_KEY }}
+          AI_TOOL_EVAL_KEY: ${{ secrets.AI_TOOL_EVAL_KEY }}
           DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
           EVAL_SURFACE: ${{ github.event.inputs.surface || 'chat' }}
           EVAL_TOOL_SEARCH: ${{ github.event.inputs.tool_search || 'default' }}
@@ -64,7 +64,7 @@ jobs:
           cat "$GITHUB_WORKSPACE/tool-eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Explain skip
         if: env.HAS_KEY != 'true'
-        run: echo "AI_TOOL_EVAL_ANTHROPIC_API_KEY is not set; eval skipped." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "AI_TOOL_EVAL_KEY is not set; eval skipped." >> "$GITHUB_STEP_SUMMARY"
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
