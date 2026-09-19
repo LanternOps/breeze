@@ -143,6 +143,7 @@ for (const result of ['failure', 'cancelled', 'skipped', '']) {
           AGENT_CHANGED: 'true', APP_CHANGED: 'true',
           // Every per-area flag true: the producer runs because the stack changed.
           API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
+          AGENT_CHANGED: 'true', APP_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true',
           MOBILE_NATIVE_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
           SMOKE_TEST_RESULT: 'skipped', GUIDED_SETUP_SMOKE_RESULT: 'skipped',
         },

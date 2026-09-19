@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints ten lines in
+# Reads changed-file paths on stdin (one per line) and prints eleven lines in
 # GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, then the six area flags
-# `api`, `web`, `portal`, `addins`, `m365`, `rust` — each `true|false`.
+# `api`, `web`, `portal`, `addins`, `m365`, `rust`, then `topology_browser` —
+# each `true|false`.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -57,8 +58,20 @@
 # Docs paths set no area. apps/mobile/** sets none either: mobile is gated by
 # its own `mobile-native-changes` filter and test-mobile rides `app`.
 #
+# `topology_browser=true` gates the one job that builds the production web
+# bundle and drives it in a real Chromium (`topology-browser-gate` in ci.yml,
+# #6117). It is deliberately narrow: only the topology UI, the build/CSP
+# configuration that governs how the layout module worker is emitted and
+# allowed to run, the shared topology contracts the bundle validates against,
+# the specs/fixtures themselves, and the CI plumbing that decides this gate
+# (ci.yml and this classifier — same rule as `agent`). Docs paths `continue`
+# before it is evaluated, and every path in the set is an application path, so
+# `topology_browser=true` always implies `code=true` AND `app=true` — the gate
+# builds and boots the web app, which is meaningless on a PR that skips the
+# app suite.
+#
 # Fail-closed: an empty file list is `code=true docs=true agent=true
-# app=true` and every area true. Deciding "nothing changed" from no evidence is how a broken
+# app=true`, every area true and `topology_browser=true`. Deciding "nothing changed" from no evidence is how a broken
 # listing would green a PR (or silently skip a job that should have run).
 set -euo pipefail
 
@@ -102,6 +115,7 @@ portal=false
 addins=false
 m365=false
 rust=false
+topology_browser=false
 seen=false
 all_areas() {
   api=true; web=true; portal=true; addins=true; m365=true; rust=true
@@ -140,6 +154,24 @@ while IFS= read -r path; do
     agent/*) qemu_gate_hit "${path}" && agent=true ;;
   esac
   case "${path}" in
+    apps/web/src/components/topology/*|\
+    apps/web/src/middleware.*|\
+    apps/web/astro.config.*|\
+    apps/web/vite.config.*|\
+    apps/web/package.json|\
+    pnpm-lock.yaml|\
+    packages/shared/src/validators/topology*|\
+    packages/shared/src/types/topology*|\
+    e2e-tests/playwright.topology-worker.config.ts|\
+    e2e-tests/tests/topology-*.spec.ts|\
+    e2e-tests/helpers/topology*|\
+    e2e-tests/pages/TopologyPage.ts|\
+    .github/workflows/ci.yml|\
+    .github/scripts/classify-pr-paths.sh)
+      topology_browser=true
+      ;;
+  esac
+  case "${path}" in
     .github/workflows/ci.yml) app=true ;;
     .github/workflows/*.yml) : ;;
     .github/scripts/classify-pr-paths.sh) app=true ;;
@@ -157,12 +189,13 @@ while IFS= read -r path; do
 done
 
 if [[ "${seen}" != "true" ]]; then
-  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app change in every area (fail-closed)" >&2
+  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app change in every area, topology_browser on (fail-closed)" >&2
   code=true
   docs=true
   agent=true
   app=true
   all_areas
+  topology_browser=true
 fi
 
 echo "code=${code}"
@@ -175,3 +208,4 @@ echo "portal=${portal}"
 echo "addins=${addins}"
 echo "m365=${m365}"
 echo "rust=${rust}"
+echo "topology_browser=${topology_browser}"

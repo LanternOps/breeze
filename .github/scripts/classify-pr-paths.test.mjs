@@ -23,7 +23,7 @@ const classify = (paths) =>
     input: paths.join('\n') + (paths.length ? '\n' : ''),
   });
 
-test('classifier: docs-only path sets report code=false docs=true agent=false app=false', () => {
+test('classifier: docs-only path sets report code=false docs=true agent=false app=false topology_browser=false', () => {
   for (const paths of [
     ['docs/guide.md'],
     ['apps/docs/src/content/docs/agent.mdx'],
@@ -32,17 +32,17 @@ test('classifier: docs-only path sets report code=false docs=true agent=false ap
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false', paths.join(', '));
+    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false', paths.join(', '));
   }
 });
 
 test('classifier: any non-docs path reports code=true; docs=true only when a docs path is present', () => {
   for (const [paths, expected] of [
-    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false'],
-    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false'],
-    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true'],
-    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false'],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true'],
+    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false'],
+    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false'],
+    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true'],
+    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false'],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false'],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -50,10 +50,10 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
   }
 });
 
-test('classifier: an empty file list fails closed to code=true docs=true agent=true app=true', () => {
+test('classifier: an empty file list fails closed to code=true docs=true agent=true app=true topology_browser=true', () => {
   const run = classify([]);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
+  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true');
   assert.match(run.stderr, /fail-closed/u);
 });
 
@@ -108,6 +108,72 @@ test('classifier: agent output — agent/** and the CI plumbing that gates it ar
     const agentLine = run.stdout.trim().split('\n').find((l) => l.startsWith('agent='));
     assert.equal(agentLine, expected, paths.join(', '));
   }
+});
+
+// ─── Topology production-browser gate (#6117) ────────────────────────
+// `topology-browser-gate` boots a BUILT production web server and runs the
+// Chromium topology specs. It is far too heavy for every PR, so it is gated on
+// its own classifier output: the topology UI, the shipped CSP/build config that
+// governs the module worker, the shared topology contracts, the specs and
+// fixtures themselves, and the CI plumbing that decides the gate (ci.yml and
+// the classifier — same rule as `agent`).
+const topologyLine = (run) => run.stdout.trim().split('\n').find((l) => l.startsWith('topology_browser='));
+
+test('classifier: a topology-browser path reports topology_browser=true (and always code=true app=true)', () => {
+  for (const path of [
+    'apps/web/src/components/topology/layout.worker.ts',
+    'apps/web/src/components/topology/TopologyExplorer.tsx',
+    'apps/web/src/middleware.ts',
+    'apps/web/astro.config.mjs',
+    'apps/web/vite.config.ts',
+    'apps/web/package.json',
+    'pnpm-lock.yaml',
+    'packages/shared/src/validators/topology.ts',
+    'packages/shared/src/validators/topologyCollection.ts',
+    'packages/shared/src/types/topologyDiagnostics.ts',
+    'e2e-tests/playwright.topology-worker.config.ts',
+    'e2e-tests/tests/topology-worker.spec.ts',
+    'e2e-tests/tests/topology-baseline.spec.ts',
+    'e2e-tests/helpers/topologyFixture.ts',
+    'e2e-tests/helpers/topologyWorkerFixture.ts',
+    'e2e-tests/pages/TopologyPage.ts',
+    '.github/workflows/ci.yml',
+    '.github/scripts/classify-pr-paths.sh',
+  ]) {
+    const run = classify([path]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(topologyLine(run), 'topology_browser=true', path);
+    // The gate builds and boots the web app: it must never be on for a change
+    // the code or app suites skip (ci-success would demand a job whose `if:`
+    // could be argued either way).
+    assert.match(run.stdout, /^code=true$/mu, path);
+    assert.match(run.stdout, /^app=true$/mu, path);
+  }
+});
+
+test('classifier: unrelated code paths do not trigger the topology browser gate', () => {
+  for (const path of [
+    'apps/api/src/routes/topology.ts',
+    'apps/web/src/components/devices/DeviceDetailPage.tsx',
+    'packages/shared/src/utils/topologyHelpers.ts',
+    'e2e-tests/tests/devices.spec.ts',
+    'e2e-tests/pages/DevicesPage.ts',
+    '.github/workflows/security.yml',
+    '.github/scripts/ci-build-reuse.test.mjs',
+    'agent/internal/discovery/scanner.go',
+  ]) {
+    const run = classify([path]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(topologyLine(run), 'topology_browser=false', path);
+  }
+});
+
+test('classifier: a docs file under the topology directory is still docs-only', () => {
+  // topology_browser=true must imply code=true: the gate builds and boots the
+  // web app, which is meaningless on a PR the code jobs skip entirely.
+  const run = classify(['apps/web/src/components/topology/README.md']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false');
 });
 
 // ─── merge_group classification ──────────────────────────────────────
@@ -174,7 +240,7 @@ test('merge_group: a docs-only entry is classified docs-only', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
+  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false');
 });
 
 test('merge_group: a mixed entry is classified as code', () => {
@@ -183,7 +249,7 @@ test('merge_group: a mixed entry is classified as code', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
+  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false');
 });
 
 test('merge_group: a code-only entry is classified as code', () => {
@@ -192,7 +258,7 @@ test('merge_group: a code-only entry is classified as code', () => {
     { seed: { 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false');
 });
 
 test('merge_group: an agent-only entry is classified as code and agent', () => {
@@ -201,7 +267,16 @@ test('merge_group: an agent-only entry is classified as code and agent', () => {
     { seed: { 'agent/internal/foo.go': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false');
+});
+
+test('merge_group: a topology-browser entry turns the production-browser gate on', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'apps/web/src/components/topology/layout.worker.ts': 'b\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=true');
 });
 
 test('merge_group: a tooling-only entry is classified as code but not app', () => {
@@ -210,7 +285,7 @@ test('merge_group: a tooling-only entry is classified as code but not app', () =
     { seed: { 'scripts/security/check-npm-audit.sh': 'a\n', '.github/workflows/release.yml': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -222,21 +297,21 @@ test('merge_group: an unresolvable base sha fails safe to the full suite', () =>
   ]) {
     const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true', JSON.stringify(env));
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true', JSON.stringify(env));
   }
 });
 
 test('merge_group: an empty diff fails closed to the full suite', () => {
   const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true');
 });
 
 test('workflow_dispatch and any other event still run the full suite', () => {
   for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
     const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true', EVENT_NAME);
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true', EVENT_NAME);
   }
 });
 
@@ -269,6 +344,7 @@ test('every code job is gated on the classifier', () => {
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
+    'topology-browser-gate', // compound gate (code AND topology_browser) — asserted separately below
   ]);
   // These validate CI plumbing itself (the classifier tests, the
   // release-lineage/migration-immutability guards, the supply-chain guards)
@@ -327,6 +403,40 @@ test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED 
     summary,
     /^\s*\[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "success" \]\] \|\| \\$/mu,
     'the old unconditional RECOVERY_MEDIA_E2E_RESULT clause must be replaced by the three-branch pattern',
+  );
+});
+
+// ─── Topology production-browser gate wiring (#6117) ─────────────────
+test('topology-browser-gate is gated on both the code and topology_browser classifier outputs', () => {
+  const body = job('topology-browser-gate');
+  assert.match(body, /^    needs: \[changes\]$/mu);
+  assert.match(
+    body,
+    /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.topology_browser == 'true'$/mu,
+    'topology-browser-gate must require BOTH code and topology_browser — it must still be skipped on a docs-only PR',
+  );
+  assert.match(body, /pnpm --filter @breeze\/web build:prod/u, 'the gate exists to exercise the PRODUCTION bundle');
+  assert.match(body, /--config=playwright\.topology-worker\.config\.ts --project=chromium/u);
+  // Anchored to a YAML key: the job body regex also captures the NEXT job's
+  // leading comment, which mentions continue-on-error in prose.
+  assert.doesNotMatch(body, /^\s+continue-on-error:/mu, 'the gate is blocking');
+});
+
+test('the changes job exposes a topology_browser output, and every full-suite fallback turns it ON', () => {
+  const body = job('changes');
+  assert.match(body, /^      topology_browser: \$\{\{ steps\.classify\.outputs\.topology_browser \}\}$/mu);
+  // Fail-safe: the non-PR / unresolvable merge-group fallback must turn the gate ON, never off.
+  assert.match(body, /printf 'code=true\\ndocs=true\\nagent=true\\napp=true\\napi=true\\nweb=true\\nportal=true\\naddins=true\\nm365=true\\nrust=true\\ntopology_browser=true\\n'/u);
+});
+
+test('ci-success asserts topology-browser-gate with the three-branch TOPOLOGY_BROWSER_CHANGED pattern', () => {
+  assert.match(summary, /needs: \[[^\]]*\btopology-browser-gate\b[^\]]*\]/u);
+  assert.match(summary, /TOPOLOGY_BROWSER_CHANGED: \$\{\{ needs\.changes\.outputs\.topology_browser \}\}/u);
+  assert.match(summary, /TOPOLOGY_BROWSER_GATE_RESULT: \$\{\{ needs\.topology-browser-gate\.result \}\}/u);
+  assert.match(
+    summary,
+    /\{ \[\[ "\$\{TOPOLOGY_BROWSER_CHANGED\}" == "true" \]\] && \[\[ "\$\{TOPOLOGY_BROWSER_GATE_RESULT\}" != "success" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{TOPOLOGY_BROWSER_CHANGED\}" != "true" \]\] && \[\[ "\$\{TOPOLOGY_BROWSER_CHANGED\}" != "false" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{TOPOLOGY_BROWSER_CHANGED\}" == "false" \]\] && \[\[ "\$\{TOPOLOGY_BROWSER_GATE_RESULT\}" != "skipped" \]\]; \}/u,
+    'ci-success must assert TOPOLOGY_BROWSER_CHANGED true→success, false→skipped, anything else→fail (mirrors AGENT_CHANGED)',
   );
 });
 
@@ -412,6 +522,7 @@ const passing = {
   ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true',
   // Every per-area flag true: the per-area tri-state lives in ci-area-gating.test.mjs.
   API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
+  ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true',
 };
 const docsOnlySkipped = {
   ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', AGENT_CHANGED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',
@@ -439,6 +550,15 @@ for (const [label, env, passes] of [
   ['agent not changed, recovery-media-e2e unexpectedly ran', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'success' }, false],
   ['agent_changed output empty', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: '', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, false],
   ['agent_changed output not a boolean', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'maybe', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, false],
+  // ─── TOPOLOGY_BROWSER_CHANGED / topology-browser-gate three-branch gate (#6117) ───
+  ['topology gate triggered and green', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true', TOPOLOGY_BROWSER_GATE_RESULT: 'success' }, true],
+  ['topology gate triggered and red', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true', TOPOLOGY_BROWSER_GATE_RESULT: 'failure' }, false],
+  ['topology gate triggered but never ran', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true', TOPOLOGY_BROWSER_GATE_RESULT: 'skipped' }, false],
+  ['topology gate not triggered and correctly skipped', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'false', TOPOLOGY_BROWSER_GATE_RESULT: 'skipped' }, true],
+  ['topology gate not triggered but unexpectedly ran', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'false', TOPOLOGY_BROWSER_GATE_RESULT: 'success' }, false],
+  ['topology gate red without a classifier signal', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: '', TOPOLOGY_BROWSER_GATE_RESULT: 'failure' }, false],
+  ['topology_browser output empty', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: '', TOPOLOGY_BROWSER_GATE_RESULT: 'skipped' }, false],
+  ['topology_browser output not a boolean', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'maybe', TOPOLOGY_BROWSER_GATE_RESULT: 'skipped' }, false],
 ]) {
   test(`CI Success: ${label}`, () => {
     const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
@@ -477,6 +597,7 @@ const toolingOnlyPassing = {
   CODE_CHANGED: 'true',
   APP_CHANGED: 'false',
   AGENT_CHANGED: 'false',
+  TOPOLOGY_BROWSER_CHANGED: 'false',
   DOCS_CHANGED: 'false',
   DOCS_CHECK_RESULT: 'skipped',
   MOBILE_NATIVE_REQUIRED: '',

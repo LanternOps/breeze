@@ -50,7 +50,8 @@ test('classifier: emits every area output, in order, after code/docs/agent/app',
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(
     run.stdout.trim().split('\n').map((l) => l.split('=')[0]),
-    ['code', 'docs', 'agent', 'app', ...AREAS],
+    // topology_browser (#6117) is a narrow non-area gate and trails the area flags.
+    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser'],
   );
 });
 
@@ -386,6 +387,7 @@ const onlyAreas = (on, { isPr = 'true' } = {}) => {
     ...allResults('success'),
     CHANGES_RESULT: 'success', CODE_CHANGED: 'true', DOCS_CHANGED: 'false', DOCS_CHECK_RESULT: 'skipped',
     APP_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'skipped',
+    TOPOLOGY_BROWSER_CHANGED: 'false', TOPOLOGY_BROWSER_GATE_RESULT: 'skipped',
     MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', IS_PR: isPr,
   };
   for (const area of AREAS) {
