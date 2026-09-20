@@ -72,6 +72,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
       { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
+      { name: 'list_network_assets', description: 'List network assets', category: 'Network & DNS' },
+      { name: 'get_network_asset', description: 'Get network asset details', category: 'Network & DNS' },
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
       { name: 'get_ip_history', description: 'IP address history', category: 'Network & DNS' },
       { name: 'get_network_asset_reachability', description: 'Network asset reachability with source and age', category: 'Network & DNS' },
@@ -83,6 +85,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
       // Alerts & Notifications
+      { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
+      { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
       { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
@@ -141,9 +145,20 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
+      { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
+      { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
+      { name: 'get_site', description: 'Get site details', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
+      // Ticketing
+      { name: 'list_time_entries', description: 'List tracked time entries', category: 'Ticketing' },
+      { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
+      { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
+      // AI Governance
+      { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
+      { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
+      { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
