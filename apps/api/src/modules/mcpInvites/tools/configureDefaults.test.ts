@@ -1,3 +1,4 @@
+vi.mock('./configureDefaults.monitors', () => ({ applyStandardAlertPolicy: vi.fn().mockResolvedValue({ created: true }) }));
 vi.mock('../../../services/mfaPolicyActivation', () => ({ lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -150,168 +151,11 @@ describe('ensureDefaultDeviceGroup', () => {
   });
 });
 
-describe('applyStandardAlertPolicy', () => {
-  // SELECT order inside applyStandardAlertPolicy:
-  //   1. org -> partnerId lookup (NEW)
-  //   2. builtIns (alert templates)
-  //   3. existing rules (dedupe) — only reached when builtIns is non-empty
-
-  it('skips gracefully when no built-in templates exist', async () => {
-    mockSelectQueue([
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [], // builtIns
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res.created).toBe(false);
-    expect(res.skipped_reason).toMatch(/no built-in/i);
-    expect(values).not.toHaveBeenCalled();
-  });
-
-  it('creates rules for all matching templates when none are present', async () => {
-    mockSelectQueue([
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [], // no existing rules
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res.created).toBe(true);
-    expect(values).toHaveBeenCalledTimes(3);
-  });
-
-  it('is idempotent when all three rules already exist', async () => {
-    mockSelectQueue([
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [
-        { templateId: 'tpl-cpu' },
-        { templateId: 'tpl-disk' },
-        { templateId: 'tpl-offline' },
-      ],
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res).toEqual({ created: false });
-    expect(values).not.toHaveBeenCalled();
-  });
-
-  it('treats a partner-wide rule (org_id NULL) as existing coverage and skips it', async () => {
-    // 2 templates already covered by org-owned rules; the 3rd is covered by
-    // a partner-wide rule (org_id NULL, partner_id = PARTNER_ID) that the
-    // partner already created for every org under it. All three should be
-    // considered covered by the dedupe query.
-    mockSelectQueue([
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [
-        { templateId: 'tpl-cpu' }, // org-owned
-        { templateId: 'tpl-disk' }, // org-owned
-        { templateId: 'tpl-offline' }, // partner-wide (org_id NULL, partner_id PARTNER_ID)
-      ],
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res).toEqual({ created: false });
-    expect(values).not.toHaveBeenCalled();
-  });
-
-  it('creates only the still-missing template when a partner-wide rule covers one of three', async () => {
-    mockSelectQueue([
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [
-        { templateId: 'tpl-cpu' }, // org-owned
-        { templateId: 'tpl-disk' }, // partner-wide (org_id NULL, partner_id PARTNER_ID)
-      ],
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res).toEqual({ created: true });
-    expect(values).toHaveBeenCalledTimes(1);
-    expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({ templateId: 'tpl-offline' }),
-    );
-  });
-
-  it('falls back to org-only dedupe when the org has no resolvable partner', async () => {
-    // Regression guard: an empty org -> partnerId lookup must not crash and
-    // must not broaden the dedupe to match any partner-wide rule.
-    mockSelectQueue([
-      [], // org -> partnerId lookup: no row (orphaned/deleted partner)
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [], // no existing org-owned rules
-    ]);
-    const values = mockInsertOk();
-    const res = await applyStandardAlertPolicy(ORG_ID, 'standard');
-    expect(res.created).toBe(true);
-    expect(values).toHaveBeenCalledTimes(3);
-  });
-
-  it('scopes the partner-wide dedupe check to the resolved partnerId only', async () => {
-    // Structural check on the WHERE condition passed to the dedupe select:
-    // and(inArray(templateId, ids), or(eq(orgId, orgId), and(isNull(orgId), eq(partnerId, orgPartnerId))))
-    const whereArgs: unknown[] = [];
-    const queue: unknown[][] = [
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [],
-    ];
-    vi.mocked(db.select).mockImplementation(() => {
-      const result = queue.shift() ?? [];
-      const terminal: any = Promise.resolve(result);
-      terminal.limit = vi.fn().mockReturnValue(Promise.resolve(result));
-      const chain: any = {
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn((arg: unknown) => {
-          whereArgs.push(arg);
-          return terminal;
-        }),
-      };
-      return chain;
-    });
-    mockInsertOk();
-
-    await applyStandardAlertPolicy(ORG_ID, 'standard');
-
-    // 3rd select is the dedupe query.
-    const dedupeWhere = whereArgs[2] as any;
-    expect(dedupeWhere._op).toBe('and');
-    const orClause = dedupeWhere.args.find((a: any) => a?._op === 'or');
-    expect(orClause).toBeDefined();
-    const partnerWideClause = orClause.args.find((a: any) => a?._op === 'and');
-    expect(partnerWideClause).toBeDefined();
-    const isNullArg = partnerWideClause.args.find((a: any) => a?._op === 'isNull');
-    expect(isNullArg).toBeDefined();
-    const partnerEqArg = partnerWideClause.args.find(
-      (a: any) => a?._op === 'eq' && a?.b === PARTNER_ID,
-    );
-    expect(partnerEqArg).toBeDefined();
-  });
+it('passes the bootstrap partner identity to the monitor attachment step', async () => {
+  mockSelectQueue([[], [{ settings: {} }], []]);
+  mockInsertOk(); mockUpdateOk();
+  await configureDefaultsTool.handler({}, ctx);
+  expect(applyStandardAlertPolicy).toHaveBeenCalledWith(ORG_ID, 'standard', PARTNER_ID);
 });
 
 describe('setRiskProfile', () => {
@@ -387,25 +231,7 @@ describe('configure_defaults tool', () => {
   });
 
   it('happy path: all four steps apply cleanly on a blank tenant', async () => {
-    // Order of SELECTs in handler:
-    //   1. ensureDefaultDeviceGroup: existing check -> []
-    //   2. applyStandardAlertPolicy: org -> partnerId lookup -> PARTNER_ID
-    //   3. applyStandardAlertPolicy: builtIns -> 3 rows
-    //   4. applyStandardAlertPolicy: existing rules -> []
-    //   5. setRiskProfile: partners row -> empty settings
-    //   6. addNotificationChannel: existing check -> []
-    mockSelectQueue([
-      [], // device group exists?
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [], // existing alert rules
-      [{ settings: {} }],
-      [], // notification channel exists?
-    ]);
+    mockSelectQueue([[], [{ settings: {} }], []]);
     mockInsertOk();
     mockUpdateOk();
 
@@ -418,23 +244,8 @@ describe('configure_defaults tool', () => {
   });
 
   it('second call is fully idempotent (nothing created, no errors)', async () => {
-    // Order of SELECTs in handler (see happy-path test above for the list).
-    mockSelectQueue([
-      [{ id: 'dg-1' }], // group exists
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [
-        { id: 'tpl-cpu', name: 'High CPU' },
-        { id: 'tpl-disk', name: 'Low Disk' },
-        { id: 'tpl-offline', name: 'Device Offline' },
-      ],
-      [
-        { templateId: 'tpl-cpu' },
-        { templateId: 'tpl-disk' },
-        { templateId: 'tpl-offline' },
-      ],
-      [{ settings: { riskProfile: 'standard' } }],
-      [{ id: 'nc-1' }],
-    ]);
+    mockSelectQueue([[{ id: 'dg-1' }], [{ settings: { riskProfile: 'standard' } }], [{ id: 'nc-1' }]]);
+    vi.mocked(applyStandardAlertPolicy).mockResolvedValueOnce({ created: false });
     mockInsertOk();
     mockUpdateOk();
 
@@ -446,17 +257,17 @@ describe('configure_defaults tool', () => {
     expect(out.errors).toBeUndefined();
   });
 
+  it('reports monitor attachment failure and still configures the other defaults', async () => {
+    mockSelectQueue([[], [{ settings: {} }], []]); mockInsertOk(); mockUpdateOk();
+    vi.mocked(applyStandardAlertPolicy).mockRejectedValueOnce(new Error('attachment rejected'));
+    const result = await configureDefaultsTool.handler({}, ctx);
+    expect(result.errors).toContainEqual({ step: 'alert_policy', error: 'attachment rejected' });
+    expect(result.applied.notification_channel.created).toBe(true);
+  });
+
   it('partial failure: one step throwing does not prevent the others', async () => {
-    // Make the FIRST select (device group existence check) throw. Calls
-    // after that: applyStandardAlertPolicy's org -> partnerId lookup, then
-    // builtIns -> none (alert_policy skips before reaching the dedupe
-    // select), then risk_profile lookup, then notification channel check.
-    const queue = [
-      [{ partnerId: PARTNER_ID }], // org -> partnerId lookup
-      [], // alert templates -> none (alert_policy will skip)
-      [{ settings: {} }], // risk_profile lookup
-      [], // notification channel existence check
-    ];
+    // The device-group SELECT fails; the other independent steps still run.
+    const queue = [[{ settings: {} }], []];
     let call = 0;
     vi.mocked(db.select).mockImplementation(() => {
       call++;

@@ -1,18 +1,17 @@
 import { lockMfaPolicySettings } from '../../../services/mfaPolicyActivation';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   deviceGroups,
   notificationChannels,
-  alertTemplates,
-  alertRules,
   partners,
-  organizations,
 } from '../../../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
 import { encryptColumnValueForWrite } from '../../../services/encryptedColumnRegistry';
 import type { BootstrapTool, BootstrapContext } from '../types';
+import { applyStandardAlertPolicy } from './configureDefaults.monitors';
+export { applyStandardAlertPolicy } from './configureDefaults.monitors';
 
 // ---- Input / output -------------------------------------------------------
 
@@ -41,7 +40,7 @@ export interface ConfigureDefaultsOutput {
 const TOOL_DESCRIPTION = [
   "Apply an opinionated baseline to this tenant in one call:",
   '(1) ensure a default "All Devices" device group exists,',
-  '(2) attach a standard alert policy (CPU > 90% for 5m, disk free < 10%, offline > 15m) if built-in templates are available,',
+  "(2) attach the partner's enabled built-in monitors to this organization's default monitoring policy, preserving existing thresholds and attachments,",
   '(3) set the partner risk profile (low/standard/strict),',
   "(4) add an admin-email notification channel routed to the tenant's primary admin.",
   "Idempotent — calling twice only creates what's missing. Requires an active partner. Bearer-token (OAuth) callers will be blocked with 403 PARTNER_INACTIVE if the partner becomes inactive between sessions; X-API-Key callers do not have this check at the tool layer (the per-key revocation flow is the gate there).",
@@ -69,90 +68,6 @@ export async function ensureDefaultDeviceGroup(
     name: DEFAULT_GROUP_NAME,
     type: 'static',
   });
-  return { created: true };
-}
-
-// Built-in template name patterns we try to match, in order. We match case-
-// insensitively against alertTemplates.name — if a deployment seeds the
-// standard bundle, these names are expected; if not, the step is skipped.
-const STANDARD_TEMPLATE_PATTERNS = [
-  '%cpu%',
-  '%disk%',
-  '%offline%',
-] as const;
-
-export async function applyStandardAlertPolicy(
-  orgId: string,
-  _framework: 'standard' | 'cis',
-): Promise<StepResult> {
-  // Resolve the org's partner so the dedupe check below can recognize
-  // partner-wide rules (org_id NULL, partner_id set) as existing coverage —
-  // otherwise this step would create a redundant org-level duplicate of a
-  // rule the partner already applies to every org under it.
-  const [orgRow] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  const orgPartnerId = orgRow?.partnerId ?? null;
-
-  // Only look at built-in templates (org-agnostic) — deployments without
-  // seeded templates will legitimately skip this step.
-  const builtIns = await db
-    .select({ id: alertTemplates.id, name: alertTemplates.name })
-    .from(alertTemplates)
-    .where(
-      and(
-        eq(alertTemplates.isBuiltIn, true),
-        or(
-          ilike(alertTemplates.name, STANDARD_TEMPLATE_PATTERNS[0]),
-          ilike(alertTemplates.name, STANDARD_TEMPLATE_PATTERNS[1]),
-          ilike(alertTemplates.name, STANDARD_TEMPLATE_PATTERNS[2]),
-        ),
-      ),
-    );
-
-  if (builtIns.length === 0) {
-    return { created: false, skipped_reason: 'no built-in alert templates found' };
-  }
-
-  // Which of these already have a rule covering this org — either an
-  // org-owned rule, or a partner-wide rule (org_id NULL) owned by the org's
-  // resolved partner? Without a resolvable partner (orphaned/deleted
-  // partner edge case), fall back to the org-only check.
-  const templateIds = builtIns.map((t) => t.id);
-  const dedupeCondition = orgPartnerId
-    ? and(
-        inArray(alertRules.templateId, templateIds),
-        or(
-          eq(alertRules.orgId, orgId),
-          and(isNull(alertRules.orgId), eq(alertRules.partnerId, orgPartnerId)),
-        ),
-      )
-    : and(eq(alertRules.orgId, orgId), inArray(alertRules.templateId, templateIds));
-  const existing = await db
-    .select({ templateId: alertRules.templateId })
-    .from(alertRules)
-    .where(dedupeCondition);
-  const existingSet = new Set(existing.map((r) => r.templateId));
-
-  let createdCount = 0;
-  for (const tpl of builtIns) {
-    if (existingSet.has(tpl.id)) continue;
-    await db.insert(alertRules).values({
-      orgId,
-      templateId: tpl.id,
-      name: `${tpl.name} (baseline)`,
-      targetType: 'organization',
-      targetId: orgId,
-      isActive: true,
-    });
-    createdCount++;
-  }
-
-  if (createdCount === 0) {
-    return { created: false };
-  }
   return { created: true };
 }
 
@@ -232,7 +147,7 @@ async function configureDefaultsHandler(
     errors.push({ step: 'device_group', error: err instanceof Error ? err.message : String(err) });
   }
   try {
-    applied.alert_policy = await applyStandardAlertPolicy(defaultOrgId, framework);
+    applied.alert_policy = await applyStandardAlertPolicy(defaultOrgId, framework, partnerId);
   } catch (err) {
     errors.push({ step: 'alert_policy', error: err instanceof Error ? err.message : String(err) });
   }
