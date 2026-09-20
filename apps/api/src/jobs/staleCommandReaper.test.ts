@@ -309,6 +309,19 @@ describe('stale command reaper', () => {
         executedAt,
         deliverBy: null,
       },
+      // The LEGACY branch (`deliver_by` NULL, never flipped to `sent`) clocks
+      // from created_at against the same per-type budget, so it regressed
+      // identically and has to be pinned separately — the two branches share
+      // nothing but `getCommandTimeoutMs`.
+      {
+        id: 'cmd-bmr-legacy',
+        type: 'bmr_recover',
+        status: 'pending',
+        payload: null,
+        createdAt: executedAt,
+        executedAt: null,
+        deliverBy: null,
+      },
     ]));
 
     updateMock.mockImplementation((table: unknown) => {
