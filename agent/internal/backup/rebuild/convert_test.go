@@ -90,3 +90,47 @@ func TestAllPhases_ConvertIsLast(t *testing.T) {
 		t.Fatalf("AllPhases = %v, want eight entries ending in %q", AllPhases, PhaseConvert)
 	}
 }
+
+// Lab run 2026-09-19: grub-install mounted efivarfs inside the chroot's
+// /sys, so the plain umount of /sys — and then of the root partition —
+// failed "target is busy". Those were only warnings, and convert went on to
+// read a raw image whose ext4 was still mounted read-write.
+func TestConvert_RefusesWhenStagingImageWasNotReleased(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFakeSystem(dir, 100*GiB)
+	root := filepath.Join(dir, "mnt")
+	fs.fail["umount "+root] = os.ErrPermission
+	out := filepath.Join(dir, "out.vhdx")
+	if err := os.WriteFile(out+".raw", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &run{opts: Options{Target: Target{Kind: TargetVHDX, Path: out}, System: fs}, sys: fs, result: &Result{}, rootMount: root}
+	r.teardown()
+	err := convert(context.Background(), r)
+	if err == nil || !strings.Contains(err.Error(), "still in use") {
+		t.Fatalf("err = %v, want a refusal because the staging image is still in use", err)
+	}
+	for _, c := range fs.cmds {
+		if strings.HasPrefix(c, "qemu-img") {
+			t.Fatalf("qemu-img must not read a still-mounted image, ran %q", c)
+		}
+	}
+	if _, statErr := os.Stat(out + ".raw"); statErr != nil {
+		t.Fatalf("raw staging file must survive a refused conversion (stat err=%v)", statErr)
+	}
+}
+
+func TestConvert_RefusesWhenDetachFailed(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFakeSystem(dir, 100*GiB)
+	out := filepath.Join(dir, "out.vhdx")
+	if err := os.WriteFile(out+".raw", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &run{opts: Options{Target: Target{Kind: TargetVHDX, Path: out}, System: fs}, sys: fs, result: &Result{},
+		detach: func() error { return os.ErrPermission }}
+	r.teardown()
+	if err := convert(context.Background(), r); err == nil || !strings.Contains(err.Error(), "still in use") {
+		t.Fatalf("err = %v, want a refusal because the loop device was not detached", err)
+	}
+}

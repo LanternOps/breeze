@@ -54,9 +54,13 @@ type run struct {
 	treeMounts   []string
 	mounts       []string // chroot-prep bind mounts, in mount order
 	stateStaging string   // downloaded system-state artifacts
-	layout       *layout.Manifest
-	manifest     *backup.Snapshot
-	warnings     []string
+	// releaseErr is set when teardown could not unmount the root partition
+	// or detach the loop device: the staging image is still live, so
+	// convert must not read it.
+	releaseErr error
+	layout     *layout.Manifest
+	manifest   *backup.Snapshot
+	warnings   []string
 	// failedFiles are source paths the restore phase could not place (only
 	// populated under AllowPartialRestore); validate must not sample them —
 	// they were already reported as a warning.
@@ -258,12 +262,14 @@ func (r *run) teardown() {
 	if r.rootMount != "" {
 		if err := r.sys.Unmount(ctx, r.rootMount); err != nil {
 			r.warn("unmount %s: %v", r.rootMount, err)
+			r.releaseErr = err
 		}
 		r.rootMount = ""
 	}
 	if r.detach != nil {
 		if err := r.detach(); err != nil {
 			r.warn("detach image: %v", err)
+			r.releaseErr = err
 		}
 		r.detach = nil
 	}

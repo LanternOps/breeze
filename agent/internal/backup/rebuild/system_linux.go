@@ -124,8 +124,11 @@ func (s realSystem) BindMount(ctx context.Context, src, dir string) error {
 	return nil
 }
 
+// Unmount is recursive: a chroot'd grub-install mounts efivarfs under the
+// bind-mounted /sys, and a plain umount of /sys (then of the root partition)
+// fails "target is busy".
 func (s realSystem) Unmount(ctx context.Context, dir string) error {
-	if out, err := s.Run(ctx, "umount", dir); err != nil {
+	if out, err := s.Run(ctx, "umount", "-R", dir); err != nil {
 		return fmt.Errorf("umount %s: %s: %w", dir, strings.TrimSpace(string(out)), err)
 	}
 	return nil
