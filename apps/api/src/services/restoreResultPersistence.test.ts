@@ -179,4 +179,65 @@ describe('restore result persistence', () => {
       },
     }));
   });
+  it('clears the stale server-timeout error when a late genuine success lands (#6415)', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const applied = await updateRestoreJobFromResult(
+      {
+        id: 'restore-1',
+        status: 'failed',
+        targetConfig: {
+          existing: true,
+          error: 'Server-side timeout: no response from agent after 60 minutes',
+          result: {
+            status: 'failed',
+            error: 'Server-side timeout: no response from agent after 60 minutes',
+            timedOutBy: 'server',
+          },
+        },
+      },
+      'bmr_recover',
+      {
+        status: 'completed',
+        result: { status: 'completed', filesRestored: 105_946, bytesRestored: 2_660_000_000 },
+      }
+    );
+
+    expect(applied).toBe(true);
+    const persisted = set.mock.calls[0][0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(persisted.status).toBe('completed');
+    expect(persisted.targetConfig).not.toHaveProperty('error');
+    expect(persisted.targetConfig.existing).toBe(true);
+    expect(persisted.targetConfig.result).toMatchObject({ status: 'completed', filesRestored: 105_946 });
+  });
+
+  it('drops the sweep-owned top-level error even when the genuine outcome is a failure (#6415)', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    await updateRestoreJobFromResult(
+      {
+        id: 'restore-1',
+        status: 'failed',
+        targetConfig: {
+          error: 'Server-side timeout: no response from agent after 60 minutes',
+          result: { status: 'failed', timedOutBy: 'server' },
+        },
+      },
+      'bmr_recover',
+      { status: 'completed', result: { status: 'failed', error: 'disk too small' } }
+    );
+
+    const persisted = set.mock.calls[0][0] as { status: string; targetConfig: Record<string, unknown> };
+    expect(persisted.status).toBe('failed');
+    // The sweep's guess is gone; the device's own reason is authoritative and
+    // lives inside `result`, which every reader prefers.
+    expect(persisted.targetConfig).not.toHaveProperty('error');
+    expect(persisted.targetConfig.result).toMatchObject({ error: 'disk too small' });
+  });
 });
