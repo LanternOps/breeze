@@ -49,6 +49,27 @@ describe('ticketingInboundSettingsSchema', () => {
     expect(ticketingInboundSettingsSchema.safeParse({ defaultTriageOrgId: '11111111-1111-4111-8111-111111111111' }).success).toBe(true);
     expect(ticketingInboundSettingsSchema.safeParse({ defaultTriageOrgId: 'nope' }).success).toBe(false);
   });
+
+  it('accepts the flood-cap fields, including 0 (unlimited)', () => {
+    expect(ticketingInboundSettingsSchema.safeParse({
+      maxTicketsPerSenderPerHour: 30,
+      maxTicketsPerDomainPerHour: 0,
+      maxTicketsPerPartnerPerHour: 1000,
+    }).success).toBe(true);
+  });
+
+  it('rejects negative, fractional, or over-max cap values', () => {
+    expect(ticketingInboundSettingsSchema.safeParse({ maxTicketsPerSenderPerHour: -1 }).success).toBe(false);
+    expect(ticketingInboundSettingsSchema.safeParse({ maxTicketsPerSenderPerHour: 1.5 }).success).toBe(false);
+    expect(ticketingInboundSettingsSchema.safeParse({ maxTicketsPerSenderPerHour: 10001 }).success).toBe(false);
+    expect(ticketingInboundSettingsSchema.safeParse({ maxTicketsPerDomainPerHour: 50001 }).success).toBe(false);
+    expect(ticketingInboundSettingsSchema.safeParse({ maxTicketsPerPartnerPerHour: 200001 }).success).toBe(false);
+  });
+
+  it('accepts the fullMessageReply toggle and rejects a non-boolean', () => {
+    expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: true }).success).toBe(true);
+    expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: 'yes' }).success).toBe(false);
+  });
 });
 
 describe('timeTrackingSessionSuggestionsSchema', () => {
