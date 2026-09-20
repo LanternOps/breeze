@@ -24,6 +24,14 @@ function offlineMonitorDeadline(observation: OfflineObservation, rule: OfflineRu
   return new Date(new Date(observation.observedLastSeenAt).getTime() + durationMinutes * 60_000 + 1);
 }
 
+/**
+ * Proof-of-presence for the conversion prerequisite check (W05c1). True only
+ * because getApplicableRules resolves monitors for the offline device (#6342);
+ * conversion/prerequisites.test.ts pins that call here and its delegation to
+ * resolveMonitorsForDevice in alertService.
+ */
+export const OFFLINE_EFFECTS_RESOLVE_MONITORS = true;
+
 export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<string[]> {
   const payload = effect.payload;
   if (payload.type !== 'alert-plan') throw new Error('Expected alert plan');
