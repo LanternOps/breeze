@@ -7,6 +7,8 @@ vi.mock('./delivery/describeDelivery', () => ({ previewDelivery: vi.fn() }));
 vi.mock('./delivery/inheritedRails', () => ({ readInheritedRails: vi.fn(async () => []) }));
 vi.mock('./delivery/railOwnership', async original => ({ ...await original<typeof import('./delivery/railOwnership')>(), partnerIdForOrg: vi.fn(async () => null) }));
 vi.mock('./delivery/routingRuleWrites', async original => ({ ...await original<typeof import('./delivery/routingRuleWrites')>(), upsertDefaultRow: vi.fn(), escalationPolicyCompatible: vi.fn(async () => true) }));
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({})) }));
+import { writeAuditEvent } from './auditEvents';
 import { db } from '../db';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { partnerIdForOrg } from './delivery/railOwnership';
@@ -19,7 +21,7 @@ import { registerDeliveryTools } from './aiToolsDelivery';
 import type { AiTool } from './aiTools';
 const ORG = '10000000-0000-4000-8000-000000000001', OTHER = '10000000-0000-4000-8000-000000000002';
 const ID = '20000000-0000-4000-8000-000000000001', CH = '30000000-0000-4000-8000-000000000001';
-const auth = (patch: Partial<AuthContext> = {}) => ({ principal: { kind: 'user_session' }, scope: 'organization',
+const auth = (patch: Partial<AuthContext> = {}) => ({ principal: { kind: 'user_session' }, user: { id: OTHER, email: 'operator@example.com' }, scope: 'organization',
   orgId: ORG, partnerId: null, accessibleOrgIds: [ORG], token: { mfa: true }, canAccessOrg: (id: string) => id === ORG, ...patch }) as AuthContext;
 const registry = new Map<string, AiTool>(); registerDeliveryTools(registry);
 const call = async (input: Record<string, unknown>, identity = auth()) => JSON.parse(await registry.get('manage_delivery')!.handler(input, identity));
@@ -204,7 +206,7 @@ describe('shared escalation validation and delivery authorization', () => {
     expect(await call({ action: 'resolve', orgId: ORG, severity: 'high' })).toEqual(preview);
     expect(previewDelivery).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }), expect.objectContaining({ scope: 'organization' }));
   });
-  it('allows an agent write under its upstream guardrails without human MFA', async () => {
+  it('executes an approved agent write without human MFA', async () => {
     vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
     expect(await call({ action: 'set_default', data: { channelIds: [] } }, auth({ principal: { kind: 'ai_agent' } as AuthContext['principal'] }))).toEqual({ data: row });
     expect(hasSatisfiedMfa).not.toHaveBeenCalled();
@@ -223,5 +225,28 @@ describe('shared escalation validation and delivery authorization', () => {
     channels([CH]);
     expect(await call({ action: 'create_routing', data: { name: 'Rule', priority: 1, conditions: { siteIds: [OTHER] }, channelIds: [CH] } })).toMatchObject({ status: 403 });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('delivery write audit parity', () => {
+  it.each([
+    ['create_routing', 'notification_routing_rule.create', { name: 'Everything else', priority: 1, conditions: {}, channelIds: [CH] }],
+    ['update_routing', 'notification_routing_rule.update', { name: 'Everything else' }],
+    ['delete_routing', 'notification_routing_rule.delete', undefined],
+    ['set_default', 'notification_routing_rule.default_upsert', { channelIds: [] }],
+    ['create_escalation', 'escalation_policy.create', { name: 'Everything else', steps: [{ delayMinutes: 1, channelIds: [CH] }] }],
+    ['update_escalation', 'escalation_policy.update', { name: 'Everything else' }],
+    ['delete_escalation', 'escalation_policy.delete', undefined],
+  ])('%s records its route-equivalent audit event', async (action, auditAction, data) => {
+    channels([CH]); insertReturning(row); updateReturning();
+    vi.mocked(getRoutingRuleWithAccess).mockResolvedValue({ ...row, isDefault: false } as never);
+    vi.mocked(db.delete).mockReturnValue({ where: () => ({ returning: async () => [{ id: ID }] }) } as never);
+    expect(await call({ action, id: ID, data })).not.toHaveProperty('error');
+    expect(writeAuditEvent).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({
+      orgId: ORG, actorId: OTHER, actorEmail: 'operator@example.com',
+      action: auditAction, resourceType: (auditAction as string).split('.')[0],
+      resourceId: ID, resourceName: row.name, result: 'success',
+      details: expect.objectContaining({ tool_name: 'manage_delivery' }),
+    }));
   });
 });

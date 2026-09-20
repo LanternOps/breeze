@@ -139,7 +139,6 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_backup_configs: ['create', 'update'],
   manage_backup_profiles: ['create', 'update', 'delete'],
   // Notification channel & saved filter tools — Tier 2 actions
-  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
 };
@@ -289,6 +288,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
@@ -515,6 +515,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_peripheral_policies: ['create', 'update'],
   manage_dr_plan: ['delete_group'],
   manage_monitors: ['create', 'update', 'delete'],
+  manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.

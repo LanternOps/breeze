@@ -286,7 +286,7 @@ describe('manage_delivery has every registration', () => {
     expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'read' }]);
   });
   it.each(['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'])('%s uses mutation tier and write permission', action => {
-    expect(checkGuardrails('manage_delivery', { action })).toMatchObject({ tier: 2, requiresApproval: false });
+    expect(checkGuardrails('manage_delivery', { action })).toMatchObject({ tier: 3, requiresApproval: true, approvalScope: 'supervised' });
     expect(requiredPermissionsForTool('manage_delivery', { action })).toEqual([{ resource: 'alerts', action: 'write' }]);
   });
   it('fails closed on unknown actions', () => {

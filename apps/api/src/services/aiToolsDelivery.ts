@@ -4,6 +4,7 @@ import { db } from '../db';
 import { notificationChannels, notificationRoutingRules, escalationPolicies } from '../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { deliveryToolSchema } from './aiToolSchemas';
 import { createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
   canAccessRoutingSites, routingSiteIds, getRoutingRuleWithAccess } from './delivery/railContracts';
@@ -47,10 +48,34 @@ async function validateRouting(data: { channelIds?: string[]; escalationPolicyId
   if (data.escalationPolicyId && !(await escalationPolicyCompatible(data.escalationPolicyId, owner))) fail(400, 'Escalation policy is not available to this rule owner');
   if (data.conditions !== undefined && !(await canAccessRoutingSites(auth, owner, routingSiteIds(data.conditions), true))) fail(403, 'Routing rule sites are outside your permitted sites');
 }
+function auditDeliveryWrite(
+  auth: AuthContext,
+  action: string,
+  resourceType: string,
+  row: { orgId: string | null; id: string; name: string },
+  details?: Record<string, unknown>,
+): void {
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: row.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action,
+      resourceType,
+      resourceId: row.id,
+      resourceName: row.name,
+      result: 'success',
+      details: { ...details, tool_name: 'manage_delivery' },
+    });
+  } catch (error) {
+    console.error('[manage_delivery] audit write failed', error);
+  }
+}
 async function execute(input: Input, auth: AuthContext): Promise<unknown> {
   if (!['organization','partner','system'].includes(auth.scope)) fail(403, 'Scope not permitted');
   if (!READS.has(input.action)) {
     if (!canMutateOrgWideGovernance(auth)) fail(403, SITE_CEILING_WRITE_DENIED_MESSAGE);
+    // Agent writes require upstream Tier-3 supervised approval instead of human MFA.
     if (auth.principal?.kind !== 'ai_agent' && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');
   }
   if (input.action === 'resolve') return previewDelivery({ orgId: input.orgId!, severity: input.severity!, kind: input.kind, siteId: input.siteId, monitorId: input.monitorId }, auth);
@@ -80,7 +105,10 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
     if (input.action === 'set_default') {
       const data = upsertDefaultRowSchema.omit({ ownerScope: true }).strict().parse(input.data);
       await validateRouting(data, owner, auth);
-      return { data: await upsertDefaultRow(owner, { channelIds: data.channelIds, escalationPolicyId: data.escalationPolicyId ?? null }, auth) };
+      const row = await upsertDefaultRow(owner, { channelIds: data.channelIds, escalationPolicyId: data.escalationPolicyId ?? null }, auth);
+      auditDeliveryWrite(auth, 'notification_routing_rule.default_upsert', 'notification_routing_rule', row,
+        { channelCount: data.channelIds.length, inboxOnly: data.channelIds.length === 0 });
+      return { data: row };
     }
     const data = createRoutingRuleSchema.omit({ ownerScope: true }).strict().parse(input.data);
     await validateRouting(data, owner, auth);
@@ -88,6 +116,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
       conditions: data.conditions, channelIds: [...new Set(data.channelIds)], enabled: data.enabled,
       escalationPolicyId: data.escalationPolicyId ?? null, isDefault: false }).returning();
     if (!row) throw new Error('Insert returned no row');
+    auditDeliveryWrite(auth, 'notification_routing_rule.create', 'notification_routing_rule', row,
+      { priority: data.priority, channelCount: data.channelIds.length });
     return { data: row };
   }
   if (input.action === 'update_routing' || input.action === 'delete_routing') {
@@ -100,6 +130,7 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
       // assertWritable above enforces governance for deleting the optional org default.
       const deleted = await db.delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, row.id)).returning({ id: notificationRoutingRules.id });
       if (!deleted.length) fail(404, 'Routing rule not found');
+      auditDeliveryWrite(auth, 'notification_routing_rule.delete', 'notification_routing_rule', row);
       return { data: { id: row.id, deleted: true } };
     }
     const data = updateRoutingRuleSchema.strict().parse(input.data);
@@ -110,6 +141,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
     const [updated] = await db.update(notificationRoutingRules).set({ ...data, updatedAt: new Date() })
       .where(eq(notificationRoutingRules.id, row.id)).returning();
     if (!updated) fail(404, 'Routing rule not found');
+    auditDeliveryWrite(auth, 'notification_routing_rule.update', 'notification_routing_rule',
+      { ...row, name: updated.name ?? row.name }, { updatedFields: Object.keys(data) });
     return { data: updated };
   }
   if (input.action === 'create_escalation') {
@@ -119,6 +152,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
     await validatePolicyUsers(data.steps, owner, auth);
     const [row] = await db.insert(escalationPolicies).values({ ...owner, name: data.name, steps: data.steps }).returning();
     if (!row) throw new Error('Insert returned no row');
+    auditDeliveryWrite(auth, 'escalation_policy.create', 'escalation_policy', row,
+      { stepCount: Array.isArray(row.steps) ? row.steps.length : undefined });
     return { data: row };
   }
   const row = await getEscalationPolicyWithOrgCheck(input.id!, auth);
@@ -127,6 +162,7 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
   if (input.action === 'delete_escalation') {
     const deleted = await db.delete(escalationPolicies).where(eq(escalationPolicies.id, row.id)).returning({ id: escalationPolicies.id });
     if (!deleted.length) fail(404, 'Escalation policy not found');
+    auditDeliveryWrite(auth, 'escalation_policy.delete', 'escalation_policy', row);
     return { data: { id: row.id, deleted: true } };
   }
   const data = updatePolicySchema.strict().parse(input.data);
@@ -137,6 +173,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
   }
   const [updated] = await db.update(escalationPolicies).set({ ...data, updatedAt: new Date() }).where(eq(escalationPolicies.id, row.id)).returning();
   if (!updated) fail(404, 'Escalation policy not found');
+  auditDeliveryWrite(auth, 'escalation_policy.update', 'escalation_policy',
+    { ...updated, orgId: row.orgId }, { updatedFields: Object.keys(data) });
   return { data: updated };
 }
 export function registerDeliveryTools(registry: Map<string, AiTool>): void {
@@ -146,7 +184,7 @@ export function registerDeliveryTools(registry: Map<string, AiTool>): void {
     searchHint: 'alert delivery: preview, routing rules, default destinations, escalation policies and recipients',
     definition: {
       name: 'manage_delivery',
-      description: 'Resolve alert delivery or manage routing and escalation policies. Set ownership with orgId/ownerScope, write fields in data, and update/delete targets with id. set_default edits Everything else; empty channelIds means inbox only. Channel CRUD remains manage_notification_channels.',
+      description: 'Resolve alert delivery or manage routing and escalation policies. Writes require approval. Set ownership with orgId/ownerScope, write fields in data, and update/delete targets with id. set_default edits Everything else; empty channelIds means inbox only. Channel CRUD remains manage_notification_channels.',
       input_schema: z.toJSONSchema(deliveryToolSchema) as AiTool['definition']['input_schema'],
     },
     handler: async (raw, auth) => {
