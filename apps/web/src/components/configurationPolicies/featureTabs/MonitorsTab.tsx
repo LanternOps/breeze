@@ -47,6 +47,19 @@ function seedItems(link: InlineSettingsLike): MonitorAttachmentItem[] {
     .filter((it) => it.monitorId.length > 0);
 }
 
+const CHECK_INTERVAL_MIN = 10;
+const CHECK_INTERVAL_MAX = 3600;
+const CHECK_INTERVAL_DEFAULT = 60;
+
+function readCheckInterval(link: InlineSettingsLike): number {
+  const raw = (link?.inlineSettings as { checkIntervalSeconds?: unknown } | null | undefined)?.checkIntervalSeconds;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : CHECK_INTERVAL_DEFAULT;
+}
+function readWatches(link: InlineSettingsLike): unknown[] {
+  const raw = (link?.inlineSettings as { watches?: unknown } | null | undefined)?.watches;
+  return Array.isArray(raw) ? raw : [];
+}
+
 const SEVERITY_BADGE: Record<string, string> = {
   critical: "border-destructive/40 bg-destructive/15 text-destructive",
   warning: "border-warning/40 bg-warning/15 text-warning",
@@ -60,6 +73,7 @@ export default function MonitorsTab({
   linkedPolicyId,
   parentLink,
   allLinks = [],
+  siblingLinks,
 }: FeatureTabProps) {
   const { t } = useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
@@ -80,6 +94,17 @@ export default function MonitorsTab({
   const [catalog, setCatalog] = useState<MonitorCatalogEntry[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string>();
+
+  // Spec §Data model: until W05d the agent reads check_interval_seconds off the
+  // `monitoring` link's settings row, so the Monitors tab writes THAT link —
+  // creating an empty-watch one when the policy has none.
+  const monitoringLink = siblingLinks?.find((l) => l.featureType === "monitoring");
+  const savedCheckInterval = readCheckInterval(monitoringLink);
+  const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
+  const [checkIntervalError, setCheckIntervalError] = useState<string>();
+  const [inheritance] = useState<"cumulative" | "replace">(
+    (existingLink?.inlineSettings as { inheritance?: string })?.inheritance === "replace" ? "replace" : "cumulative");
+  useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
 
   useEffect(() => {
     if (!meta.fetchUrl) {
@@ -186,21 +211,47 @@ export default function MonitorsTab({
       sortOrder: idx,
     }));
 
-  const handleSave = async () => {
-    clearError();
-    if (items.length === 0) {
+  const saveAttachments = async (): Promise<boolean> => {
+    if (items.length === 0 && inheritance === "cumulative") {
       if (existingLink) {
         const ok = await remove(existingLink.id);
-        if (ok) onLinkChanged(null, "monitors");
+        if (!ok) return false;
+        onLinkChanged(null, "monitors");
       }
-      return;
+      return true;
     }
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
       featurePolicyId: null, // inline settings — never stamp the parent CONFIG policy's own id
-      inlineSettings: { items: buildPayloadItems() },
+      inlineSettings: { items: buildPayloadItems(), inheritance },
     });
     if (result) onLinkChanged(result, "monitors");
+    return !!result;
+  };
+
+  const saveCheckInterval = async (): Promise<void> => {
+    const parsed = Number(checkInterval);
+    if (parsed === savedCheckInterval) return;
+    const result = await save(monitoringLink?.id ?? null, {
+      featureType: "monitoring",
+      featurePolicyId: null,
+      inlineSettings: { ...(monitoringLink?.inlineSettings ?? {}), checkIntervalSeconds: parsed, watches: readWatches(monitoringLink) },
+    });
+    if (result) onLinkChanged(result, "monitoring");
+  };
+
+  const validateCheckInterval = (): boolean => {
+    const parsed = Number(checkInterval);
+    const ok = Number.isInteger(parsed) && parsed >= CHECK_INTERVAL_MIN && parsed <= CHECK_INTERVAL_MAX;
+    setCheckIntervalError(ok ? undefined : i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalInvalid"));
+    return ok;
+  };
+
+  const handleSave = async () => {
+    clearError();
+    if (!validateCheckInterval()) return;
+    if (!(await saveAttachments())) return;
+    await saveCheckInterval();
   };
 
   const handleRemove = async () => {
@@ -306,6 +357,31 @@ export default function MonitorsTab({
             </button>
           </div>
         )}
+
+        <fieldset className="rounded-md border bg-background p-4" data-testid="monitors-tab-agent-collection">
+          <legend className="px-1 text-sm font-medium">
+            {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.agentCollectionTitle")}
+          </legend>
+          <label className="mt-2 block text-sm" htmlFor="monitors-tab-check-interval">
+            {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalLabel")}
+          </label>
+          <input
+            id="monitors-tab-check-interval"
+            data-testid="monitors-tab-check-interval"
+            type="number"
+            min={CHECK_INTERVAL_MIN}
+            max={CHECK_INTERVAL_MAX}
+            step={1}
+            value={checkInterval}
+            disabled={isInherited}
+            onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalError(undefined); }}
+            className="mt-1 h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalHint")}
+          </p>
+          {checkIntervalError && <p className="mt-1 text-xs text-destructive">{checkIntervalError}</p>}
+        </fieldset>
 
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground">

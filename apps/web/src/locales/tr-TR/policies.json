@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} eski uyarı kuralları, bu politikanın Uyarılar özelliğine taşındı. İzleme artık bunları saklamaz."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Aracı toplama",
+        "checkIntervalLabel": "Kontrol aralığı (saniye)",
+        "checkIntervalHint": "Bu ilkedeki aracıların hizmet ve süreç monitörlerini ne sıklıkla kontrol ettiği (10–3600).",
+        "checkIntervalInvalid": "Kontrol aralığı 10 ile 3600 saniye arasında olmalıdır.",
         "attachMonitor": "Bir izleyici ekle",
         "loadingMonitors": "İzleyiciler yükleniyor…",
         "noMoreMonitorsToAttach": "Eklenecek başka izleyici yok",

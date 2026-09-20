@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} legacy alert rule(s) saved on this tab were moved to the Alerts feature of this policy. Monitoring no longer stores them."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Agent collection",
+        "checkIntervalLabel": "Check interval (seconds)",
+        "checkIntervalHint": "How often agents under this policy check service and process monitors (10–3600).",
+        "checkIntervalInvalid": "Check interval must be between 10 and 3600 seconds.",
         "attachMonitor": "Attach a monitor",
         "loadingMonitors": "Loading monitors…",
         "noMoreMonitorsToAttach": "No more monitors available to attach",

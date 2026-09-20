@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Raccolta dell'agente",
+        "checkIntervalLabel": "Intervallo di controllo (secondi)",
+        "checkIntervalHint": "Ogni quanto gli agenti sotto questa policy controllano i monitor di servizi e processi (10–3600).",
+        "checkIntervalInvalid": "L'intervallo di controllo deve essere compreso tra 10 e 3600 secondi.",
         "attachMonitor": "Collega un monitor",
         "loadingMonitors": "Caricamento dei monitor…",
         "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",

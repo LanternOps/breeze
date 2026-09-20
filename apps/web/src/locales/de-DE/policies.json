@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} ältere Alarmregel(n) von diesem Tab wurden in die Alarm-Funktion dieser Richtlinie verschoben. Die Überwachung speichert sie nicht mehr."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Agent-Erfassung",
+        "checkIntervalLabel": "Prüfintervall (Sekunden)",
+        "checkIntervalHint": "Wie oft Agenten unter dieser Richtlinie Dienst- und Prozessmonitore prüfen (10–3600).",
+        "checkIntervalInvalid": "Das Prüfintervall muss zwischen 10 und 3600 Sekunden liegen.",
         "attachMonitor": "Überwachung hinzufügen",
         "loadingMonitors": "Überwachungen werden geladen…",
         "noMoreMonitorsToAttach": "Keine weiteren Überwachungen zum Hinzufügen verfügbar",

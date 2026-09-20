@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regla(s) de alerta heredada(s) guardadas en esta pestaña se movieron a la función Alertas de esta política. Monitoreo ya no las almacena."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Recolección del agente",
+        "checkIntervalLabel": "Intervalo de comprobación (segundos)",
+        "checkIntervalHint": "Con qué frecuencia los agentes bajo esta política comprueban los monitores de servicios y procesos (10–3600).",
+        "checkIntervalInvalid": "El intervalo de comprobación debe estar entre 10 y 3600 segundos.",
         "attachMonitor": "Adjuntar un monitor",
         "loadingMonitors": "Cargando monitores…",
         "noMoreMonitorsToAttach": "No hay más monitores disponibles para adjuntar",

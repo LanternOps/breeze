@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regra(s) de alerta legada(s) salvas nesta aba foram movidas para o recurso Alertas desta política. O monitoramento não as armazena mais."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Coleta do agente",
+        "checkIntervalLabel": "Intervalo de verificação (segundos)",
+        "checkIntervalHint": "Com que frequência os agentes desta política verificam os monitores de serviços e processos (10–3600).",
+        "checkIntervalInvalid": "O intervalo de verificação deve ficar entre 10 e 3600 segundos.",
         "attachMonitor": "Anexar um monitor",
         "loadingMonitors": "Carregando monitores…",
         "noMoreMonitorsToAttach": "Não há mais monitores disponíveis para anexar",

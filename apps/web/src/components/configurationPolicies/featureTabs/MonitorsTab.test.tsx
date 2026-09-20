@@ -58,13 +58,14 @@ function clickSave() {
   fireEvent.click(saveButton);
 }
 
-describe('MonitorsTab', () => {
-  beforeEach(() => {
-    saveMock.mockClear();
-    removeMock.mockClear();
-    fetchWithAuthMock.mockClear();
-  });
+beforeEach(() => {
+  saveMock.mockClear();
+  removeMock.mockClear();
+  fetchWithAuthMock.mockClear();
+  vi.mocked(baseProps.onLinkChanged).mockClear();
+});
 
+describe('MonitorsTab', () => {
   it('attaches an existing monitor from the picker and saves it', async () => {
     render(<MonitorsTab {...baseProps} />);
 
@@ -204,5 +205,53 @@ describe('MonitorsTab', () => {
     expect(saveMock).toHaveBeenCalled();
     const call = saveMock.mock.calls[0] as unknown as [unknown, { featurePolicyId: string | null }];
     expect(call[1].featurePolicyId).toBeNull();
+  });
+});
+
+const monitoringLink = (over: Partial<{ id: string; inlineSettings: Record<string, unknown> }> = {}) => ({
+  id: 'link-svc', featureType: 'monitoring' as const, featurePolicyId: null,
+  inlineSettings: { checkIntervalSeconds: 60, watches: [{ watchType: 'service', name: 'Spooler' }] },
+  ...over,
+});
+const ownMonitorsLink = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [{ monitorId: 'm1', enabled: true }] } };
+
+describe('MonitorsTab — check interval write-through (W05c2)', () => {
+  it('PATCHes the existing monitoring link with the new interval and its watches untouched', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink, monitoringLink()]} />);
+    const input = (await screen.findByTestId('monitors-tab-check-interval')) as HTMLInputElement;
+    expect(input.value).toBe('60');
+    fireEvent.change(input, { target: { value: '120' } });
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2));
+    const [linkId, payload] = saveMock.mock.calls[1] as unknown as [string | null, { featureType: string; inlineSettings: Record<string, unknown> }];
+    expect(linkId).toBe('link-svc');
+    expect(payload.featureType).toBe('monitoring');
+    expect(payload.inlineSettings).toEqual({ checkIntervalSeconds: 120, watches: [{ watchType: 'service', name: 'Spooler' }] });
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(expect.objectContaining({ id: 'link-1' }), 'monitoring');
+  });
+
+  it('creates an empty-watch monitoring link when the policy has none', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
+    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '30' } });
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2));
+    const [linkId, payload] = saveMock.mock.calls[1] as unknown as [string | null, { inlineSettings: Record<string, unknown> }];
+    expect(linkId).toBeNull();
+    expect(payload.inlineSettings).toEqual({ checkIntervalSeconds: 30, watches: [] });
+  });
+
+  it('leaves the monitoring link alone when the interval did not change', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink, monitoringLink()]} />);
+    await screen.findByTestId('monitors-tab-check-interval');
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('refuses an interval outside 10–3600 without saving anything', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
+    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '5' } });
+    clickSave();
+    expect(await screen.findByText(/between 10 and 3600/i)).toBeInTheDocument();
+    expect(saveMock).not.toHaveBeenCalled();
   });
 });

@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} règle(s) d'alerte héritée(s) enregistrée(s) dans cet onglet ont été déplacées vers la fonction Alertes de cette politique. La surveillance ne les conserve plus."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Collecte par l'agent",
+        "checkIntervalLabel": "Intervalle de vérification (secondes)",
+        "checkIntervalHint": "Fréquence à laquelle les agents sous cette politique vérifient les moniteurs de services et de processus (10–3600).",
+        "checkIntervalInvalid": "L'intervalle de vérification doit être compris entre 10 et 3600 secondes.",
         "attachMonitor": "Associer un moniteur",
         "loadingMonitors": "Chargement des moniteurs…",
         "noMoreMonitorsToAttach": "Aucun autre moniteur disponible à associer",

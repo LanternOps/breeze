@@ -33,6 +33,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
   'src/components/devices/DeviceFilesystemTab.tsx',
   // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
@@ -758,7 +759,8 @@ describe('no silent mutations in targeted set', () => {
     // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
     // Metric anomaly episodes W04 adds devices/AnomalyEpisodeCard.tsx: 163 → 164.
     // Business reports (#3198 W03) add reports/ReportTemplates.tsx: 164 → 165.
-    expect(absoluteFiles.length).toBe(165);
+    // Alerting W05c2 adopts the shared feature-link mutation hook: 165 → 166.
+    expect(absoluteFiles.length).toBe(166);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
