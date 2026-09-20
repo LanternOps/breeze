@@ -161,7 +161,7 @@ function makeAlert(overrides: Record<string, unknown> = {}) {
 
 function makeChannel(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'channel-1',
+    id: 'aaaaaaaa-0000-4000-8000-000000000013',
     orgId: 'org-1',
     partnerId: null,
     name: 'Webhook Channel',
@@ -184,7 +184,7 @@ function makeNotificationRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'notif-1',
     alertId: 'alert-1',
-    channelId: 'channel-1',
+    channelId: 'aaaaaaaa-0000-4000-8000-000000000013',
     escalationStep: 0,
     status: 'pending',
     sentAt: null,
@@ -197,7 +197,7 @@ function makeNotificationRow(overrides: Record<string, unknown> = {}) {
 const baseData: SendNotificationJobData = {
   type: 'send',
   alertId: 'alert-1',
-  channelId: 'channel-1'
+  channelId: 'aaaaaaaa-0000-4000-8000-000000000013'
 };
 
 /** Queues the alert/org/channel selects every prepare-phase run needs. */
@@ -246,7 +246,7 @@ describe('processSendNotification send-identity state machine', () => {
     expect(insertValuesMock).toHaveBeenCalledTimes(1);
     expect(insertValuesMock).toHaveBeenCalledWith({
       alertId: 'alert-1',
-      channelId: 'channel-1',
+      channelId: 'aaaaaaaa-0000-4000-8000-000000000013',
       escalationStep: 0,
       status: 'pending'
     });

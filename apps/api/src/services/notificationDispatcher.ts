@@ -13,14 +13,12 @@ import {
   notificationChannels,
   alertNotifications,
   escalationPolicies,
-  notificationRoutingRules,
   devices,
   organizations,
   partners,
-  configPolicyAlertRules,
-  monitorDefinitions
+  configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
+import { eq, and, ne, inArray, type SQL } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -44,6 +42,8 @@ import { sendSmsNotification, type SmsChannelConfig } from './notificationSender
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
+import { resolveDelivery } from './delivery/resolveDelivery';
+import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
 const { db } = dbModule;
 
@@ -128,38 +128,6 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
       concurrency: 5
     }
   );
-}
-
-/**
- * Delivery rails are dual-owned (#2130): a channel / routing rule /
- * escalation policy is org-owned (org_id set) OR partner-wide (org_id NULL,
- * partner_id set). Every dispatcher lookup must match the alert org's own
- * rows OR partner-wide rows owned by that org's partner — a plain
- * eq(orgId, alert.orgId) silently never matches partner-wide rows (the #1724
- * trap; the worker runs under system context, so RLS is not the filter here).
- */
-async function partnerIdForOrg(orgId: string): Promise<string | null> {
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  return org?.partnerId ?? null;
-}
-
-function railOwnershipCondition(
-  orgCol: Column,
-  partnerCol: Column,
-  orgId: string,
-  orgPartnerId: string | null
-): SQL {
-  if (!orgPartnerId) {
-    return eq(orgCol, orgId);
-  }
-  return or(
-    eq(orgCol, orgId),
-    and(isNull(orgCol), eq(partnerCol, orgPartnerId))
-  ) as SQL;
 }
 
 /**
@@ -261,33 +229,40 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     console.error('[NotificationDispatcher] Failed to send in-app notifications:', error);
   }
 
-  // Get notification channels — from rule overrides or org defaults
-  let channelIds: string[] = [];
-  let ruleOverrides: Record<string, unknown> | null = null;
-  // #5290 — set only by a monitor whose delivery_mode is 'none'.
-  let suppressChannelFallback = false;
+  // ONE delivery decision (W05b, spec §Delivery resolution). resolveDelivery is
+  // shared with GET /alerts/delivery/resolve, so what the monitor editor
+  // previews is what fires here. The all-enabled-channels fallback is gone: the
+  // "Everything else" routing row is the default a technician can read.
+  let monitorId: string | null = alert.monitorId ?? null;
+  let legacyOverride: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null = null;
 
   if (alert.ruleId) {
     const [rule] = await db
-      .select()
+      .select({ overrideSettings: alertRules.overrideSettings, managedByMonitorId: alertRules.managedByMonitorId })
       .from(alertRules)
       .where(eq(alertRules.id, alert.ruleId))
       .limit(1);
-
     if (rule) {
-      ruleOverrides = rule.overrideSettings as Record<string, unknown> | null;
-      channelIds = (ruleOverrides?.notificationChannelIds as string[]) || [];
+      monitorId = monitorId ?? rule.managedByMonitorId ?? null;
+      if (!rule.managedByMonitorId) {
+        // Transitional (spec §Delivery resolution "Transitional", W05b → W05d):
+        // an UNMANAGED legacy rule keeps its own channel/escalation overrides
+        // until it is converted. W05c adds `retired_at IS NULL` to this lookup;
+        // W05c1 Task 8 covers BOTH legacy lookups with a queued-dispatch regression.
+        // W05d deletes the branch. A MANAGED (monitor-compiled) rule is never
+        // read for delivery — the monitor definition is the source of truth.
+        const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
+        legacyOverride = {
+          channelIds: Array.isArray(overrides.notificationChannelIds) ? (overrides.notificationChannelIds as string[]) : null,
+          escalationPolicyId: typeof overrides.escalationPolicyId === 'string' ? overrides.escalationPolicyId : null,
+        };
+      }
     }
   } else if (alert.configPolicyId) {
-    // Delivery parity for config-policy alerts (#5289 Task 9, spec
-    // §Delivery): a config-policy-sourced alert has `ruleId: null` and
-    // `configPolicyId` set to the `config_policy_alert_rules` row id (the
-    // column name is historical). That row can carry its own
-    // escalation/channel overrides, same shape as `alertRules.overrideSettings`
-    // above, so the fallbacks below (routing rules, then org default
-    // channels) and the escalation scheduling at the bottom of this function
-    // work unchanged whether the alert came from a standalone rule or a
-    // config policy.
+    // Config-policy inline rule (#5289 Task 9): `configPolicyId` holds the
+    // config_policy_alert_rules row id (historical column name). Same
+    // transitional treatment as an unmanaged alert_rules row. W05c1 Task 8 adds
+    // isNull(configPolicyAlertRules.retiredAt) here, alongside alertRules.retiredAt above.
     const [cpRule] = await db
       .select({
         escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
@@ -296,109 +271,43 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       .from(configPolicyAlertRules)
       .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
       .limit(1);
-
     if (cpRule) {
-      ruleOverrides = {
-        escalationPolicyId: cpRule.escalationPolicyId ?? undefined,
-        notificationChannelIds: cpRule.notificationChannelIds ?? []
-      };
-      channelIds = cpRule.notificationChannelIds ?? [];
-    }
-  } else if (alert.monitorId) {
-    // #5290 — a rule-less MONITOR alert (the recurrence escalation) has no
-    // alert_rules row to read overrideSettings from, so it sources delivery
-    // straight from the monitor definition the technician authored. Without
-    // this branch a requires-human alert would fall through to the org's
-    // default channels and ignore the monitor's escalation policy entirely.
-    const [monitor] = await db
-      .select({
-        deliveryMode: monitorDefinitions.deliveryMode,
-        deliveryChannelIds: monitorDefinitions.deliveryChannelIds,
-        escalationPolicyId: monitorDefinitions.escalationPolicyId
-      })
-      .from(monitorDefinitions)
-      .where(eq(monitorDefinitions.id, alert.monitorId))
-      .limit(1);
-
-    if (monitor) {
-      // delivery_mode 'none' means "inbox only": suppress channel sends but
-      // leave the alert visible. It must also skip the routing-rule and
-      // org-default fallbacks below, which is what `suppressChannelFallback`
-      // does — those fallbacks exist for alerts with no delivery opinion, and
-      // 'none' IS an opinion.
-      suppressChannelFallback = monitor.deliveryMode === 'none';
-      ruleOverrides = {
-        escalationPolicyId: monitor.escalationPolicyId ?? undefined,
-        notificationChannelIds: monitor.deliveryMode === 'channels'
-          ? (monitor.deliveryChannelIds ?? [])
-          : []
-      };
-      channelIds = (ruleOverrides.notificationChannelIds as string[]) ?? [];
+      legacyOverride = { channelIds: cpRule.notificationChannelIds ?? null, escalationPolicyId: cpRule.escalationPolicyId ?? null };
     }
   }
 
-  // Dual-axis rail resolution (#2130): resolve the alert org's partner once,
-  // so routing/channel/escalation lookups can match partner-wide rows too.
+  // Dual-axis rail resolution (#2130): the alert org's partner, for the
+  // channel validation and escalation lookups below.
   const orgPartnerId = await partnerIdForOrg(alert.orgId);
 
-  // Phase 5: Notification routing rules. Site-restricted rules fail closed if
-  // the firing device or its site cannot be resolved.
-  // Check routing rules before falling back to all channels
-  if (channelIds.length === 0 && !suppressChannelFallback) {
-    const routedChannelIds = await resolveRoutingRules(
-      alert.orgId,
-      alert.severity,
-      orgPartnerId,
-      device?.siteId ?? null
-    );
-    if (routedChannelIds.length > 0) {
-      channelIds = routedChannelIds;
+  const resolved = await resolveDelivery({
+    orgId: alert.orgId,
+    severity: alert.severity as AlertSeverity,
+    monitorId,
+    siteId: device?.siteId ?? null,
+    legacyOverride
+  });
+
+  // Escalation resolves independently of channels (spec): "inbox now, page
+  // on-call in 30 minutes" is a valid configuration, so schedule it whether or
+  // not a baseline send goes out.
+  const scheduleResolvedEscalation = async () => {
+    if (resolved.escalationPolicyId) {
+      await scheduleEscalation(data.alertId, resolved.escalationPolicyId, alert.orgId, orgPartnerId);
     }
-  }
+  };
 
-  // For config policy alerts (no ruleId) or rules without channel overrides and no routing rules,
-  // fall back to all enabled channels for the org — including the partner's
-  // partner-wide channels, which are active for every member org by design.
-  if (channelIds.length === 0 && !suppressChannelFallback) {
-    const orgChannels = await db
-      .select({ id: notificationChannels.id })
-      .from(notificationChannels)
-      .where(
-        and(
-          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
-          eq(notificationChannels.enabled, true)
-        )
-      );
-    channelIds = orgChannels.map(c => c.id);
-  }
-
+  const channelIds = resolved.channelIds;
   if (channelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No additional channels configured for alert ${data.alertId}`);
+    console.log(`[NotificationDispatcher] Delivery for alert ${data.alertId} resolved to inbox only (source=${resolved.source})`);
+    await scheduleResolvedEscalation();
     return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
   }
 
-  const requestedChannelIds = [...new Set(channelIds.filter(Boolean))];
-  if (requestedChannelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No valid channel IDs configured for alert ${data.alertId}`);
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
-  }
-
-  const validChannels = await db
-    .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
-    .from(notificationChannels)
-    .where(
-      and(
-        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
-        eq(notificationChannels.enabled, true),
-        inArray(notificationChannels.id, requestedChannelIds)
-      )
-    );
-  channelIds = validChannels.map((channel) => channel.id);
-
-  if (channelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No valid channels in alert org or its partner for alert ${data.alertId}`);
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
-  }
+  const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
+    .from(notificationChannels).where(inArray(notificationChannels.id, channelIds));
+  const optionsById = new Map(channelOptions.map(channel => [channel.id, channel]));
+  const validChannels = channelIds.map(id => optionsById.get(id) ?? { id, type: 'unknown', config: {} });
 
   // Queue notification jobs for each channel with retry + exponential backoff (Phase 4a)
   const queue = getNotificationQueue();
@@ -438,12 +347,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
   );
 
-  // Check for escalation policy — sourced from either the alert rule's or
-  // the config-policy alert rule's overrides (#5289 Task 9).
-  const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
-  if (escalationPolicyId) {
-    await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId, orgPartnerId);
-  }
+  await scheduleResolvedEscalation();
 
   return {
     queued: jobs.length,
@@ -1240,64 +1144,6 @@ async function sendPushoverChannelNotification(
     success: result.success,
     error: result.error
   };
-}
-
-/**
- * Phase 5: Resolve notification routing rules for an alert.
- * Returns channel IDs from the first matching routing rule (by priority).
- * Returns empty array if no routing rules match (falls through to default behavior).
- */
-export async function resolveRoutingRules(
-  orgId: string,
-  severity: string,
-  orgPartnerId: string | null,
-  deviceSiteId: string | null
-): Promise<string[]> {
-  // Dual-axis (#2130): the org's own rules AND its partner's partner-wide
-  // rules compete in one priority ordering; the first match wins regardless
-  // of axis, so an org can pre-empt a partner-wide rule with a
-  // higher-priority org rule.
-  const rules = await db
-    .select()
-    .from(notificationRoutingRules)
-    .where(
-      and(
-        railOwnershipCondition(notificationRoutingRules.orgId, notificationRoutingRules.partnerId, orgId, orgPartnerId),
-        eq(notificationRoutingRules.enabled, true)
-      )
-    )
-    .orderBy(asc(notificationRoutingRules.priority));
-
-  for (const rule of rules) {
-    const conditions = rule.conditions as {
-      severities?: string[];
-      conditionTypes?: string[];
-      deviceTags?: string[];
-      siteIds?: string[];
-    };
-
-    // Check severity match
-    if (conditions.severities && conditions.severities.length > 0) {
-      if (!conditions.severities.includes(severity)) {
-        continue;
-      }
-    }
-
-    if (conditions.siteIds && conditions.siteIds.length > 0) {
-      if (!deviceSiteId || !conditions.siteIds.includes(deviceSiteId)) {
-        continue;
-      }
-    }
-
-    // First matching rule wins
-    const channelIds = rule.channelIds;
-    if (channelIds && channelIds.length > 0) {
-      console.log(`[NotificationDispatcher] Routing rule "${rule.name}" matched for severity=${severity}`);
-      return channelIds;
-    }
-  }
-
-  return [];
 }
 
 /**
