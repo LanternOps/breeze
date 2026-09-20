@@ -42,7 +42,7 @@ import { sendSmsNotification, type SmsChannelConfig } from './notificationSender
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
-import { escalationStepSchema } from '../routes/alerts/schemas';
+import { escalationStepSchema, type EscalationStep } from '../routes/alerts/schemas';
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
@@ -305,17 +305,34 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     }
   };
 
-  const channelIds = resolved.channelIds;
-  if (channelIds.length === 0) {
+  if (resolved.skippedChannelIds.length > 0) {
+    console.warn(`[NotificationDispatcher] Skipped delivery channels for alert ${data.alertId} ${JSON.stringify({
+      orgId: alert.orgId, source: resolved.source, routingRuleId: resolved.routingRuleId,
+      routingRuleName: resolved.routingRuleName, skippedChannelIds: resolved.skippedChannelIds,
+    })}`);
+  }
+  const inboxOnly = async () => {
     console.log(`[NotificationDispatcher] Delivery for alert ${data.alertId} resolved to inbox only (source=${resolved.source})`);
     await scheduleResolvedEscalation();
     return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  };
+  const channelIds = resolved.channelIds;
+  if (channelIds.length === 0) {
+    return inboxOnly();
   }
 
   const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
     .from(notificationChannels).where(inArray(notificationChannels.id, channelIds));
   const optionsById = new Map(channelOptions.map(channel => [channel.id, channel]));
-  const validChannels = channelIds.map(id => optionsById.get(id) ?? { id, type: 'unknown', config: {} });
+  const missingChannelIds = channelIds.filter(id => !optionsById.has(id));
+  if (missingChannelIds.length > 0) {
+    console.warn(`[NotificationDispatcher] Missing transport options for alert ${data.alertId} — dropped channel ids=${JSON.stringify(missingChannelIds)}`);
+  }
+  const validChannels = channelIds.flatMap(id => {
+    const channel = optionsById.get(id);
+    return channel ? [channel] : [];
+  });
+  if (validChannels.length === 0) return inboxOnly();
 
   // Queue notification jobs for each channel with retry + exponential backoff (Phase 4a)
   const queue = getNotificationQueue();
@@ -1181,8 +1198,26 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   }
 
   const parsed = escalationStepSchema.array().min(1).max(10).safeParse(policy.steps);
-  if (!parsed.success) throw new Error(`Invalid escalation policy ${policy.id}`);
-  const steps = parsed.data;
+  const steps: EscalationStep[] = [];
+  const originalIndexes: number[] = [];
+  const droppedIndexes: number[] = [];
+  if (Array.isArray(policy.steps)) {
+    policy.steps.forEach((step, index) => {
+      const result = escalationStepSchema.safeParse(step);
+      // The occurrence id reserves ten positions per repetition.
+      if (index < 10 && result.success) {
+        steps.push(result.data);
+        originalIndexes.push(index);
+      } else {
+        droppedIndexes.push(index);
+      }
+    });
+  }
+  if (!parsed.success) {
+    console.warn(`[NotificationDispatcher] Invalid escalation policy ${policyId} for alert ${alertId} `
+      + `— dropped indexes=${JSON.stringify(droppedIndexes)}, first issue=${JSON.stringify(parsed.error.issues[0])}`);
+  }
+  if (steps.length === 0) return;
 
   const queue = getNotificationQueue();
   const requestedChannelIds = [...new Set(
@@ -1206,7 +1241,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   const requestedUsers = steps.some(step => step.userIds.length > 0);
   const eligibleUsers = new Set(requestedUsers
     ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
-  for (const step of escalationOccurrences(steps)) {
+  for (const step of escalationOccurrences(steps, originalIndexes, alertId)) {
     for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
       const channel = validChannelById.get(channelId)!;
       const job = await queue.add('send', { type: 'send', alertId, channelId, escalationStep: step.escalationStep }, {

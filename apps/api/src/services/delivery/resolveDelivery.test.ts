@@ -104,10 +104,19 @@ describe('resolveDelivery precedence', () => {
     expect(out).toEqual({ skippedChannelIds: [], channelIds: [CH_ORG], escalationPolicyId: ESC_MON, source: 'legacy_override' });
   });
 
-  it('3b. legacy override with an escalation but no channels does NOT short-circuit; its escalation survives as the last fallback', async () => {
+  it('3b. legacy override with an escalation but no channels does NOT short-circuit routing', async () => {
     selectQueue.push(orgLookup(), [row({ id: 'r1', conditions: { severities: ['high'] } })]);
     const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds: [], escalationPolicyId: ESC_LEGACY } });
     expect(out).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_LEGACY, source: 'routing_rule', routingRuleId: 'r1' });
+  });
+
+  it.each([false, true])('honours legacy escalation before the winning row (default=%s) without a channel override', async isDefault => {
+    const routes = [row({ id: 'r1', isDefault, escalationPolicyId: ESC_ROW })];
+    selectQueue.push(orgLookup(), routes, orgLookup(), routes);
+    const legacy = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: ESC_LEGACY } });
+    const inherited = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: null } });
+    expect(legacy).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_LEGACY, routingRuleId: 'r1' });
+    expect(inherited).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_ROW, routingRuleId: 'r1' });
   });
 
   it('4. first matching non-default row wins; org row beats partner row at equal priority; row escalation used', async () => {

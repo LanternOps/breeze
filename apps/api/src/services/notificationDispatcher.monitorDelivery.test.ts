@@ -283,3 +283,80 @@ it('cancels channel and user repetitions but leaves baseline jobs alone', async 
   expect(await cancelAlertEscalations('alert-1')).toBe(2);
   expect(jobs[2]!.remove).not.toHaveBeenCalled();
 });
+
+const REVIEW_CHANNEL = 'aaaaaaaa-0000-4000-8000-000000000011';
+const REVIEW_STEP = { delayMinutes: 5, channelIds: [REVIEW_CHANNEL] };
+function queueReviewPolicy(steps: unknown) {
+  selectQueue.push(
+    [makeAlert({ monitorId: 'monitor-1' })], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP,
+    [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: [REVIEW_CHANNEL], escalationPolicyId: 'ep1' }],
+    [{ id: REVIEW_CHANNEL }], [{ id: 'ep1', steps }], [{ id: REVIEW_CHANNEL }],
+  );
+}
+describe('legacy escalation policy recovery (F1)', () => {
+  it.each([
+    ['empty', []],
+    ['no targets', [{ delayMinutes: 5, channelIds: [] }]],
+    ['zero delay', [{ ...REVIEW_STEP, delayMinutes: 0 }]],
+    ['extra key', [{ ...REVIEW_STEP, obsolete: true }]],
+    ['eleven steps', Array.from({ length: 11 }, () => REVIEW_STEP)],
+  ])('keeps baseline delivery for %s', async (_name, steps) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueReviewPolicy(steps);
+    try {
+      await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('alert-1'));
+      expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('ep1'));
+      expect(warn.mock.calls[0]![0]).toContain('first issue=');
+      expect(queueAddMock).toHaveBeenCalledTimes(_name === 'eleven steps' ? 10 : 0);
+    } finally { warn.mockRestore(); }
+  });
+  it('salvages mixed steps with original occurrence ids', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueReviewPolicy([{ delayMinutes: 0 }, { ...REVIEW_STEP, repeat: { everyMinutes: 5, maxTimes: 1 } }]);
+    try {
+      await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
+      expect(queueAddMock.mock.calls.map(call => call[1].escalationStep)).toEqual([2, 12]);
+      expect(queueAddMock.mock.calls.map(call => call[2].jobId)).toEqual([
+        `escalation-alert-1-step2-${REVIEW_CHANNEL}`, `escalation-alert-1-step12-${REVIEW_CHANNEL}`,
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('dropped indexes=[0]');
+    } finally { warn.mockRestore(); }
+  });
+});
+
+describe('dispatch destination diagnostics', () => {
+  it.each([false, true])('warns once for disabled routing destinations, allSkipped=%s (F2)', async allSkipped => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const disabledId = DEFAULT_ROW.channelIds[0]!;
+    channelEligibilityMock.mockResolvedValueOnce([
+      { id: REVIEW_CHANNEL, orgId: 'org-1', partnerId: null, enabled: true },
+      { id: disabledId, orgId: 'org-1', partnerId: null, enabled: false },
+    ]);
+    selectQueue.push([makeAlert()], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP,
+      [{ ...DEFAULT_ROW, isDefault: false, channelIds: allSkipped ? [disabledId] : [REVIEW_CHANNEL, disabledId] }]);
+    if (!allSkipped) selectQueue.push([{ id: REVIEW_CHANNEL }]);
+    try {
+      expect(await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).toMatchObject({ queued: allSkipped ? 0 : 1, inAppSent: true });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = warn.mock.calls[0]![0];
+      for (const value of ['alert-1', 'org-1', 'routing_rule', 'default-row', 'Everything else', disabledId, 'disabled']) expect(line).toContain(value);
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(allSkipped ? 0 : 1);
+    } finally { warn.mockRestore(); }
+  });
+  it('drops a destination missing transport options and logs inbox only (F4)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    selectQueue.push([makeAlert()], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP, [DEFAULT_ROW], []);
+    try {
+      expect(await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).toMatchObject({ queued: 0, inAppSent: true });
+      expect(queueAddBulkMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(DEFAULT_ROW.channelIds[0]!));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('alert-1'));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('alert alert-1 resolved to inbox only'));
+    } finally { warn.mockRestore(); log.mockRestore(); }
+  });
+});

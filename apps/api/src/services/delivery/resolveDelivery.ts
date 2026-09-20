@@ -12,8 +12,8 @@
  *   4. first matching routing row       → row's channels        (routing_rule)
  *   5. org is_default row, else partner is_default row          (default_row)
  *   6. nothing                          → inbox only            (none)
- * Escalation resolves independently: monitor's (mode ≠ none) ?? winning row's
- * ?? legacy override's ?? null.
+ * Escalation resolves independently: monitor's (mode ≠ none) ?? legacy
+ * override's ?? winning row's ?? null, preserving unconverted legacy rules.
  */
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { AlertSeverity, MonitorKind } from '@breeze/shared';
@@ -175,7 +175,7 @@ export async function resolveDelivery(
     if (channelIds.length === 0) continue;
     return finish({
       channelIds,
-      escalationPolicyId: monitorEscalation ?? rule.escalationPolicyId ?? legacyEscalation,
+      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? rule.escalationPolicyId ?? null,
       source: 'routing_rule',
       routingRuleId: rule.id,
       routingRuleName: rule.name,
@@ -188,7 +188,7 @@ export async function resolveDelivery(
   if (defaultRow) {
     return finish({
       channelIds: uniq(defaultRow.channelIds ?? []),
-      escalationPolicyId: monitorEscalation ?? defaultRow.escalationPolicyId ?? legacyEscalation,
+      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? defaultRow.escalationPolicyId ?? null,
       source: 'default_row',
       routingRuleId: defaultRow.id,
       routingRuleName: defaultRow.name,

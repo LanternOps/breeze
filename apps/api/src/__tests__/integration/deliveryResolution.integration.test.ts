@@ -185,6 +185,42 @@ describe('delivery resolution gate — dispatcher ⇄ resolver', () => {
 // System scope makes the membership predicates (including the foreign-partner
 // exclusion) do the work, rather than letting RLS hide the negative fixtures.
 describe('listEscalationUsers — real SQL membership eligibility', () => {
+  runDb('partner-wide owner includes all active partner staff regardless of selected orgs', async () => {
+    const f = await seedFixture();
+    const otherOrg = await createOrganization({ partnerId: f.partnerId });
+    const foreignPartner = await createPartner();
+    await createUser({ partnerId: f.partnerId, orgId: f.orgId,
+      name: 'Org member', email: 'member@delivery.example.com', withMembership: true });
+    const siteLimited = await createUser({ partnerId: f.partnerId, orgId: f.orgId,
+      name: 'Site limited', email: 'site@delivery.example.com', withMembership: true });
+    await createUser({ partnerId: f.partnerId,
+      name: 'Disabled', email: 'disabled@delivery.example.com', status: 'disabled', withMembership: true });
+    const all = await createUser({ partnerId: f.partnerId,
+      name: 'Partner all', email: 'all@delivery.example.com', withMembership: true });
+    const included = await createUser({ partnerId: f.partnerId,
+      name: 'Partner selected included', email: 'included@delivery.example.com', withMembership: true });
+    const excluded = await createUser({ partnerId: f.partnerId,
+      name: 'Partner selected excluded', email: 'excluded@delivery.example.com', withMembership: true });
+    await createUser({ partnerId: foreignPartner.id,
+      name: 'Foreign partner', email: 'foreign@delivery.example.com', withMembership: true });
+
+    await withSystemDbAccessContext(async () => {
+      await db.update(organizationUsers).set({ siteIds: [f.siteId] })
+        .where(eq(organizationUsers.userId, siteLimited.id));
+      await db.update(partnerUsers).set({ orgAccess: 'selected', orgIds: [f.orgId] })
+        .where(eq(partnerUsers.userId, included.id));
+      await db.update(partnerUsers).set({ orgAccess: 'selected', orgIds: [otherOrg.id] })
+        .where(eq(partnerUsers.userId, excluded.id));
+    });
+
+    const listed = await withSystemDbAccessContext(async () => {
+      const role = await db.execute(sql`select current_user as role`);
+      expect(role[0]?.role).toBe('breeze_app');
+      return listEscalationUsers({ orgId: null, partnerId: f.partnerId }, db);
+    });
+    expect(listed.map(user => user.id).sort()).toEqual([all.id, included.id, excluded.id].sort());
+  });
+
   runDb.each([true, false])('includePartnerUsers=%s', async (includePartnerUsers) => {
     const f = await seedFixture();
     const otherOrg = await createOrganization({ partnerId: f.partnerId });

@@ -181,20 +181,25 @@ export const escalationStepSchema = z.object({
   delayMinutes: z.number().int().min(1).max(10080),
   channelIds: z.array(z.string().guid()).max(100).default([]),
   userIds: z.array(z.string().guid()).max(100).default([]),
-  repeat: z.object({ everyMinutes: z.number().int().min(1).max(10080),
-    maxTimes: z.number().int().min(1).max(100) }).strict().optional(),
+  repeat: z.object({ everyMinutes: z.number().int().min(1).max(1440),
+    maxTimes: z.number().int().min(1).max(10) }).strict().optional(),
 }).strict().refine(step => step.channelIds.length + step.userIds.length > 0, 'At least one target is required');
 export type EscalationStep = z.infer<typeof escalationStepSchema>;
+
+const escalationStepsSchema = z.array(escalationStepSchema).min(1).max(10).refine(
+  steps => steps.reduce((total, step) => total + 1 + (step.repeat?.maxTimes ?? 0), 0) <= 50,
+  'Escalation policy must have at most 50 total occurrences',
+);
 
 export const createPolicySchema = z.object({
   orgId: z.string().guid().optional(),
   // 'partner' creates a partner-wide ("all orgs") escalation policy (#2130).
   ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
-  steps: z.array(escalationStepSchema).min(1).max(10)
+  steps: escalationStepsSchema
 });
 
 export const updatePolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  steps: z.array(escalationStepSchema).min(1).max(10).optional()
+  steps: escalationStepsSchema.optional()
 });
