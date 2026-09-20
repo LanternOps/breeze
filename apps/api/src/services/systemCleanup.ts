@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { devices, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
 import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './commandQueue';
@@ -356,7 +356,7 @@ export async function failSystemCleanupRunAndCancelCommand(args: {
         .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
       if (!run) return false;
 
-      if (run.commandId) {
+      {
         const completedAt = new Date();
         const [cancelled] = await tx
           .update(deviceCommands)
@@ -366,7 +366,10 @@ export async function failSystemCleanupRunAndCancelCommand(args: {
             result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
           })
           .where(and(
-            eq(deviceCommands.id, run.commandId),
+            run.commandId ? eq(deviceCommands.id, run.commandId) : and(
+              eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_RUN),
+              sql`${deviceCommands.payload}->>'runId' = ${args.runId}`,
+            ),
             eq(deviceCommands.deviceId, args.deviceId),
             eq(deviceCommands.status, 'pending'),
           ))

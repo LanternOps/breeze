@@ -16,9 +16,10 @@ vi.mock('../db/schema', () => ({
     id: 'runs.id', orgId: 'runs.orgId', deviceId: 'runs.deviceId',
     kind: 'runs.kind', status: 'runs.status', commandId: 'runs.commandId',
   },
-  deviceCommands: { id: 'commands.id', deviceId: 'commands.deviceId', status: 'commands.status' },
+  deviceCommands: { id: 'commands.id', deviceId: 'commands.deviceId', status: 'commands.status', type: 'commands.type', payload: 'commands.payload' },
 }));
 vi.mock('drizzle-orm', () => ({
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings: [...strings], values }),
   and: (...conditions: unknown[]) => ({ conditions }),
   eq: (left: unknown, right: unknown) => ({ left, right }),
 }));
@@ -391,6 +392,20 @@ describe('system-cleanup queue/start service seam', () => {
     expect(writes[1]?.condition).toMatchObject({ conditions: expect.arrayContaining([
       { left: 'commands.id', right: SEAM_COMMAND_ID }, { left: 'commands.deviceId', right: SEAM_DEVICE_ID },
       { left: 'commands.status', right: 'pending' },
+    ]) });
+  });
+
+  it('cancels an unlinked pending cleanup command by device and payload runId', async () => {
+    returnedUpdates = [[{ id: SEAM_RUN_ID, commandId: null }], [{ id: SEAM_COMMAND_ID }]];
+    await expect(failSystemCleanupRunAndCancelCommand({ runId: SEAM_RUN_ID, deviceId: SEAM_DEVICE_ID, orgId: SEAM_ORG_ID, error: 'run_expired' })).resolves.toBe(true);
+    expect(writes[1]?.values).toMatchObject({ status: 'cancelled' });
+    expect(writes[1]?.condition).toMatchObject({ conditions: expect.arrayContaining([
+      { left: 'commands.deviceId', right: SEAM_DEVICE_ID },
+      { left: 'commands.status', right: 'pending' },
+      { conditions: expect.arrayContaining([
+        { left: 'commands.type', right: 'system_cleanup_run' },
+        { strings: ["", "->>'runId' = ", ""], values: ['commands.payload', SEAM_RUN_ID] },
+      ]) },
     ]) });
   });
 
