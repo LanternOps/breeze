@@ -172,7 +172,7 @@ describe('partner-wide escalation policies (#2130)', () => {
     const res = await makeApp().request('/alerts/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [] }),
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [{ delayMinutes: 5, channelIds: ['9a8b7c6d-2222-4333-8444-555566667777'] }] }),
     });
     expect(res.status).toBe(403);
     expect(((await res.json()) as any).error).toMatch(/full partner org access/);
@@ -184,7 +184,7 @@ describe('partner-wide escalation policies (#2130)', () => {
     const res = await makeApp().request('/alerts/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [] }),
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet escalation', steps: [{ delayMinutes: 5, channelIds: ['9a8b7c6d-2222-4333-8444-555566667777'] }] }),
     });
     expect(res.status).toBe(201);
     expect(insertedRef.current?.orgId).toBeNull();
