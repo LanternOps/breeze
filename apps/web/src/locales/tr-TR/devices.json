@@ -752,6 +752,50 @@
     "of": "arasında",
     "noMoreActivity": "Başka etkinlik yok"
   },
+  "systemCleanupPanel": {
+    "title": "Sistem temizliği",
+    "description": "Dosya taramasının göremediği alanı geri kazanan yerleşik bakım araçları. Tahminler, gerçekte boşaltılan alandan farklı olabilir.",
+    "checkActions": "Kullanılabilir işlemleri denetle",
+    "checking": "Denetleniyor…",
+    "run": "Seçilenleri çalıştır",
+    "running": "Çalışıyor… {{minutes}} dk {{seconds}} sn geçti",
+    "noActions": "Bu cihazda kullanılabilir sistem temizliği işlemi yok.",
+    "estimateUpTo": "en çok {{size}}",
+    "estimateUnknown": "boyut bilinmiyor",
+    "listFailed": "Bu cihazdaki temizlik işlemleri okunamadı.",
+    "listTimedOut": "Cihaz zamanında yanıt vermedi. Birkaç dakika sonra yeniden deneyin.",
+    "runFailed": "Temizlik tamamlanamadı.",
+    "runTimedOut": "Temizlik hâlâ sürüyor. Sonucu görmek için bu sekmeyi daha sonra yeniden açın.",
+    "agentUpdateRequired": "Sistem temizliği çalıştırmak için bu cihazın aracısını {{version}} veya sonraki bir sürüme güncelleyin.",
+    "confirmTitle": "Sistem temizliği çalıştırılsın mı?",
+    "confirmMessage": "Bu cihazda {{count}} işlem çalıştırılacak. Bazıları 90 dakikaya kadar sürebilir ve geri alınamaz.",
+    "confirmIrreversible": "Bu değişikliklerin geri alınamayacağını anlıyorum.",
+    "freed": "{{size}} boşaltıldı",
+    "volumeFreed": "{{mount}}: {{size}} boşaltıldı",
+    "risk": {
+      "long_running": "uzun sürebilir",
+      "may_require_reboot": "alan yeniden başlatmadan sonra boşalır",
+      "may_require_reboot_free_state": "alanın bir kısmı yeniden başlatmadan sonra boşalır",
+      "removes_driver_rollback": "sürücü geri almayı kaldırır",
+      "removes_packages": "paketleri kaldırır",
+      "removes_os_rollback": "Windows geri almayı bitirir",
+      "removes_recovery_points": "geri yükleme noktalarını kaldırır"
+    },
+    "status": {
+      "completed": "tamamlandı",
+      "failed": "başarısız",
+      "timed_out": "zaman aşımı",
+      "unavailable": "kullanılamıyor",
+      "busy": "başlatılmadı — cihaz meşguldü",
+      "not_started": "başlatılmadı — süre doldu"
+    },
+    "runInProgress": "Bu cihazda zaten bir sistem temizliği çalışıyor. Bitmesini bekleyin.",
+    "consequence": {
+      "removes_packages": "Artık gerekmeyen paketler kaldırılacak.",
+      "removes_os_rollback": "Bu cihaz artık önceki Windows sürümüne geri dönemeyecek.",
+      "removes_recovery_points": "Yerel anlık görüntüler silinir. Time Machine diski bağlı değilse bu cihazın başka geri yükleme noktası kalmaz."
+    }
+  },
   "deviceFilesystemTab": {
     "resultPartial": "Kısmen tamamlandı",
     "resultSkippedLinks": "Atlanan bağlantılar: {{count}}",

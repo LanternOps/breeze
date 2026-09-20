@@ -752,6 +752,50 @@
     "of": "de",
     "noMoreActivity": "Plus aucune activité"
   },
+  "systemCleanupPanel": {
+    "title": "Nettoyage du système",
+    "description": "Outils de maintenance intégrés qui récupèrent l'espace que l'analyse de fichiers ne voit pas. Les estimations peuvent différer de l’espace réellement libéré.",
+    "checkActions": "Voir les actions disponibles",
+    "checking": "Vérification…",
+    "run": "Exécuter la sélection",
+    "running": "En cours… {{minutes}} min {{seconds}} s écoulées",
+    "noActions": "Aucune action de nettoyage système n'est offerte sur cet appareil.",
+    "estimateUpTo": "jusqu'à {{size}}",
+    "estimateUnknown": "taille inconnue",
+    "listFailed": "Impossible de lire les actions de nettoyage offertes sur cet appareil.",
+    "listTimedOut": "L'appareil n'a pas répondu à temps. Réessayez dans quelques minutes.",
+    "runFailed": "Le nettoyage n'a pas pu être terminé.",
+    "runTimedOut": "Le nettoyage est toujours en cours. Revenez à cet onglet plus tard pour voir le résultat.",
+    "agentUpdateRequired": "Mettez à jour l'agent de cet appareil vers la version {{version}} ou ultérieure pour exécuter des nettoyages système.",
+    "confirmTitle": "Exécuter le nettoyage du système?",
+    "confirmMessage": "{{count}} action(s) vont s'exécuter sur cet appareil. Certaines peuvent durer jusqu'à 90 minutes et sont irréversibles.",
+    "confirmIrreversible": "Je comprends que ces changements sont irréversibles.",
+    "freed": "{{size}} libérés",
+    "volumeFreed": "{{mount}}: {{size}} libérés",
+    "risk": {
+      "long_running": "peut être long",
+      "may_require_reboot": "espace libéré après redémarrage",
+      "may_require_reboot_free_state": "une partie de l'espace est libérée après redémarrage",
+      "removes_driver_rollback": "supprime la restauration des pilotes",
+      "removes_packages": "désinstalle des paquets",
+      "removes_os_rollback": "fin de la restauration Windows",
+      "removes_recovery_points": "supprime les points de restauration"
+    },
+    "status": {
+      "completed": "terminée",
+      "failed": "échouée",
+      "timed_out": "délai dépassé",
+      "unavailable": "non offerte",
+      "busy": "non démarrée — appareil occupé",
+      "not_started": "non démarrée — temps épuisé"
+    },
+    "runInProgress": "Un nettoyage système est déjà en cours sur cet appareil. Attendez qu'il se termine.",
+    "consequence": {
+      "removes_packages": "Les paquets qui ne sont plus nécessaires seront désinstallés.",
+      "removes_os_rollback": "Cet appareil ne pourra plus revenir à sa version précédente de Windows.",
+      "removes_recovery_points": "Les instantanés locaux sont supprimés. Si le disque Time Machine n'est pas branché, cet appareil n'a aucun autre point de restauration."
+    }
+  },
   "deviceFilesystemTab": {
     "resultPartial": "Partiellement terminé",
     "resultSkippedLinks": "Liens ignorés : {{count}}",

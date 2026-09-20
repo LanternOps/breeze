@@ -752,6 +752,50 @@
     "of": "de",
     "noMoreActivity": "No hay más actividad"
   },
+  "systemCleanupPanel": {
+    "title": "Limpieza del sistema",
+    "description": "Herramientas de mantenimiento integradas que recuperan espacio que el análisis de archivos no puede ver. Las estimaciones pueden diferir del espacio que se libera realmente.",
+    "checkActions": "Ver acciones disponibles",
+    "checking": "Consultando…",
+    "run": "Ejecutar selección",
+    "running": "Ejecutando… {{minutes}} min {{seconds}} s transcurridos",
+    "noActions": "No hay acciones de limpieza del sistema disponibles en este dispositivo.",
+    "estimateUpTo": "hasta {{size}}",
+    "estimateUnknown": "tamaño desconocido",
+    "listFailed": "No se pudieron leer las acciones de limpieza disponibles en este dispositivo.",
+    "listTimedOut": "El dispositivo no respondió a tiempo. Vuelva a intentarlo en unos minutos.",
+    "runFailed": "No se pudo completar la limpieza.",
+    "runTimedOut": "La limpieza sigue en curso. Vuelva a abrir esta pestaña más tarde para ver el resultado.",
+    "agentUpdateRequired": "Actualice el agente de este dispositivo a la versión {{version}} o posterior para ejecutar acciones de limpieza del sistema.",
+    "confirmTitle": "¿Ejecutar la limpieza del sistema?",
+    "confirmMessage": "Se ejecutarán {{count}} acción(es) en este dispositivo. Algunas pueden tardar hasta 90 minutos y no se pueden deshacer.",
+    "confirmIrreversible": "Entiendo que estos cambios no se pueden deshacer.",
+    "freed": "Se liberaron {{size}}",
+    "volumeFreed": "{{mount}}: {{size}} liberados",
+    "risk": {
+      "long_running": "puede tardar",
+      "may_require_reboot": "el espacio se libera tras reiniciar",
+      "may_require_reboot_free_state": "parte del espacio se libera tras reiniciar",
+      "removes_driver_rollback": "elimina la reversión de controladores",
+      "removes_packages": "desinstala paquetes",
+      "removes_os_rollback": "fin de la reversión de Windows",
+      "removes_recovery_points": "elimina puntos de restauración"
+    },
+    "status": {
+      "completed": "completada",
+      "failed": "con error",
+      "timed_out": "tiempo agotado",
+      "unavailable": "no disponible",
+      "busy": "no se inició: el dispositivo estaba ocupado",
+      "not_started": "no se inició: se agotó el tiempo"
+    },
+    "runInProgress": "Ya hay una limpieza del sistema en curso en este dispositivo. Espere a que termine.",
+    "consequence": {
+      "removes_packages": "Se desinstalarán los paquetes que ya no se necesitan.",
+      "removes_os_rollback": "Este dispositivo ya no podrá volver a su versión anterior de Windows.",
+      "removes_recovery_points": "Se eliminan las instantáneas locales. Si el disco de Time Machine no está conectado, este dispositivo no tiene otros puntos de restauración."
+    }
+  },
   "deviceFilesystemTab": {
     "resultPartial": "Completado parcialmente",
     "resultSkippedLinks": "Enlaces omitidos: {{count}}",

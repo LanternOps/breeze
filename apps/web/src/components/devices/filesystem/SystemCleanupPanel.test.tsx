@@ -93,7 +93,6 @@ describe('SystemCleanupPanel', () => {
     fireEvent.click(screen.getByTestId('system-cleanup-check'));
 
     expect(await screen.findByText('Package manager cache')).toBeInTheDocument();
-    // Task 15 adds localized-copy assertions once the catalogs land (Task 13 Step 4).
     expect(screen.getByTestId('system-cleanup-estimate-linux_pkg_cache_clean')).toBeInTheDocument();
     expect(screen.getByTestId('system-cleanup-estimate-linux_pkg_autoremove')).toBeInTheDocument();
     expect(screen.getByTestId('system-cleanup-row-linux_journal_vacuum')).toHaveTextContent('journalctl not present');
@@ -307,5 +306,18 @@ describe('SystemCleanupPanel', () => {
     const callsAtUnmount = fetchWithAuthMock.mock.calls.length;
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(fetchWithAuthMock.mock.calls.length).toBe(callsAtUnmount);
+  });
+
+  it('renders localised copy, not raw key paths', async () => {
+    listFlow();
+    render(<SystemCleanupPanel deviceId={DEVICE} />);
+    // A missing key echoes its own path, which is the failure mode this catches.
+    expect(screen.getByTestId('system-cleanup-check').textContent).not.toContain('systemCleanupPanel.');
+    fireEvent.click(screen.getByTestId('system-cleanup-check'));
+    await screen.findByText('Package manager cache');
+    expect(screen.getByTestId('system-cleanup-estimate-linux_pkg_cache_clean')).toHaveTextContent(/up to 392\.91 MB/i);
+    expect(screen.getByTestId('system-cleanup-estimate-linux_pkg_autoremove')).toHaveTextContent(/unknown/i);
+    expect(screen.getByTestId('system-cleanup-risk-linux_pkg_autoremove-removes_packages').textContent)
+      .not.toContain('systemCleanupPanel.');
   });
 });
