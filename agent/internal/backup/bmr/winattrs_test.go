@@ -129,3 +129,40 @@ func seedWinAttrsManifest(t *testing.T, attrs uint32) (*providers.LocalProvider,
 		Size: int64(len(content)),
 	}
 }
+
+// TestRestoreContentlessEntryDirAppliesWinAttrs is the bmr half of the same
+// review finding: its independent "dir" branch must reapply the manifest's
+// captured attributes too, after the chmod (ReadOnly would block it).
+func TestRestoreContentlessEntryDirAppliesWinAttrs(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "hidden-dir")
+
+	var order []string
+	var gotPath string
+	var gotAttrs uint32
+	origChmod, origAttrs := chmodFile, applyWinAttrsFile
+	chmodFile = func(string, os.FileMode) error { order = append(order, "chmod"); return nil }
+	applyWinAttrsFile = func(p string, a uint32) error {
+		order = append(order, "winattrs")
+		gotPath, gotAttrs = p, a
+		return nil
+	}
+	defer func() { chmodFile, applyWinAttrsFile = origChmod, origAttrs }()
+
+	if err := restoreContentlessEntry(target, manifestFile{
+		SourcePath: target,
+		Kind:       "dir",
+		ModeBits:   0o750,
+		WinAttrs:   0x0002 | 0x0004,
+	}); err != nil {
+		t.Fatalf("restoreContentlessEntry: %v", err)
+	}
+	if gotAttrs != 0x0002|0x0004 {
+		t.Fatalf("applyWinAttrsFile got %#x, want %#x", gotAttrs, 0x0002|0x0004)
+	}
+	if gotPath != target {
+		t.Fatalf("applyWinAttrsFile got path %q, want %q", gotPath, target)
+	}
+	if strings.Join(order, ",") != "chmod,winattrs" {
+		t.Fatalf("order = %v, want chmod then winattrs", order)
+	}
+}

@@ -1189,9 +1189,14 @@ func restoreContentlessEntry(targetPath string, file manifestFile) error {
 			return mkErr
 		}
 		if file.ModeBits != 0 {
-			return chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid)
+			if err := chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid); err != nil {
+				return err
+			}
 		}
-		return nil
+		// Windows attributes last (#5407, review finding): a Hidden/System
+		// directory must come back Hidden/System here too, and ReadOnly would
+		// block the chmod above if it were applied first.
+		return applyWinAttrsFile(targetPath, file.WinAttrs)
 	default:
 		return fmt.Errorf("entry %s has content; use the download path", file.SourcePath)
 	}

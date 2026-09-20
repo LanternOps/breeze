@@ -2,7 +2,12 @@
 
 package securefs
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+	"fmt"
+
+	"golang.org/x/sys/windows"
+)
 
 // PreservedWinAttrs is the set of Windows file attributes the backup captures
 // and the restore reapplies (#5407): Hidden, System, ReadOnly, Temporary,
@@ -42,26 +47,33 @@ func ApplyWinAttrs(path string, attrs uint32) error {
 	if err != nil {
 		return err
 	}
+	// The two halves are independent and BOTH are attempted (review finding):
+	// a target that cannot carry sparse files at all — FAT32, exFAT, a network
+	// redirector — must still get Hidden/System/ReadOnly. Short-circuiting on
+	// the sparse ioctl silently forfeited every other attribute on exactly the
+	// filesystems where the operator most needs the warning to be accurate
+	// about what was actually lost.
+	var sparseErr error
 	if attrs&windows.FILE_ATTRIBUTE_SPARSE_FILE != 0 {
 		if err := setSparseByPath(p); err != nil {
-			return err
+			sparseErr = fmt.Errorf("mark restored file sparse: %w", err)
 		}
 	}
 	settable := attrs &^ uint32(windows.FILE_ATTRIBUTE_SPARSE_FILE)
 	if settable == 0 {
-		return nil
+		return sparseErr
 	}
 	current, err := windows.GetFileAttributes(p)
 	if err != nil {
-		return err
+		return errors.Join(sparseErr, err)
 	}
 	// FILE_ATTRIBUTE_NORMAL is only valid standing alone, so it has to go the
 	// moment any other attribute is added.
 	merged := (current &^ uint32(windows.FILE_ATTRIBUTE_NORMAL)) | settable
 	if merged == current {
-		return nil
+		return sparseErr
 	}
-	return windows.SetFileAttributes(p, merged)
+	return errors.Join(sparseErr, windows.SetFileAttributes(p, merged))
 }
 
 func setSparseByPath(p *uint16) error {

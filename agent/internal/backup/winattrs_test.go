@@ -132,3 +132,30 @@ func TestApplyEntryMetadataWithWinAttrs(t *testing.T) {
 		t.Fatalf("mtime = %v, want %v (attribute apply must come AFTER chtimes)", info.ModTime(), modTime)
 	}
 }
+
+// TestRestoreContentlessEntryDirAppliesWinAttrs is the review-finding guard:
+// the walker records a Hidden/System directory's attributes, so the restore
+// must reapply them. Before the fix they were captured and then thrown away at
+// every one of the three directory-recreation sites. Off Windows applyWinAttrs
+// is a no-op, so what this pins here is that the call happens at all (a
+// removed call makes the dir branch stop compiling/ordering correctly) and
+// that the surrounding mode apply is unaffected.
+func TestRestoreContentlessEntryDirAppliesWinAttrs(t *testing.T) {
+	target := t.TempDir() + string(os.PathSeparator) + "hidden-dir"
+	err := RestoreContentlessEntry(target, SnapshotFile{
+		SourcePath: target,
+		Kind:       KindDir,
+		ModeBits:   0o750,
+		WinAttrs:   winAttrsHidden | winAttrsSystem,
+	}, false)
+	if err != nil {
+		t.Fatalf("RestoreContentlessEntry: %v", err)
+	}
+	info, statErr := os.Stat(target)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("stat = (%v, %v), want a directory", info, statErr)
+	}
+	if info.Mode().Perm() != 0o750 {
+		t.Fatalf("mode = %v, want 0750 (the attribute apply must not disturb it)", info.Mode().Perm())
+	}
+}
