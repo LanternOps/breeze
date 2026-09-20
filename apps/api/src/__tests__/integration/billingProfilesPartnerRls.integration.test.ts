@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { cascadeDeletePartner } from '../../services/tenantCascade';
 
 const partnerA = randomUUID();
 const partnerB = randomUUID();
@@ -125,5 +126,42 @@ describe('billing profile tables — partner-axis RLS', () => {
       SELECT condeferrable, condeferred FROM pg_constraint
       WHERE conname = 'org_billing_profile_assignments_org_partner_fk'`));
     expect(rows[0]).toEqual({ condeferrable: true, condeferred: false });
+  });
+
+  // PARTNER ERASURE (plan Task 15 Step 2). The three tables are reached by
+  // cascadeDeletePartner's information_schema `partner_id` sweep, ordered by
+  // topologicalCascadeOrder's pg_constraint read -- no static list registers
+  // them. time_entries.billing_profile_id is a NO ACTION composite FK, so if
+  // billing_profiles were swept before time_entries the purge would abort with
+  // 23503 and the partner would be left half-erased. Only a live run proves it.
+  it('cascadeDeletePartner erases a partner with a stamped time entry, rules and an org assignment', async () => {
+    const user = randomUUID();
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`INSERT INTO users (id, partner_id, email, name)
+        VALUES (${user}, ${partnerA}, ${`bp-erasure-${user}@example.test`}, 'Erasure user')`);
+      await db.execute(sql`INSERT INTO time_entries (partner_id, org_id, user_id, started_at, work_type_id, billing_profile_id, coverage, is_billable, currency_code)
+        VALUES (${partnerA}, ${orgA}, ${user}, now(), ${workTypeA}, ${profileA}, 'billable', true, 'USD')`);
+    });
+
+    // CONTROL: the referencing rows exist, so a clean purge is evidence about
+    // these FK edges and not about an empty partner.
+    const before = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM time_entries WHERE billing_profile_id = ${profileA}) AS entries,
+        (SELECT count(*) FROM billing_profile_rules WHERE partner_id = ${partnerA}) AS rules,
+        (SELECT count(*) FROM org_billing_profile_assignments WHERE partner_id = ${partnerA}) AS assignments
+    `))) as unknown as Array<{ entries: string; rules: string; assignments: string }>;
+    expect(before[0]).toEqual({ entries: '1', rules: '1', assignments: '2' });
+
+    await expect(cascadeDeletePartner(partnerA, randomUUID())).resolves.toBeDefined();
+
+    const after = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM billing_profiles WHERE partner_id = ${partnerA}) AS profiles,
+        (SELECT count(*) FROM billing_profile_rules WHERE partner_id = ${partnerA}) AS rules,
+        (SELECT count(*) FROM org_billing_profile_assignments WHERE partner_id = ${partnerA}) AS assignments,
+        (SELECT count(*) FROM time_entries WHERE partner_id = ${partnerA}) AS entries
+    `))) as unknown as Array<{ profiles: string; rules: string; assignments: string; entries: string }>;
+    expect(after[0]).toEqual({ profiles: '0', rules: '0', assignments: '0', entries: '0' });
   });
 });
