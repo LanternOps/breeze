@@ -52,6 +52,8 @@ export default function DeviceFilesystemTab({
   }, [volumes.volumes, selectedScanPath]);
   const selectedVolume = volumes.volumes.find((volume) => volume.scanPath === selectedScanPath) ?? null;
   const scanPath = selectedScanPath;
+  const selectedScanPathRef = useRef(scanPath);
+  selectedScanPathRef.current = scanPath;
   const snapshotState = useFilesystemSnapshot(deviceId, scanPath);
   const scanPoll = useCommandPoll(deviceId);
 
@@ -167,7 +169,8 @@ export default function DeviceFilesystemTab({
     }
   }, [snapshotState, volumes]);
 
-  const onExecuted = useCallback(() => {
+  const onExecuted = useCallback((executedScanPath: string) => {
+    if (executedScanPath !== selectedScanPathRef.current) return;
     // Keep the pinned preview mounted so CleanupPanel can display its result.
     setHistoryToken((value) => value + 1);
     void snapshotState.reload({ silent: true });

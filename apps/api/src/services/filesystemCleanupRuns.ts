@@ -249,6 +249,42 @@ export async function cancelCleanupRunForCommand(params: {
   return Boolean(row);
 }
 
+/** Normalise legacy arrays and current envelopes without a read/modify/write race. */
+function currentCleanupActions(): SQL {
+  const current = deviceFilesystemCleanupRuns.executedActions;
+  return sql`CASE
+    WHEN jsonb_typeof(${current}) = 'array' THEN ${current}
+    WHEN jsonb_typeof(${current} -> 'actions') = 'array' THEN ${current} -> 'actions'
+    ELSE '[]'::jsonb END`;
+}
+
+/**
+ * Finalise against the row held by UPDATE, preserving receipts that won the
+ * lock first. The first entry for a command wins; actions without commands
+ * (e.g. rejected paths) remain distinct. Preserve order and envelope metadata.
+ */
+export function mergeCleanupExecutedActions(envelope: {
+  partial: boolean;
+  budgetMs: number;
+  actions: unknown[];
+}): SQL {
+  const current = deviceFilesystemCleanupRuns.executedActions;
+  return sql`jsonb_set(
+    (CASE WHEN jsonb_typeof(${current}) = 'object' THEN ${current} ELSE '{}'::jsonb END)
+      || ${JSON.stringify(envelope)}::jsonb,
+    '{actions}',
+    (SELECT COALESCE(jsonb_agg(action ORDER BY position), '[]'::jsonb)
+      FROM (
+        SELECT DISTINCT ON (action ->> 'commandId',
+          CASE WHEN action ->> 'commandId' IS NULL THEN position ELSE 0 END)
+          action, position
+        FROM jsonb_array_elements(${currentCleanupActions()} || ${JSON.stringify(envelope.actions)}::jsonb)
+          WITH ORDINALITY AS entries(action, position)
+        ORDER BY action ->> 'commandId',
+          CASE WHEN action ->> 'commandId' IS NULL THEN position ELSE 0 END, position
+      ) AS deduplicated), true)`;
+}
+
 /**
  * Record a `file_delete` result that arrived after its run was finalised.
  *
@@ -294,6 +330,8 @@ export async function recordLateCleanupResult(params: {
       eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId),
       eq(deviceFilesystemCleanupRuns.kind, 'files'),
       inArray(deviceFilesystemCleanupRuns.status, ['running', 'executed', 'failed']),
+      sql`NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${currentCleanupActions()}) AS entry
+        WHERE entry ->> 'commandId' = ${params.commandId})`,
     ))
     .returning({ id: deviceFilesystemCleanupRuns.id });
 

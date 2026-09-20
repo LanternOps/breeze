@@ -333,6 +333,29 @@ describe('DeviceFilesystemTab (composition)', () => {
     expect(screen.queryByTestId('cleanup-execute')).not.toBeInTheDocument();
   });
 
+  it.each([200, 500])('does not reload the old snapshot when execute finishes after a volume switch (%s)', async (status) => {
+    windowsFixture();
+    const fixture = fetchMock.getMockImplementation()!;
+    let finish!: (value: Response) => void;
+    fetchMock.mockImplementation((url, init) => String(url).endsWith('/filesystem/cleanup-execute')
+      ? new Promise(resolve => { finish = resolve; }) : fixture(url, init));
+    render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
+    await screen.findByTestId('filesystem-snapshot-panels');
+    await userEvent.click(screen.getByTestId('filesystem-preview-button'));
+    await userEvent.click(await screen.findByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+    await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
+    await userEvent.click(screen.getAllByTestId('volume-chip')[1]);
+    await screen.findByTestId('filesystem-snapshot-panels');
+    const callsBeforeResult = fetchMock.mock.calls.length;
+    await act(async () => finish(json({ success: status === 200, error: 'cleanup_finalize_failed', data: {
+      cleanupRunId: RUN_ID, status: 'executed', bytesReclaimed: 3072, actions: [],
+    } }, status)));
+    expect(fetchMock.mock.calls.slice(callsBeforeResult)).toEqual([]);
+    expect(screen.queryByTestId('cleanup-result')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cleanup-execute')).not.toBeInTheDocument();
+  });
+
   it.each(['switch', 'unmount'])('ignores a scan submission completing after %s', async (mode) => {
     windowsFixture();
     const fixture = fetchMock.getMockImplementation()!;

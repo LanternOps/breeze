@@ -1,3 +1,5 @@
+import { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
@@ -12,12 +14,13 @@ vi.mock('../../db', () => ({
   }
 }));
 
-vi.mock('../../db/schema', () => ({
+vi.mock('../../db/schema', async (importOriginal) => ({
   deviceDisks: {
     deviceId: 'deviceId',
     usedPercent: 'usedPercent',
   },
   deviceFilesystemCleanupRuns: {
+    executedActions: (await importOriginal<typeof import('../../db/schema')>()).deviceFilesystemCleanupRuns.executedActions,
     id: 'id',
     deviceId: 'deviceId',
     plan: 'plan',
@@ -75,7 +78,8 @@ vi.mock('../../services/filesystemAnalysis', () => ({
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash']
 }));
 
-vi.mock('../../services/filesystemCleanupRuns', () => ({
+vi.mock('../../services/filesystemCleanupRuns', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/filesystemCleanupRuns')>(),
   CLEANUP_RUNS_DEFAULT_LIMIT: 20,
   CLEANUP_RUNS_MAX_LIMIT: 100,
   decodeCleanupRunCursor: vi.fn(() => ({ requestedAt: '2026-09-19T10:00:00.000Z', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })),
@@ -383,7 +387,7 @@ describe('device filesystem routes', () => {
     const body = await res.json();
     expect(body.error).toBe('cleanup_dispatch_failed');
     expect(body.data.actions).toHaveLength(1);
-    expect(set.mock.calls[1]![0]).toMatchObject({ status: 'failed', error: 'dispatch_failed: insert failed', executedActions: { actions: [expect.objectContaining({ path: '/tmp/a.tmp' })] } });
+    expect(set.mock.calls[1]![0]).toMatchObject({ status: 'failed', error: 'dispatch_failed: insert failed', executedActions: expect.any(SQL) });
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
     expect(captureException).toHaveBeenCalled();
   });
@@ -880,10 +884,15 @@ describe('device filesystem routes', () => {
       body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
     });
 
-    const row = values.mock.calls[1]?.[0] as { executedActions: { partial: boolean; budgetMs: number; actions: unknown[] } };
-    expect(row.executedActions.partial).toBe(false);
-    expect(row.executedActions.budgetMs).toBe(240_000);
-    expect(row.executedActions.actions).toHaveLength(1);
+    const row = values.mock.calls[1]?.[0] as { executedActions: SQL };
+    expect(row.executedActions).toBeInstanceOf(SQL);
+    const merge = new PgDialect().sqlToQuery(row.executedActions);
+    expect(merge.sql).toContain('jsonb_set');
+    expect(merge.sql).toContain('SELECT DISTINCT ON');
+    const envelope = JSON.parse(merge.params[0] as string);
+    expect(envelope.partial).toBe(false);
+    expect(envelope.budgetMs).toBe(240_000);
+    expect(envelope.actions).toHaveLength(1);
   });
 
   describe('GET /devices/:id/filesystem/volumes (spec §5.1)', () => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -205,6 +205,24 @@ describe('CleanupPanel', () => {
     ));
   });
 
+  it.each([200, 500])('discards a stale execute response (%s) after replacing the volume preview', async (status) => {
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const onExecuted = vi.fn();
+    const view = render(<CleanupPanel deviceId="dev-1" volumeLabel="C:" preview={preview()} onExecuted={onExecuted} />);
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+    await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
+    view.rerender(<CleanupPanel deviceId="dev-1" volumeLabel="D:" preview={preview({ cleanupRunId: 'new-run', scanPath: 'D:', candidates: [{ path: 'D:/temp/new', category: 'temp_files', sizeBytes: 1 }] })} onExecuted={onExecuted} />);
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await act(async () => finish(json({ success: status === 200, error: 'cleanup_finalize_failed', data: {
+      cleanupRunId: RUN_ID, status: 'executed', bytesReclaimed: 2048, actions: [],
+    } }, status)));
+    expect(screen.queryByTestId('cleanup-result')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cleanup-candidate-checkbox-D:/temp/new')).toBeChecked();
+    expect(onExecuted).not.toHaveBeenCalled();
+  });
+
   it('clears the selection when the preview is replaced', () => {
     const { rerender } = render(
       <CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />,
@@ -221,10 +239,10 @@ describe('CleanupPanel', () => {
     );
     expect(screen.getByTestId('cleanup-execute')).toBeDisabled();
   });
-  it.each(['partial', 'failed', 'cleanup_dispatch_failed', 'cleanup_finalize_failed'])('renders terminal %s outcomes without success feedback', async (outcome) => {
+  it.each(['partial', 'failed', 'cleanup_dispatch_failed', 'cleanup_finalize_failed', 'all cleanup actions failed'])('renders terminal %s outcomes without success feedback', async (outcome) => {
     const data = { cleanupRunId: RUN_ID, status: outcome === 'partial' ? 'executed' : 'failed', bytesReclaimed: 0,
-      actions: [{ path: '/bin', status: outcome === 'partial' ? 'partial' : 'completed', failedChildren: ['/bin/locked child'], skippedLinkCount: 2 }] };
-    const terminalError = outcome.startsWith('cleanup_');
+      actions: [{ path: '/bin', status: outcome === 'partial' ? 'partial' : outcome === 'all cleanup actions failed' ? 'failed' : 'completed', failedChildren: ['/bin/locked child'], skippedLinkCount: 2 }] };
+    const terminalError = outcome.startsWith('cleanup_') || outcome === 'all cleanup actions failed';
     fetchMock.mockResolvedValue(json({ success: !terminalError, error: terminalError ? outcome : undefined, data }, terminalError ? 500 : 200));
     const onExecuted = vi.fn();
     render(<CleanupPanel deviceId="dev-1" volumeLabel="C:" preview={preview()} onExecuted={onExecuted} />);
@@ -240,9 +258,10 @@ describe('CleanupPanel', () => {
       expect(screen.getByTestId('cleanup-failures')).toHaveTextContent('locked child');
       expect(screen.getByTestId('cleanup-failures')).toHaveTextContent('2');
     } else expect(screen.getByTestId('cleanup-result')).toHaveTextContent('Cleanup failed');
+    if (outcome === 'all cleanup actions failed') expect(screen.getByTestId('cleanup-failures')).toHaveTextContent('/bin');
   });
   it.each(['agent_update_required', 'cleanup_run_required', 'volume_required'])('translates %s', async (error) => {
-    fetchMock.mockResolvedValue(json({ error, minAgentVersion: '2.4.0' }, 409));
+    fetchMock.mockResolvedValue(json({ error, data: { minAgentVersion: '2.4.0' } }, 409));
     render(<CleanupPanel deviceId="dev-1" volumeLabel="C:" preview={preview()} onExecuted={vi.fn()} />);
     await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
     await userEvent.click(screen.getByTestId('cleanup-execute'));

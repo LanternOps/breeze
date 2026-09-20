@@ -13,7 +13,7 @@
  * behaviour) reads as success at a glance.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
@@ -48,7 +48,7 @@ type Props = {
   /** What the confirm dialog names as the target, e.g. `C:\` or `/`. */
   volumeLabel: string;
   preview: FilesystemCleanupPreview | null;
-  onExecuted: () => void;
+  onExecuted: (scanPath: string) => void;
 };
 
 export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecuted }: Props) {
@@ -59,6 +59,15 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
   const [result, setResult] = useState<CleanupExecuteResult | null>(null);
 
   const pinnedRunId = preview?.cleanupRunId ?? null;
+
+  // Execute can outlive the selected volume or pinned preview. Reject both
+  // success and failure continuations from an earlier scope.
+  const executeScopeRef = useRef<object | null>(null);
+  useEffect(() => {
+    executeScopeRef.current = {};
+    setExecuting(false);
+    return () => { executeScopeRef.current = null; };
+  }, [deviceId, pinnedRunId, preview?.scanPath]);
 
   // A new preview pins a NEW run and a new candidate set. Carrying a stale
   // selection across that would submit paths from a different pinned plan,
@@ -112,7 +121,10 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
   }, [byCategory]);
 
   const execute = useCallback(async () => {
-    if (!pinnedRunId || selectedPaths.length === 0) return;
+    if (!pinnedRunId || !preview || selectedPaths.length === 0) return;
+    const executedScanPath = preview.scanPath;
+    const scope = executeScopeRef.current;
+    const isCurrent = () => scope !== null && executeScopeRef.current === scope;
     setExecuting(true);
     try {
       const data = await runAction<CleanupExecuteResult>({
@@ -124,7 +136,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
         // The API answers 409 with a machine token in `error` and no `code`,
         // so without this the operator is shown "preview_expired" verbatim.
         friendly: (code, _message, body) => {
-          if (code === 'agent_update_required') return t('deviceFilesystemTab.errorAgentUpdateRequired', { minAgentVersion: (body as { minAgentVersion?: string })?.minAgentVersion ?? '—' });
+          if (code === 'agent_update_required') return t('deviceFilesystemTab.errorAgentUpdateRequired', { minAgentVersion: (body as { data?: { minAgentVersion?: string } })?.data?.minAgentVersion ?? '—' });
           if (code === 'cleanup_run_required') return t('deviceFilesystemTab.errorCleanupRunRequired');
           if (code === 'volume_required') return t('deviceFilesystemTab.errorVolumeRequired');
           if (code === 'cleanup_dispatch_failed' || code === 'cleanup_finalize_failed') return t('deviceFilesystemTab.cleanupFailed');
@@ -134,6 +146,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
         },
         parseSuccess: (body) => (body as { data: CleanupExecuteResult }).data,
       });
+      if (!isCurrent()) return;
       const hasFailures = data.status === 'failed' || data.actions.some(a => a.status !== 'completed');
       showToast({ type: hasFailures ? 'error' : 'success', message: hasFailures
         ? t('deviceFilesystemTab.cleanupFailed')
@@ -141,26 +154,27 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       setConfirmOpen(false);
       setResult(data);
       setSelected(new Set());
-      onExecuted();
+      onExecuted(executedScanPath);
     } catch (err) {
+      if (!isCurrent()) return;
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('deviceFilesystemTab.cleanupFailed') });
       }
       if (err instanceof ActionError) {
         const body = err.body as { error?: string; code?: string; data?: CleanupExecuteResult } | undefined;
-        if (['cleanup_dispatch_failed', 'cleanup_finalize_failed'].includes(body?.code ?? body?.error ?? '') && body?.data) {
+        if (body?.data && Array.isArray(body.data.actions)) {
           setResult({ ...body.data, status: 'failed' });
           setSelected(new Set());
-          onExecuted();
+          onExecuted(executedScanPath);
         }
       }
       // A nonterminal request failure can still be retried.
       setConfirmOpen(false);
     } finally {
-      setExecuting(false);
+      if (isCurrent()) setExecuting(false);
     }
-  }, [deviceId, onExecuted, pinnedRunId, selectedPaths, t]);
+  }, [deviceId, onExecuted, pinnedRunId, preview, selectedPaths, t]);
 
   if (!preview) {
     return (

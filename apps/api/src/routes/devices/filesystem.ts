@@ -33,6 +33,7 @@ import {
   safeCleanupCategories,
 } from '../../services/filesystemAnalysis';
 import {
+  mergeCleanupExecutedActions,
   CLEANUP_RUNS_DEFAULT_LIMIT,
   CLEANUP_RUNS_MAX_LIMIT,
   decodeCleanupRunCursor,
@@ -615,7 +616,7 @@ filesystemRoutes.post(
             // W01 amendment 8's envelope, NOT a bare array — Task 2's
             // `actionCount` unwraps `actions` out of it and the web result
             // panel reads `partial`/`budgetMs` off it.
-            executedActions: { partial: outcome.partial, budgetMs: outcome.budgetMs, actions: outcome.actions },
+            executedActions: mergeCleanupExecutedActions({ partial: outcome.partial, budgetMs: outcome.budgetMs, actions: outcome.actions }),
             bytesReclaimed: outcome.bytesReclaimed,
             error: runError,
             updatedAt: new Date(),

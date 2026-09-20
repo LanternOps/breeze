@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,7 @@ import {
   encodeCleanupRunCursor,
   cancelCleanupRunForCommand,
   recordLateCleanupResult,
+  mergeCleanupExecutedActions,
   getCleanupRun,
   listCleanupRuns,
 } from './filesystemCleanupRuns';
@@ -278,7 +280,8 @@ describe('recordLateCleanupResult', () => {
       [{ path: '/tmp/a', status: 'completed', commandId: 'cmd-1', lateResult: true, receivedAt: '2026-09-19T11:00:00.000Z' }],
     ]);
     expect(dialect.sqlToQuery(where.mock.calls[0]![0]).params)
-      .toEqual([RUN_A, 'files', 'running', 'executed', 'failed']);
+      .toEqual([RUN_A, 'files', 'running', 'executed', 'failed', 'cmd-1']);
+    expect(dialect.sqlToQuery(where.mock.calls[0]![0]).sql).toContain('NOT EXISTS');
   });
 
   it('ignores absent, previewed, or system runs when the conditional update finds no row', async () => {
@@ -289,5 +292,53 @@ describe('recordLateCleanupResult', () => {
       error: 'device refused', completedAt: new Date(),
     })).toBe('ignored');
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+// Optional real-PostgreSQL proof: only a session-local temporary table is used.
+// Set CLEANUP_TEST_POSTGRES_CONTAINER to a local PostgreSQL container to run.
+describe.runIf(process.env.CLEANUP_TEST_POSTGRES_CONTAINER)('cleanup action SQL ordering', () => {
+  const dialect = new PgDialect();
+  function literal(value: unknown): string {
+    return "'" + String(value).replaceAll("'", "''") + "'";
+  }
+  function expression(value: SQL): string {
+    const query = dialect.sqlToQuery(value);
+    return query.sql.replace(/\$(\d+)/g, (_, index) => literal(query.params[Number(index) - 1]));
+  }
+  async function lateUpdate(): Promise<string> {
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: RUN_A }]) });
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+    await recordLateCleanupResult({ cleanupRunId: RUN_A, commandId: 'cmd-late', path: '/tmp/late', status: 'completed', completedAt: new Date() });
+    return `UPDATE device_filesystem_cleanup_runs SET executed_actions = ${expression(set.mock.calls[0]![0].executedActions)} WHERE ${expression(where.mock.calls[0]![0])};`;
+  }
+  function finalise(actions: unknown[]): string {
+    return `UPDATE device_filesystem_cleanup_runs SET executed_actions = ${expression(mergeCleanupExecutedActions({ partial: false, budgetMs: 240000, actions }))}, status = 'executed';`;
+  }
+  function run(updates: string[]): { actions: Array<{ commandId?: string; lateResult?: boolean }>; partial: boolean } {
+    const output = execFileSync('docker', ['exec', '-i', process.env.CLEANUP_TEST_POSTGRES_CONTAINER!, 'psql', '-U', 'breeze', '-d', 'breeze', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'], {
+      input: `BEGIN; CREATE TEMP TABLE device_filesystem_cleanup_runs (id text, kind text, status text, executed_actions jsonb); INSERT INTO device_filesystem_cleanup_runs VALUES ('${RUN_A}', 'files', 'running', '{"actions":[]}'); ${updates.join(' ')} SELECT executed_actions FROM device_filesystem_cleanup_runs; ROLLBACK;`,
+      encoding: 'utf8',
+    });
+    return JSON.parse(output.trim());
+  }
+  it('duplicate terminal delivery records one entry', async () => {
+    const late = await lateUpdate();
+    expect(run([late, late]).actions).toHaveLength(1);
+  });
+  it('append then finalise keeps the late entry and the finaliser action', async () => {
+    const result = run([await lateUpdate(), finalise([{ commandId: 'cmd-other', status: 'completed' }])]);
+    expect(result.actions.map(a => a.commandId)).toEqual(['cmd-late', 'cmd-other']);
+    expect(result.partial).toBe(false);
+  });
+  it('finalise then append does not duplicate the finaliser action', async () => {
+    const result = run([finalise([{ commandId: 'cmd-late', status: 'completed' }]), await lateUpdate()]);
+    expect(result.actions).toEqual([{ commandId: 'cmd-late', status: 'completed' }]);
+  });
+  it('finalise dedupes against an earlier receipt but retains actions without command IDs', async () => {
+    const result = run([await lateUpdate(), finalise([{ commandId: 'cmd-late', status: 'failed' }, { status: 'rejected' }, { status: 'skipped_budget' }])]);
+    expect(result.actions).toHaveLength(3);
+    expect(result.actions[0]).toMatchObject({ commandId: 'cmd-late', lateResult: true });
   });
 });
