@@ -30,6 +30,10 @@ branch: (set by feature-lifecycle after registration)
 
 ## Global Constraints
 
+- **D27.** The step field is `renotify`; UI copy may still say “repeat”. `scheduleRegistry.contract.test.ts` treats object-literal `repeat` fields as BullMQ registrations without an allowlist. Shared step schemas/types live in the Zod-only `services/delivery/escalationSteps.ts`, re-exported by route schemas; services never import routes. API and web both enforce integer `delayMinutes` 1..10080. Every PR gate runs the full API unit suite (`cd apps/api && npx vitest run`), including schedule-registry and worker-entrypoint contracts. Any integration test that seeds a notification channel and expects delivery must also seed a matching routing row or an Everything else row; the all-enabled-channel fallback is gone.
+
+- **D22–D26 (2026-09-19 review amendments).** Escalation order is monitor (unless delivery mode is `none`) → unretired legacy source → winning row → null; W05d removes only the legacy arm. The partner default is permanent; an org default is a removable governance-protected override. Writes use Task 5 bounds (ten steps, fifty occurrences); stored data uses Task 6 tolerant parsing and Task 12 coercion. Task 6's caller-aware user selection applies to HTTP, web and AI alike — **product owner confirmation pending** (HO-20260919-alerting-consolidation Q1). Warn on skipped channels with alert/org/source/rule/reasons, log skipped escalation users and missing transport options, and schedule escalation even with no initial channels.
+
 - **Tenancy (CLAUDE.md "Tenant Isolation / RLS", "Partner-Wide First").** No new tables. `notification_routing_rules` gains two columns on a table already registered in `CORE_ORG_CASCADE_DELETE_ORDER` (`services/tenantCascade.ts:579`) and `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts:404`). **The export-policy row fires on a new column:** both `escalation_policy_id` and `is_default` must be added to the `included` bucket in the same PR (Task 1) or `tenant-export-policy.integration.test.ts` goes red under Integration Tests. RLS on the table is unchanged: `notification_routing_rules_isolation` (FOR ALL, `2026-07-01-notification-rails-partner-ownership.sql`) plus the SELECT-only partner-wide branch `notification_routing_rules_partner_wide_select` (`2026-10-10-120000-notification-maintenance-partner-wide-select.sql`). The branch is what lets an org token's preview endpoint see the partner's "Everything else" row — do not escalate to system context in the route.
 - **Migration rules (CLAUDE.md "Schema Migration Workflow").** File `apps/api/migrations/2026-10-23-100000-delivery-routing-default-rows.sql` (assigned name; newest shipped at planning time is `2026-10-21-110100-…`). **Before pushing, run `git fetch origin && git ls-tree -r --name-only origin/main apps/api/migrations | grep -E '^apps/api/migrations/[0-9]{4}-[^/]+\.sql$' | sort | tail -1` and run `scripts/check-migration-naming.sh --against-ref origin/main`; rename if anything newer landed.** Idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE UNIQUE INDEX IF NOT EXISTS`, `NOT EXISTS` guards on every INSERT); no inner `BEGIN`/`COMMIT`; elect system scope in the migration's first statement solely for its row writes and counts (FORCE RLS otherwise denies those writes; enforced by `apps/api/src/db/migrationRlsScope.test.ts`); every write reports `GET DIAGNOSTICS ... ROW_COUNT` via `RAISE WARNING` so the counts land in Postgres logs (spec: "Report both counts"). Never edit it after it ships.
 - **D21 delivery boundary.** Runtime code never elevates its own scope. Ordinary RLS-scoped executor reads and the same explicit owner predicate apply in system dispatch and org preview: `channel.orgId === input.orgId || (channel.orgId === null && channel.partnerId === orgPartnerId)` (a null org partner never matches). Only visible, owner-valid, enabled channels enter `channelIds`; others have `disabled` or `unavailable` skip reasons. Check ownership before enabled state; missing, foreign and invisible IDs are indistinguishable. Inherited rails use service-level column projections for the exact Task 8 DTOs, never whole-row redaction. Moving channel configuration to an RLS-protected child table is tracked separately and out of scope. The migration’s row-write scope election is the sole exception to runtime scope preservation.
@@ -37,7 +41,7 @@ branch: (set by feature-lifecycle after registration)
 - **Web mutations go through `runAction`** (`apps/web/src/lib/runAction.ts`); catch pattern per CLAUDE.md. `no-silent-mutations.test.ts` guards this.
 - **Web i18n.** Every new key needs real translations in all eight locale folders: `en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR` (`apps/web/src/locales/`). Parity is enforced; per-locale/namespace duplicate caps live in `apps/web/src/lib/i18n/translationCoverage.test.ts` — if a new value trips a cap, translate it instead of bumping the cap. PR description must carry the two machine-draft lines from `apps/web/src/locales/README.md`.
 - **Settings rules (CLAUDE.md "Settings — one concept, one home").** Delivery is edited in one place: `/alerts/delivery`. Routing/escalation are lists → row-drawer Save; channels keep their existing modal (unchanged component). The Notify card *shows* the resolved inherited value and where it comes from (rule 4) and links to `/alerts/delivery`; it never edits routing. PR descriptions for PR 2 and PR 3 state: home `/alerts/delivery`, levels partner default → org override, resolver `resolveDelivery`, places configured before = 2 (`/alerts/channels` page + monitor editor override), after = 2 (same two, one resolver).
-- **Test commands.** Unit: `cd apps/api && npx vitest run <path>`; web: `cd apps/web && npx vitest run <path>`; integration: `pnpm test-stack up` once, then `cd apps/api && npx vitest run -c vitest.integration.config.ts <path>`; `pnpm test-stack down` when finished. Never `pnpm --filter X test -- --run` (the `--` breaks vitest). Path filters are substring matches — list dotted siblings explicitly.
+- **Test commands.** Focused development unit checks: `cd apps/api && npx vitest run <path>`; every PR gate: `cd apps/api && npx vitest run`; web: `cd apps/web && npx vitest run <path>`; integration: `pnpm test-stack up` once, then `cd apps/api && npx vitest run -c vitest.integration.config.ts <path>`; `pnpm test-stack down` when finished. Never `pnpm --filter X test -- --run` (the `--` breaks vitest). Path filters are substring matches — list dotted siblings explicitly.
 - **File size.** `notificationDispatcher.ts` is 1587 lines, `NotificationChannelsPage.tsx` 928, `aiToolsAlerts.ts` 677. New code goes in new files (`services/delivery/*`, `components/alerts/delivery/*`, `aiToolsDelivery.ts`); the dispatcher and the alerts tool file only shrink.
 
 ## File Structure (what changes where)
@@ -54,12 +58,14 @@ branch: (set by feature-lifecycle after registration)
 | `apps/api/src/routes/alerts/routing.ts` | Modify: schema (drop `conditionTypes`/`deviceTags`, add `monitorKinds`, `escalationPolicyId`), default-row rules on PATCH/DELETE, `PUT /routing-rules/default`; export site-access helpers in Task 8 (PR 1). |
 | `apps/api/src/routes/alerts/routing.defaultRow.test.ts` | **Create.** |
 | `apps/api/src/routes/alerts/routing.writes.test.ts` | Modify: ordinary POST explicitly inserts `isDefault: false`. |
-| `apps/api/src/routes/alerts/policies.steps.test.ts` | Create: user/channel targets and bounded repeat schema regressions. |
+| `apps/api/src/services/delivery/railContracts.ts` | **Create (Task 15).** Shared route/AI schemas and access helpers moved out of routes; imports step schemas from `escalationSteps.ts`. Routes import/re-export; no service imports routes. |
+| `apps/api/src/services/delivery/escalationSteps.ts` | **Create.** Zod-only step/policy schemas and `EscalationStep` type; route schemas re-export them. |
+| `apps/api/src/routes/alerts/policies.steps.test.ts` | Create: user/channel targets and bounded `renotify` schema regressions. |
 | `apps/api/src/services/delivery/escalationExecution.ts` (+ `.test.ts`) | Create: bounded occurrences, scoped user targets, durable in-app execution. |
 | `apps/api/src/routes/alerts/policies.ts:157-165,210-229,244-273` | Modify: user target validation and governance guards. |
 | `apps/api/src/services/delivery/inheritedRails.ts` (+ `.test.ts`) | Create: exact inherited DTO column projections, site filtering, supplied executor scope. |
 | `apps/api/src/routes/alerts/deliveryRails.ts` (+ `.test.ts`) | Create: site-filtered inherited routing, inherited escalation, safe channel metadata, target user reads. |
-| `apps/api/src/routes/alerts/schemas.ts:180-191` | Modify: typed `steps` on create/update policy schemas. |
+| `apps/api/src/routes/alerts/schemas.ts:180-191` | Modify: import/re-export service-layer step schemas and `EscalationStep`; typed `steps` on create/update policy schemas. |
 | `apps/api/src/routes/alerts/policies.authz.test.ts:175,187` | Modify: fixtures use a valid step. |
 | `apps/api/src/services/notificationDispatcher.ts:264-376, 441-446, 1250-1300, 126-160` | Modify: resolver wiring; delete fallback and `resolveRoutingRules`; import rail helpers; schedule/cancel user targets and repeat occurrences. |
 | `apps/api/src/services/notificationDispatcher.routingSites.test.ts` | Rewrite against `resolveDelivery`; rename to `services/delivery/resolveDelivery.sites.test.ts`. |
@@ -440,10 +446,10 @@ git commit -m "feat(api): routing escalation_policy_id + is_default, default 'Ev
 
 Precedence (spec §Delivery resolution), first hit wins:
 1. monitor `deliveryMode = 'none'` → `[]`, `monitor_none`, escalation **null** (spec: monitor escalation applies only when mode ≠ none).
-2. monitor `deliveryMode = 'channels'` → its channels, `monitor_channels`, escalation = monitor's.
+2. monitor `deliveryMode = 'channels'` → its channels, `monitor_channels`, escalation = monitor's ?? unretired legacy source's ?? null (there is no winning routing row in this short-circuit).
 3. transitional legacy override with ≥1 channel → `legacy_override`, escalation = monitor's ?? override's.
 4. routing rows: `enabled`, non-default first, `priority ASC`, org rows before partner rows at equal priority; match `severities` / `monitorKinds` / `siteIds`; **site and kind both fail closed** (a kind-scoped row never catches a kind-less alert; today's site semantics unchanged). Rows with no channels are skipped (API forbids them for non-default rows).
-5. org `is_default` row, else partner `is_default` row → `default_row` (channels may be `[]` = inbox only). Escalation = monitor's ?? row's ?? override's.
+5. org `is_default` row, else partner `is_default` row → `default_row` (channels may be `[]` = inbox only). Escalation = monitor's ?? unretired legacy source's ?? row's ?? null.
 6. nothing → `[]`, `none`, escalation = monitor's ?? override's.
 
 - [ ] **Step 1: Write the failing test** — `apps/api/src/services/delivery/resolveDelivery.test.ts`
@@ -555,8 +561,14 @@ describe('resolveDelivery precedence', () => {
     expect(out).toEqual({ skippedChannelIds: [], channelIds: [CH_ORG], escalationPolicyId: ESC_MON, source: 'legacy_override' });
   });
 
-  it('3b. legacy override with an escalation but no channels does NOT short-circuit; its escalation survives as the last fallback', async () => {
-    selectQueue.push(orgLookup(), [row({ id: 'r1', conditions: { severities: ['high'] } })]);
+  it('2b. monitor channels without own escalation preserve an explicit legacy escalation', async () => {
+    selectQueue.push(orgLookup(), monitor('channels', { escalationPolicyId: null }));
+    const out = await resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1', legacyOverride: { escalationPolicyId: ESC_LEGACY } });
+    expect(out).toMatchObject({ channelIds: [CH_MON], escalationPolicyId: ESC_LEGACY, source: 'monitor_channels' });
+  });
+
+  it('3b. legacy override with an escalation but no channels does NOT short-circuit; its escalation wins over the routing row escalation', async () => {
+    selectQueue.push(orgLookup(), [row({ id: 'r1', conditions: { severities: ['high'] }, escalationPolicyId: ESC_ROW })]);
     const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds: [], escalationPolicyId: ESC_LEGACY } });
     expect(out).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_LEGACY, source: 'routing_rule', routingRuleId: 'r1' });
   });
@@ -705,8 +717,8 @@ export function railOwnershipCondition(
  *   4. first matching routing row       → row's channels        (routing_rule)
  *   5. org is_default row, else partner is_default row          (default_row)
  *   6. nothing                          → inbox only            (none)
- * Escalation resolves independently: monitor's (mode ≠ none) ?? winning row's
- * ?? legacy override's ?? null.
+ * Escalation resolves independently: monitor's (mode ≠ none) ?? unretired legacy source's
+ * ?? winning routing row's ?? null (the legacy source must be unretired).
  */
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { AlertSeverity, MonitorKind } from '@breeze/shared';
@@ -831,17 +843,17 @@ export async function resolveDelivery(
   }
 
   // 1. Inbox only is an opinion: no channels, and no escalation either.
+  const legacyEscalation = input.legacyOverride?.escalationPolicyId ?? null;
   if (monitorMode === 'none') {
     return finish({ channelIds: [], escalationPolicyId: null, source: 'monitor_none' });
   }
   // 2. Explicit channels on the monitor.
   if (monitorMode === 'channels') {
-    return finish({ channelIds: monitorChannels, escalationPolicyId: monitorEscalation, source: 'monitor_channels' });
+    return finish({ channelIds: monitorChannels, escalationPolicyId: monitorEscalation ?? legacyEscalation, source: 'monitor_channels' });
   }
 
   // 3. Transitional legacy override (W05b → W05d).
   const legacyChannels = uniq(input.legacyOverride?.channelIds ?? []);
-  const legacyEscalation = input.legacyOverride?.escalationPolicyId ?? null;
   if (legacyChannels.length > 0) {
     return finish({ channelIds: legacyChannels, escalationPolicyId: monitorEscalation ?? legacyEscalation, source: 'legacy_override' });
   }
@@ -868,7 +880,7 @@ export async function resolveDelivery(
     if (channelIds.length === 0) continue;
     return finish({
       channelIds,
-      escalationPolicyId: monitorEscalation ?? rule.escalationPolicyId ?? legacyEscalation,
+      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? rule.escalationPolicyId ?? null,
       source: 'routing_rule',
       routingRuleId: rule.id,
       routingRuleName: rule.name,
@@ -881,7 +893,7 @@ export async function resolveDelivery(
   if (defaultRow) {
     return finish({
       channelIds: uniq(defaultRow.channelIds ?? []),
-      escalationPolicyId: monitorEscalation ?? defaultRow.escalationPolicyId ?? legacyEscalation,
+      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? defaultRow.escalationPolicyId ?? null,
       source: 'default_row',
       routingRuleId: defaultRow.id,
       routingRuleName: defaultRow.name,
@@ -926,7 +938,7 @@ git commit -m "feat(api): resolveDelivery — one precedence for alert delivery 
   export async function escalationPolicyCompatible(policyId: string, owner: RoutingOwner, executor?: DbExecutor): Promise<boolean>;
   export async function upsertDefaultRow(owner: RoutingOwner, data: { channelIds: string[]; escalationPolicyId: string | null }, auth: Pick<AuthContext, 'scope' | 'allowedSiteIds' | 'allowedDeviceIds'> & Partial<Pick<AuthContext, 'partnerId' | 'partnerOrgAccess' | 'canAccessOrg'>>, executor?: DbExecutor): Promise<typeof notificationRoutingRules.$inferSelect>;
   ```
-- Produces (HTTP): `POST /alerts/routing-rules` accepts `conditions: { severities?, monitorKinds?, siteIds? }` (strict — `conditionTypes`/`deviceTags` → 400) and `escalationPolicyId?: uuid | null`; `PATCH /alerts/routing-rules/:id` on an `isDefault` row requires `canMutateOrgWideGovernance(auth)` and accepts only `channelIds` (may be `[]`) and `escalationPolicyId`; `DELETE` of an `isDefault` row on either axis → 409; `PUT /alerts/routing-rules/default` `{ ownerScope?: 'organization' | 'partner', channelIds: uuid[], escalationPolicyId?: uuid | null }` (+ `?orgId=` for partner/system callers) upserts the axis's row → 200 `{ data: row }`.
+- Produces (HTTP): `POST /alerts/routing-rules` accepts `conditions: { severities?, monitorKinds?, siteIds? }` (strict — `conditionTypes`/`deviceTags` → 400) and `escalationPolicyId?: uuid | null`; `PATCH /alerts/routing-rules/:id` on an `isDefault` row requires `canMutateOrgWideGovernance(auth)` and accepts only `channelIds` (may be `[]`) and `escalationPolicyId`; `DELETE` of a partner `isDefault` row → 409; deleting an org default requires `canMutateOrgWideGovernance(auth)` and restores partner inheritance; `PUT /alerts/routing-rules/default` `{ ownerScope?: 'organization' | 'partner', channelIds: uuid[], escalationPolicyId?: uuid | null }` (+ `?orgId=` for partner/system callers) upserts the axis's row → 200 `{ data: row }`.
 - Consumes: `monitorKindSchema` (`@breeze/shared`), `canManagePartnerWidePolicies` / `PARTNER_WIDE_WRITE_DENIED_MESSAGE` (`services/partnerWideAccess.ts`), `resolveWriteOrgId`, `ensureOrgAccess` (`routes/alerts/helpers.ts:52,77`), `partnerIdForOrg` (Task 2).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1125,12 +1137,21 @@ describe('Everything else row rules', () => {
     const res = await app().request(`/alerts/routing-rules/${RULE_ID}`, jsonReq('PATCH', { channelIds: [] }));
     expect(res.status).toBe(400);
   });
-  it('DELETE of either Everything else row is 409', async () => {
-    for (const owner of [{ orgId: null, partnerId: 'p-1' }, { orgId: 'org-a', partnerId: null }]) {
-      existingRowRef.current = { id: RULE_ID, ...owner, name: 'Everything else', isDefault: true, conditions: {} };
-      expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' })).status).toBe(409);
-      expect(deletedRef.current).toBe(false);
-    }
+  it('protects the partner default but allows removing the org override', async () => {
+    authRef.current = partnerAuth();
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: 'p-1', isDefault: true, conditions: {} };
+    expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' })).status).toBe(409);
+    expect(deletedRef.current).toBe(false);
+    authRef.current = orgAuth();
+    existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, isDefault: true, conditions: {} };
+    expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' })).status).toBe(200);
+    expect(deletedRef.current).toBe(true);
+  });
+  it.each([{ allowedSiteIds: [] }, { allowedDeviceIds: [] }])('denies org default deletion with a governance ceiling %j', async ceiling => {
+    authRef.current = { ...orgAuth(), ...ceiling };
+    existingRowRef.current = { id: RULE_ID, orgId: 'org-a', partnerId: null, isDefault: true, conditions: {} };
+    expect((await app().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' })).status).toBe(403);
+    expect(deletedRef.current).toBe(false);
   });
   it('PUT /routing-rules/default upserts the org row for an org token and the partner row for ownerScope partner', async () => {
     authRef.current = orgAuth();
@@ -1174,8 +1195,9 @@ Expected: `Failed to resolve import "./routingRuleWrites"`; then, once the file 
 /**
  * Write rules for notification_routing_rules that the route AND the
  * manage_delivery AI tool must agree on (spec §End state "Delivery": the
- * "Everything else" row cannot be deleted or reordered; its channels may be
- * emptied to mean inbox only). One body, two callers.
+ * partner "Everything else" row is permanent; the org override may be removed
+ * with governance access to inherit again. Neither can be reordered; either
+ * may have empty channels for inbox only). One body, two callers.
  */
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
@@ -1361,8 +1383,11 @@ and in the `setValues` block add `if (updates.escalationPolicyId !== undefined) 
 
 DELETE handler: after the partner-wide capability check, add
 ```ts
-      if (existing.isDefault) {
-        return c.json({ error: 'The Everything else row cannot be deleted; empty its channels for inbox only' }, 409);
+      if (existing.isDefault && existing.orgId === null) {
+        return c.json({ error: 'The partner Everything else row cannot be deleted; empty its channels for inbox delivery (escalation still applies)' }, 409);
+      }
+      if (existing.isDefault && !canMutateOrgWideGovernance(auth)) {
+        return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
       }
 ```
 
@@ -1866,6 +1891,12 @@ remove `notificationRoutingRules`, `monitorDefinitions` from the `../db/schema` 
     }
   };
 
+  if (resolved.skippedChannelIds.length) {
+    console.warn('[NotificationDispatcher] Skipped delivery channels', {
+      alertId: data.alertId, orgId: alert.orgId, source: resolved.source,
+      ruleId: alert.ruleId, routingRuleId: resolved.routingRuleId, skippedChannelIds: resolved.skippedChannelIds,
+    });
+  }
   let channelIds = resolved.channelIds;
   if (channelIds.length === 0) {
     console.log(`[NotificationDispatcher] Delivery for alert ${data.alertId} resolved to inbox only (source=${resolved.source})`);
@@ -1880,10 +1911,15 @@ remove `notificationRoutingRules`, `monitorDefinitions` from the `../db/schema` 
 const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
   .from(notificationChannels).where(inArray(notificationChannels.id, channelIds));
 const optionsById = new Map(channelOptions.map(channel => [channel.id, channel]));
-const validChannels = channelIds.map(id => optionsById.get(id) ?? { id, type: 'unknown', config: {} });
+const validChannels = channelIds.flatMap(id => {
+  const options = optionsById.get(id);
+  if (options) return [options];
+  console.warn('[NotificationDispatcher] Missing transport options', { alertId: data.alertId, orgId: alert.orgId, channelId: id });
+  return [];
+});
 ```
 
-There is no dispatcher eligibility filter or post-filter early return. The zero-channel branch above **always** calls `scheduleResolvedEscalation`; retain the mandatory disabled-channel regression in Task 17 as a PR-1 gate. The send worker still checks live state at egress to handle changes after resolution. Replace `:441-446` with:
+A transport-options miss is dropped and logged; it never invents an unknown transport. There is no second eligibility filter or post-filter early return, including when every transport-options read misses. The zero-channel branch above **always** calls `scheduleResolvedEscalation`; retain the mandatory disabled-channel regression in Task 17 as a PR-1 gate. The send worker still checks live state at egress to handle changes after resolution. Replace `:441-446` with:
 
 ```ts
 await scheduleResolvedEscalation();
@@ -1915,13 +1951,14 @@ git commit -m "feat(api): dispatcher delivers through resolveDelivery; all-chann
 ### Task 5: Typed escalation-policy steps
 
 **Files:**
+- Create: `apps/api/src/services/delivery/escalationSteps.ts` (Zod only)
 - Modify: `apps/api/src/routes/alerts/schemas.ts:180-191`
 - Modify: `apps/api/src/routes/alerts/policies.authz.test.ts:175,187` (fixtures `steps: []` → one valid step)
 - Test: `apps/api/src/routes/alerts/policies.steps.test.ts`
 
 **Interfaces:**
-- Produces: `export const escalationStepSchema: z.ZodType<EscalationStep>; EscalationStep = { delayMinutes: number; channelIds: string[]; userIds: string[]; repeat?: { everyMinutes: number; maxTimes: number } }`; `createPolicySchema.steps` = `z.array(escalationStepSchema).min(1).max(10)`; `updatePolicySchema.steps` = same, optional. Exported `EscalationStep` type.
-- D18: steps target channels and/or users; `repeat.everyMinutes` is 1..10080 and `maxTimes` is 1..100 **additional** sends after the first. All delays are absolute from initial scheduling; acknowledgements/resolution cancel every occurrence. User targets create deduplicated in-app notifications. The execution task below implements these fields in PR 1; Task 12 exposes them in PR 2.
+- Produces in `services/delivery/escalationSteps.ts` (re-exported by `routes/alerts/schemas.ts`): `export const escalationStepSchema: z.ZodType<EscalationStep>; EscalationStep = { delayMinutes: number; channelIds: string[]; userIds: string[]; renotify?: { everyMinutes: number; maxTimes: number } }`; `createPolicySchema.steps` = shared `escalationStepsSchema` (1..10 steps and at most 50 total occurrences); `updatePolicySchema.steps` = same, optional. Exported `EscalationStep` type.
+- D23/D27: each step has integer `delayMinutes` in 1..10080 and at least one channel/user target. A policy has 1..10 steps; `renotify.everyMinutes` is integer 1..1440 and `maxTimes` is integer 1..10 **additional** sends after the first. The sum of `1 + (renotify?.maxTimes ?? 0)` across steps is at most 50. All delays are absolute from initial scheduling; acknowledgements/resolution cancel every occurrence. User targets create deduplicated in-app notifications. The execution task below implements these fields in PR 1; Task 12 exposes them in PR 2.
 
 - [ ] **Step 1: Write the failing test** — `apps/api/src/routes/alerts/policies.steps.test.ts`
 
@@ -1933,19 +1970,30 @@ const CH = '9a8b7c6d-2222-4333-8444-555566667777';
 
 describe('escalation policy steps schema (W05b)', () => {
   it('accepts delayMinutes + channelIds', () => {
-    expect(escalationStepSchema.safeParse({ delayMinutes: 15, channelIds: [CH] }).success).toBe(true);
+    for (const delayMinutes of [1, 15, 10080]) {
+      expect(escalationStepSchema.safeParse({ delayMinutes, channelIds: [CH] }).success).toBe(true);
+    }
   });
   it('rejects a step with no targets, a zero delay, and invalid user IDs', () => {
     expect(escalationStepSchema.safeParse({ delayMinutes: 15, channelIds: [] }).success).toBe(false);
-    expect(escalationStepSchema.safeParse({ delayMinutes: 0, channelIds: [CH] }).success).toBe(false);
+    for (const delayMinutes of [0, 1.5, 10081]) {
+      expect(escalationStepSchema.safeParse({ delayMinutes, channelIds: [CH] }).success).toBe(false);
+    }
     expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], userIds: ['u'] }).success).toBe(false);
   });
   it('accepts user-only steps and bounded repeats; rejects malformed repetition', () => {
-    expect(escalationStepSchema.parse({ delayMinutes: 5, userIds: [CH], repeat: { everyMinutes: 10, maxTimes: 2 } }))
-      .toEqual({ delayMinutes: 5, channelIds: [], userIds: [CH], repeat: { everyMinutes: 10, maxTimes: 2 } });
-    for (const repeat of [{ everyMinutes: 0, maxTimes: 2 }, { everyMinutes: 10, maxTimes: 0 }, { everyMinutes: 10, maxTimes: 101 }]) {
-      expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], repeat }).success).toBe(false);
+    expect(escalationStepSchema.parse({ delayMinutes: 5, userIds: [CH], renotify: { everyMinutes: 10, maxTimes: 2 } }))
+      .toEqual({ delayMinutes: 5, channelIds: [], userIds: [CH], renotify: { everyMinutes: 10, maxTimes: 2 } });
+    for (const repeat of [{ everyMinutes: 0, maxTimes: 2 }, { everyMinutes: 10, maxTimes: 0 }, { everyMinutes: 10, maxTimes: 11 }, { everyMinutes: 1441, maxTimes: 1 }, { everyMinutes: 1.5, maxTimes: 1 }]) {
+      expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], renotify: repeat }).success).toBe(false);
     }
+  });
+  it('accepts 50 occurrences and rejects 51 on create and update', () => {
+    const steps = Array.from({ length: 5 }, () => ({ delayMinutes: 5, channelIds: [CH], renotify: { everyMinutes: 1440, maxTimes: 9 } }));
+    expect(createPolicySchema.safeParse({ name: 'On-call', steps }).success).toBe(true);
+    steps[0]!.renotify.maxTimes = 10;
+    expect(createPolicySchema.safeParse({ name: 'On-call', steps }).success).toBe(false);
+    expect(updatePolicySchema.safeParse({ steps }).success).toBe(false);
   });
   it('create requires 1..10 steps; update keeps steps optional', () => {
     expect(createPolicySchema.safeParse({ name: 'On-call', steps: [] }).success).toBe(false);
@@ -1963,29 +2011,41 @@ cd apps/api && npx vitest run src/routes/alerts/policies.steps.test.ts
 ```
 Expected: `escalationStepSchema` is not exported; `steps: []` parses successfully today (`z.any()`).
 
-- [ ] **Step 3: Implement** — `schemas.ts:180-191`:
+- [ ] **Step 3: Implement** — `apps/api/src/services/delivery/escalationSteps.ts` owns the schemas and type, with Zod as its only import. Services must never import from `routes/` (`workerEntrypointClosure.contract.test.ts`).
 
 ```ts
+import { z } from 'zod';
+
 export const escalationStepSchema = z.object({
   delayMinutes: z.number().int().min(1).max(10080),
   channelIds: z.array(z.string().guid()).max(100).default([]),
   userIds: z.array(z.string().guid()).max(100).default([]),
-  repeat: z.object({ everyMinutes: z.number().int().min(1).max(10080),
-    maxTimes: z.number().int().min(1).max(100) }).strict().optional(),
+  renotify: z.object({ everyMinutes: z.number().int().min(1).max(1440),
+    maxTimes: z.number().int().min(1).max(10) }).strict().optional(),
 }).strict().refine(step => step.channelIds.length + step.userIds.length > 0, 'At least one target is required');
 export type EscalationStep = z.infer<typeof escalationStepSchema>;
+export const escalationStepsSchema = z.array(escalationStepSchema).min(1).max(10)
+  .refine(steps => steps.reduce((total, step) => total + 1 + (step.renotify?.maxTimes ?? 0), 0) <= 50,
+    'At most 50 escalation occurrences are allowed');
+```
+
+In `apps/api/src/routes/alerts/schemas.ts:180-191`, import the policy-array schema and re-export the shared schemas/type:
+
+```ts
+import { escalationStepsSchema } from '../../services/delivery/escalationSteps';
+export { escalationStepSchema, escalationStepsSchema, type EscalationStep } from '../../services/delivery/escalationSteps';
 
 export const createPolicySchema = z.object({
   orgId: z.string().guid().optional(),
   // 'partner' creates a partner-wide ("all orgs") escalation policy (#2130).
   ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
-  steps: z.array(escalationStepSchema).min(1).max(10)
+  steps: escalationStepsSchema
 });
 
 export const updatePolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  steps: z.array(escalationStepSchema).min(1).max(10).optional()
+  steps: escalationStepsSchema.optional()
 });
 ```
 `policies.authz.test.ts:175,187`: `steps: []` → `steps: [{ delayMinutes: 5, channelIds: ['9a8b7c6d-2222-4333-8444-555566667777'] }]`.
@@ -1999,7 +2059,7 @@ cd apps/api && npx vitest run src/routes/alerts/policies
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/routes/alerts/schemas.ts apps/api/src/routes/alerts/policies.steps.test.ts apps/api/src/routes/alerts/policies.authz.test.ts
+git add apps/api/src/services/delivery/escalationSteps.ts apps/api/src/routes/alerts/schemas.ts apps/api/src/routes/alerts/policies.steps.test.ts apps/api/src/routes/alerts/policies.authz.test.ts
 git commit -m "feat(api): typed escalation policy steps (W05b)"
 ```
 
@@ -2015,8 +2075,9 @@ git commit -m "feat(api): typed escalation policy steps (W05b)"
 - Read: `apps/api/src/services/notificationSenders/inAppSender.ts:65-105,178-218`, `apps/api/src/db/schema/users.ts:132-153`, `apps/api/src/db/schema/notifications.ts:33-67`. The existing targeted sender has no dedupe key; the new executor uses the existing unique `(user_id,dedupe_key)` index instead.
 
 **Interfaces:**
-- Consumes Task 5 `EscalationStep`; existing channel `processSendNotification` durable status/dedupe guard.
-- Produces `escalationOccurrences(steps)`, `listEscalationUsers(owner, executor?)`, `validateEscalationUsers(steps, owner, executor?)`, `processUserEscalation(data, executor?)`; `UserEscalationJob = { type: 'escalation-user'; alertId; userId; escalationStep: number }`.
+- Consumes Task 5 `escalationStepSchema` and `EscalationStep` directly from `services/delivery/escalationSteps.ts` (never the route re-export); existing channel `processSendNotification` durable status/dedupe guard.
+- Produces `parseStoredEscalationSteps(raw, policyId)` (non-throwing, original indexes), `escalationOccurrences(steps)` (50-occurrence cap), `listEscalationUsers(owner, auth, executor?)` (picker), `listEligibleEscalationRecipients(owner, executor?)` (delivery), `validateEscalationUsers(steps, owner, auth, existingSteps?, executor?)`, `processUserEscalation(data, executor?)`; `UserEscalationJob = { type: 'escalation-user'; alertId; userId; escalationStep: number }`.
+- **D25 — product owner confirmation pending** (HO-20260919-alerting-consolidation Q1): recipients for org O are active unrestricted O members or active users of O’s partner with all-org access or selected access including O. Validate targets on writes and re-filter against the alert org at fire time. Org callers may see/newly add only O members; previously stored partner-picked IDs survive edits. Partner/system callers may also pick partner users; partner-wide policies list every active partner user regardless of org access.
 - First occurrence keeps existing `escalationStep = index + 1`; repeat r uses `r * 10 + index + 1` (at most ten steps). Thus old pending channel jobs retain identity and each repeat gets a different durable send identity. `maxTimes` counts additional sends; delay is `delayMinutes + r * everyMinutes` from scheduling. User notifications have no external egress and commit in the background worker’s existing short system transaction; the service requires that transaction and never changes the caller’s scope.
 
 - [ ] **Step 1: Write the failing test**
@@ -2038,7 +2099,7 @@ import { assertInTransaction } from '../../db';
 import { escalationOccurrences, processUserEscalation, validateEscalationUsers } from './escalationExecution';
 beforeEach(() => { state.rows.length = 0; vi.clearAllMocks(); });
 it('keeps old step IDs and allocates unique repeat identities at exact delays', () => {
-  expect(escalationOccurrences([{ delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], repeat: { everyMinutes: 10, maxTimes: 2 } }])
+  expect(escalationOccurrences([{ delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], renotify: { everyMinutes: 10, maxTimes: 2 } }])
     .map(o => [o.escalationStep, o.delayMs])).toEqual([[1, 300000], [11, 900000], [21, 1500000]]);
 });
 it.each(['acknowledged', 'resolved', 'suppressed', 'dismissed'])('does not notify after %s, including jobs already active', async status => {
@@ -2061,7 +2122,7 @@ it('requires an existing transaction instead of changing scope itself', async ()
 it('rejects missing/foreign targets before policy writes', async () => {
   state.rows.push([{ partnerId: 'p' }], []);
   await expect(validateEscalationUsers([{ delayMinutes: 5, channelIds: [], userIds: ['foreign'] }],
-    { orgId: 'o', partnerId: null })).rejects.toMatchObject({ status: 400 });
+    { orgId: 'o', partnerId: null }, { scope: 'partner' } as any)).rejects.toMatchObject({ status: 400 });
 });
 it('drops a user who lost membership before execution', async () => {
   state.rows.push([{ id: 'a', orgId: 'o', status: 'active' }], [{ partnerId: 'p' }], []);
@@ -2085,6 +2146,8 @@ it('cancels channel and user repetitions but leaves baseline jobs alone', async 
 });
 ```
 
+D23/D25/D26 required regressions: parse `[invalid, valid]` and retain original step index 1 (first job step 2), warn with dropped indexes, accept a non-array as no valid steps without throwing, and clamp valid stored repeats to 50 occurrences. Test caller scope separately from delivery eligibility: org callers reject newly supplied partner-user IDs but preserve IDs read from the existing policy; partner/system callers may select eligible partner users; a partner-wide picker includes active selected-org users. At fire time test inactive/restricted org members, removed membership and selected-org exclusion; each skipped user is logged. Keep recipient filtering tied to the alert org, never merely the policy owner.
+
 - [ ] **Step 2: Run, expect FAIL**
 
 ```bash
@@ -2099,18 +2162,36 @@ Expected: missing `./escalationExecution`; cancellation returns 1 instead of 2.
 import { eq, sql } from 'drizzle-orm';
 import { db, assertInTransaction } from '../../db';
 import { alerts, userNotifications } from '../../db/schema';
-import type { EscalationStep } from '../../routes/alerts/schemas';
+import { escalationStepSchema, type EscalationStep } from './escalationSteps';
+import type { AuthContext } from '../../middleware/auth';
 import { partnerIdForOrg, type DbExecutor } from './railOwnership';
 import { DeliveryWriteError, type RoutingOwner } from './routingRuleWrites';
 
 export interface UserEscalationJob { type: 'escalation-user'; alertId: string; userId: string; escalationStep: number }
-export function escalationOccurrences(steps: EscalationStep[]) {
-  return steps.flatMap((step, index) => Array.from({ length: 1 + (step.repeat?.maxTimes ?? 0) }, (_, repeat) => ({
-    ...step, escalationStep: repeat * 10 + index + 1,
-    delayMs: (step.delayMinutes + repeat * (step.repeat?.everyMinutes ?? 0)) * 60000,
-  })));
+type IndexedStep = EscalationStep & { originalIndex: number };
+export function parseStoredEscalationSteps(raw: unknown, policyId: string): IndexedStep[] {
+  const result: IndexedStep[] = [], droppedIndexes: number[] = [];
+  if (!Array.isArray(raw)) {
+    console.warn('[Escalation] Invalid stored steps', { policyId });
+    return result;
+  }
+  raw.forEach((value, originalIndex) => {
+    const parsed = escalationStepSchema.safeParse(value);
+    if (originalIndex >= 10 || !parsed.success) droppedIndexes.push(originalIndex);
+    else result.push({ ...parsed.data, originalIndex });
+  });
+  if (droppedIndexes.length) console.warn('[Escalation] Dropped stored steps', { policyId, droppedIndexes });
+  return result;
 }
-export async function listEscalationUsers(owner: RoutingOwner, executor: DbExecutor = db): Promise<Array<{ id: string; name: string }>> {
+export function escalationOccurrences(steps: Array<EscalationStep & { originalIndex?: number }>) {
+  const occurrences = steps.flatMap((step, index) => Array.from({ length: 1 + (step.renotify?.maxTimes ?? 0) }, (_, repeat) => ({
+    ...step, escalationStep: repeat * 10 + (step.originalIndex ?? index) + 1,
+    delayMs: (step.delayMinutes + repeat * (step.renotify?.everyMinutes ?? 0)) * 60000,
+  })));
+  if (occurrences.length > 50) console.warn('[Escalation] Stored occurrences clamped', { total: occurrences.length, limit: 50 });
+  return occurrences.slice(0, 50);
+}
+export async function listEligibleEscalationRecipients(owner: RoutingOwner, executor: DbExecutor = db): Promise<Array<{ id: string; name: string }>> {
   const partner = owner.orgId ? await partnerIdForOrg(owner.orgId, executor) : owner.partnerId;
   const rows = await executor.execute<{ id: string; name: string }>(sql`
     SELECT DISTINCT u.id, u.name FROM users u WHERE u.status = 'active' AND (
@@ -2119,24 +2200,44 @@ export async function listEscalationUsers(owner: RoutingOwner, executor: DbExecu
           AND ou.site_ids IS NULL AND ou.device_group_ids IS NULL
       )) OR EXISTS (
         SELECT 1 FROM partner_users pu WHERE pu.user_id = u.id AND pu.partner_id = ${partner}::uuid
-          AND (pu.org_access = 'all' OR (${owner.orgId}::uuid IS NOT NULL
+          AND (${owner.orgId}::uuid IS NULL OR pu.org_access = 'all' OR (${owner.orgId}::uuid IS NOT NULL
             AND pu.org_access = 'selected' AND ${owner.orgId}::uuid = ANY(pu.org_ids)))
       )) ORDER BY u.name, u.id
   `);
   return Array.from(rows);
 }
-export async function validateEscalationUsers(steps: EscalationStep[], owner: RoutingOwner, executor: DbExecutor = db) {
-  const requested = [...new Set(steps.flatMap(step => step.userIds))];
+export async function listEscalationUsers(owner: RoutingOwner, auth: AuthContext, executor: DbExecutor = db) {
+  if (auth.scope !== 'organization') return listEligibleEscalationRecipients(owner, executor);
+  if (!owner.orgId || owner.orgId !== auth.orgId) throw new DeliveryWriteError(403, 'Organization scope required');
+  const rows = await executor.execute<{ id: string; name: string }>(sql`
+    SELECT DISTINCT u.id, u.name FROM users u JOIN organization_users ou ON ou.user_id = u.id
+    WHERE u.status = 'active' AND ou.org_id = ${owner.orgId}::uuid
+      AND ou.site_ids IS NULL AND ou.device_group_ids IS NULL ORDER BY u.name, u.id
+  `);
+  return Array.from(rows);
+}
+export async function validateEscalationUsers(steps: EscalationStep[], owner: RoutingOwner, auth: AuthContext,
+  existingSteps: unknown = [], executor: DbExecutor = db) {
+  // Org editors preserve prior partner-picked IDs without learning hidden identities.
+  const preserved = new Set(auth.scope === 'organization' && Array.isArray(existingSteps)
+    ? existingSteps.flatMap(step => Array.isArray(step?.userIds) ? step.userIds.filter((id: unknown) => typeof id === 'string') : []) : []);
+  const requested = [...new Set(steps.flatMap(step => step.userIds))].filter(id => !preserved.has(id));
   if (!requested.length) return;
-  const available = new Set((await listEscalationUsers(owner, executor)).map(user => user.id));
-  if (requested.some(id => !available.has(id))) throw new DeliveryWriteError(400, 'Escalation users are not available to this owner');
+  const available = new Set((await listEscalationUsers(owner, auth, executor)).map(user => user.id));
+  if (requested.some(id => !available.has(id))) throw new DeliveryWriteError(400, 'Escalation users are not available to this caller and owner');
 }
 export async function processUserEscalation(data: UserEscalationJob, executor: DbExecutor = db): Promise<void> {
   assertInTransaction('processUserEscalation');
   const [alert] = await executor.select().from(alerts).where(eq(alerts.id, data.alertId)).limit(1).for('update');
-  if (!alert || alert.status !== 'active') return;
-  const eligible = await listEscalationUsers({ orgId: alert.orgId, partnerId: null }, executor);
-  if (!eligible.some(user => user.id === data.userId)) return;
+  if (!alert || alert.status !== 'active') {
+    console.warn('[Escalation] Skipped user target for missing or inactive alert', { alertId: data.alertId, userId: data.userId, status: alert?.status ?? 'missing' });
+    return;
+  }
+  const eligible = await listEligibleEscalationRecipients({ orgId: alert.orgId, partnerId: null }, executor);
+  if (!eligible.some(user => user.id === data.userId)) {
+    console.warn('[Escalation] Skipped user target', { alertId: alert.id, orgId: alert.orgId, userId: data.userId });
+    return;
+  }
   await executor.insert(userNotifications).values({
     userId: data.userId, orgId: alert.orgId, type: 'alert', priority: 'urgent',
     title: alert.title, message: alert.message, link: `/alerts/${alert.id}`,
@@ -2147,15 +2248,14 @@ export async function processUserEscalation(data: UserEscalationJob, executor: D
 
 ```
 
-Use the actual schema parser for stored steps (older rows omit `userIds`): import `escalationStepSchema` into the dispatcher; in `scheduleEscalation`, replace the type assertion with:
+Parse stored steps individually (older rows omit `userIds`): import `parseStoredEscalationSteps` into the dispatcher; in `scheduleEscalation`, replace the type assertion with:
 
 ```ts
-const parsed = escalationStepSchema.array().min(1).max(10).safeParse(policy.steps);
-if (!parsed.success) throw new Error(`Invalid escalation policy ${policy.id}`);
-const steps = parsed.data;
+const steps = parseStoredEscalationSteps(policy.steps, policy.id);
+// Malformed stored steps never abort dispatch; valid steps keep original indexes.
 ```
 
-Import `escalationOccurrences`, `listEscalationUsers`, `processUserEscalation`, and `UserEscalationJob`. Add `UserEscalationJob` to `NotificationJobData` and this worker case:
+Import `escalationOccurrences`, `listEligibleEscalationRecipients`, `processUserEscalation`, and `UserEscalationJob`. Add `UserEscalationJob` to `NotificationJobData` and this worker case:
 
 ```ts
 case 'escalation-user': {
@@ -2170,7 +2270,7 @@ Keep the existing enabled/owner-scoped escalation-channel query and retry handli
 ```ts
 const requestedUsers = steps.some(step => step.userIds.length > 0);
 const eligibleUsers = new Set(requestedUsers
-  ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
+  ? (await listEligibleEscalationRecipients({ orgId, partnerId: null })).map(user => user.id) : []);
 for (const step of escalationOccurrences(steps)) {
   for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
     const channel = validChannelById.get(channelId)!;
@@ -2181,7 +2281,11 @@ for (const step of escalationOccurrences(steps)) {
     });
     await retryIfFailedJob(job, `alert ${alertId} escalation step ${step.escalationStep}`);
   }
-  for (const userId of [...new Set(step.userIds)].filter(id => eligibleUsers.has(id))) {
+  for (const userId of [...new Set(step.userIds)]) {
+    if (!eligibleUsers.has(userId)) {
+      console.warn('[Escalation] Skipped user target', { alertId, orgId, userId, escalationStep: step.escalationStep });
+      continue;
+    }
     const job = await queue.add('escalation-user', { type: 'escalation-user', alertId, userId, escalationStep: step.escalationStep }, {
       delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-user-${userId}`,
       attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
@@ -2205,20 +2309,20 @@ In `policies.ts` import `validateEscalationUsers`, `DeliveryWriteError`, `canMut
 ```ts
 if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
 try {
-  if (data.steps) await validateEscalationUsers(data.steps, owner);
+  if (data.steps) await validateEscalationUsers(data.steps, owner, auth, existingSteps);
 } catch (error) {
   if (error instanceof DeliveryWriteError) return c.json({ error: error.message }, error.status);
   throw error;
 }
 ```
 
-For the PUT snippet, declare the immutable owner immediately after its existing `getEscalationPolicyWithOrgCheck`/partner-capability guard:
+Set `existingSteps = []` for POST and `existingSteps = policy.steps` for PUT; the latter comes from the stored row, never the request. For the PUT snippet, declare the immutable owner immediately after its existing `getEscalationPolicyWithOrgCheck`/partner-capability guard:
 
 ```ts
 const owner = { orgId: policy.orgId, partnerId: policy.partnerId };
 ```
 
-Keep the channel write validation already specified for routing/AI; additionally call `validateEscalationUsers(data.steps, owner)` in both Task 15 AI escalation mutations. `policies.authz.test.ts` keeps channel-only fixtures; no target-user query occurs for them. For DELETE use only the governance guard, since there is no `data.steps`.
+Keep the channel write validation already specified for routing/AI; additionally call `validateEscalationUsers(data.steps, owner, auth)` on AI create and `validateEscalationUsers(data.steps, owner, auth, row.steps)` on AI update in Task 15. `policies.authz.test.ts` keeps channel-only fixtures; no target-user query occurs for them. For DELETE use only the governance guard, since there is no `data.steps`.
 
 - [ ] **Step 4: Run, expect PASS**
 
@@ -2467,6 +2571,7 @@ After Task 8 and Task 17 verification, open PR 1. PR 1 body: `Closes` nothing ye
 
 **Interfaces:**
 - Produces `GET /alerts/delivery/rails?rail=channels|routing|escalation|users&orgId=<uuid>&ownerScope=partner|organization`. Channels return `{ data: editableChannels, inherited: InheritedChannel[] }`; routing/escalation return `{ data: Array<EditableRow | InheritedDTO> }`. Users retain `{ data: UserChoice[] }`.
+- User picker and validation follow Task 6’s D25 recipient/caller distinction (**product owner confirmation pending**): org callers only see org members, partner/system callers also see eligible partner users, and partner-wide policies expose every active partner user regardless of org access. Add route tests for all three lists and for org-token denial of partner selection.
 - Org callers are pinned to their org. Partner/system callers with orgId get that org plus its actual parent partner, never a caller-supplied partner ID. Without orgId, partner scope reads its own editable rails only. `ownerScope=partner` is accepted only for users and partner/system principals with a partner ID.
 - Service-level column projection produces exactly these inherited DTOs: channels `{ id, name, type, enabled, inherited: true }`; routing `{ id, name, priority, enabled, isDefault, conditions: { severities, monitorKinds, siteIds }, channelIds, escalationPolicyId, inherited: true }`; policies `{ id, name, stepCount, inherited: true }`. Inherited channels never select `config`, even for redaction. Policy step targets and user IDs never leave the database projection. Routing exposes only supported conditions and intersects site IDs with the selected org and caller's allowed sites; targeted rows with no visible sites and unrestricted rows for site-limited callers fail closed.
 - Editable rows use their exact owner axis. Inherited reads use the supplied ordinary executor and an explicit `org_id IS NULL AND partner_id = <actual org parent>` predicate. Existing additive SELECT policies supply visibility; no new policy, allowlist change, runtime elevation, or widened mutation permission. Existing own-channel redaction remains unchanged.
@@ -2654,7 +2759,7 @@ deliveryRailsRoutes.get('/delivery/rails', requireScope('organization','partner'
       const axis = (table: typeof notificationRoutingRules | typeof notificationChannels | typeof escalationPolicies) => orgId
         ? eq(table.orgId, orgId)
         : and(isNull(table.orgId), eq(table.partnerId, partnerId!));
-      if (query.rail === 'users') return c.json({ data: await listEscalationUsers(owner) });
+      if (query.rail === 'users') return c.json({ data: await listEscalationUsers(owner, auth) });
       const inherited = () => orgId && partnerId
         ? readInheritedRails(query.rail as 'channels' | 'routing' | 'escalation', { orgId, partnerId, allowedSiteIds: auth.allowedSiteIds }, db)
         : Promise.resolve([]);
@@ -3053,7 +3158,7 @@ git commit -m "fix(web): distinguish delivery read failures from empty settings 
   export type RoutingRule = EditableRoutingRule | InheritedRoutingRule;
   export const isEditableRoutingRule = (row: RoutingRule): row is EditableRoutingRule => row.inherited !== true;
   export const isPartnerRail = (row: RoutingRule | EscalationPolicy): boolean => row.inherited === true || row.orgId === null;
-  export type EditableEscalationPolicy = { inherited?: false; id: string; orgId: string | null; partnerId: string | null; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }> };
+  export type EditableEscalationPolicy = { inherited?: false; id: string; orgId: string | null; partnerId: string | null; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; renotify?: { everyMinutes: number; maxTimes: number } }> };
   export type InheritedEscalationPolicy = { id: string; name: string; stepCount: number; inherited: true };
   export type EscalationPolicy = EditableEscalationPolicy | InheritedEscalationPolicy;
   export const isEditableEscalationPolicy = (row: EscalationPolicy): row is EditableEscalationPolicy => row.inherited !== true;
@@ -3061,7 +3166,7 @@ git commit -m "fix(web): distinguish delivery read failures from empty settings 
   export async function runDefaultRowSave(data: { ownerScope?: 'organization' | 'partner'; channelIds: string[]; escalationPolicyId: string | null }, deps): Promise<void>; // PUT /alerts/routing-rules/default
   ```
 - Consumes: `Drawer` (`components/shared/Drawer.tsx`), `ConfirmDialog`, `MONITOR_KINDS` (`@breeze/shared`) with labels `monitoring:kinds.<kind>`, sites via `GET /orgs/sites?organizationId=<id>&limit=100` (`asList(data, 'sites')`), `useDefaultOwnerScope`, `useOrgStore().currentOrgId`.
-- View rules (spec §End state "Delivery" 2): non-default rows ordered by priority then org-before-partner; partner rows carry the `All orgs` badge and are editable only when `isPartnerScope`; the **Everything else** row is always rendered last, never has a delete button, shows *Inbox only* when its channels are empty; in an org view (`currentOrgId` set) the org row shadows the partner row — if only the partner row exists it renders read-only with **Customize for this organization**; in the all-orgs partner view the partner row is edited directly; when no row exists at all the page renders a synthesized *Inbox only* row whose Edit creates it.
+- View rules (spec §End state "Delivery" 2): non-default rows ordered by priority then org-before-partner; partner rows carry the `All orgs` badge and are editable only when `isPartnerScope`; the **Everything else** row is always rendered last. The partner row has no delete action; an editable org default offers **Use partner default**, gated by governance access and a confirmation naming the partner channels/escalation or inbox-only fallback. Empty channels show *Inbox only* while an independent escalation may still run; in an org view (`currentOrgId` set) the org row shadows the partner row — if only the partner row exists it renders read-only with **Customize for this organization**, explaining that the override stops following the partner default and can be removed later; in the all-orgs partner view the partner row is edited directly; when no row exists at all the page renders a synthesized *Inbox only* row whose Edit creates it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3117,7 +3222,7 @@ function renderSection(rules: RoutingRule[], opts: { currentOrgId?: string | nul
   const onChanged = vi.fn(async () => {});
   render(
     <RoutingSection
-      rules={rules} channels={channels} policies={policies}
+      rules={rules} channels={channels} policies={policies} canMutateGovernance
       currentOrgId={opts.currentOrgId === undefined ? 'org-1' : opts.currentOrgId}
       isPartnerScope={opts.isPartnerScope ?? false}
       defaultOwnerScope="organization"
@@ -3164,10 +3269,10 @@ describe('RoutingSection (W05b)', () => {
     expect(JSON.parse((put[1] as RequestInit).body as string)).toEqual({ channelIds: ['ch-partner', 'ch-org'], escalationPolicyId: 'ep-1' });
   });
 
-  it('never offers default deletion even when both axes have a row', () => {
+  it('offers Use partner default for the optional org override', () => {
     renderSection([rule({ id: 'd-org', isDefault: true }),
       rule({ id: 'd-partner', orgId: null, partnerId: 'p-1', isDefault: true })]);
-    expect(screen.queryByTestId('routing-default-remove')).toBeNull();
+    expect(screen.getByTestId('routing-default-remove')).toHaveTextContent('Use partner default');
   });
 
   it('no row anywhere: a synthesized Inbox only row whose Edit opens the default drawer', async () => {
@@ -3415,6 +3520,7 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
         <div>
           <p className="text-xs font-medium text-muted-foreground">{t('deliveryPage.routing.sendTo')}</p>
           {mode === 'default' && <p className="mb-2 text-xs text-muted-foreground">{t('deliveryPage.routing.everythingElseHint')}</p>}
+          {mode === 'default' && ownerScope === 'organization' && !rule && <p>{t('deliveryPage.routing.customizeForOrgHint')}</p>}
           <div className="mt-2 space-y-1">
             {channels.map((ch) => (
               <label key={ch.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-muted">
@@ -3485,8 +3591,9 @@ type DrawerState =
   | { kind: 'rule'; rule: EditableRoutingRule | null }
   | { kind: 'default'; ownerScope: 'organization' | 'partner'; row: EditableRoutingRule | null; prefillFrom: RoutingRule | null };
 
-export default function RoutingSection({ rules, channels, policies, currentOrgId, isPartnerScope, defaultOwnerScope, onChanged, onUnauthorized }: {
+export default function RoutingSection({ rules, channels, policies, currentOrgId, isPartnerScope, defaultOwnerScope, canMutateGovernance, onChanged, onUnauthorized }: {
   rules: RoutingRule[];
+  canMutateGovernance: boolean;
   channels: ChannelChoice[];
   policies: EscalationPolicy[];
   currentOrgId: string | null;
@@ -3553,6 +3660,11 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
   const canEditRow = (rule: RoutingRule): rule is EditableRoutingRule => isEditableRoutingRule(rule)
     && (rule.orgId !== null || (isPartnerScope && currentOrgId === null));
   const defaultIsPartnerRowInOrgView = orgView && !orgDefault && !!partnerDefault;
+  const partnerFallback = [partnerDefault?.channelIds.map(channelName).join(', ') || t('deliveryPage.routing.inboxOnly'),
+    partnerDefault?.escalationPolicyId ? policyName(partnerDefault.escalationPolicyId) : null].filter(Boolean).join(' · ');
+  // canMutateGovernance is derived from the caller's site/device ceilings using
+  // the existing web governance capability; the server repeats the check.
+
 
   return (
     <section className="space-y-3" data-testid="delivery-routing">
@@ -3615,12 +3727,17 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
             <p className="mt-1 text-xs text-muted-foreground">{t('deliveryPage.routing.everythingElseHint')}</p>
           </div>
           <div className="flex items-center gap-1">
+            {defaultIsPartnerRowInOrgView && <p className="text-xs text-muted-foreground">{t('deliveryPage.routing.customizeForOrgHint')}</p>}
             {defaultIsPartnerRowInOrgView ? (
               <button type="button" onClick={openDefaultEditor} data-testid="routing-default-customize" className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted">{t('deliveryPage.routing.customizeForOrg')}</button>
             ) : (orgView || isPartnerScope) && (
               <button type="button" onClick={openDefaultEditor} data-testid="routing-default-edit" className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted">{t('common:actions.edit')}</button>
             )}
-
+            {orgView && orgDefault && canEditRow(orgDefault) && canMutateGovernance && (
+              <button type="button" onClick={() => setDeleting(orgDefault)} data-testid="routing-default-remove">
+                {t('deliveryPage.routing.usePartnerDefault')}
+              </button>
+            )}
           </div>
         </li>
       </ol>
@@ -3642,7 +3759,9 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
       <ConfirmDialog
         open={deleting !== null} onClose={() => setDeleting(null)} isLoading={saving} variant="destructive"
         title={t('common:actions.delete')}
-        message={t('deliveryPage.routing.deleteConfirm', { name: deleting?.name ?? '' })}
+        message={deleting?.isDefault
+          ? t('deliveryPage.routing.usePartnerDefaultConfirm', { fallback: partnerFallback })
+          : t('deliveryPage.routing.deleteConfirm', { name: deleting?.name ?? '' })}
         onConfirm={() => {
           if (!deleting) return;
           void run(
@@ -3663,6 +3782,8 @@ function describeMatch(rule: RoutingRule, t: (k: string, o?: Record<string, unkn
   return parts.length ? parts.join(' · ') : t('deliveryPage.routing.matchAll');
 }
 ```
+
+Define `canMutateGovernance` in `DeliveryPage` and wire `RoutingSection.canMutateGovernance` from the existing caller-governance capability in `DeliveryPage`; never infer it from owner scope alone. Add localized keys in all eight locales: `usePartnerDefault` = “Use partner default”, `usePartnerDefaultConfirm` = “Remove this organization’s override and use {{fallback}}?”, and `customizeForOrgHint` = “This override stops following the partner default. Remove it later to inherit again.” Add web tests for confirm/cancel, DELETE via `runRoutingRuleDelete`/`runAction`, fallback channel and escalation names, missing-partner inbox fallback, partner row with no remove action, and governance-limited callers with no action.
 
 `DeliveryPage.tsx` (rewritten; all three rails have independent state):
 
@@ -3708,7 +3829,7 @@ export default function DeliveryPage() {
     </>}
     {state(routing, 'routing')}{state(policies, 'escalation')}
     {channels.status === 'success' && routing.status === 'success' && policies.status === 'success' &&
-      <RoutingSection {...props} channels={choices} rules={routing.data} policies={policies.data} />}
+      <RoutingSection {...props} canMutateGovernance={canMutateGovernance} channels={choices} rules={routing.data} policies={policies.data} />}
     {channels.status === 'success' && policies.status === 'success' &&
       <EscalationPoliciesSection {...props} channels={choices} policies={policies.data} />}
   </div>;
@@ -4184,7 +4305,7 @@ git commit -m "feat(web): Delivery page — channels + routing with the Everythi
 **Interfaces:**
 - Produces:
   ```ts
-  export async function runEscalationPolicySave(policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null }, deps): Promise<void>; // POST /alerts/policies | PUT /alerts/policies/:id
+  export async function runEscalationPolicySave(policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; renotify?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null }, deps): Promise<void>; // POST /alerts/policies | PUT /alerts/policies/:id
   export async function runEscalationPolicyDelete(policy: { id: string; name: string }, deps): Promise<void>; // DELETE /alerts/policies/:id
   ```
 - Consumes: `POST /alerts/policies` (`policies.ts:113-186`, body `{ orgId?, ownerScope?, name, steps }`), `PUT /alerts/policies/:id` (`:189-241`), `DELETE /alerts/policies/:id` (`:244-273`). Note the policy routes return the bare row (`c.json(policy, 201)`), not `{ data }`.
@@ -4274,14 +4395,14 @@ describe('EscalationPoliciesSection (W05b)', () => {
   });
   it('saves user-only targets and repeats, preserving both when editing', async () => {
     renderSection([{ id: 'ep-user', orgId: 'org-1', partnerId: null, name: 'Alex on-call',
-      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 10, maxTimes: 2 } }] }]);
+      steps: [{ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 10, maxTimes: 2 } }] }]);
     fireEvent.click(within(screen.getByTestId('escalation-row-ep-user')).getByTestId('escalation-row-edit'));
     expect(await screen.findByLabelText('Alex')).toBeChecked();
     expect(screen.getByTestId('escalation-step-0-every')).toHaveValue(10);
     fireEvent.click(screen.getByTestId('escalation-policy-drawer-save'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/alerts/policies/ep-user', expect.objectContaining({ method: 'PUT' })));
     const call = fetchMock.mock.calls.find(([, options]) => options?.method === 'PUT')!;
-    expect(JSON.parse(call[1]!.body as string).steps[0]).toEqual({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], repeat: { everyMinutes: 10, maxTimes: 2 } });
+    expect(JSON.parse(call[1]!.body as string).steps[0]).toEqual({ delayMinutes: 5, channelIds: [], userIds: ['user-1'], renotify: { everyMinutes: 10, maxTimes: 2 } });
   });
   it('save is disabled while a step has no target', async () => {
     renderSection([]);
@@ -4313,7 +4434,7 @@ Expected: `runEscalationPolicySave is not a function`; `Unable to find an elemen
 
 ```ts
 export async function runEscalationPolicySave(
-  policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; repeat?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null },
+  policy: { id?: string; name: string; steps: Array<{ delayMinutes: number; channelIds: string[]; userIds?: string[]; renotify?: { everyMinutes: number; maxTimes: number } }>; ownerScope?: 'organization' | 'partner'; orgId?: string | null },
   deps: { onUnauthorized: () => void }
 ): Promise<void> {
   const isEdit = !!policy.id;
@@ -4338,6 +4459,8 @@ export async function runEscalationPolicyDelete(policy: { id: string; name: stri
 }
 ```
 
+D23/D25 regressions in the Task 12 drawer tests: malformed/non-array stored steps open without crashing and show “Stored policy was adjusted”; zero/fractional delay or delay 10081, repeat interval 1441, repeat count 11, eleven steps, and 51 occurrences cannot save. Test delays 1 and 10080 and 50 occurrences as valid. Picker tests cover org-only choices, partner/system additions, partner-wide selected-org users, and preserving previously stored user IDs absent from the org picker through a name/channel edit. Never intersect existing `userIds` with picker results. Mark the user-target policy **product owner confirmation pending**. Add `deliveryPage.escalation.storedPolicyAdjusted` in all locales and import the exported coercion helper wherever a policy list renders legacy steps.
+
 `EscalationPolicyDrawer.tsx`:
 
 ```tsx
@@ -4349,8 +4472,32 @@ import { Drawer } from '../../shared/Drawer';
 import type { ChannelChoice } from './useDeliveryResource';
 import type { EscalationPolicy, EditableEscalationPolicy } from './deliveryActions';
 
-type Step = { delayMinutes: number; channelIds: string[]; userIds: string[]; repeat?: { everyMinutes: number; maxTimes: number } };
+type Step = { delayMinutes: number; channelIds: string[]; userIds: string[]; renotify?: { everyMinutes: number; maxTimes: number } };
 export type EscalationDrawerValues = { name: string; steps: Step[]; ownerScope: 'organization' | 'partner' };
+
+export function coerceStoredSteps(raw: unknown): { steps: Step[]; adjusted: boolean } {
+  const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+  const positive = (value: unknown, fallback: number) => typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : fallback;
+  const source = Array.isArray(raw) ? raw : [];
+  let remaining = 50;
+  const steps: Step[] = source.slice(0, 10).map(value => {
+    const s = value && typeof value === 'object' ? value : {};
+    const renotify = s.renotify && typeof s.renotify === 'object' ? {
+      everyMinutes: Math.min(1440, positive(s.renotify.everyMinutes, 15)),
+      maxTimes: Math.min(10, positive(s.renotify.maxTimes, 1)),
+    } : undefined;
+    const step: Step = { delayMinutes: Math.min(10080, positive(s.delayMinutes, 15)), channelIds: ids(s.channelIds), userIds: ids(s.userIds), renotify };
+    return step;
+  });
+  steps.forEach((step, index) => {
+    const allowedRepeats = Math.max(0, remaining - 1 - (steps.length - index - 1));
+    if (step.renotify) step.renotify = allowedRepeats > 0 ? { ...step.renotify, maxTimes: Math.min(step.renotify.maxTimes, allowedRepeats) } : undefined;
+    remaining -= 1 + (step.renotify?.maxTimes ?? 0);
+  });
+  return { steps: steps.length ? steps : [{ delayMinutes: 15, channelIds: [], userIds: [] }],
+    adjusted: JSON.stringify(raw) !== JSON.stringify(steps) };
+}
+
 
 export default function EscalationPolicyDrawer({ open, policy, channels, orgId, ownerScope, showOwnerScope, saving, onSave, onCancel }: {
   open: boolean; policy: EditableEscalationPolicy | null; channels: ChannelChoice[]; orgId: string | null;
@@ -4360,7 +4507,7 @@ export default function EscalationPolicyDrawer({ open, policy, channels, orgId, 
   const { t } = useTranslation('alerts');
   const [values, setValues] = useState<EscalationDrawerValues>(() => ({
     name: policy?.name ?? '',
-    steps: policy?.steps?.length ? policy.steps.map((s) => ({ ...s, channelIds: [...s.channelIds], userIds: [...(s.userIds ?? [])] })) : [{ delayMinutes: 15, channelIds: [], userIds: [] }],
+    steps: coerceStoredSteps(policy?.steps).steps,
     ownerScope,
   }));
   const targetQuery = new URLSearchParams({ rail: 'users', ownerScope: values.ownerScope });
@@ -4370,12 +4517,14 @@ export default function EscalationPolicyDrawer({ open, policy, channels, orgId, 
   const toggleChannel = (i: number, id: string) => setStep(i, { channelIds: values.steps[i]!.channelIds.includes(id) ? values.steps[i]!.channelIds.filter((c) => c !== id) : [...values.steps[i]!.channelIds, id] });
   const canSave = users.status === 'success' && values.name.trim().length > 0 && values.steps.length > 0 && values.steps.length <= 10
     && values.steps.every((s) => Number.isInteger(s.delayMinutes) && s.delayMinutes >= 1 && s.delayMinutes <= 10080 && s.channelIds.length + s.userIds.length > 0
-      && (!s.repeat || (Number.isInteger(s.repeat.everyMinutes) && s.repeat.everyMinutes >= 1 && s.repeat.everyMinutes <= 10080
-        && Number.isInteger(s.repeat.maxTimes) && s.repeat.maxTimes >= 1 && s.repeat.maxTimes <= 100)));
+      && (!s.renotify || (Number.isInteger(s.renotify.everyMinutes) && s.renotify.everyMinutes >= 1 && s.renotify.everyMinutes <= 1440
+        && Number.isInteger(s.renotify.maxTimes) && s.renotify.maxTimes >= 1 && s.renotify.maxTimes <= 10)))
+    && values.steps.reduce((total, step) => total + 1 + (step.renotify?.maxTimes ?? 0), 0) <= 50;
 
   return (
     <Drawer open={open} onClose={onCancel} title={policy ? t('deliveryPage.escalation.edit') : t('deliveryPage.escalation.new')} width="max-w-lg" dataTestId="escalation-policy-drawer" closeDisabled={saving}>
       <div className="space-y-5 p-1">
+        {policy && coerceStoredSteps(policy.steps).adjusted && <p role="status">{t('deliveryPage.escalation.storedPolicyAdjusted')}</p>}
         {!policy && showOwnerScope && (
           <fieldset className="space-y-2 rounded-md border p-3" data-testid="escalation-owner">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('notificationChannelsPage.scope')}</legend>
@@ -4417,24 +4566,24 @@ export default function EscalationPolicyDrawer({ open, policy, channels, orgId, 
                   onChange={() => setStep(i, { userIds: step.userIds.includes(user.id)
                     ? step.userIds.filter(id => id !== user.id) : [...step.userIds, user.id] })} />{user.name}
               </label>)}
-              <label className="flex gap-2"><input type="checkbox" checked={!!step.repeat}
+              <label className="flex gap-2"><input type="checkbox" checked={!!step.renotify}
                 data-testid={`escalation-step-${i}-repeat`}
-                onChange={e => setStep(i, { repeat: e.target.checked ? { everyMinutes: 15, maxTimes: 1 } : undefined })} />
+                onChange={e => setStep(i, { renotify: e.target.checked ? { everyMinutes: 15, maxTimes: 1 } : undefined })} />
                 {t('deliveryPage.escalation.repeat')}
               </label>
-              {step.repeat && <div className="grid grid-cols-2 gap-3">
-                <label>{t('deliveryPage.escalation.everyMinutes')}<input type="number" min={1} max={10080}
-                  data-testid={`escalation-step-${i}-every`} value={step.repeat.everyMinutes}
-                  onChange={e => setStep(i, { repeat: { ...step.repeat!, everyMinutes: Number(e.target.value) } })} /></label>
-                <label>{t('deliveryPage.escalation.maxTimes')}<input type="number" min={1} max={100}
-                  data-testid={`escalation-step-${i}-times`} value={step.repeat.maxTimes}
-                  onChange={e => setStep(i, { repeat: { ...step.repeat!, maxTimes: Number(e.target.value) } })} /></label>
+              {step.renotify && <div className="grid grid-cols-2 gap-3">
+                <label>{t('deliveryPage.escalation.everyMinutes')}<input type="number" min={1} max={1440}
+                  data-testid={`escalation-step-${i}-every`} value={step.renotify.everyMinutes}
+                  onChange={e => setStep(i, { renotify: { ...step.renotify!, everyMinutes: Number(e.target.value) } })} /></label>
+                <label>{t('deliveryPage.escalation.maxTimes')}<input type="number" min={1} max={10}
+                  data-testid={`escalation-step-${i}-times`} value={step.renotify.maxTimes}
+                  onChange={e => setStep(i, { renotify: { ...step.renotify!, maxTimes: Number(e.target.value) } })} /></label>
               </div>}
 
             </div>
           ))}
           {values.steps.length < 10 && (
-            <button type="button" onClick={() => setValues((v) => ({ ...v, steps: [...v.steps, { delayMinutes: (v.steps.at(-1)?.delayMinutes ?? 0) + 15, channelIds: [], userIds: [] }] }))} data-testid="escalation-add-step" className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted">
+            <button type="button" onClick={() => setValues((v) => ({ ...v, steps: [...v.steps, { delayMinutes: Math.min(10080, (v.steps.at(-1)?.delayMinutes ?? 0) + 15), channelIds: [], userIds: [] }] }))} data-testid="escalation-add-step" className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted">
               <Plus className="h-3.5 w-3.5" /> {t('deliveryPage.escalation.addStep')}
             </button>
           )}
@@ -4511,8 +4660,8 @@ export default function EscalationPoliciesSection({ policies, channels, currentO
                   {isPartnerRail(p) && <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary" data-testid="escalation-partner-wide-badge">{t('notificationChannelsPage.allOrgs')}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {t('deliveryPage.escalation.stepCount', { count: p.inherited === true ? p.stepCount : p.steps.length })}
-                  {p.inherited !== true && p.steps.length ? ` · ${p.steps.map((s) => `${s.delayMinutes}m`).join(' → ')}` : ''}
+                  {t('deliveryPage.escalation.stepCount', { count: p.inherited === true ? p.stepCount : Array.isArray(p.steps) ? p.steps.length : 0 })}
+                  {p.inherited !== true && Array.isArray(p.steps) && p.steps.length ? ` · ${coerceStoredSteps(p.steps).steps.map((s) => `${s.delayMinutes}m`).join(' → ')}` : ''}
                 </p>
               </div>
               {canEdit(p) && (
@@ -4573,6 +4722,8 @@ PR 2 body must include the Settings-rule-9 statement (Global Constraints) and bo
 - Produces: `describeDelivery(input, resolved, executor?): Promise<DeliveryPreview>`; `DeliveryPreview = ResolvedDelivery & { display: string; description: { channels: Array<{ id: string; name: string; enabled: boolean }>; escalationPolicy: { id: string; name: string } | null; owner: 'organization' | 'partner' | null } }`. `description` is additive: clients localize surrounding text without parsing the English `display` or changing the fixed cross-wave resolver contract.
 - HTTP: `GET /alerts/delivery/resolve?orgId=<uuid>&severity=<severity>[&kind=<kind>&siteId=<uuid>&monitorId=<uuid>]` → **bare** `DeliveryPreview`, not `{ data }`. `orgId` and `severity` required; invalid query 400; missing authentication 401; missing `alerts:read`/foreign org/disallowed site 403; missing or wrong-owner org/site/monitor 404; unexpected resolver failure 500. A supplied kind describes a draft condition and takes precedence over the saved monitor kind, matching Task 2. No legacy override is accepted from a browser.
 - A partner monitor requires a concrete organization to preview its inherited routing. An omitted site means site-scoped rows fail closed; it does not mean “all sites”. The endpoint never queues a test notification.
+
+- D22–D26 parity: preview delegates to the same resolver order (monitor → unretired legacy source when supplied internally → winning row → null) and must not infer a second escalation or recipient policy. Browser requests cannot inject legacy overrides. Extend the shared gate for a legacy explicit escalation conflicting with a row, an empty-channel decision that still schedules escalation, and org-default deletion restoring the partner row (or inbox-only initial delivery with no partner row). Target-user eligibility remains Task 6’s alert-org fire-time check.
 
 - [ ] **Step 1: Write the failing route and description tests**
 
@@ -5543,6 +5694,8 @@ git commit -m "feat(web): show resolved Notify inheritance and preview delivery 
 ### Task 15: Register `manage_delivery` across chat, MCP, guardrails, and the agent catalog
 
 **Files:**
+- Create: `apps/api/src/services/delivery/railContracts.ts` (shared schemas/access helpers; no route imports)
+- Modify: `apps/api/src/routes/alerts/schemas.ts`, `helpers.ts`, `routing.ts` (import/re-export moved declarations)
 - Create: `apps/api/src/services/aiToolsDelivery.ts`, `aiToolsDelivery.test.ts`
 - Modify: `apps/api/src/services/aiTools.ts:68,318`, `aiToolSchemas.ts:100,1580`, `aiGuardrails.ts:142,1263,1613`, `aiAgents/agentToolCatalog.ts:84`, `aiAgentSystemPrompt.ts:108`
 - Modify: `apps/api/src/services/aiAgentSdkTools.ts:163,279,2507` (mandatory SDK registration surface)
@@ -5568,16 +5721,15 @@ git commit -m "feat(web): show resolved Notify inheritance and preview delivery 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
 vi.mock('../middleware/auth', async original => ({ ...await original<typeof import('../middleware/auth')>(), hasSatisfiedMfa: vi.fn(() => true) }));
-vi.mock('../routes/alerts/routing', async original => ({ ...await original<typeof import('../routes/alerts/routing')>(), getRoutingRuleWithAccess: vi.fn(), canAccessRoutingSites: vi.fn(async () => true) }));
-vi.mock('../routes/alerts/helpers', async original => ({ ...await original<typeof import('../routes/alerts/helpers')>(), getEscalationPolicyWithOrgCheck: vi.fn() }));
+vi.mock('./delivery/railContracts', async original => ({ ...await original<typeof import('./delivery/railContracts')>(), getRoutingRuleWithAccess: vi.fn(), canAccessRoutingSites: vi.fn(async () => true), getEscalationPolicyWithOrgCheck: vi.fn() }));
 vi.mock('./delivery/describeDelivery', () => ({ previewDelivery: vi.fn() }));
 vi.mock('./delivery/inheritedRails', () => ({ readInheritedRails: vi.fn(async () => []) }));
 vi.mock('./delivery/railOwnership', async original => ({ ...await original<typeof import('./delivery/railOwnership')>(), partnerIdForOrg: vi.fn(async () => null) }));
 vi.mock('./delivery/routingRuleWrites', async original => ({ ...await original<typeof import('./delivery/routingRuleWrites')>(), upsertDefaultRow: vi.fn(), escalationPolicyCompatible: vi.fn(async () => true) }));
 import { db } from '../db';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
-import { getRoutingRuleWithAccess } from '../routes/alerts/routing';
-import { getEscalationPolicyWithOrgCheck } from '../routes/alerts/helpers';
+import { getRoutingRuleWithAccess } from './delivery/railContracts';
+import { getEscalationPolicyWithOrgCheck } from './delivery/railContracts';
 import { previewDelivery } from './delivery/describeDelivery';
 import { readInheritedRails } from './delivery/inheritedRails';
 import { validateEscalationUsers } from './delivery/escalationExecution';
@@ -5635,13 +5787,14 @@ describe('manage_delivery', () => {
     expect(await call({ action: 'set_default', data: { channelIds: [] } })).toEqual({ data: row });
     expect(upsertDefaultRow).toHaveBeenCalledWith({ orgId: ORG, partnerId: null }, { channelIds: [], escalationPolicyId: null }, expect.anything());
   });
-  it('rejects foreign channels, foreign escalation, default rename, and deletion on either axis', async () => {
+  it('rejects foreign channels, foreign escalation, default rename, and partner default deletion', async () => {
     channels([]);
     expect(await call({ action: 'set_default', data: { channelIds: [CH] } })).toMatchObject({ status: 400 });
     vi.mocked(escalationPolicyCompatible).mockResolvedValue(false);
     expect(await call({ action: 'set_default', data: { channelIds: [], escalationPolicyId: ID } })).toMatchObject({ status: 400 });
     expect(await call({ action: 'update_routing', id: ID, data: { name: 'changed' } })).toMatchObject({ status: 400 });
-    expect(await call({ action: 'delete_routing', id: ID })).toMatchObject({ status: 409 });
+    vi.mocked(db.delete).mockReturnValue({ where: () => ({ returning: async () => [{ id: ID }] }) } as never);
+    expect(await call({ action: 'delete_routing', id: ID })).toEqual({ data: { id: ID, deleted: true } });
     vi.mocked(getRoutingRuleWithAccess).mockResolvedValue({ ...row, orgId: null, partnerId: OTHER } as never);
     expect(await call({ action: 'delete_routing', id: ID }, auth({ scope: 'partner', partnerId: OTHER, partnerOrgAccess: 'all' }))).toMatchObject({ status: 409 });
   });
@@ -5729,6 +5882,8 @@ it('makes delivery reachable without changing prior frozen gaps', () => {
 });
 ```
 
+Additional tool regressions use the same real validation service as HTTP: org callers cannot newly add a partner-only user, an existing partner-picked ID survives org edits, partner/system callers can select eligible partner users, and partner-wide policies accept active selected-org users while fire-time delivery filters per alert org (**product owner confirmation pending**). Reject out-of-bounds repeat interval/count, eleven steps and 51 occurrences on both create/update; accept 50. Delete an org default with governance access and verify inherited delivery on resolve; deny a ceiling-limited caller and always reject partner-default deletion. `resolve` delegates to Task 13’s preview service, including no-channel escalation and the same D22 precedence.
+
 - [ ] **Step 2: Run, expect FAIL**
 
 ```bash
@@ -5756,7 +5911,7 @@ export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefi
 // manage_delivery: deliveryToolSchema,
 ```
 
-Export the following existing declarations in `routes/alerts/routing.ts` (bodies unchanged from Task 3/current code): `createRoutingRuleSchema`, `updateRoutingRuleSchema`, `upsertDefaultRowSchema`, `getRoutingRuleWithAccess`. The concrete edit is adding `export` before each `const` or `async function` declaration. Consume `routingSiteIds` and `canAccessRoutingSites` already exported in Task 8/PR 1; do not defer those exports to this task. The AI module never invokes Hono middleware.
+D27: move the shared declarations into `services/delivery/railContracts.ts` before wiring the AI handler: `createRoutingRuleSchema`, `updateRoutingRuleSchema`, `upsertDefaultRowSchema`, `getRoutingRuleWithAccess`, `routingSiteIds`, `canAccessRoutingSites` from `routes/alerts/routing.ts`; `createPolicySchema`, `updatePolicySchema` from `routes/alerts/schemas.ts`; and `resolveWriteOrgId`, `getEscalationPolicyWithOrgCheck` from `routes/alerts/helpers.ts`. Preserve their bodies and authorization checks, adjust relative imports, and have the original route files import/re-export them so existing callers remain compatible. `railContracts.ts` imports `escalationStepsSchema` directly from `./escalationSteps`; the Zod-only step schemas/type remain there as established in Task 5. Move any transitive route-local dependencies with these helpers: this service must have no `routes/` imports. Task 8's route exports still land in PR 1; this PR 3 extraction preserves them. The AI module never invokes Hono middleware.
 
 `aiToolsDelivery.ts`:
 
@@ -5769,9 +5924,9 @@ import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { deliveryToolSchema } from './aiToolSchemas';
 import { createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
-  canAccessRoutingSites, routingSiteIds, getRoutingRuleWithAccess } from '../routes/alerts/routing';
-import { createPolicySchema, updatePolicySchema } from '../routes/alerts/schemas';
-import { resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../routes/alerts/helpers';
+  canAccessRoutingSites, routingSiteIds, getRoutingRuleWithAccess } from './delivery/railContracts';
+import { createPolicySchema, updatePolicySchema } from './delivery/railContracts';
+import { resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from './delivery/railContracts';
 import { canManagePartnerWidePolicies, canReadPartnerWideRows, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { DeliveryWriteError, assertDefaultRowPatch, escalationPolicyCompatible,
@@ -5859,7 +6014,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
     const owner = { orgId: row.orgId, partnerId: row.partnerId }; assertWritable(owner, auth);
     if (!(await canAccessRoutingSites(auth, owner, routingSiteIds(row.conditions), true))) fail(403, 'Routing rule sites are outside your permitted sites');
     if (input.action === 'delete_routing') {
-      if (row.isDefault) fail(409, 'The Everything else row cannot be deleted; empty its channels for inbox only');
+      if (row.isDefault && row.orgId === null) fail(409, 'The partner Everything else row cannot be deleted; empty its channels for inbox delivery (escalation still applies)');
+      // assertWritable above enforces governance for deleting the optional org default.
       const deleted = await db.delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, row.id)).returning({ id: notificationRoutingRules.id });
       if (!deleted.length) fail(404, 'Routing rule not found');
       return { data: { id: row.id, deleted: true } };
@@ -5878,7 +6034,7 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
     const owner = resolveOwner(input, auth); assertWritable(owner, auth);
     const data = createPolicySchema.omit({ ownerScope: true, orgId: true }).strict().parse(input.data);
     await validateChannels(data.steps.flatMap(step => step.channelIds), owner);
-    await validateEscalationUsers(data.steps, owner);
+    await validateEscalationUsers(data.steps, owner, auth);
     const [row] = await db.insert(escalationPolicies).values({ ...owner, name: data.name, steps: data.steps }).returning();
     if (!row) throw new Error('Insert returned no row');
     return { data: row };
@@ -5895,7 +6051,7 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
   if (!Object.keys(data).length) fail(400, 'No updates provided');
   if (data.steps) {
     await validateChannels(data.steps.flatMap(step => step.channelIds), owner);
-    await validateEscalationUsers(data.steps, owner);
+    await validateEscalationUsers(data.steps, owner, auth, row.steps);
   }
   const [updated] = await db.update(escalationPolicies).set({ ...data, updatedAt: new Date() }).where(eq(escalationPolicies.id, row.id)).returning();
   if (!updated) fail(404, 'Escalation policy not found');
@@ -5963,7 +6119,7 @@ manage_delivery: 'alerts_monitoring',
 Insert this exact bullet in the tool section of `aiAgentSystemPrompt.ts`'s existing prompt string (no new template-string delimiters):
 
 ```text
-- **Alert delivery**: manage_delivery (resolve/list_routing/create_routing/update_routing/delete_routing/set_default/list_escalation/create_escalation/update_escalation/delete_escalation). Resolve inheritance before changing delivery. An empty channelIds list on set_default means inbox only. Default rows cannot be deleted. Channel CRUD remains manage_notification_channels.
+- **Alert delivery**: manage_delivery (resolve/list_routing/create_routing/update_routing/delete_routing/set_default/list_escalation/create_escalation/update_escalation/delete_escalation). Resolve inheritance before changing delivery. An empty channelIds list on set_default means inbox only initially; independently resolved escalation still runs. The partner default is permanent; delete_routing may remove the optional org default with governance access to inherit again. Channel CRUD remains manage_notification_channels.
 ```
 
 - [ ] **Step 5: Run, expect PASS**
@@ -5979,7 +6135,7 @@ The frozen snapshot must pass without `-u`: this wave adds a reachable tool and 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/services/aiToolsDelivery.ts apps/api/src/services/aiToolsDelivery.test.ts apps/api/src/services/aiTools.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiAgentSystemPrompt.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.registryParity.contract.test.ts apps/api/src/services/aiAgents/agentToolCatalog.contract.test.ts apps/api/src/routes/alerts/routing.ts
+git add apps/api/src/services/delivery/railContracts.ts apps/api/src/routes/alerts/schemas.ts apps/api/src/routes/alerts/helpers.ts apps/api/src/services/aiToolsDelivery.ts apps/api/src/services/aiToolsDelivery.test.ts apps/api/src/services/aiTools.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiAgentSystemPrompt.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.registryParity.contract.test.ts apps/api/src/services/aiAgents/agentToolCatalog.contract.test.ts apps/api/src/routes/alerts/routing.ts
 git commit -m "feat(ai): manage delivery through shared resolution and guarded writes (W05b)"
 ```
 
@@ -6049,12 +6205,12 @@ Open **Alerts > Delivery**, then **Routing**. A monitor's own Notify setting win
 2. A monitor set to **Inbox only** sends no external notifications and does not escalate. A monitor set to **Use these channels instead** uses its own channel list.
 3. During the conversion period, an unretired legacy rule's explicit channel override still applies. Conversion carries that choice onto the monitor; upgrading Delivery does not silently remove it.
 4. Other alerts use the first matching enabled routing row. Rows match severity, monitor kind (`monitorKinds`), and site. Lower priority numbers run first; organization rows win ties with partner rows. Non-default rows are considered before defaults.
-5. If no ordinary row matches, the organization's **Everything else** row applies when present; otherwise the partner's **Everything else** row applies. Empty default channels mean **Inbox only**. With no default row, delivery is also inbox only.
+5. If no ordinary row matches, the organization's **Everything else** row applies when present; otherwise the partner's **Everything else** row applies. Empty default channels mean **Inbox only** initially. With no default row, initial delivery is also inbox only; any independently resolved escalation still runs.
 </Steps>
 
 A site-specific row matches only a known matching site. A monitor-kind row cannot match an alert with no monitor kind. The old condition-type and device-tag routing inputs never affected delivery and are no longer accepted.
 
-**Everything else** is always shown last and cannot be reordered or deleted. Its channels and escalation policy can be edited. In an organization view, **Customize for this organization** creates the optional org default from the partner's current choices. That row then shadows the partner default for that organization.
+**Everything else** is always shown last and cannot be reordered. The partner row is permanent; **Use partner default** removes an optional org override after confirming the inherited channels/escalation (or inbox only). Its channels and escalation policy can be edited. In an organization view, **Customize for this organization** creates the optional org default from the partner's current choices. That row stops following the partner default for that organization and can be removed later to inherit again.
 
 ### Preview delivery
 
@@ -6070,19 +6226,21 @@ The decision returns eligible `channelIds` and `skippedChannelIds` with `disable
 
 Open **Alerts > Delivery > Escalation policies** to create, edit, or delete a policy. Give it a name and timed steps, then choose it on a routing row or in a monitor's Notify card. Partner-wide policies have an **All orgs** badge and require partner-wide management access to change.
 
-Steps notify channels, users in-app, or both. Optional `repeat: { everyMinutes, maxTimes }` repeats a step at that interval; `maxTimes` is the number of additional sends after its first notification.
+Steps notify channels, users in-app, or both, with at least one target per step. Use 1..10 steps, integer delays of 1..10080 minutes, repeat intervals of 1..1440 minutes and 1..10 additional sends, with at most 50 total occurrences. Optional `renotify: { everyMinutes, maxTimes }` repeats a step at that interval; `maxTimes` is the number of additional sends after its first notification.
 
-Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise the winning routing/default row's escalation applies. During conversion, a legacy rule's explicit escalation is the final fallback. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
+Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise an unretired legacy source's explicit escalation wins, followed by the winning routing/default row's escalation, then none. W05d removes the legacy arm only after conversion or retirement, leaving monitor → row → null. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
 
 ```json
 {
   "name": "On-call",
   "steps": [
     { "delayMinutes": 15, "channelIds": ["channel-uuid-1"] },
-    { "delayMinutes": 60, "channelIds": ["channel-uuid-1"], "userIds": ["user-uuid-1"], "repeat": { "everyMinutes": 15, "maxTimes": 2 } }
+    { "delayMinutes": 60, "channelIds": ["channel-uuid-1"], "userIds": ["user-uuid-1"], "renotify": { "everyMinutes": 15, "maxTimes": 2 } }
   ]
 }
 ```
+
+User targets are validated on save and checked again against the alert’s organization when delivered: active unrestricted org members or partner users whose all/selected org access includes that org. Org callers may newly select only org members, while existing partner-picked targets survive edits. Partner/system callers can also select partner users; partner-wide policies list all active partner users and re-filter per alert. **Product owner confirmation pending** (HO-20260919-alerting-consolidation Q1).
 
 ### From automations
 
@@ -6090,7 +6248,7 @@ An automation's `send_notification` action targets its configured channel explic
 
 ### AI and MCP
 
-Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, and list/create/update/delete escalation policies. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
+Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, remove an optional org default with `delete_routing` to inherit again (the partner default is permanent), and list/create/update/delete escalation policies using the same bounded schemas and caller-aware user validation as the web/API. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
 
 ### Upgrade note: explicit defaults
 
@@ -6147,13 +6305,13 @@ Replace from `### Setting Up a Channel` through the separator before `## Offline
 
 Open **Alerts > Delivery > Routing**. Add a rule with a name, priority, optional severities, monitor kinds, and sites, plus notification channels and an optional escalation policy. Save in the row drawer.
 
-The monitor's Notify override wins. Otherwise the first matching enabled ordinary row wins: priority ascending, organization before partner at equal priority. If none matches, the optional organization **Everything else** row wins over the partner default. A default with empty channels means inbox only; default rows cannot be deleted or reordered. During conversion an unretired legacy rule's explicit delivery override also retains precedence.
+The monitor's Notify override wins. Otherwise the first matching enabled ordinary row wins: priority ascending, organization before partner at equal priority. If none matches, the optional organization **Everything else** row wins over the partner default. A default with empty channels means inbox only initially; independent escalation still runs; neither default can be reordered. The partner default is permanent; the optional org default can be removed with **Use partner default** to inherit again. During conversion an unretired legacy rule's explicit delivery override also retains precedence.
 
 Use **Test this rule set** to inspect the decision for one organization, severity, kind, and site without sending a notification. The monitor's **Notify > Inherit** card uses the same resolver and shows the inherited destinations and their source.
 
 ## Escalation Policies
 
-Create and edit policies in **Alerts > Delivery > Escalation policies**, then select one on a routing row or in the monitor's Notify card. Escalation is independent of initial channels: an explicit monitor escalation wins except in Inbox-only mode, followed by the winning routing row's escalation and the transitional legacy override. Acknowledging or resolving an alert cancels pending escalation jobs.
+Create and edit policies in **Alerts > Delivery > Escalation policies**, then select one on a routing row or in the monitor's Notify card. Escalation is independent of initial channels: an explicit monitor escalation wins except in Inbox-only mode, followed by an unretired legacy source’s explicit escalation, then the winning routing row’s escalation, then none. Acknowledging or resolving an alert cancels pending escalation jobs.
 
 See [Notifications](/features/notifications/#notification-routing) for the complete precedence, API preview, and upgrade note. Existing bookmarks to the Channels and Routing Rules console pages redirect permanently to Delivery; the channel API URLs remain unchanged.
 
@@ -6201,7 +6359,7 @@ git commit -m "docs(alerts): explain Delivery previews, explicit defaults, and o
 - Modify only if the checks identify a defect in this wave: its owning implementation and regression test, using the Task 1–16 file lists. Verification itself adds no production feature, migration, or empty commit.
 
 **Interfaces:**
-- Consumes: PR 1 Tasks 1–8; PR 2 Tasks 9–12 on PR 1; PR 3 Tasks 13–16 on PRs 1–2. Run the relevant blocks **before each PR**; absent future-PR files are not failure waivers for the final wave gate.
+- Consumes: PR 1 Tasks 1–8; PR 2 Tasks 9–12 on PR 1; PR 3 Tasks 13–16 on PRs 1–2. Run the full API unit suite and relevant remaining blocks **before each PR**; absent future-PR files are not failure waivers for the final wave gate.
 - Produces: passing typecheck/build; unit, i18n, guardrail, migration replay, and real `breeze_app` integration evidence; no all-enabled-channel fallback or old console destinations; stable cross-wave names. The spec gate requires exact channel IDs and independent escalation agreement, not just equal counts or a mocked database. D21 additionally requires identical unavailable results and HTTP shapes for foreign/missing references, exact inherited DTO keys (no config or step targets), and denial of partner writes from org tokens (42501/403). No new policy or RLS allowlist edit is permitted; the replay suite covers only migration row/column/index behavior.
 - Migration ordering: before pushing, inspect the newest migration on **origin/main** and compare with `2026-10-23-100000-delivery-routing-default-rows.sql`; rename only an unshipped migration if needed and update every filename reference in this plan's implemented tests. Never rename a shipped migration.
 - Commands below are **implementation-time instructions**. The plan-finishing author must not execute them while appending this document. All commands start from the repository root; parentheses prevent accumulated `cd` state. Any failure stops the pass; no `grep`-filtered typecheck, `|| echo` success mask, or snapshots updated to hide mismatches.
@@ -6216,6 +6374,7 @@ from pathlib import Path
 required = [
  'apps/api/src/services/delivery/resolveDelivery.ts',
  'apps/api/src/services/delivery/describeDelivery.ts',
+ 'apps/api/src/services/delivery/escalationSteps.ts',
  'apps/api/src/services/delivery/escalationExecution.ts',
  'apps/api/src/services/delivery/inheritedRails.ts',
  'apps/api/src/routes/alerts/deliveryRails.ts',
@@ -6280,7 +6439,7 @@ it('inherit escalation survives filtering all disabled baseline channels', async
 ```
 
 ```bash
-(cd apps/api && npx vitest run src/services/notificationDispatcher.monitorDelivery.test.ts)
+(cd apps/api && npx vitest run)
 ```
 
 Expected before the correction: `expected "spy" to be called 1 times, but got 0 times`.
@@ -6301,7 +6460,7 @@ pnpm --filter @breeze/docs build
 Unit checks for PR 1 and each dependent PR:
 
 ```bash
-(cd apps/api && npx vitest run src/services/delivery/escalationExecution.test.ts src/services/delivery/inheritedRails.test.ts src/routes/alerts/deliveryRails.test.ts src/services/delivery/resolveDelivery.test.ts src/services/delivery/resolveDelivery.sites.test.ts src/services/delivery/routingRuleWrites.test.ts src/services/notificationDispatcher src/routes/alerts/routing.defaultRow.test.ts src/routes/alerts/routing.writes.test.ts src/routes/alerts/routing.authz.test.ts src/routes/alerts/routing.siteScope.test.ts src/routes/alerts/routing.list.test.ts src/routes/alerts/policies.authz.test.ts src/routes/alerts/policies.steps.test.ts src/db/migrationRlsScope.test.ts src/db/autoMigrate.test.ts src/db/migrationOrdering.test.ts src/__tests__/partner-wide-write-coverage.test.ts src/__tests__/site-ceiling-write-coverage.test.ts)
+(cd apps/api && npx vitest run)
 ```
 
 Additional PR 2/3 web checks:
@@ -6310,10 +6469,9 @@ Additional PR 2/3 web checks:
 (cd apps/web && npx vitest run src/components/alerts/DeliveryPage.test.tsx src/components/alerts/delivery/useDeliveryResource.test.tsx src/components/alerts/AlertsTabStrip.test.tsx src/components/alerts/delivery/deliveryActions.test.ts src/components/alerts/delivery/RoutingSection.test.tsx src/components/alerts/delivery/EscalationPoliciesSection.test.tsx src/lib/i18n/translationCoverage.test.ts src/lib/__tests__/settingsPageRegistry.test.ts src/lib/__tests__/no-silent-mutations.test.ts src/lib/__tests__/no-translated-comparisons.test.ts)
 ```
 
-Additional PR 3 checks:
+Additional PR 3 web checks (API coverage is included in the full suite above):
 
 ```bash
-(cd apps/api && npx vitest run src/routes/alerts/delivery.test.ts src/services/delivery/describeDelivery.test.ts src/services/aiToolsDelivery.test.ts src/services/aiAgentSdkTools.registryParity.contract.test.ts src/services/aiAgentSdkTools.mcpCoverage.test.ts src/services/aiAgents/agentToolCatalog.contract.test.ts src/services/aiAgentSystemPrompt.test.ts)
 (cd apps/web && npx vitest run src/components/alerts/delivery/DeliveryPreview.test.tsx src/components/monitoring/MonitorEditor.test.tsx)
 ```
 

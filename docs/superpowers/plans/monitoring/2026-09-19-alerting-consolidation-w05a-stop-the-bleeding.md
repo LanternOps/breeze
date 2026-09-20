@@ -1401,10 +1401,10 @@ cd apps/web && npx vitest run src/components/configurationPolicies src/component
 ```
 Expected: all green. `settingsPageRegistry.test.ts` still passes because the alert-templates index remains registered; only the dynamic `new` branch redirects.
 
-- [ ] **Step 3: API suites touched**
+- [ ] **Step 3: Full API unit suite (each PR)**
 
 ```bash
-cd apps/api && npx vitest run src/routes/alerts src/services/notificationDispatcher
+cd apps/api && npx vitest run
 ```
 Expected: green.
 
