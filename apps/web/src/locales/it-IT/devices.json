@@ -250,6 +250,7 @@
     "deploySoftware": "Distribuisci software",
     "clearSessions": "Cancella sessioni",
     "changeSite": "Cambia sito",
+    "moveOrg": "Sposta in un'organizzazione",
     "exitMaintenance": "Esci dalla manutenzione",
     "enterMaintenance": "Entra in manutenzione",
     "decommission": "Rimuovi",
@@ -576,6 +577,7 @@
     "assignPolicy": "Assegna un criterio di configurazione"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
     "online": "online",
     "offline": "offline",
@@ -2383,6 +2385,32 @@
     "submitting": "Elaborazione…",
     "cancel": "Annulla",
     "genericError": "Impossibile avviare la modalità manutenzione."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Sposta in un'altra organizzazione",
+    "description": "Sposta {{hostname}} fuori da {{orgName}}. Cronologia, ticket e criteri lo seguono e l'agente si riconnette sotto la nuova organizzazione.",
+    "targetOrgLabel": "Organizzazione di destinazione",
+    "targetOrgPlaceholder": "Scegli un'organizzazione",
+    "targetSiteLabel": "Sede di destinazione",
+    "targetSitePlaceholder": "Scegli una sede",
+    "loadingSites": "Caricamento delle sedi…",
+    "noOtherOrgs": "Non esiste un'altra organizzazione attiva in cui spostare questo dispositivo.",
+    "noSites": "L'organizzazione scelta non ha ancora sedi. Aggiungine prima una.",
+    "currencyMismatchHeading": "Lavoro non fatturato in un'altra valuta",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registrazioni di tempo non fatturate e {{parts}} parti non fatturate mantengono la valuta originale dopo lo spostamento.",
+    "currencyMismatchAccept": "Ho capito: sposta il dispositivo e mantieni quelle righe nella valuta originale",
+    "currencyMismatchNoPermission": "Per accettare serve il permesso di scrittura delle fatture. Chiedi a un amministratore della fatturazione di fatturare o chiudere prima il lavoro aperto.",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpIntro": "Spostare un dispositivo tra organizzazioni richiede un secondo fattore.",
+    "stepUpCodeLabel": "Codice dell'app di autenticazione",
+    "stepUpPasskeyNote": "Confermerai con la tua passkey.",
+    "noStepUpFactor": "Aggiungi un'app di autenticazione o una passkey al tuo account prima di spostare dispositivi tra organizzazioni.",
+    "mfaRequired": "Completa prima l'accesso MFA, poi riprova.",
+    "submit": "Sposta dispositivo",
+    "submitStepUp": "Verifica e sposta",
+    "submitting": "In corso…",
+    "cancel": "Annulla",
+    "genericError": "Impossibile spostare il dispositivo."
   },
   "networkDeviceDetailPage": {
     "approval": {

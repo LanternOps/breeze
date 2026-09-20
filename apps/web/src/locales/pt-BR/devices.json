@@ -254,6 +254,7 @@
     "deploySoftware": "Implantar software",
     "clearSessions": "Limpar sessões",
     "changeSite": "Alterar site",
+    "moveOrg": "Mover para organização",
     "exitMaintenance": "Sair da manutenção",
     "enterMaintenance": "Entrar em manutenção",
     "decommission": "Remover",
@@ -576,6 +577,7 @@
     "assignPolicy": "Atribuir uma política de configuração"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} foi movido para {{orgName}}",
     "failedToFetchDevice": "Falha ao buscar o dispositivo",
     "online": "online",
     "offline": "offline",
@@ -2383,6 +2385,32 @@
     "submitting": "Processando…",
     "cancel": "Cancelar",
     "genericError": "Não foi possível iniciar o modo de manutenção."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Mover para outra organização",
+    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico, tickets e políticas vão junto, e o agente reconecta sob a nova organização.",
+    "targetOrgLabel": "Organização de destino",
+    "targetOrgPlaceholder": "Escolha uma organização",
+    "targetSiteLabel": "Local de destino",
+    "targetSitePlaceholder": "Escolha um local",
+    "loadingSites": "Carregando locais…",
+    "noOtherOrgs": "Não há outra organização ativa para a qual mover este dispositivo.",
+    "noSites": "A organização escolhida ainda não tem locais. Adicione um local primeiro.",
+    "currencyMismatchHeading": "Trabalho não faturado em outra moeda",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} lançamentos de tempo não faturados e {{parts}} peças não faturadas mantêm a moeda original após a movimentação.",
+    "currencyMismatchAccept": "Entendi — mover o dispositivo e manter essas linhas na moeda original",
+    "currencyMismatchNoPermission": "Aceitar isso exige permissão de escrita em faturas. Peça a um administrador de faturamento para faturar ou resolver o trabalho pendente primeiro.",
+    "stepUpHeading": "Confirme que é você",
+    "stepUpIntro": "Mover um dispositivo entre organizações exige um segundo fator.",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpPasskeyNote": "Você confirmará com sua chave de acesso.",
+    "noStepUpFactor": "Adicione um app autenticador ou uma chave de acesso à sua conta antes de mover dispositivos entre organizações.",
+    "mfaRequired": "Conclua primeiro o login com MFA e tente novamente.",
+    "submit": "Mover dispositivo",
+    "submitStepUp": "Verificar e mover",
+    "submitting": "Processando…",
+    "cancel": "Cancelar",
+    "genericError": "Não foi possível mover o dispositivo."
   },
   "networkDeviceDetailPage": {
     "approval": {

@@ -254,6 +254,7 @@
     "deploySoftware": "Software bereitstellen",
     "clearSessions": "Sitzungen beenden",
     "changeSite": "Standort ändern",
+    "moveOrg": "In Organisation verschieben",
     "exitMaintenance": "Wartungsmodus beenden",
     "enterMaintenance": "Wartungsmodus aktivieren",
     "decommission": "Entfernen",
@@ -576,6 +577,7 @@
     "assignPolicy": "Konfigurationsrichtlinie zuweisen"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
     "online": "online",
     "offline": "offline",
@@ -2383,6 +2385,32 @@
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "In eine andere Organisation verschieben",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "targetOrgLabel": "Zielorganisation",
+    "targetOrgPlaceholder": "Organisation auswählen",
+    "targetSiteLabel": "Zielstandort",
+    "targetSitePlaceholder": "Standort auswählen",
+    "loadingSites": "Standorte werden geladen…",
+    "noOtherOrgs": "Es gibt keine andere aktive Organisation, in die dieses Gerät verschoben werden kann.",
+    "noSites": "Die gewählte Organisation hat noch keine Standorte. Legen Sie zuerst einen Standort an.",
+    "currencyMismatchHeading": "Nicht abgerechnete Arbeit in einer anderen Währung",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
+    "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
+    "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie Geräte zwischen Organisationen verschieben.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "submit": "Gerät verschieben",
+    "submitStepUp": "Bestätigen und verschieben",
+    "submitting": "Wird ausgeführt…",
+    "cancel": "Abbrechen",
+    "genericError": "Das Gerät konnte nicht verschoben werden."
   },
   "networkDeviceDetailPage": {
     "approval": {

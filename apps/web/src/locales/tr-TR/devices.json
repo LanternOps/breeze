@@ -254,6 +254,7 @@
     "deploySoftware": "Yazılımı Dağıtın",
     "clearSessions": "Oturumları Temizle",
     "changeSite": "Siteyi Değiştir",
+    "moveOrg": "Kuruluşa taşı",
     "exitMaintenance": "Bakımdan Çık",
     "enterMaintenance": "Bakıma Girin",
     "decommission": "Çıkar",
@@ -576,6 +577,7 @@
     "assignPolicy": "Bir yapılandırma ilkesi atayın"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
     "failedToFetchDevice": "Cihaz getirilemedi",
     "online": "çevrimiçi",
     "offline": "çevrimdışı",
@@ -2383,6 +2385,32 @@
     "submitting": "İşleniyor…",
     "cancel": "İptal",
     "genericError": "Bakım modu başlatılamadı."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Başka bir kuruluşa taşı",
+    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi, biletleri ve ilkeleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
+    "targetOrgLabel": "Hedef kuruluş",
+    "targetOrgPlaceholder": "Bir kuruluş seçin",
+    "targetSiteLabel": "Hedef konum",
+    "targetSitePlaceholder": "Bir konum seçin",
+    "loadingSites": "Konumlar yükleniyor…",
+    "noOtherOrgs": "Bu cihazın taşınabileceği başka bir etkin kuruluş yok.",
+    "noSites": "Seçilen kuruluşun henüz konumu yok. Önce bir konum ekleyin.",
+    "currencyMismatchHeading": "Başka bir para biriminde faturalandırılmamış iş",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} faturalandırılmamış zaman girişi ve {{parts}} faturalandırılmamış parça, taşımadan sonra orijinal para birimini korur.",
+    "currencyMismatchAccept": "Anladım — cihazı taşı ve bu satırları orijinal para biriminde bırak",
+    "currencyMismatchNoPermission": "Bunu kabul etmek için fatura yazma izni gerekir. Önce bir faturalama yöneticisinden açık işi faturalandırmasını veya temizlemesini isteyin.",
+    "stepUpHeading": "Siz olduğunuzu doğrulayın",
+    "stepUpIntro": "Bir cihazı kuruluşlar arasında taşımak ikinci bir faktör gerektirir.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpPasskeyNote": "Geçiş anahtarınızla doğrulayacaksınız.",
+    "noStepUpFactor": "Cihazları kuruluşlar arasında taşımadan önce hesabınıza bir kimlik doğrulayıcı uygulaması veya geçiş anahtarı ekleyin.",
+    "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "submit": "Cihazı taşı",
+    "submitStepUp": "Doğrula ve taşı",
+    "submitting": "İşleniyor…",
+    "cancel": "İptal",
+    "genericError": "Cihaz taşınamadı."
   },
   "networkDeviceDetailPage": {
     "approval": {

@@ -254,6 +254,7 @@
     "deploySoftware": "Déployer un logiciel",
     "clearSessions": "Effacer les sessions",
     "changeSite": "Changement de site",
+    "moveOrg": "Déplacer vers une organisation",
     "exitMaintenance": "Désactiver la maintenance",
     "enterMaintenance": "Activer la maintenance",
     "decommission": "Retirer",
@@ -576,6 +577,7 @@
     "assignPolicy": "Attribuer une stratégie de configuration"
   },
   "deviceDetailPage": {
+    "movedToOrg": "{{hostname}} a été déplacé vers {{orgName}}",
     "failedToFetchDevice": "Impossible de récupérer l’appareil",
     "online": "en ligne",
     "offline": "hors ligne",
@@ -2383,6 +2385,32 @@
     "submitting": "Traitement…",
     "cancel": "Annuler",
     "genericError": "Impossible de démarrer le mode maintenance."
+  },
+  "moveDeviceOrgDialog": {
+    "title": "Déplacer vers une autre organisation",
+    "description": "Retire {{hostname}} de {{orgName}}. Son historique, ses tickets et ses stratégies suivent, et l'agent se reconnecte sous la nouvelle organisation.",
+    "targetOrgLabel": "Organisation cible",
+    "targetOrgPlaceholder": "Choisir une organisation",
+    "targetSiteLabel": "Site cible",
+    "targetSitePlaceholder": "Choisir un site",
+    "loadingSites": "Chargement des sites…",
+    "noOtherOrgs": "Aucune autre organisation active ne peut accueillir cet appareil.",
+    "noSites": "L'organisation choisie n'a pas encore de site. Ajoutez-en un d'abord.",
+    "currencyMismatchHeading": "Travail non facturé dans une autre devise",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}} : {{timeEntries}} saisies de temps non facturées et {{parts}} pièces non facturées conservent leur devise d'origine après le déplacement.",
+    "currencyMismatchAccept": "Je comprends – déplacer l'appareil et conserver ces lignes dans leur devise d'origine",
+    "currencyMismatchNoPermission": "Cette acceptation nécessite le droit d'écriture sur les factures. Demandez à un administrateur de facturation de facturer ou de solder le travail en attente d'abord.",
+    "stepUpHeading": "Confirmez votre identité",
+    "stepUpIntro": "Déplacer un appareil entre organisations nécessite un second facteur.",
+    "stepUpCodeLabel": "Code de l'application d'authentification",
+    "stepUpPasskeyNote": "Vous confirmerez avec votre passkey.",
+    "noStepUpFactor": "Ajoutez une application d'authentification ou une passkey à votre compte avant de déplacer des appareils entre organisations.",
+    "mfaRequired": "Terminez d'abord la connexion MFA, puis réessayez.",
+    "submit": "Déplacer l'appareil",
+    "submitStepUp": "Vérifier et déplacer",
+    "submitting": "En cours…",
+    "cancel": "Annuler",
+    "genericError": "Impossible de déplacer l'appareil."
   },
   "networkDeviceDetailPage": {
     "approval": {
