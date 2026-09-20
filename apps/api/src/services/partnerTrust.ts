@@ -3,7 +3,7 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
-import { partnerForDevice, readTrust, writeTrust } from './partnerTrust.repo';
+import { partnerForDevice, partnerForOrg, readTrust, writeTrust } from './partnerTrust.repo';
 import { getRedis } from './redis';
 import { tryAutoPromote } from './partnerTrustPromotion';
 
@@ -117,6 +117,8 @@ export const GATED_COMMAND_TYPES = [
   'mssql_discover',
   'mssql_restore',
   'mssql_verify',
+  'network_diagnostic',
+  'network_diagnostic_cancel',
   'network_discovery',
   'network_dns_check',
   'network_http_check',
@@ -157,6 +159,8 @@ export const GATED_COMMAND_TYPES = [
   'start_desktop',
   'start_service',
   'stop_service',
+  'system_cleanup_list',
+  'system_cleanup_run',
   'system_state_collect',
   'take_screenshot',
   'task_disable',
@@ -189,6 +193,15 @@ export function isLifecycleCommand(type: string): boolean {
 
 export async function partnerIdForDevice(deviceId: string): Promise<string | null> {
   return partnerForDevice(deviceId);
+}
+
+/**
+ * The partner every device in one organization belongs to. Lets a caller that
+ * is about to gate a whole org's devices on the same capability resolve the
+ * partner once instead of per device.
+ */
+export async function partnerIdForOrg(orgId: string): Promise<string | null> {
+  return partnerForOrg(orgId);
 }
 
 export async function loadTrustState(partnerId: string): Promise<{

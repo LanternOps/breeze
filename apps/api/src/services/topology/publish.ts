@@ -7,6 +7,7 @@ import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNod
 import { canonicalIdentityKey, normalizedTopologyScope, planAliasClusterPosition } from './identity';
 import { planAcceptedAliasClusters } from './aliasClusters';
 import { lockTopologyInventoryReferences } from './inventoryLocks';
+import { prepareCollectionPublication, publishCollectionInterfaces, publishCollectionEvidence } from './collectionPublication';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -26,11 +27,11 @@ const nodeSchema = z.object({ ...scoped, identityKey: z.string().max(256), ident
   firstObservedAt: z.date().nullable().optional(), lastObservedAt: z.date().nullable().optional(), lifecycle: lifecycleSchema.default('active'), aliasTargetId: uuid.nullable().optional(), ...legacy,
 }).strict();
 const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(256), identityMaterial, kind: relationshipKindSchema,
-  sourceNodeId: uuid, targetNodeId: uuid,
+  sourceNodeId: uuid, targetNodeId: uuid, sourceInterfaceId: uuid.nullable().optional(), targetInterfaceId: uuid.nullable().optional(),
   logicalContext: z.object({ routingDomainId: uuid.optional(), interfaceId: uuid.optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional(), destinationPrefix: z.string().max(128).optional(), contextKey: z.string().max(8192).optional() }).strict().default({}),
   directness: directnessSchema.default('unknown'), confidence: confidenceSchema.default('asserted'), evidenceClass: evidenceClassSchema.default('manual'), lifecycle: lifecycleSchema.default('active'),
   firstSupportedAt: z.date().nullable().optional(), lastSupportedAt: z.date().nullable().optional(), supportCount: counter.default(0n),
-  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy']).optional(), createdBy: uuid.optional() }).strict().default({}), ...legacy,
+  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context']).optional(), createdBy: uuid.optional() }).strict().default({}), ...legacy,
 }).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence');
 const bindingSchema = z.object({ ...scoped, nodeId: uuid, deviceId: uuid.nullable().optional(), discoveredAssetId: uuid.nullable().optional(), manualNodeId: uuid.nullable().optional(),
   provenance: z.object({ method: z.enum(['inventory', 'accepted_link', 'manual', 'legacy']).optional(), sourceId: uuid.optional(), createdBy: uuid.optional() }).strict().default({}),
@@ -67,7 +68,7 @@ export function validatePublicationInput(scope: TopologyScope, input: Publicatio
 
 const structuralFields = {
   node: ['id', 'identityKey', 'identityMaterial', 'kind', 'role', 'labelOverride', 'attributes', 'lifecycle', 'aliasTargetId', 'deletedAt'],
-  relationship: ['id', 'canonicalKey', 'identityMaterial', 'kind', 'sourceNodeId', 'targetNodeId', 'logicalContext', 'directness', 'confidence', 'evidenceClass', 'lifecycle', 'attributes', 'deletedAt'],
+  relationship: ['id', 'canonicalKey', 'identityMaterial', 'kind', 'sourceNodeId', 'targetNodeId', 'sourceInterfaceId', 'targetInterfaceId', 'logicalContext', 'directness', 'confidence', 'evidenceClass', 'lifecycle', 'attributes', 'deletedAt'],
   binding: ['id', 'nodeId', 'deviceId', 'discoveredAssetId', 'manualNodeId', 'provenance'],
 };
 function stable(value: unknown): unknown {
@@ -91,7 +92,7 @@ const bindingKey = (b: { deviceId?: string | null; discoveredAssetId?: string | 
  * request/system DB context; this function owns the atomic publication savepoint. */
 export async function publishTopologyBuild(scope: TopologyScope, input: PublicationInput): Promise<{ published: boolean; graphRevision: string }> {
   const normalized = normalizedTopologyScope(scope);
-  const staged = validatePublicationInput(normalized, input);
+  let staged = validatePublicationInput(normalized, input);
   assertInTransaction('publishTopologyBuild');
   return db.transaction(async tx => {
     const [state] = await tx.select().from(topologySiteState).where(scopedWhere(topologySiteState, normalized)).for('update');
@@ -101,6 +102,14 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     const nodes = await tx.select().from(topologyNodes).where(scopedWhere(topologyNodes, normalized));
     const relationships = await tx.select().from(topologyRelationships).where(scopedWhere(topologyRelationships, normalized));
     const bindings = await tx.select().from(topologyNodeBindings).where(scopedWhere(topologyNodeBindings, normalized));
+    const collection = await prepareCollectionPublication(tx, normalized, BigInt(staged.inputRevision), {
+      nodes: [...new Map([...nodes, ...staged.nodes].map(row => [row.id, row])).values()],
+      relationships: [...new Map([...relationships, ...staged.relationships].map(row => [row.id, row])).values()],
+      bindings: [...new Map([...bindings, ...staged.bindings].map(row => [bindingKey(row), row])).values()],
+    });
+    staged = validatePublicationInput(normalized, { ...staged,
+      nodes: [...staged.nodes, ...collection.nodes], relationships: [...staged.relationships, ...collection.relationships],
+    });
     // Shared with layout reads/writes: site state, sorted layout headers, then
     // positions. A merge's pin-conflict decision must see protected positions.
     await tx.select().from(topologyLayouts).where(scopedWhere(topologyLayouts, normalized)).orderBy(topologyLayouts.id).for('update');
@@ -239,6 +248,7 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       else await tx.insert(topologyNodes).values({ ...row, aliasTargetId: null });
     }
     for (const row of nodeWrites.filter(n => n.aliasTargetId)) await tx.update(topologyNodes).set({ aliasTargetId: row.aliasTargetId }).where(and(scopedWhere(topologyNodes, normalized), eq(topologyNodes.id, row.id!)));
+    await publishCollectionInterfaces(tx, normalized, collection, resolve);
     for (const row of relationshipWrites) {
       const { id, ...changes } = row;
       if (oldRelationshipsById.has(id!)) await tx.update(topologyRelationships).set({ ...changes, graphRevision: BigInt(graphRevision) }).where(and(scopedWhere(topologyRelationships, normalized), eq(topologyRelationships.id, id!)));
@@ -249,6 +259,7 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       if (oldBindingsById.has(id!)) await tx.update(topologyNodeBindings).set(changes).where(and(scopedWhere(topologyNodeBindings, normalized), eq(topologyNodeBindings.id, id!)));
       else await tx.insert(topologyNodeBindings).values(row);
     }
+    await publishCollectionEvidence(tx, normalized, collection, resolve);
     const changedLayouts = new Set<string>();
     const positionsByNode = new Map<string, typeof positions>();
     for (const position of positions) {

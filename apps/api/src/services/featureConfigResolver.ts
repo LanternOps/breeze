@@ -7,6 +7,7 @@ import {
   configPolicyAssignments,
   configPolicyAlertRules,
   configPolicyAutomations,
+  monitorConversions,
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
@@ -20,10 +21,11 @@ import {
   sites,
   softwarePolicies,
 } from '../db/schema';
-import { and, eq, ne, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
+import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 
 // ============================================
@@ -93,9 +95,9 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | null> {
+async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
-  const [device] = await db
+  const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -104,14 +106,14 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   if (!device) return null;
 
   // 2. Load org for partnerId
-  const [org] = await db
+  const [org] = await executor
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
+  const groupRows = await executor
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
@@ -347,7 +349,7 @@ export async function resolveGoverningAlertRulePolicyForDevice(
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(
       and(
@@ -418,7 +420,7 @@ export async function resolveAlertRulesForDevice(
     )
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -457,10 +459,10 @@ export interface ResolvedDeviceAutomations {
  * assignment won. `null` when the device is unknown or nothing is assigned —
  * callers treat that as "skip this device", never as "no constraint applies".
  */
-export async function resolveAutomationsForDeviceWithPolicy(
-  deviceId: string
+export async function resolveAutomationAssignmentForDevice(
+  deviceId: string, executor: DbExecutor = db,
 ): Promise<ResolvedDeviceAutomations | null> {
-  const hierarchy = await loadDeviceHierarchy(deviceId);
+  const hierarchy = await loadDeviceHierarchy(deviceId, executor);
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
@@ -471,7 +473,7 @@ export async function resolveAutomationsForDeviceWithPolicy(
   // breeze_current_partner_id(). So this runs in the CALLER'S OWN context (W03
   // deleted the system-context escape). Self-tenanted by this device's own
   // hierarchy on top of RLS.
-  const rows = await db
+  const rows = await executor
     .select({
       automation: configPolicyAutomations,
       assignmentLevel: configPolicyAssignments.level,
@@ -498,7 +500,12 @@ export async function resolveAutomationsForDeviceWithPolicy(
     )
     .innerJoin(
       configPolicyAutomations,
-      eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+        or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+          WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+            AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+            AND ${monitorConversions.revertedAt} IS NULL
+            AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -518,6 +525,13 @@ export async function resolveAutomationsForDeviceWithPolicy(
     configPolicyId: winner.policyId,
     automations: winning.map((r) => r.automation),
   };
+}
+
+export async function resolveAutomationsForDeviceWithPolicy(
+  deviceId: string, executor: DbExecutor = db,
+): Promise<ResolvedDeviceAutomations | null> {
+  const winner = await resolveAutomationAssignmentForDevice(deviceId, executor);
+  return winner ? { ...winner, automations: winner.automations.filter((automation) => !automation.retiredAt) } : null;
 }
 
 /**
@@ -1433,7 +1447,8 @@ export async function scanScheduledAutomations(): Promise<ScheduledAutomationWit
     .where(
       and(
         eq(configPolicyAutomations.triggerType, 'schedule'),
-        eq(configPolicyAutomations.enabled, true)
+        eq(configPolicyAutomations.enabled, true),
+        isNull(configPolicyAutomations.retiredAt)
       )
     )
     .orderBy(

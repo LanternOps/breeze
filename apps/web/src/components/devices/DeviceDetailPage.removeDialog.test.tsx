@@ -67,6 +67,8 @@ vi.mock('./DeviceSettingsModal', () => ({
   ),
 }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
+// The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
+vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 
 const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

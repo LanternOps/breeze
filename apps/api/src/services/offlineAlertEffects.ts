@@ -1,5 +1,5 @@
 /** Offline-only durable alert admission. DB preparation and admission never await Redis. */
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { alerts, alertRules, alertTemplates, configPolicyAlertRules, devices, offlineTransitionEffects as effects, type OfflineEffect } from '../db/schema';
 import { alertRuleOwnershipConditionForOrg, getApplicableRules, getApplicableRulesFromPolicy } from './alertService';
@@ -34,7 +34,7 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
     const ownership = await alertRuleOwnershipConditionForOrg(device.orgId);
     const rules = await db.select({ rule: alertRules, template: alertTemplates }).from(alertRules)
       .innerJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
-      .where(and(ownership, eq(alertRules.isActive, true), or(
+      .where(and(ownership, eq(alertRules.isActive, true), isNull(alertRules.retiredAt), or(
         eq(alertRules.targetType, 'all'),
         and(eq(alertRules.targetType, 'org'), eq(alertRules.targetId, device.orgId)),
         and(eq(alertRules.targetType, 'site'), eq(alertRules.targetId, device.siteId)),
@@ -79,7 +79,7 @@ async function prepareRule(observation: OfflineObservation, rule: OfflineRulePla
     if (!sourceDevice) return null;
     // Read current eligibility without holding a device lock across Redis work.
     const table = rule.policy ? configPolicyAlertRules : alertRules;
-    const [exists] = await db.select({ id: table.id }).from(table).where(eq(table.id, rule.ruleId));
+    const [exists] = await db.select({ id: table.id }).from(table).where(and(eq(table.id, rule.ruleId), isNull(table.retiredAt)));
     if (!exists) return null;
     if (rule.monitorId) {
       // A delayed effect must not fire a monitor that was detached or disabled.

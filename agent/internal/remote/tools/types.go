@@ -139,6 +139,15 @@ const (
 	CmdFilesystemAnalysis = "filesystem_analysis"
 	CmdFileListDrives     = "file_list_drives"
 
+	// OS-native disk cleanup (Disk Cleanup v2 §7). A SECOND cleanup engine
+	// beside filesystem_analysis / file_delete: opaque, non-itemised platform
+	// maintenance (cleanmgr handlers, DISM component cleanup, Time Machine
+	// local snapshots, brew cleanup, package caches, journal vacuum) that the
+	// file scanner structurally cannot see. Its safety model is a CLOSED
+	// catalogue rather than a previewed path list — see internal/syscleanup.
+	CmdSystemCleanupList = "system_cleanup_list"
+	CmdSystemCleanupRun  = "system_cleanup_run"
+
 	// Network discovery
 	CmdNetworkDiscovery = "network_discovery"
 
@@ -146,10 +155,12 @@ const (
 	CmdSnmpPoll = "snmp_poll"
 
 	// Network monitoring
-	CmdNetworkPing      = "network_ping"
-	CmdNetworkTcpCheck  = "network_tcp_check"
-	CmdNetworkHttpCheck = "network_http_check"
-	CmdNetworkDnsCheck  = "network_dns_check"
+	CmdNetworkDiagnostic       = "network_diagnostic"
+	CmdNetworkDiagnosticCancel = "network_diagnostic_cancel"
+	CmdNetworkPing             = "network_ping"
+	CmdNetworkTcpCheck         = "network_tcp_check"
+	CmdNetworkHttpCheck        = "network_http_check"
+	CmdNetworkDnsCheck         = "network_dns_check"
 
 	// Script management (executor)
 	CmdScriptCancel      = "script_cancel"

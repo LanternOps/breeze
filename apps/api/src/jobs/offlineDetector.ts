@@ -10,11 +10,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { findDueOfflineEffects, persistOfflineTransition, pruneOfflineEffects } from '../services/offlineEffectsStore';
 import { processOfflineEffect } from '../services/offlineTransitionEffects';
 import * as dbModule from '../db';
-import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
+import { devices, alerts } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
-import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
-import { interpolateTemplate } from '../services/alertConditions';
+import { evaluateDeviceAlertsFromPolicy } from '../services/alertService';
 import { resolveReevalHorizonMinutes } from '../services/alertConditions/offlineDuration';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
@@ -520,145 +519,6 @@ async function triggerConfigPolicyOfflineAlerts(
     console.error(`[OfflineDetector] Error evaluating config policy offline alerts for device ${device.id}:`, error);
     return { created: false, fatalError: error };
   }
-}
-
-/**
- * Find and trigger offline-type alert rules for a device.
- *
- * Evaluates BOTH rule sources:
- *  - legacy standalone `alertRules` (template-based) below, and
- *  - configuration-policy alert rules via evaluateDeviceAlertsFromPolicy().
- *
- * Config-policy offline rules must be evaluated here because the periodic
- * alertWorker sweep only queues devices that are still `online` with a recent
- * heartbeat (alertWorker.ts), so a device offline long enough to trip an
- * offline threshold is never evaluated by that path (issue #1857).
- */
-export async function triggerOfflineAlerts(
-  device: typeof devices.$inferSelect
-): Promise<boolean> {
-  const configPolicyResult = await triggerConfigPolicyOfflineAlerts(device);
-  let alertCreated = configPolicyResult.created;
-
-  // Find legacy standalone alert rules that have offline conditions
-  // We need to find rules where the template conditions include type: 'offline'
-
-  // Get all active rules for this device's org, plus its partner's
-  // partner-wide rules (#2128).
-  const ownershipCondition = await alertRuleOwnershipConditionForOrg(device.orgId);
-  const rules = await db
-    .select()
-    .from(alertRules)
-    .where(
-      and(
-        ownershipCondition,
-        eq(alertRules.isActive, true),
-        or(
-          eq(alertRules.targetType, 'all'),
-          and(eq(alertRules.targetType, 'org'), eq(alertRules.targetId, device.orgId)),
-          and(eq(alertRules.targetType, 'site'), eq(alertRules.targetId, device.siteId)),
-          and(eq(alertRules.targetType, 'device'), eq(alertRules.targetId, device.id))
-        )
-      )
-    );
-
-  if (rules.length === 0) {
-    // No legacy rules — surface any config-policy failure before returning so
-    // the BullMQ job fails and retries (consistent with alertWorker).
-    if (configPolicyResult.fatalError) throw configPolicyResult.fatalError;
-    return alertCreated;
-  }
-
-  // Get templates for all rules
-  const templateIds = [...new Set(rules.map(r => r.templateId))];
-  const templates = await db
-    .select()
-    .from(alertTemplates)
-    .where(inArray(alertTemplates.id, templateIds));
-
-  const templateMap = new Map(templates.map(t => [t.id, t]));
-
-  for (const rule of rules) {
-    const template = templateMap.get(rule.templateId);
-    if (!template) continue;
-
-    // Check if conditions include offline type
-    const overrides = rule.overrideSettings as Record<string, unknown> | null;
-    const conditions = (overrides?.conditions ?? template.conditions) as unknown;
-
-    if (!hasOfflineCondition(conditions)) {
-      continue;
-    }
-
-    // Build template context
-    const context: Record<string, unknown> = {
-      deviceName: device.displayName || device.hostname,
-      hostname: device.hostname,
-      osType: device.osType,
-      osVersion: device.osVersion,
-      ruleName: rule.name,
-      severity: (overrides?.severity as string) ?? template.severity,
-      lastSeenAt: device.lastSeenAt?.toISOString()
-    };
-
-    // Interpolate title and message
-    const title = interpolateTemplate(template.titleTemplate, context);
-    const message = interpolateTemplate(template.messageTemplate, context);
-    const severity = (overrides?.severity as 'critical' | 'high' | 'medium' | 'low' | 'info') ?? template.severity;
-
-    // Create alert
-    const alertId = await createAlert({
-      ruleId: rule.id,
-      deviceId: device.id,
-      orgId: device.orgId,
-      severity,
-      title,
-      message,
-      context: {
-        ...context,
-        conditionsMet: ['Device offline'],
-        templateId: template.id
-      }
-    });
-
-    if (alertId) {
-      alertCreated = true;
-      console.log(`[OfflineDetector] Created offline alert ${alertId} for device ${device.id}`);
-    }
-  }
-
-  // Legacy path ran successfully; now surface any config-policy failure so the
-  // BullMQ job fails and retries (consistent with alertWorker).
-  if (configPolicyResult.fatalError) throw configPolicyResult.fatalError;
-
-  return alertCreated;
-}
-
-/**
- * Check if conditions include an offline type condition
- */
-function hasOfflineCondition(conditions: unknown): boolean {
-  if (!conditions) return false;
-
-  if (Array.isArray(conditions)) {
-    return conditions.some(c => hasOfflineCondition(c));
-  }
-
-  if (typeof conditions === 'object') {
-    const c = conditions as Record<string, unknown>;
-
-    // Check if this is an offline condition
-    if (c.type === 'offline') {
-      return true;
-    }
-
-    // Check nested conditions in a group
-    if ('conditions' in c && Array.isArray(c.conditions)) {
-      return c.conditions.some((sub: unknown) => hasOfflineCondition(sub));
-    }
-  }
-
-  return false;
 }
 
 /**

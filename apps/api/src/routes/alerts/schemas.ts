@@ -9,7 +9,8 @@ export const listAlertRulesSchema = z.object({
   limit: z.string().optional(),
   orgId: z.string().guid().optional(),
   isActive: z.enum(['true', 'false']).optional(),
-  enabled: z.enum(['true', 'false']).optional()
+  enabled: z.enum(['true', 'false']).optional(),
+  includeRetired: z.enum(['true', 'false']).optional()
 });
 
 export const createAlertRuleSchema = z.object({

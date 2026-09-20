@@ -12,6 +12,7 @@ export class GraphReadError extends Error {
 }
 export const nodeListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(), kind: z.enum(['endpoint', 'network', 'gateway', 'internet', 'manual']).optional(),
+  deviceId: z.string().uuid().optional(), assetId: z.string().uuid().optional(),
   lifecycle: z.enum(['active', 'withdrawn', 'archived']).default('active'),
   health: z.enum(['unknown', 'healthy', 'degraded', 'failed_check']).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100), cursor: z.string().max(2048).optional(),

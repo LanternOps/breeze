@@ -246,6 +246,17 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
+  'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
+  'topology_collection_runs.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
+  'topology_observations.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
+  'topology_config_template_versions.breeze_topology_template_content_guard': 'published payload immutable but owner org may move',
+  'topology_site_template_bindings.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
+  'topology_probe_targets.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
+  'topology_monitoring_policies.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
+  'topology_diagnostic_runs.breeze_topology_diagnostic_run_guard': 'guards accepted content and terminal state, permits org-only ownership transfer',
+  'devices.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; prepare hook fences authority',
+  'discovered_assets.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; collision executor detaches before deletion',
+  'network_monitors.breeze_topology_monitor_site': 'only asset/site updates bind monitor scope; org-only merge uses deferred composite FKs',
   'devices.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
   'discovered_assets.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
   'topology_manual_nodes.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',

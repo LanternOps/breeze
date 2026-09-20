@@ -57,8 +57,10 @@ type AuthContext = {
  * partner-wide row owns no org, so it can carry no org-scoped discovered asset
  * and therefore no site; site gating for it is vacuously "no site".
  */
-async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string | null }): Promise<string | null> {
-  if (!monitor.orgId || !monitor.assetId) return null;
+async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string | null; siteId?: string | null }): Promise<string | null> {
+  if (!monitor.orgId) return null;
+  if (monitor.siteId) return monitor.siteId;
+  if (!monitor.assetId) return null;
   const [asset] = await db
     .select({ siteId: discoveredAssets.siteId })
     .from(discoveredAssets)
@@ -68,7 +70,7 @@ async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string
 }
 
 async function hasMonitorSiteAccess(
-  monitor: { orgId: string | null; assetId: string | null },
+  monitor: { orgId: string | null; assetId: string | null; siteId?: string | null },
   permissions: UserPermissions | undefined,
 ): Promise<boolean> {
   if (!permissions?.allowedSiteIds) return true;
@@ -188,7 +190,8 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
     .select({
       rule: networkMonitorAlertRules,
       monitorOrgId: networkMonitors.orgId,
-      monitorAssetId: networkMonitors.assetId
+      monitorAssetId: networkMonitors.assetId,
+      monitorSiteId: networkMonitors.siteId
     })
     .from(networkMonitorAlertRules)
     .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
@@ -213,7 +216,7 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
   // their allowlist (same org). Mirror requireMonitorAccess's site gate — the
   // create path (POST /alerts) already goes through it. Empty/unset allowlist
   // (partner/system scope) = full access.
-  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId }, permissions))) {
+  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId, siteId: row.monitorSiteId }, permissions))) {
     return { error: 'Access to this site denied', status: 403 } as const;
   }
 
@@ -245,7 +248,7 @@ function validateMonitorConfigForType(
  * from a different site.
  */
 async function selectExecutionAgentForMonitor(
-  monitor: { orgId: string; assetId: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
   permissions?: UserPermissions,
   agentId?: string,
 ): Promise<string | null | 'SITE_ACCESS_DENIED'> {

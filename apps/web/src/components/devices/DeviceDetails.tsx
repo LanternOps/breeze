@@ -1,3 +1,4 @@
+import TopologyEntry from '../topology/TopologyEntry';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
 import { fetchWithAuth } from "../../stores/auth";
@@ -105,6 +106,7 @@ type CoreTab =
   | "scripts"
   | "performance"
   | "eventlog"
+  | "topology"
   | "monitoring"
   | "compliance"
   | "activities"
@@ -203,6 +205,7 @@ const VALID_TABS: CoreTab[] = [
   "performance",
   "anomalies",
   "eventlog",
+  "topology",
   "monitoring",
   "compliance",
   "activities",
@@ -529,6 +532,12 @@ export default function DeviceDetails({
       title: t("deviceDetails.windowsMacosSystemEventLogs"),
     },
     {
+      id: "topology",
+      label: t("topology:title"),
+      icon: <Network className="h-4 w-4" />,
+      title: t("topology:title"),
+    },
+    {
       id: "monitoring",
       group: groups.monitoring,
       count: tabCounts?.monitoring,
@@ -688,8 +697,9 @@ export default function DeviceDetails({
 
   // Primary tabs keep their declaration order in the row; separators only
   // make sense between primaries, so re-derive them from group changes.
-  const overflowTabs: OverflowTab[] = tabs.map((tab, index) => {
-    const prev = tabs[index - 1];
+  const visibleTabs = tabs.filter((tab) => tab.id !== "topology" || !!device.siteId);
+  const overflowTabs: OverflowTab[] = visibleTabs.map((tab, index) => {
+    const prev = visibleTabs[index - 1];
     return {
       id: tab.id,
       label: tab.label,
@@ -1013,6 +1023,8 @@ export default function DeviceDetails({
           osType={device.os}
         />
       )}
+
+      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} />}
 
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab

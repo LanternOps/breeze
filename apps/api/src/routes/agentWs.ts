@@ -761,7 +761,8 @@ function rejectMalformedCriticalResult(
 
 function normalizeCriticalResultIfNeeded(
   commandType: string,
-  result: AgentCommandResult
+  result: AgentCommandResult,
+  commandPayload?: unknown
 ): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -781,7 +782,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: result.durationMs,
       error: result.error,
       result: result.result,
-    });
+    }, { commandPayload });
     if (!validated) {
       return {
         normalizedResult: result,
@@ -1995,6 +1996,7 @@ async function processCommandResult(
               or(
                 commandAcceptsAgentResultCondition(),
                 and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
               )
             )
           )
@@ -2026,6 +2028,7 @@ async function processCommandResult(
                 or(
                   commandAcceptsAgentResultCondition(),
                   and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
                 )
               )
             )
@@ -2076,7 +2079,7 @@ async function processCommandResult(
       normalizedResult: rawNormalizedResult,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, result);
+    } = normalizeCriticalResultIfNeeded(command.type, result, command.payload);
 
     // #3409 PR4a — exact-value redaction against the secrets THIS command
     // carried, before either the device_commands.result write below or (via
@@ -2093,16 +2096,17 @@ async function processCommandResult(
 
     const cleanupCommand = command;
     const recordSupplementalCleanup = async () => {
-      const payload = cleanupCommand.payload as { cleanupRunId?: unknown } | null;
-      if (cleanupCommand.type !== 'file_delete' || typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+      const payload = cleanupCommand.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = cleanupCommand.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(cleanupCommand.type) || typeof runId !== 'string' || !runId) return;
       await runWithAgentOrgDbAccess('agentWs.commandResult.cleanupEvidence', orgId, partnerId, () =>
-        commandResultHandlers.file_delete!({
+        commandResultHandlers[cleanupCommand.type]!({
           agentId, command: cleanupCommand, commandId: result.commandId, result: normalizedResult,
           resolvedDeviceId: resolvedDeviceId!, stdout,
         })
       );
     };
-    if (command.type === 'file_delete' && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
+    if (['file_delete', 'system_cleanup_run'].includes(command.type) && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
       await recordSupplementalCleanup();
       return;
     }
@@ -2307,6 +2311,24 @@ async function processCommandResult(
         await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        // No org wrap: the topology result path establishes its own bounded
+        // system context, and the producer identity comes from this connection.
+        const { ingestTopologyDiagnosticCommandResult } = await import('../services/topology/diagnosticResults');
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: resolvedDeviceId!,
+          agentId,
+          commandId: result.commandId,
+          result: normalizedResult.result,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology diagnostic result ${result.commandId}:`, err);
         captureException(err);
       }
     }

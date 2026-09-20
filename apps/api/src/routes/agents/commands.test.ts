@@ -141,6 +141,7 @@ vi.mock('../../services/auditBaselineService', () => ({
 // mock existing proves the route skips the registry by intent rather than
 // because the handler happened to be missing.
 const fileDeleteRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const systemCleanupRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const pamRegistryHandlerMock = vi.fn().mockResolvedValue({ kind: 'pam', classification: 'applied' });
@@ -148,6 +149,7 @@ const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
     file_delete: (...args: unknown[]) => fileDeleteRegistryHandlerMock(...(args as [])),
+    system_cleanup_run: (...args: unknown[]) => systemCleanupRegistryHandlerMock(...(args as [])),
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
     peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
     pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
@@ -337,6 +339,46 @@ describe('agent commands routes', () => {
     },
   );
 
+  it('dispatches a system_cleanup_run result to the shared handler over the HTTP path', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'system_cleanup_run',
+      status: 'sent',
+      payload: { runId: '33333333-3333-4333-8333-333333333333' },
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: 'cmd-1' }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'cleanup result',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      command: expect.objectContaining({ id: commandId, type: 'system_cleanup_run' }),
+      // The id comes from the authorized path param, never the request body.
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      resolvedDeviceId: 'device-1',
+      stdout: 'cleanup result',
+    });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'cleanup result',
+    }));
+  });
+
   it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
     const command = {
       id: commandId,
@@ -446,6 +488,24 @@ describe('agent commands routes', () => {
       expect(command).toEqual(before);
     },
   );
+
+  it.each(['cancelled', 'completed', 'failed'])('reconciles resubmitted system cleanup for a %s command without reopening it', async (status) => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId, deviceId: 'device-1', type: 'system_cleanup_run', status, targetRole: 'agent',
+      payload: { runId: '44444444-4444-4444-8444-444444444444' }, result: { status },
+    }]));
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: '{"freedBytes":3000}' }),
+    });
+    expect(res.status).toBe(200);
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledOnce();
+    expect(systemCleanupRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command: expect.objectContaining({ payload: { runId: '44444444-4444-4444-8444-444444444444' } }),
+      stdout: '{"freedBytes":3000}',
+    }));
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 
   it('preserves the terminal short circuit for malformed PAM results', async () => {
     selectMock.mockReturnValueOnce(chainMock([{

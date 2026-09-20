@@ -479,6 +479,58 @@ These items require manual review and are surfaced in the snapshot for informati
 
 ---
 
+## OS Cleanup Actions
+
+The file scanner can only reclaim what it can enumerate. A component store, a Windows Update backup, an APFS local snapshot and a systemd journal are all invisible to it — they are managed by the operating system through its own tools. Breeze runs those tools directly as a **second cleanup engine** on the same tab.
+
+The two engines are deliberately separate. The file engine previews every path before it deletes anything; the native engine cannot, because the tools it drives report a summary rather than a file list. So instead of a preview it is constrained by a **closed catalog**: a fixed list of vetted actions, with every command line built from constants inside the agent.
+
+### Catalog
+
+| Action | Platform | What it does | Risk |
+|---|---|---|---|
+| Windows Disk Cleanup | Windows | Runs the selected built-in Disk Cleanup handlers (Update Cleanup, Delivery Optimization, previous installations, setup and error-reporting logs, memory dumps, Defender scan history, BranchCache and others) | Update Cleanup releases its space after a restart; Device Driver Packages removes driver rollback |
+| Component store cleanup | Windows | `DISM /Online /Cleanup-Image /StartComponentCleanup` — removes superseded components from WinSxS | Long-running; some space is released after the next restart. Never `/ResetBase`, so installed updates stay removable |
+| Time Machine local snapshots | macOS | Deletes the local APFS snapshots on the startup volume | Backups on the Time Machine destination are untouched |
+| Homebrew cache and old versions | macOS | `brew cleanup --prune=all` | Installed software stays at its current version |
+| Package manager cache | Linux | `apt-get clean` / `dnf clean all` / `yum clean all` | Removed archives are re-downloadable |
+| Remove orphaned packages | Linux | `apt-get -y autoremove` / `dnf -y autoremove` | **Uninstalls packages.** Requires a second confirmation in the UI |
+| Trim systemd journal | Linux | `journalctl --vacuum-size=<target>` (64 MiB – 4 GiB, default 256 MiB) | Archived journals only; the active journal is preserved |
+
+Never offered, by design: the Downloads folder, the Windows recovery image (`Windows ESD installation files`), language packs, per-user caches and recycle bins (the file engine already covers those), and DISM `/ResetBase`.
+
+### What you lose, stated before you run it
+
+Three of these actions remove something no later action can bring back, and the confirmation dialog names which one rather than asking a generic "are you sure":
+
+- **Remove orphaned packages** uninstalls software.
+- **Previous Windows installations** and **Discarded upgrade files** end this device's ability to roll back to its previous Windows version.
+- **Time Machine local snapshots** deletes the only on-disk restore points a Mac has when its backup disk is not connected.
+
+Selecting any of them requires a second, explicit acknowledgement.
+
+### Estimates are approximate — and say which kind
+
+Sizes are labelled, not just shown:
+
+- **"up to X"** — a genuine upper bound, such as a cache directory's current size.
+- **heuristic** — a figure derived indirectly and reliable only to an order of magnitude: the DISM component-store fields (which are store *overhead*, and a direct `StartComponentCleanup` frees an amount related to but not equal to them), the journal's usage-minus-target (only archived journals are vacuumed), and the installed size of the packages `autoremove` would take (unpacked footprint over-counts shared files).
+- **size unknown** — the tool reported nothing the agent can read, or the handler's footprint is not confined to a directory we can measure (Windows `Temporary Files`, Time Machine snapshots). *Unknown* is never rendered as *0*: a confident zero reads as "nothing to reclaim", which is a different and possibly wrong claim.
+
+After a run, the panel reports **measured** free-space deltas per volume, taken either side of the whole run. That figure, not the estimate, is what the run actually achieved.
+
+### One run at a time
+
+A device runs one OS cleanup at a time. Starting a second while one is in flight is refused with *an OS cleanup is already running on this device* — Windows Disk Cleanup is driven by a shared on-disk selection profile, so two overlapping runs would each execute whatever the other wrote last.
+
+### Requirements
+
+OS cleanup actions need agent **0.115.0** or later. On an older agent the panel shows an update banner and the Run button stays disabled.
+
+Running actions requires `devices.execute` and an MFA-verified session, exactly like file cleanup, and every run is audited as `device.filesystem.system_cleanup.run` with the action ids, each action's status, and the measured bytes.
+
+---
+
 ## Database Schema
 
 ### Filesystem Snapshots
@@ -560,6 +612,10 @@ All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace 
 | `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute cleanup on approved paths | `devices.execute` |
 
 `POST /devices/:id/filesystem/scan` and `POST /devices/:id/filesystem/cleanup-preview` both accept a `path` naming the volume; both default to the device's OS volume. Every response that concerns one volume echoes the normalised `scanPath` it used.
+| `POST` | `/devices/:id/filesystem/system-cleanup/list` | Queue a catalog request; returns a `commandId` | `devices.execute` |
+| `GET` | `/devices/:id/filesystem/system-cleanup/list/:commandId` | Poll the catalog request | `devices.read` |
+| `POST` | `/devices/:id/filesystem/system-cleanup/run` | Run selected actions; returns a `cleanupRunId`, or `409 run_in_progress` | `devices.execute` |
+| `GET` | `/devices/:id/filesystem/system-cleanup/run/:cleanupRunId` | Poll the run | `devices.read` |
 
 ---
 

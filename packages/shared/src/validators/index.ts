@@ -42,6 +42,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';
 export * from './deviceFunctions';
@@ -1175,3 +1176,11 @@ export * from './toolSources';
 
 // Intelligent network topology canonical wire contracts (#5996)
 export * from './topology';
+
+export * from './topologyCollection';
+
+export * from './topologyConfiguration';
+
+export * from './topologyDiagnostics';
+
+export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';

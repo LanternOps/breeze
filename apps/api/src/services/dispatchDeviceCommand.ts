@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { refreshPayloadForDelivery } from './commandDelivery';
@@ -71,10 +71,53 @@ export type DispatchDeviceCommandResult =
 export async function dispatchDeviceCommand(
   input: DispatchDeviceCommandInput,
 ): Promise<DispatchDeviceCommandResult> {
-  // Resolved first, so an unregistered command type fails loudly before any
-  // device lookup or write happens.
   const policy = resolveOfflinePolicy(input.type, input.offlinePolicy);
+  const prepared = await prepareDeviceCommand(input, policy);
+  if (!prepared.ok) return prepared;
+  return deliverPreparedDeviceCommand(input, prepared);
+}
 
+/**
+ * For self-managed routes: commit device/trust checks and persistence in a
+ * short system transaction before any socket transport. The expected tenant
+ * is mandatory because the device lookup bypasses tenant RLS.
+ */
+export async function dispatchDeviceCommandWithSystemPrecheck(
+  input: DispatchDeviceCommandInput & { expectedOrgId: string },
+): Promise<DispatchDeviceCommandResult> {
+  if (getCurrentDbAccessContext()) {
+    throw new Error('dispatchDeviceCommandWithSystemPrecheck requires no ambient DB context');
+  }
+  const policy = resolveOfflinePolicy(input.type, input.offlinePolicy);
+  const prepared = await withSystemDbAccessContext(
+    () => prepareDeviceCommand(input, policy),
+    'dispatchDeviceCommandWithSystemPrecheck',
+  );
+  if (!prepared.ok) return prepared;
+  try {
+    return await deliverPreparedDeviceCommand(input, prepared);
+  } catch (error) {
+    // Persistence already committed. Returning failure would orphan the
+    // caller's run even though heartbeat delivery or the reaper can still
+    // finish this command. Retain its identity for result reconciliation.
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return { ok: true, command: prepared.command, delivery: 'queued_live', deliverBy: prepared.deliverBy };
+  }
+}
+
+type PreparedDeviceCommand = {
+  ok: true;
+  device: typeof devices.$inferSelect;
+  online: boolean;
+  payload: CommandPayload;
+  command: QueuedCommand;
+  deliverBy: Date | null;
+};
+
+async function prepareDeviceCommand(
+  input: DispatchDeviceCommandInput,
+  policy: OfflinePolicy,
+): Promise<PreparedDeviceCommand | Extract<DispatchDeviceCommandResult, { ok: false }>> {
   const [device] = await db.select().from(devices).where(eq(devices.id, input.deviceId)).limit(1);
   if (!device) return { ok: false, code: 'device_not_found', error: 'Device not found' };
 
@@ -126,6 +169,14 @@ export async function dispatchDeviceCommand(
     ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
   });
 
+  return { ok: true, device, online, payload, command, deliverBy };
+}
+
+async function deliverPreparedDeviceCommand(
+  input: DispatchDeviceCommandInput,
+  queued: PreparedDeviceCommand,
+): Promise<DispatchDeviceCommandResult> {
+  const { device, online, payload, command, deliverBy } = queued;
   if (!online) return { ok: true, command, delivery: 'queued_offline', deliverBy };
   if (!device.agentId || input.preferHeartbeat) return { ok: true, command, delivery: 'queued_live', deliverBy };
 

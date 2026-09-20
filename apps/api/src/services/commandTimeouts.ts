@@ -5,6 +5,7 @@ const FIVE_MINUTES = 5 * 60 * 1000;
 const THIRTY_MINUTES = 30 * 60 * 1000;
 const SIXTY_MINUTES = 60 * 60 * 1000;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
+const THREE_HOURS = 3 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 // Extra buffer on top of a script's own timeout, so the agent-side timeout
 // always fires first. Exported because the stale reaper needs it as the floor
@@ -75,6 +76,7 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.PATCH_SCAN,
   CommandTypes.SOFTWARE_UNINSTALL,
   CommandTypes.FILESYSTEM_ANALYSIS,
+  CommandTypes.SYSTEM_CLEANUP_LIST,
   CommandTypes.REBOOT_SAFE_MODE,
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.COLLECT_EVIDENCE,
@@ -88,6 +90,14 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.SECURITY_THREAT_RESTORE,
   CommandTypes.BACKUP_RESTORE,
 ]);
+
+/**
+ * A diagnostic plan's own lifetime ceiling (120s, topologyDiagnosticLimitsSchema)
+ * plus a delivery grace. Deliberately shorter than every other tier: an
+ * accepted-but-delayed diagnostic must EXPIRE, never acquire a fresh execution
+ * budget when the agent reconnects.
+ */
+export const NETWORK_DIAGNOSTIC_TIMEOUT_MS = 150 * 1000;
 
 const RESTORE_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
@@ -143,12 +153,39 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
+  if (
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC ||
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC_CANCEL
+  )
+    return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;
+  // Disk Cleanup v2: a native run's real budget is per-selection and lives on
+  // the row; this is the ceiling that keeps the reaper from terminalising a
+  // command whose run is still inside it.
+  if (commandType === CommandTypes.SYSTEM_CLEANUP_RUN) return THREE_HOURS;
   if (LONG_TIMEOUT_TYPES.has(commandType)) return TWO_HOURS;
   if (!EXCLUDED_COMMAND_TYPES.has(commandType)) {
     console.warn(`[commandTimeouts] Unknown command type "${commandType}" using default ${DEFAULT_TIMEOUT_MS / 60000}min timeout`);
   }
   return DEFAULT_TIMEOUT_MS;
 }
+
+/**
+ * The CEILING for one native cleanup run's command row (Disk Cleanup v2 §5.3,
+ * §13 #14).
+ *
+ * It is not the run's budget. The budget is a function of the SELECTION —
+ * `systemCleanupRunBudgetMs` in `@breeze/shared/validators`, Σ the chosen
+ * actions' own timeouts + 10 minutes — and is computed once at queue time and
+ * **stored on the row** as `plan.deadlineAt`. Both clocks that matter read
+ * that stored value: the route's lazy `running → failed ('timed out')`
+ * transition and, through it, the operator's view.
+ *
+ * This constant exists only because `getCommandTimeoutMs` is keyed by TYPE and
+ * cannot see a selection. Three hours is the same cap the budget function
+ * applies, so the reaper can never terminalise a command row while its run is
+ * still legitimately inside its own budget.
+ */
+export const SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS = THREE_HOURS;

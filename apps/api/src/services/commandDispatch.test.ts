@@ -65,10 +65,16 @@ vi.mock('drizzle-orm', async (importOriginal) => {
 
 const { partitionClaimableMock } = vi.hoisted(() => ({ partitionClaimableMock: vi.fn() }));
 
+const revalidateCommandForDeliveryMock = vi.hoisted(() => vi.fn<() => Promise<string | null>>(async () => null));
 vi.mock('./commandClaimEligibility', () => ({
   partitionClaimable: partitionClaimableMock,
   POWER_STATE_BARRIER_TYPES: new Set(['reboot', 'shutdown', 'reboot_safe_mode']),
   typeHolds: {},
+  // The delivery-time revalidation seam. Registered for real by
+  // services/topology/diagnosticDispatch; here it defaults to "deliver" so the
+  // existing dispatch assertions keep exercising the claim path itself.
+  registerCommandRevalidation: vi.fn(),
+  revalidateCommandForDelivery: revalidateCommandForDeliveryMock,
 }));
 
 import { gt, inArray, isNull, notInArray, or } from 'drizzle-orm';
@@ -107,9 +113,22 @@ function selectChain(pending: unknown[], opts: { device?: unknown; inFlight?: nu
   }));
 }
 
+/**
+ * The single-command claim now re-reads its candidate row so both delivery legs
+ * share one revalidation seam. Stub that lookup for the direct-claim tests.
+ */
+function stubSingleClaimCandidate(row: unknown = { id: 'cmd-1', type: 'script', deviceId: 'dev-1', payload: null }) {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
+    })),
+  } as any);
+}
+
 describe('command dispatch helpers', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    revalidateCommandForDeliveryMock.mockResolvedValue(null);
     partitionClaimableMock.mockImplementation(async (_tx: unknown, _dev: unknown, rows: any[]) => ({
       claimable: rows,
       cancelled: [],
@@ -118,6 +137,7 @@ describe('command dispatch helpers', () => {
   });
 
   it('claims a pending command for delivery only when the conditional update succeeds', async () => {
+    stubSingleClaimCandidate();
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -396,7 +416,19 @@ describe('command dispatch helpers', () => {
 
   // #5128: the single-command delivery UPDATE carries the same deadline
   // predicate as the batch scan, so a stale row can't be delivered directly.
+  it('the single-command claim cancels a row whose delivery authority is gone', async () => {
+    stubSingleClaimCandidate({ id: 'cmd-1', type: 'network_diagnostic', deviceId: 'dev-1', payload: {} });
+    revalidateCommandForDeliveryMock.mockResolvedValue('scope_changed');
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+  });
+
   it('the single-command claim refuses a row past its delivery deadline', async () => {
+    stubSingleClaimCandidate();
     const where = vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]),
     });
