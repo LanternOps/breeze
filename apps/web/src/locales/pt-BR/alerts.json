@@ -620,7 +620,7 @@
       "correlations": "Correlações",
       "monitors": "Monitores",
       "rules": "Regras",
-      "channels": "Canais"
+      "delivery": "Entrega"
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +905,7 @@
     "notificationRoutingRules": "Regras de roteamento de notificações",
     "routeAlertsToSpecificChannelsBasedOn": "Encaminhe alertas para canais específicos com base na gravidade. A primeira regra correspondente vence.",
     "rule": "regra",
-    "noRoutingRulesConfiguredAllAlertsGo": "Nenhuma regra de roteamento configurada. Todos os alertas são enviados a todos os canais ativados.",
+    "newChannelsRequireRouting": "Novos canais não entregam alertas até serem selecionados em uma regra de roteamento ou na linha “Todo o restante”.",
     "addRoutingRule": "Adicionar regra de roteamento",
     "partnerWideRuleRoutesAlertsFromEvery": "Regra de todo o parceiro — encaminha alertas de todas as organizações",
     "allOrgs": "Todo o parceiro",

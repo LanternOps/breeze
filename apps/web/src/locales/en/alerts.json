@@ -620,7 +620,7 @@
       "correlations": "Correlations",
       "monitors": "Monitors",
       "rules": "Rules",
-      "channels": "Channels"
+      "delivery": "Delivery"
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +905,7 @@
     "notificationRoutingRules": "Notification Routing Rules",
     "routeAlertsToSpecificChannelsBasedOn": "Route alerts to specific channels based on severity. First matching rule wins.",
     "rule": "rule",
-    "noRoutingRulesConfiguredAllAlertsGo": "No routing rules configured. All alerts go to all enabled channels.",
+    "newChannelsRequireRouting": "New channels deliver no alerts until a routing row or the Everything else row selects them.",
     "addRoutingRule": "Add Routing Rule",
     "partnerWideRuleRoutesAlertsFromEvery": "Partner-wide rule — routes alerts from every organization",
     "allOrgs": "Partner-wide",

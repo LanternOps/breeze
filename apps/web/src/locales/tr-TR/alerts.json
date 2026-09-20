@@ -620,7 +620,7 @@
       "correlations": "Korelasyonlar",
       "monitors": "Monitörler",
       "rules": "Kurallar",
-      "channels": "Kanallar"
+      "delivery": "Teslimat"
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +905,7 @@
     "notificationRoutingRules": "Bildirim Yönlendirme Kuralları",
     "routeAlertsToSpecificChannelsBasedOn": "Uyarıları önem derecesine göre belirli kanallara yönlendirin. İlk eşleşen kural kazanır.",
     "rule": "kuralı",
-    "noRoutingRulesConfiguredAllAlertsGo": "Yapılandırılan yönlendirme kuralı yok. Tüm uyarılar tüm etkin kanallara gider.",
+    "newChannelsRequireRouting": "Yeni kanallar, bir yönlendirme kuralında veya “Diğer tümü” satırında seçilene kadar uyarı iletmez.",
     "addRoutingRule": "Yönlendirme Kuralı Ekle",
     "partnerWideRuleRoutesAlertsFromEvery": "İş ortağı çapında kural — her kuruluştan gelen uyarıları yönlendirir",
     "allOrgs": "İş ortağı çapında",

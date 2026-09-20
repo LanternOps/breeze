@@ -130,7 +130,7 @@ type RoutingRule = {
   enabled: boolean;
 };
 
-export default function NotificationChannelsPage() {
+export default function DeliveryPage() {
   const { t } = useTranslation('alerts');
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -159,13 +159,13 @@ export default function NotificationChannelsPage() {
         // Routing rules are a secondary panel; don't block the page. Log
         // to console so failures are still debuggable.
         const data = await response.json().catch(() => null);
-        console.warn('[NotificationChannelsPage]', extractApiError(data, `Failed to fetch routing rules (HTTP ${response.status})`));
+        console.warn('[DeliveryPage]', extractApiError(data, `Failed to fetch routing rules (HTTP ${response.status})`));
         return;
       }
       const data = await response.json();
       setRoutingRules(asList(data, 'rules'));
     } catch (err) {
-      console.warn('[NotificationChannelsPage] fetchRoutingRules', err);
+      console.warn('[DeliveryPage] fetchRoutingRules', err);
     }
   }, []);
 
@@ -501,12 +501,12 @@ export default function NotificationChannelsPage() {
 
   return (
     <div className="space-y-6">
-      <AlertsTabStrip currentPath="/alerts/channels" />
+      <AlertsTabStrip currentPath="/alerts/delivery" />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('notificationChannelsPage.notificationChannels')}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('alertsTabStrip.tabs.delivery')}</h1>
           <p className="text-muted-foreground">
-            {t('notificationChannelsPage.configureWhereAlertNotificationsAreSent')}
+            {t('notificationChannelsPage.newChannelsRequireRouting')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -567,7 +567,7 @@ export default function NotificationChannelsPage() {
           <div className="border-t px-6 pb-6 pt-4">
             {routingRules.length === 0 && !showRuleForm ? (
               <div className="rounded-md border border-dashed py-8 text-center">
-                <p className="text-sm text-muted-foreground">{t('notificationChannelsPage.noRoutingRulesConfiguredAllAlertsGo')}</p>
+                <p className="text-sm text-muted-foreground">{t('notificationChannelsPage.newChannelsRequireRouting')}</p>
                 <button
                   type="button"
                   onClick={() => { setEditingRule(null); setShowRuleForm(true); }}

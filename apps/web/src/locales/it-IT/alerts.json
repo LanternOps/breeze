@@ -620,7 +620,7 @@
       "correlations": "Correlazioni",
       "monitors": "Monitor",
       "rules": "Regole",
-      "channels": "Canali"
+      "delivery": "Consegna"
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +905,7 @@
     "notificationRoutingRules": "Regole di instradamento notifiche",
     "routeAlertsToSpecificChannelsBasedOn": "Instrada gli avvisi a canali specifici in base alla gravità. Vince la prima regola corrispondente.",
     "rule": "regola",
-    "noRoutingRulesConfiguredAllAlertsGo": "Nessuna regola di instradamento configurata. Tutti gli avvisi vengono inviati a tutti i canali abilitati.",
+    "newChannelsRequireRouting": "I nuovi canali non inviano avvisi finché non vengono selezionati in una regola di instradamento o nella riga «Tutto il resto».",
     "addRoutingRule": "Aggiungi regola di instradamento",
     "partnerWideRuleRoutesAlertsFromEvery": "Regola a livello di partner - instrada gli avvisi da ogni organizzazione",
     "allOrgs": "A livello di partner",

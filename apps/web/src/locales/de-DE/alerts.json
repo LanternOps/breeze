@@ -620,7 +620,7 @@
       "correlations": "Korrelationen",
       "monitors": "Monitore",
       "rules": "Regeln",
-      "channels": "Kanäle"
+      "delivery": "Zustellung"
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +905,7 @@
     "notificationRoutingRules": "Regeln für die Weiterleitung von Benachrichtigungen",
     "routeAlertsToSpecificChannelsBasedOn": "Leiten Sie Warnungen je nach Schweregrad an bestimmte Kanäle weiter. Die erste übereinstimmende Regel gewinnt.",
     "rule": "Regel",
-    "noRoutingRulesConfiguredAllAlertsGo": "Keine Routing-Regeln konfiguriert. Alle Benachrichtigungen gehen an alle aktivierten Kanäle.",
+    "newChannelsRequireRouting": "Neue Kanäle stellen erst dann Warnungen zu, wenn sie in einer Routing-Regel oder in der Zeile „Alles andere“ ausgewählt werden.",
     "addRoutingRule": "Routing-Regel hinzufügen",
     "partnerWideRuleRoutesAlertsFromEvery": "Partnerweite Regel – leitet Warnungen von jeder Organisation weiter",
     "allOrgs": "Partnerweit",

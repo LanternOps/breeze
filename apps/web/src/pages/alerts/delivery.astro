@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import DeliveryPage from '../../components/alerts/DeliveryPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout titleKey="titles.alertsDelivery">
+  <Breadcrumbs client:load items={[
+    { label: 'Alerts', href: '/alerts' },
+    { label: 'Delivery' }
+  ]} />
+  <DeliveryPage client:load />
+</DashboardLayout>

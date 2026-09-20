@@ -2,31 +2,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock heavy sub-components that load on module init (NotificationChannelForm
 // imports @breeze/shared validators; AlertsTabStrip imports routing hooks).
-vi.mock('./NotificationChannelList', () => ({ default: () => null }));
-vi.mock('./NotificationChannelForm', () => ({ default: () => null }));
-vi.mock('./AlertsTabStrip', () => ({ default: () => null }));
-vi.mock('../../stores/orgStore', () => ({
+vi.mock('../NotificationChannelList', () => ({ default: () => null }));
+vi.mock('../NotificationChannelForm', () => ({ default: () => null }));
+vi.mock('../AlertsTabStrip', () => ({ default: () => null }));
+vi.mock('../../../stores/orgStore', () => ({
   useOrgStore: vi.fn(() => ({ currentOrgId: 'org-1' })),
 }));
 
 // Core mocks
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../shared/Toast', () => ({
+vi.mock('../../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
-import { fetchWithAuth } from '../../stores/auth';
-import { showToast } from '../shared/Toast';
+import { fetchWithAuth } from '../../../stores/auth';
+import { showToast } from '../../shared/Toast';
 import {
   runChannelTest,
   runChannelSave,
   runChannelDelete,
   runRoutingRuleSave,
   runRoutingRuleDelete,
-} from './NotificationChannelsPage';
+} from '../DeliveryPage';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
@@ -167,7 +167,7 @@ describe('runRoutingRuleSave', () => {
     vi.clearAllMocks();
   });
 
-  const RULE = { name: 'Critical Only', priority: 1, conditions: {}, channelIds: ['ch-1'], enabled: true };
+  const RULE = { name: 'Critical Only', priority: 1, conditions: {}, channelIds: ['ch-1'], escalationPolicyId: null, enabled: true };
 
   it('shows a success toast on create (no id)', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ id: 'rr-1' }));
