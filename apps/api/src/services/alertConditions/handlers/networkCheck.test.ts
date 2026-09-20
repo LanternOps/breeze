@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { mockDb, alertDeviceMock } = vi.hoisted(() => ({
   mockDb: { select: vi.fn() },
-  alertDeviceMock: vi.fn(async (_check: { orgId: string; assetId: string | null }): Promise<string | null> => 'device-1'),
+  alertDeviceMock: vi.fn(async (_check: { orgId: string; assetId: string | null; monitorId: string }): Promise<string | null> => 'device-1'),
 }));
 
 vi.mock('../../../db', () => ({ db: mockDb }));
 vi.mock('../../monitors/networkCheckAlertDevice', () => ({
-  resolveNetworkCheckAlertDevice: alertDeviceMock,
+  resolveNetworkCheckAlertDeviceForMonitor: alertDeviceMock,
 }));
 
 vi.mock('../../../db/schema', () => ({
@@ -89,7 +89,7 @@ describe('networkCheckHandler (#5291 W04)', () => {
       );
 
       expect(result.passed).toBe(true);
-      expect(alertDeviceMock).toHaveBeenCalledWith({ orgId: 'org-b', assetId: 'asset-1' });
+      expect(alertDeviceMock).toHaveBeenCalledWith({ orgId: 'org-b', assetId: 'asset-1', monitorId: MONITOR_ID });
     });
 
     it('never breaches on any other device the policy reaches, even with an offline streak', async () => {

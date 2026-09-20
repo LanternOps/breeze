@@ -75,7 +75,7 @@ vi.mock('../../db/schema', () => ({
 }));
 vi.mock('../alertService', () => ({ evaluateNetworkCheckAlertsForDevice: evaluateForDeviceMock }));
 vi.mock('./episodeService', () => ({ detachMonitorFromDevice: detachMock }));
-vi.mock('./networkCheckAlertDevice', () => ({ resolveNetworkCheckAlertDevice: resolveAlertDeviceMock }));
+vi.mock('./networkCheckAlertDevice', () => ({ resolveNetworkCheckAlertDeviceForMonitor: resolveAlertDeviceMock }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 import { evaluateNetworkCheckAlertsForOrg, selectNetworkCheckOrgIds } from './networkCheckAlertSweep';
@@ -126,7 +126,7 @@ describe('evaluateNetworkCheckAlertsForOrg (#6353)', () => {
 
     const result = await evaluateNetworkCheckAlertsForOrg(ORG);
 
-    expect(resolveAlertDeviceMock).toHaveBeenCalledWith({ orgId: ORG, assetId: null });
+    expect(resolveAlertDeviceMock).toHaveBeenCalledWith({ orgId: ORG, assetId: null, monitorId: 'mon-1' });
     expect(evaluateForDeviceMock).toHaveBeenCalledTimes(1);
     expect(evaluateForDeviceMock).toHaveBeenCalledWith('device-b', new Set(['mon-1']));
     expect(result.alertIds).toEqual(['alert-1']);
@@ -217,6 +217,59 @@ describe('evaluateNetworkCheckAlertsForOrg (#6353)', () => {
 
     expect(detachMock).toHaveBeenCalledTimes(1);
     expect(detachMock).toHaveBeenCalledWith('mon-1', 'device-old');
+    expect(result.staleEpisodesDetached).toBe(1);
+  });
+
+  it('one check\'s resolution failure does not cost the org\'s other checks their evaluation', async () => {
+    pushOrgAndChecks([
+      { id: 'nm-1', assetId: null, monitorId: 'mon-1' },
+      { id: 'nm-2', assetId: null, monitorId: 'mon-2' },
+    ]);
+    selectResults.push([]);
+    resolveAlertDeviceMock
+      .mockRejectedValueOnce(new Error('resolver boom'))
+      .mockResolvedValueOnce('device-b');
+    evaluateForDeviceMock.mockResolvedValue(['alert-2']);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await evaluateNetworkCheckAlertsForOrg(ORG);
+
+    expect(result.checksFailed).toBe(1);
+    expect(evaluateForDeviceMock).toHaveBeenCalledWith('device-b', new Set(['mon-2']));
+    expect(result.alertIds).toEqual(['alert-2']);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ issue: 'network_check_sweep_resolve_failed', monitorId: 'mon-1' }),
+    );
+  });
+
+  it('does NOT detach the old device\'s episode for a monitor whose new alert device failed to evaluate', async () => {
+    pushOrgAndChecks([
+      { id: 'nm-1', assetId: null, monitorId: 'mon-1' },
+      { id: 'nm-3', assetId: 'asset-3', monitorId: 'mon-3' },
+    ]);
+    // Stale-episode scan: both monitors hold an open episode on an OLD device.
+    selectResults.push([
+      { monitorId: 'mon-1', deviceId: 'device-old' },
+      { monitorId: 'mon-3', deviceId: 'device-old' },
+    ]);
+    resolveAlertDeviceMock.mockImplementation(async ({ assetId }: { assetId: string | null }) =>
+      assetId ? 'device-linked' : 'device-b');
+    evaluateForDeviceMock.mockImplementation(async (deviceId: string) => {
+      if (deviceId === 'device-b') throw new Error('boom');
+      return [];
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await evaluateNetworkCheckAlertsForOrg(ORG);
+
+    // mon-3 was evaluated on device-linked → its stale episode on device-old
+    // is closed; mon-1's evaluation threw → its episode is left alone, or
+    // "not evaluated" would read as "resolved".
+    expect(detachMock).toHaveBeenCalledTimes(1);
+    expect(detachMock).toHaveBeenCalledWith('mon-3', 'device-old');
+    expect(result.devicesFailed).toBe(1);
     expect(result.staleEpisodesDetached).toBe(1);
   });
 

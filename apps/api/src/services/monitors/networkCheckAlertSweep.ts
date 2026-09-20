@@ -3,7 +3,7 @@ import { db } from '../../db';
 import { monitorDeviceState, networkMonitors, organizations } from '../../db/schema';
 import { evaluateNetworkCheckAlertsForDevice } from '../alertService';
 import { detachMonitorFromDevice } from './episodeService';
-import { resolveNetworkCheckAlertDevice } from './networkCheckAlertDevice';
+import { resolveNetworkCheckAlertDeviceForMonitor } from './networkCheckAlertDevice';
 import { captureException } from '../sentry';
 
 /**
@@ -24,7 +24,8 @@ import { captureException } from '../sentry';
  *      DEVICE org's partner exactly as `monitorWorker.selectDueMonitorJobs`
  *      fans the probe itself;
  *   2. ONE alert device per check, chosen by the legacy network worker's rule
- *      (`resolveNetworkCheckAlertDevice`; offline devices eligible);
+ *      constrained to the monitor's policy attachment
+ *      (`resolveNetworkCheckAlertDeviceForMonitor`; offline devices eligible);
  *   3. one `evaluateNetworkCheckAlertsForDevice` pass per distinct alert
  *      device, which runs the ordinary monitor pipeline (resolution through
  *      the device's configuration policies, episode seam, cooldown, dedupe)
@@ -81,6 +82,10 @@ export interface NetworkCheckOrgSweepResult {
   devicesEvaluated: number;
   /** Checks with no eligible alert device in the org (nothing to attach an alert to). */
   checksWithoutDevice: number;
+  /** Checks whose alert-device resolution threw; reported, skipped this tick. */
+  checksFailed: number;
+  /** Alert devices whose evaluation threw; their checks are not detach-swept this tick. */
+  devicesFailed: number;
   /** Stale open episodes closed because the alert device moved. */
   staleEpisodesDetached: number;
   alertIds: string[];
@@ -98,6 +103,8 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
     checks: 0,
     devicesEvaluated: 0,
     checksWithoutDevice: 0,
+    checksFailed: 0,
+    devicesFailed: 0,
     staleEpisodesDetached: 0,
     alertIds: [],
   };
@@ -141,8 +148,26 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
   const monitorsByDevice = new Map<string, Set<string>>();
   for (const check of checks) {
     const monitorId = check.monitorId as string;
-    const deviceId = await resolveNetworkCheckAlertDevice({ orgId, assetId: check.assetId });
+    let deviceId: string | null;
+    try {
+      deviceId = await resolveNetworkCheckAlertDeviceForMonitor({ orgId, assetId: check.assetId, monitorId });
+    } catch (error) {
+      // One check's resolution failure must not cost the org's other checks
+      // their evaluation this tick.
+      result.checksFailed++;
+      console.error(`[NetworkCheckSweep] Error resolving alert device for monitor ${monitorId} (org ${orgId}):`, error);
+      captureException(error, undefined, {
+        area: 'monitors',
+        issue: 'network_check_sweep_resolve_failed',
+        orgId,
+        monitorId,
+      });
+      continue;
+    }
     if (!deviceId) {
+      // No non-ephemeral device the monitor resolves for — common for a
+      // partner-wide check fanned out to an org with no devices, so counted
+      // (and surfaced by the worker) rather than warned about every minute.
       result.checksWithoutDevice++;
       continue;
     }
@@ -152,13 +177,20 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
     monitorsByDevice.set(deviceId, set);
   }
 
+  // Monitors whose alert device was actually evaluated this tick. Only these
+  // take part in the stale-episode detach below: a device whose evaluation
+  // threw never opened/refreshed its episode, so closing the OLD device's
+  // episode for it would turn "not evaluated" into "resolved".
+  const evaluatedMonitorIds = new Set<string>();
   for (const [deviceId, monitorIds] of monitorsByDevice) {
     try {
       const created = await evaluateNetworkCheckAlertsForDevice(deviceId, monitorIds);
       result.devicesEvaluated++;
       result.alertIds.push(...created);
+      for (const id of monitorIds) evaluatedMonitorIds.add(id);
     } catch (error) {
       // One device's failure must not cost the org's other checks their alert.
+      result.devicesFailed++;
       console.error(`[NetworkCheckSweep] Error evaluating network checks for device ${deviceId} (org ${orgId}):`, error);
       captureException(error, undefined, {
         area: 'monitors',
@@ -174,7 +206,7 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
   // open forever: the per-device sweep deliberately never detaches
   // network_check episodes (it does not evaluate them), and the old device is
   // never evaluated by this sweep again.
-  const monitorIds = [...alertDeviceByMonitor.keys()];
+  const monitorIds = [...evaluatedMonitorIds];
   if (monitorIds.length > 0) {
     try {
       const open = await db
@@ -186,6 +218,9 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
           isNotNull(monitorDeviceState.currentEpisodeId),
         ));
       for (const row of open) {
+        // Belt and braces with the inArray above: never touch a monitor that
+        // was not evaluated this tick.
+        if (!evaluatedMonitorIds.has(row.monitorId)) continue;
         if (alertDeviceByMonitor.get(row.monitorId) === row.deviceId) continue;
         await detachMonitorFromDevice(row.monitorId, row.deviceId);
         result.staleEpisodesDetached++;

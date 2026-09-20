@@ -23,6 +23,8 @@ import {
   configPolicyFeatureLinks,
   configPolicyMonitors,
   configurationPolicies,
+  deviceGroupMemberships,
+  deviceGroups,
   devices,
   monitorDefinitions,
   monitorDeviceState,
@@ -60,6 +62,8 @@ afterEach(async () => {
     if (orgIds.length > 0) {
       await db.delete(alerts).where(inArray(alerts.orgId, orgIds));
       await db.delete(configurationPolicies).where(inArray(configurationPolicies.orgId, orgIds));
+      await db.delete(deviceGroupMemberships).where(inArray(deviceGroupMemberships.orgId, orgIds));
+      await db.delete(deviceGroups).where(inArray(deviceGroups.orgId, orgIds));
       // monitor_definitions cascades into the managed alert_templates /
       // alert_rules / automations / network_monitors (+ results).
       await db.delete(monitorDefinitions).where(inArray(monitorDefinitions.orgId, orgIds));
@@ -97,7 +101,7 @@ async function seedDevice(
   return device!.id;
 }
 
-async function fixture() {
+async function fixture(scope: 'organization' | 'device_group' = 'organization') {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: org.id });
@@ -144,8 +148,10 @@ async function fixture() {
   );
   expect(managed, 'compiler must have provisioned the managed network_monitors row').toBeDefined();
 
-  // Attached through an ORG-level configuration policy, so every device in the
-  // org resolves the monitor — the exact shape that multiplied alerts.
+  // Attached through a configuration policy: at ORG level every device in the
+  // org resolves the monitor — the exact shape that multiplied alerts; at
+  // DEVICE_GROUP level only onlineA (the "Servers" group) does, so the org-wide
+  // recency pick (the offline device) is outside the monitor's scope.
   await system(async () => {
     const [policy] = await db
       .insert(configurationPolicies)
@@ -156,10 +162,20 @@ async function fixture() {
       .values({ configPolicyId: policy!.id, featureType: 'monitors' })
       .returning({ id: configPolicyFeatureLinks.id });
     await db.insert(configPolicyMonitors).values({ featureLinkId: link!.id, monitorId: def!.id });
+
+    let targetId = org.id;
+    if (scope === 'device_group') {
+      const [group] = await db
+        .insert(deviceGroups)
+        .values({ orgId: org.id, name: `Servers ${randomUUID().slice(0, 8)}`, type: 'static' })
+        .returning({ id: deviceGroups.id });
+      await db.insert(deviceGroupMemberships).values({ deviceId: onlineA, groupId: group!.id, orgId: org.id });
+      targetId = group!.id;
+    }
     await db.insert(configPolicyAssignments).values({
       configPolicyId: policy!.id,
-      level: 'organization',
-      targetId: org.id,
+      level: scope,
+      targetId,
       priority: 0,
     });
   });
@@ -243,6 +259,23 @@ describe('network_check — one alert per check, on the alert device, online or 
     const quiet = await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId));
     expect(quiet.alertIds).toEqual([]);
     expect(await activeAlerts(f.orgId)).toHaveLength(0);
+  });
+
+  it('a device-group-scoped attachment alerts on the most recent device IN the group, not the org-wide recency pick', async () => {
+    const f = await fixture('device_group');
+    await pushResults(f, 'offline', 2);
+
+    const outcome = await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId));
+    expect(outcome.checks).toBe(1);
+    expect(outcome.checksWithoutDevice).toBe(0);
+    expect(outcome.alertIds).toHaveLength(1);
+
+    const open = await activeAlerts(f.orgId);
+    expect(open).toHaveLength(1);
+    // The legacy rule alone would have picked the offline device (most
+    // recently seen) — which the group policy never reaches, so nothing would
+    // have been evaluated. The monitor-aware pick lands on the group member.
+    expect(open[0]!.deviceId).toBe(f.onlineA);
   });
 
   it('N online devices + one failing check → the per-device sweep alone raises NOTHING (the verdict is not per device)', async () => {

@@ -20,6 +20,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
+import { captureException } from '../services/sentry';
 import {
   evaluateNetworkCheckAlertsForOrg,
   selectNetworkCheckOrgIds,
@@ -266,21 +267,32 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   // own short system context, the enqueue after it closes. Two extra reads per
   // evaluate-all tick (managed rows, their orgs) when any managed check exists;
   // one when none does.
-  const networkCheckOrgIds = await runWithSystemDbAccess(() => selectNetworkCheckOrgIds());
-  if (networkCheckOrgIds.length > 0) {
-    await queue.addBulk(
-      networkCheckOrgIds.map((orgId) => ({
-        name: 'evaluate-network-checks',
-        data: { type: 'evaluate-network-checks' as const, orgId },
-      }))
-    );
-    console.log(`[AlertWorker] Queued ${networkCheckOrgIds.length} network-check org evaluations`);
+  //
+  // Isolated from the device fan-out above, which has already been enqueued: a
+  // failure here must not fail the whole evaluate-all job and have BullMQ
+  // re-run (and re-enqueue) the fleet's device evaluations on retry.
+  let networkCheckOrgsQueued = 0;
+  try {
+    const networkCheckOrgIds = await runWithSystemDbAccess(() => selectNetworkCheckOrgIds());
+    if (networkCheckOrgIds.length > 0) {
+      await queue.addBulk(
+        networkCheckOrgIds.map((orgId) => ({
+          name: 'evaluate-network-checks',
+          data: { type: 'evaluate-network-checks' as const, orgId },
+        }))
+      );
+      console.log(`[AlertWorker] Queued ${networkCheckOrgIds.length} network-check org evaluations`);
+    }
+    networkCheckOrgsQueued = networkCheckOrgIds.length;
+  } catch (error) {
+    console.error('[AlertWorker] Failed to queue network-check org evaluations; they will be retried next tick:', error);
+    captureException(error, undefined, { area: 'monitors', issue: 'network_check_sweep_enqueue_failed' });
   }
 
   return {
     queued: totalQueued,
     skipped: 0,
-    networkCheckOrgsQueued: networkCheckOrgIds.length,
+    networkCheckOrgsQueued,
     durationMs: Date.now() - startTime
   };
 }
@@ -305,7 +317,17 @@ async function processEvaluateNetworkChecks(data: EvaluateNetworkChecksJobData):
     if (outcome.alertIds.length > 0) {
       console.log(
         `[AlertWorker] Created ${outcome.alertIds.length} network-check alerts for org ${data.orgId} ` +
-        `(checks=${outcome.checks}, devices=${outcome.devicesEvaluated})`
+        `(checks=${outcome.checks}, devices=${outcome.devicesEvaluated}, withoutDevice=${outcome.checksWithoutDevice})`
+      );
+    }
+    // A short run is a health signal even when it created nothing: each
+    // failure was already reported to Sentry individually, this is the per-tick
+    // summary an operator can grep for.
+    if (outcome.checksFailed > 0 || outcome.devicesFailed > 0) {
+      console.warn(
+        `[AlertWorker] Network-check sweep for org ${data.orgId} ran short: ` +
+        `checks=${outcome.checks}, checksFailed=${outcome.checksFailed}, devicesFailed=${outcome.devicesFailed}, ` +
+        `devicesEvaluated=${outcome.devicesEvaluated}, withoutDevice=${outcome.checksWithoutDevice}`
       );
     }
 

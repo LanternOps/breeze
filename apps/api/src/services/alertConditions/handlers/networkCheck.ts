@@ -3,13 +3,13 @@ import { db } from '../../../db';
 import { devices, networkMonitorResults, networkMonitors } from '../../../db/schema';
 import type { ConditionHandler } from '../registry';
 import type { ConditionResult, NetworkCheckCondition } from '../types';
-import { resolveNetworkCheckAlertDevice } from '../../monitors/networkCheckAlertDevice';
+import { resolveNetworkCheckAlertDeviceForMonitor } from '../../monitors/networkCheckAlertDevice';
 
 /**
  * #6353 — runtime capability the alerting-consolidation W05e converter gates
  * on. `true` means: a `network_check` verdict is evaluated ONCE per managed
  * check per running org (`services/monitors/networkCheckAlertSweep.ts`), on the
- * device `resolveNetworkCheckAlertDevice` picks, independent of that device's
+ * device `resolveNetworkCheckAlertDeviceForMonitor` picks, independent of that device's
  * online status — and this handler refuses to breach for any other device.
  * Removing either half must flip this to `false`, which blocks conversion.
  */
@@ -35,8 +35,9 @@ export const NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION = true as const;
  *
  * ONE ALERT DEVICE PER CHECK PER ORG (#6353): the probe runs once per org, so
  * the verdict is the org's, not any device's. The handler breaches only when
- * called for the device `resolveNetworkCheckAlertDevice` picks for that org —
- * the same rule the legacy network worker uses — and answers "not breaching"
+ * called for the device `resolveNetworkCheckAlertDeviceForMonitor` picks for
+ * that org — the legacy network worker's rule, constrained to devices the
+ * monitor's policy attachment reaches — and answers "not breaching"
  * for every other device an org-wide policy reaches. The device-independent
  * sweep (`networkCheckAlertSweep.ts`) is what calls it for the alert device,
  * online or not; the per-device sweep skips `network_check` rules entirely.
@@ -79,9 +80,17 @@ export const networkCheckHandler: ConditionHandler = {
     }
 
     // One probe per org raises ONE alert per org, on the device the legacy
-    // worker would have chosen. Any other device — and an org with no eligible
-    // device at all — is "not breaching", never a duplicate alert.
-    const alertDeviceId = await resolveNetworkCheckAlertDevice({ orgId: device.orgId, assetId: managed.assetId });
+    // worker would have chosen (within the monitor's attachment scope). Any
+    // other device — and an org with no eligible device at all — is "not
+    // breaching", never a duplicate alert. The only callers today are the
+    // network_check sweep (always the alert device) and auto-resolve (the
+    // alert's device, which may legitimately have stopped being the alert
+    // device — then the alert resolves, which is the right outcome).
+    const alertDeviceId = await resolveNetworkCheckAlertDeviceForMonitor({
+      orgId: device.orgId,
+      assetId: managed.assetId,
+      monitorId: cond.monitorId,
+    });
     if (alertDeviceId !== deviceId) {
       return { passed: false, description: 'Not the alert device for this network check' };
     }
