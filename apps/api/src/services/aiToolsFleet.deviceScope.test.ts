@@ -133,12 +133,27 @@ beforeEach(() => {
   );
 });
 
+/**
+ * #6206: the fixtures above are ai_agent principals, and the fleet actions that
+ * write a `users` FK now refuse an agent principal outright — ahead of the
+ * site/device gates this file is about. Scope semantics belong to human
+ * callers too, so the tests that assert a SCOPE denial (or an unrestricted
+ * success) use this human variant; the agent refusal itself is covered in
+ * aiToolsFleet.test.ts, plus the one case below.
+ */
+function asHuman(auth: AuthContext): AuthContext {
+  const next = { ...(auth as any) };
+  next.principal = { kind: 'user' };
+  next.user = { ...next.user, id: 'cccccccc-cccc-cccc-cccc-cccccccccccc' };
+  return next as AuthContext;
+}
+
 // ── 1. manage_patches approvals are fleet-wide policy ────────────────────────
 describe('manage_patches approvals — device/site-narrowed callers cannot set fleet policy', () => {
   it('denies approve for a partner admin bound to one device', async () => {
     const r = await handlerFor('manage_patches')(
       { action: 'approve', patchId: 'p-1' },
-      deviceBoundAuth(PARTNER_ADMIN),
+      asHuman(deviceBoundAuth(PARTNER_ADMIN)),
     );
     expect(JSON.parse(r).error).toMatch(/cannot act on the fleet|organization-wide/i);
     expect(patchHelperMocks.upsertPatchApproval).not.toHaveBeenCalled();
@@ -147,7 +162,7 @@ describe('manage_patches approvals — device/site-narrowed callers cannot set f
   it('denies bulk_approve for a device-LESS analysis run', async () => {
     const r = await handlerFor('manage_patches')(
       { action: 'bulk_approve', patchIds: ['p-1'] },
-      deviceLessRunAuth(PARTNER_ADMIN),
+      asHuman(deviceLessRunAuth(PARTNER_ADMIN)),
     );
     expect(JSON.parse(r).error).toMatch(/cannot act on the fleet/i);
     expect(patchHelperMocks.upsertPatchApproval).not.toHaveBeenCalled();
@@ -156,7 +171,7 @@ describe('manage_patches approvals — device/site-narrowed callers cannot set f
   it('denies defer for a site-restricted (no device axis) partner admin', async () => {
     const auth = deviceBoundAuth(PARTNER_ADMIN) as any;
     delete auth.allowedDeviceIds;
-    const r = await handlerFor('manage_patches')({ action: 'defer', patchId: 'p-1' }, auth);
+    const r = await handlerFor('manage_patches')({ action: 'defer', patchId: 'p-1' }, asHuman(auth));
     expect(JSON.parse(r).error).toMatch(/organization-wide|cannot act on the fleet/i);
     expect(patchHelperMocks.upsertPatchApproval).not.toHaveBeenCalled();
   });
@@ -164,10 +179,23 @@ describe('manage_patches approvals — device/site-narrowed callers cannot set f
   it('still lets an unrestricted partner admin approve (no regression)', async () => {
     const r = await handlerFor('manage_patches')(
       { action: 'approve', patchId: 'p-1' },
-      unrestrictedAuth(PARTNER_ADMIN),
+      asHuman(unrestrictedAuth(PARTNER_ADMIN)),
     );
     expect(JSON.parse(r).success).toBe(true);
     expect(patchHelperMocks.upsertPatchApproval).toHaveBeenCalled();
+  });
+
+  // The same unrestricted call from an AGENT principal must NOT succeed: its
+  // auth.user.id is an aiAgents.id and `patch_approvals.approved_by` is a
+  // users FK (#6206). This is the case the file's fixtures used to assert
+  // green, so it is pinned here rather than only in aiToolsFleet.test.ts.
+  it('refuses the same unrestricted approve for an ai_agent principal', async () => {
+    const r = await handlerFor('manage_patches')(
+      { action: 'approve', patchId: 'p-1' },
+      unrestrictedAuth(PARTNER_ADMIN),
+    );
+    expect(JSON.parse(r)).toEqual({ error: 'agent_principal_unsupported_action', action: 'approve' });
+    expect(patchHelperMocks.upsertPatchApproval).not.toHaveBeenCalled();
   });
 
   it('scopes the compliance approval counts to the caller org', async () => {
@@ -446,7 +474,7 @@ describe('manage_alert_rules — alert reads carry the device axis', () => {
 // ── 6. generate_report ───────────────────────────────────────────────────────
 describe('generate_report — device-bound runs cannot mint site-wide reports', () => {
   it('denies generate for a device-bound run', async () => {
-    const r = await handlerFor('generate_report')({ action: 'generate', reportType: 'device_inventory' }, deviceBoundAuth());
+    const r = await handlerFor('generate_report')({ action: 'generate', reportType: 'device_inventory' }, asHuman(deviceBoundAuth()));
     expect(JSON.parse(r).error).toMatch(/fixed set of devices/i);
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
