@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -373,6 +374,14 @@ func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
 	cmd := exec.CommandContext(ctx, built.Path, built.Args[1:]...)
 	cmd.Env = built.Env
 	cmd.Dir = built.Dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	cmd.WaitDelay = 30 * time.Second
 	output, err := cmd.CombinedOutput()
 	text := truncateBrewOutputTail(output)
 	if ctxErr := ctx.Err(); ctxErr != nil {

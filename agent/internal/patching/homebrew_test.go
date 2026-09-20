@@ -718,3 +718,36 @@ func TestRunBrewCleanupStillSwallowsErrors(t *testing.T) {
 	h := &HomebrewProvider{}
 	h.runBrewCleanup() // must not panic and must not propagate anything
 }
+
+func TestRunBrewCleanupBoundedCancelsDescendants(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n/bin/sh -c 'echo ready > \"$BREW_TEST_READY\"; /bin/sleep 3' &\nwait\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BREW_TEST_READY", ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := RunBrewCleanupBounded(ctx, false); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fixture child never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started := time.Now()
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup retained descendant pipe for %s after cancellation", elapsed)
+	}
+}
