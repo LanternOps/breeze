@@ -83,12 +83,12 @@ export default function AiChatSidebar() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "a") {
         e.preventDefault();
-        toggle();
+        if (canUseAi) toggle();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [toggle]);
+  }, [toggle, canUseAi]);
 
   // Restore session history when sidebar opens with a persisted sessionId
   useEffect(() => {

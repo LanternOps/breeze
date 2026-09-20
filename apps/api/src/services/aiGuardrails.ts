@@ -1177,10 +1177,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Documentation tools
   // `general` was never a catalog resource. The documentation index is
   // static product content, not tenant data, and the only surface that
-  // reaches this tool is the AI chat route, which already requires
-  // ORGS_READ (routes/ai.ts:167) — so mirroring that is exactly "what the
-  // route requires" and nothing weaker.
-  search_documentation: { resource: 'organizations', action: 'read' },
+  // reaches this tool is the AI chat route, which requires ai_sessions:use
+  // (routes/ai.ts, #6396) — so mirroring that is exactly "what the route
+  // requires" and nothing weaker. It used to mirror organizations:read, which
+  // the seeded Org Admin / Org Technician roles do NOT hold: chat would open
+  // and the first docs lookup would be denied.
+  search_documentation: { resource: 'ai_sessions', action: 'use' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   list_scripts: { resource: 'scripts', action: 'read' },

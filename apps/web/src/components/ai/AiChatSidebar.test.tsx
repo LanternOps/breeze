@@ -5,7 +5,13 @@ const permState = vi.hoisted(() => ({ canUseAi: true }));
 // #6396: the sidebar is gated on ai_sessions:use; default to allowed so the
 // shell tests below exercise the open/collapsed states.
 vi.mock('@/lib/permissions', () => ({
-  usePermissions: () => ({ permissions: [], can: () => permState.canUseAi }),
+  usePermissions: () => ({
+    permissions: [],
+    // Argument-checked so gating on a different resource/action than the
+    // Header and the API route is caught, not just "some gate exists".
+    can: (resource: string, action: string) =>
+      resource === 'ai_sessions' && action === 'use' && permState.canUseAi,
+  }),
 }));
 
 import AiChatSidebar from './AiChatSidebar';

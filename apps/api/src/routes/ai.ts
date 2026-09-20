@@ -169,7 +169,7 @@ const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSI
 // organizations:write actions.
 const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 // #6396: opening and driving your OWN chat session is a dedicated capability
-// (ai_sessions:use) held by Org Admin and Org Technician — NOT
+// (ai_sessions:use) held by Org Admin, Org Technician and Partner Technician — NOT
 // organizations:write, which no seeded org-scope role holds. Tool calls inside
 // the session are re-checked against TOOL_PERMISSIONS (route parity), so this
 // gate opens the conversation without widening what the role can do. Own-session

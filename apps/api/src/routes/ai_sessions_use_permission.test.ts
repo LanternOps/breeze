@@ -10,6 +10,7 @@ type Perm = { resource: string; action: string };
 let currentAuth: any;
 
 vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -73,6 +74,10 @@ vi.mock('../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+// PUT /budget fire-and-forgets evaluateAiBudgetThresholds after the gate; an
+// unmocked call rejects against the partial db mock and fails the run as an
+// unhandled error even though every assertion passes.
+vi.mock('../services/aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn(async () => undefined) }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/effectiveSettings', () => ({ assertNotLocked: vi.fn() }));
 
@@ -176,5 +181,39 @@ describe('own-session chat routes are gated on ai_sessions:use (#6396)', () => {
     expect((await post('/sessions/sess-1/flag', {})).status).toBe(403);
     currentAuth = authWith([ORGS_WRITE]);
     expect((await post('/sessions/sess-1/flag', {})).status).not.toBe(403);
+  });
+
+  // Every route that moved onto the alias, so a future edit that re-types
+  // requireAiWrite on one of them is caught individually.
+  const REGATED: Array<[string, string, unknown]> = [
+    ['GET', '/sessions', undefined],
+    ['GET', '/sessions/search?q=x', undefined],
+    ['GET', '/sessions/sess-1', undefined],
+    ['GET', '/m365-connections', undefined],
+    ['GET', '/usage', undefined],
+    ['POST', '/sessions', {}],
+    ['PATCH', '/sessions/sess-1', { title: 't' }],
+    ['DELETE', '/sessions/sess-1', undefined],
+    ['POST', '/sessions/sess-1/messages', { content: 'hi' }],
+    ['POST', '/sessions/sess-1/interrupt', {}],
+    ['POST', '/sessions/sess-1/approve/exec-1', { approved: true }],
+    ['POST', '/sessions/sess-1/pause', {}],
+    ['POST', '/sessions/sess-1/approve-plan', {}],
+    ['POST', '/sessions/sess-1/abort-plan', {}],
+  ];
+  const call = (method: string, path: string, body: unknown) =>
+    app.request(`/ai${path}${path.includes('?') ? '&' : '?'}orgId=${ORG_ID}`, {
+      method,
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it.each(REGATED)('%s %s denies organizations:read+write alone and lets ai_sessions:use past the gate', async (method, path, body) => {
+    currentAuth = authWith([ORGS_WRITE, { resource: 'organizations', action: 'read' }]);
+    expect((await call(method, path, body)).status).toBe(403);
+    currentAuth = authWith([AI_SESSIONS_USE]);
+    // Past the permission gate the handler may still 400/404/500 on the
+    // minimal mocks; the gate itself is what this asserts.
+    expect((await call(method, path, body)).status).not.toBe(403);
   });
 });
