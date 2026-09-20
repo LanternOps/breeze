@@ -493,6 +493,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'filesystemCleanupRunRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/filesystemCleanupRunRetention');
+      return {
+        init: m.initializeFilesystemCleanupRunRetention,
+        shutdown: m.shutdownFilesystemCleanupRunRetention,
+      };
+    },
+  },
+  {
     name: 'oauthCleanup',
     placement: 'global',
     load: async () => {

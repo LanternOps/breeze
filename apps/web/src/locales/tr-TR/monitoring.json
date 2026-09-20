@@ -7,16 +7,6 @@
     "badgeHint": "Bir monitör tarafından yönetiliyor — bunun yerine monitörden düzenleyin.",
     "monitorLabel": "Monitör"
   },
-  "hub": {
-    "title": "İzleme ve Otomasyon",
-    "tabs": {
-      "monitors": "Monitörler",
-      "network": "Ağ",
-      "delivery": "Teslimat",
-      "legacyRules": "Eski kurallar"
-    },
-    "ariaLabel": "İzleme bölümleri"
-  },
   "list": {
     "title": "Monitörler",
     "description": "Bir koşulu izleyin, cihazda yanıt verin, bildirin ve tekrarlamaya devam ederse yükseltin.",
@@ -45,6 +35,7 @@
     "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
   },
   "editor": {
+    "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
     "titleNew": "Yeni monitör",
     "titleEdit": "Monitörü düzenle",
     "breadcrumb": {
@@ -83,7 +74,6 @@
       "channels": "Yönlendirme kuralları ve bu kanallar",
       "none": "Bildirim gönderme"
     },
-    "agentDeliveredHint": "Bu izleme cihazda çalışır ve bu birleştirilene kadar politikanın Hizmet ve Süreç İzleme sekmesinde de bulunmalıdır.",
     "responsesHint": "Yanıtlar, ihlalin gerçekleştiği cihazda sırayla çalışır.",
     "recurrenceHint": "İhlal olaylarında sayılır: yeni bir olay yalnızca koşul düzeldikten sonra başlar.",
     "ownerScope": {

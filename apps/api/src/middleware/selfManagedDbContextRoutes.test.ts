@@ -8,6 +8,9 @@ import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 // fails to match re-pins a pooled connection across the network call.
 describe('isSelfManagedDbContextRoute', () => {
   const MATCH: ReadonlyArray<[string, string]> = [
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute/'],
+    ['post', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     ['POST', '/api/v1/invoices/abc-123/pay-link'],
     ['POST', '/api/v1/invoices/abc-123/pay-link/'], // optional trailing slash
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
@@ -159,6 +162,8 @@ describe('isSelfManagedDbContextRoute', () => {
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-preview', 'preview keeps ambient tx'],
+    ['GET', '/api/v1/devices/abc-123/filesystem/cleanup-runs', 'history keeps ambient tx'],
     // #3905 — the /send pattern must not swallow its siblings. Losing the
     // ambient transaction on a route whose handler does NOT manage its own
     // contexts means every db call there lands on the bare pool with no RLS

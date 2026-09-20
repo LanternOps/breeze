@@ -4,7 +4,7 @@ import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
-import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
+import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -86,6 +86,7 @@ import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts }
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
 import {
+  commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
@@ -1992,7 +1993,10 @@ async function processCommandResult(
               eq(deviceCommands.id, result.commandId),
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
-              commandAcceptsAgentResultCondition()
+              or(
+                commandAcceptsAgentResultCondition(),
+                and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+              )
             )
           )
           .limit(1)
@@ -2020,7 +2024,10 @@ async function processCommandResult(
                 eq(deviceCommands.id, result.commandId),
                 eq(devices.agentId, agentId),
                 eq(deviceCommands.targetRole, 'agent'),
-                commandAcceptsAgentResultCondition()
+                or(
+                  commandAcceptsAgentResultCondition(),
+                  and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                )
               )
             )
             .limit(1)
@@ -2084,6 +2091,22 @@ async function processCommandResult(
       rawNormalizedResult,
       rawStdout,
     );
+
+    const cleanupCommand = command;
+    const recordSupplementalCleanup = async () => {
+      const payload = cleanupCommand.payload as { cleanupRunId?: unknown } | null;
+      if (cleanupCommand.type !== 'file_delete' || typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+      await runWithAgentOrgDbAccess('agentWs.commandResult.cleanupEvidence', orgId, partnerId, () =>
+        commandResultHandlers.file_delete!({
+          agentId, command: cleanupCommand, commandId: result.commandId, result: normalizedResult,
+          resolvedDeviceId: resolvedDeviceId!, stdout,
+        })
+      );
+    };
+    if (command.type === 'file_delete' && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
+      await recordSupplementalCleanup();
+      return;
+    }
 
     // D20-D: mssql_backup/hyperv_backup are QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES
     // — the agent's FIRST reply for these can be a non-terminal queue-
@@ -2176,6 +2199,7 @@ async function processCommandResult(
     );
 
     if (updatedCommands.length === 0) {
+      await recordSupplementalCleanup();
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
       return;
     }

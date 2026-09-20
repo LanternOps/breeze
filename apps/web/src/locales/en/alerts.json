@@ -976,5 +976,12 @@
     "forever": "Forever",
     "cancel": "Cancel",
     "suppress": "Suppress"
+  },
+  "templates": {
+    "frozen": {
+      "title": "New alert templates are created as monitors",
+      "body": "Existing templates stay editable here and convert in the next release.",
+      "link": "Open Monitors"
+    }
   }
 }

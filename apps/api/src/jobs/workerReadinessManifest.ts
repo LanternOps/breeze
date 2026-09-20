@@ -88,6 +88,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('m365SyncRetention'),
   consumers('serviceProcessCheckRetention'),
   consumers('changeLogRetention'),
+  // Disk Cleanup v2 W03. Plain Redis-required consumer: it constructs and
+  // attaches unconditionally wherever it is placed, with no feature flag.
+  consumers('filesystemCleanupRunRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),

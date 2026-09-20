@@ -35,7 +35,7 @@
  * proposal. This module is where that distinction is actually drawn.
  */
 import { createHash } from 'node:crypto';
-import { and, desc, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { AiAgentKind } from '@breeze/shared';
 import {
   db,
@@ -47,6 +47,7 @@ import { deviceFilesystemCleanupRuns } from '../../db/schema/filesystem';
 import { playbookDefinitions } from '../../db/schema/playbooks';
 import { organizations } from '../../db/schema/orgs';
 import { aiUnattendedExposure } from '../../db/schema/aiUnattendedExposure';
+import { CLEANUP_PREVIEW_TTL_HOURS } from '../../routes/devices/filesystem';
 import { readPlanPreviewCandidates } from '../filesystemAnalysis';
 import { computeEffectDigestForRelease } from '../actionIntents/effectDigest';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
@@ -139,28 +140,42 @@ async function pinDiskCleanup(
   run: RevalidateActExecutionArgs['run'],
 ): Promise<PinStepResult> {
   return inSystemDbContext(async () => {
-    const [latest] = await db
-      .select({ plan: deviceFilesystemCleanupRuns.plan })
+    // Pin identity, still scoped to both the run's device and organization.
+    const [pinned] = await db
+      .select({
+        plan: deviceFilesystemCleanupRuns.plan,
+        status: deviceFilesystemCleanupRuns.status,
+        requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+      })
       .from(deviceFilesystemCleanupRuns)
       .where(and(
+        eq(deviceFilesystemCleanupRuns.id, target.cleanupRunId),
         eq(deviceFilesystemCleanupRuns.deviceId, run.deviceId),
         eq(deviceFilesystemCleanupRuns.orgId, run.orgId),
-        eq(deviceFilesystemCleanupRuns.status, 'previewed'),
       ))
-      .orderBy(desc(deviceFilesystemCleanupRuns.createdAt))
       .limit(1);
 
-    if (!latest) {
-      return { ok: false, deny: 'No disk-cleanup preview plan exists for this device' };
+    if (!pinned) {
+      return { ok: false, deny: 'The pinned disk-cleanup run does not exist for this device' };
+    }
+    if (pinned.status !== 'previewed') {
+      return { ok: false, deny: `The pinned disk-cleanup run is no longer previewable (status: ${pinned.status})` };
     }
 
-    const candidatePaths = new Set(readPlanPreviewCandidates(latest.plan).map((c) => c.path));
+    const requestedAt = pinned.requestedAt instanceof Date
+      ? pinned.requestedAt
+      : new Date(pinned.requestedAt as unknown as string);
+    if (Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+      return { ok: false, deny: `The pinned disk-cleanup preview has expired (older than ${CLEANUP_PREVIEW_TTL_HOURS}h)` };
+    }
+
+    const candidatePaths = new Set(readPlanPreviewCandidates(pinned.plan).map((c) => c.path));
     const outside = target.paths.find((p) => !candidatePaths.has(p));
     if (outside) {
-      return { ok: false, deny: `Path "${outside}" is not part of the latest cleanup preview` };
+      return { ok: false, deny: `Path "${outside}" is not part of the pinned cleanup run` };
     }
 
-    const estimatedBytes = readEstimatedBytes(latest.plan);
+    const estimatedBytes = readEstimatedBytes(pinned.plan);
     if (estimatedBytes > ACT_DISK_CLEANUP_MAX_BYTES_V1) {
       return {
         ok: false,
@@ -443,7 +458,8 @@ export async function revalidateActExecution(
     // proposal instead — the same "legitimate call, not currently
     // executable unattended" shape Step 3.5 and the playbook-pin step below
     // already use.
-    if (normalized.deviceMismatch) {
+    // A cleanup without its preview identity is unsafe, even as a proposal.
+    if (normalized.deviceMismatch || (op.key === 'disk_cleanup.execute' && normalized.reason.startsWith('cleanupRunId'))) {
       return { ok: false, deny: `Act revalidation: ${normalized.reason}` };
     }
     // #3826 cheap nonblocking fix: thread the concrete reason through so the

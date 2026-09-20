@@ -976,5 +976,12 @@
     "forever": "Für immer",
     "cancel": "Abbrechen",
     "suppress": "Unterdrücken"
+  },
+  "templates": {
+    "frozen": {
+      "title": "Neue Alarmvorlagen werden als Monitore erstellt",
+      "body": "Bestehende Vorlagen bleiben hier bearbeitbar und werden im nächsten Release umgewandelt.",
+      "link": "Monitore öffnen"
+    }
   }
 }

@@ -42,11 +42,14 @@ function metricSelect(): HTMLSelectElement {
   return select as HTMLSelectElement;
 }
 
-function addFirstRule(): void {
-  // Both the header and empty-state render an "Add Alert Rule" button; the
-  // empty-state one only exists before any rule is added — click it.
-  const addButtons = screen.getAllByRole('button', { name: /Add Alert Rule/i });
-  fireEvent.click(addButtons[addButtons.length - 1]!);
+const editableRuleLink = {
+  id: 'link-1', featureType: 'alert_rule' as const, featurePolicyId: null,
+  inlineSettings: { items: [{ name: 'Existing CPU rule', severity: 'medium',
+    conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80, durationMinutes: 5 }],
+    cooldownMinutes: 15, autoResolve: false }] },
+};
+function openExistingRule() {
+  fireEvent.click(screen.getByText('Existing CPU rule'));
 }
 
 describe('AlertRuleTab (issue #1857)', () => {
@@ -269,14 +272,14 @@ describe('AlertRuleTab (issue #1857)', () => {
     render(
       <AlertRuleTab
         policyId="policy-1"
-        existingLink={undefined}
+        existingLink={editableRuleLink}
         linkedPolicyId={null}
         onLinkChanged={vi.fn()}
       />
     );
 
-    // Add a rule, then switch its single condition's type to Device Offline.
-    addFirstRule();
+    // Open the existing rule, then switch its single condition's type to Device Offline.
+    openExistingRule();
 
     const typeSelect = controlForLabel('Type') as HTMLSelectElement;
     fireEvent.change(typeSelect, { target: { value: 'offline' } });
@@ -295,13 +298,13 @@ describe('AlertRuleTab (issue #1857)', () => {
     render(
       <AlertRuleTab
         policyId="policy-1"
-        existingLink={undefined}
+        existingLink={editableRuleLink}
         linkedPolicyId={null}
         onLinkChanged={vi.fn()}
       />
     );
 
-    addFirstRule();
+    openExistingRule();
 
     const typeSelect = controlForLabel('Type') as HTMLSelectElement;
     fireEvent.change(typeSelect, { target: { value: 'offline' } });
@@ -320,13 +323,13 @@ describe('AlertRuleTab (issue #1857)', () => {
     render(
       <AlertRuleTab
         policyId="policy-1"
-        existingLink={undefined}
+        existingLink={editableRuleLink}
         linkedPolicyId={null}
         onLinkChanged={vi.fn()}
       />
     );
 
-    addFirstRule();
+    openExistingRule();
 
     const typeSelect = controlForLabel('Type');
     expect(within(typeSelect).getByRole('option', { name: 'Device Offline' })).toBeTruthy();
@@ -348,11 +351,11 @@ describe('AlertRuleTab condition types after the alert consolidation', () => {
     });
   });
 
-  function renderEmpty() {
+  function renderEditableRule() {
     render(
       <AlertRuleTab
         policyId="policy-1"
-        existingLink={undefined}
+        existingLink={editableRuleLink}
         linkedPolicyId={null}
         onLinkChanged={vi.fn()}
       />
@@ -376,8 +379,8 @@ describe('AlertRuleTab condition types after the alert consolidation', () => {
   }
 
   it('offers exactly metric, offline and event_log — never the dead "custom" type', () => {
-    renderEmpty();
-    addFirstRule();
+    renderEditableRule();
+    openExistingRule();
 
     const typeSelect = controlForLabel('Type');
     const values = within(typeSelect)
@@ -388,8 +391,8 @@ describe('AlertRuleTab condition types after the alert consolidation', () => {
   });
 
   it('seeds schema-valid defaults when a condition is switched to Event Log', async () => {
-    renderEmpty();
-    addFirstRule();
+    renderEditableRule();
+    openExistingRule();
 
     fireEvent.change(controlForLabel('Type') as HTMLSelectElement, {
       target: { value: 'event_log' },
@@ -412,8 +415,8 @@ describe('AlertRuleTab condition types after the alert consolidation', () => {
   });
 
   it('round-trips event_log condition edits through form state', async () => {
-    renderEmpty();
-    addFirstRule();
+    renderEditableRule();
+    openExistingRule();
 
     fireEvent.change(controlForLabel('Type') as HTMLSelectElement, {
       target: { value: 'event_log' },
@@ -454,8 +457,8 @@ describe('AlertRuleTab condition types after the alert consolidation', () => {
   });
 
   it('clamps event_log count/window to the schema bounds', async () => {
-    renderEmpty();
-    addFirstRule();
+    renderEditableRule();
+    openExistingRule();
 
     fireEvent.change(controlForLabel('Type') as HTMLSelectElement, {
       target: { value: 'event_log' },
@@ -1031,9 +1034,9 @@ describe('AlertRuleTab rationale (#5653)', () => {
 
   it('says so when a rule carries no rationale', () => {
     render(
-      <AlertRuleTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+      <AlertRuleTab policyId="policy-1" existingLink={editableRuleLink} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
     );
-    addFirstRule();
+    openExistingRule();
 
     expect(screen.getByTestId('alert-rule-rationale-0').textContent).toContain('No rationale recorded.');
   });

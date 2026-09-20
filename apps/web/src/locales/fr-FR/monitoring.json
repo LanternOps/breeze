@@ -7,16 +7,6 @@
     "badgeHint": "Géré par un moniteur — modifiez-le plutôt depuis le moniteur.",
     "monitorLabel": "Moniteur"
   },
-  "hub": {
-    "title": "Supervision et automatisation",
-    "tabs": {
-      "monitors": "Moniteurs",
-      "network": "Réseau",
-      "delivery": "Diffusion",
-      "legacyRules": "Règles héritées"
-    },
-    "ariaLabel": "Sections de supervision"
-  },
   "list": {
     "title": "Moniteurs",
     "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
@@ -45,6 +35,7 @@
     "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
   },
   "editor": {
+    "attachedToPolicy": "Moniteur créé et attaché à la politique",
     "titleNew": "Nouveau moniteur",
     "titleEdit": "Modifier le moniteur",
     "breadcrumb": {
@@ -83,7 +74,6 @@
       "channels": "Règles de routage plus ces chaînes",
       "none": "Ne pas notifier"
     },
-    "agentDeliveredHint": "Cette surveillance s’exécute sur l’appareil et doit aussi exister dans l’onglet Supervision des services et des processus de la politique, jusqu’à ce que ce soit unifié.",
     "responsesHint": "Les réponses s’exécutent dans l’ordre sur l’appareil qui a enfreint la condition.",
     "recurrenceHint": "Compté en épisodes de manquement : un nouvel épisode ne commence qu’après le rétablissement de la condition.",
     "ownerScope": {

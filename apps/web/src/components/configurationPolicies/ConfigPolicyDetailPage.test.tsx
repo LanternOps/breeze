@@ -51,11 +51,13 @@ type MockLink = {
 function mockPolicy(
   owner: { orgId: string | null; partnerId: string | null },
   featureLinks: MockLink[] = [],
-  extra: Record<string, unknown> = {}
+  extra: Record<string, unknown> = {},
+  catalog: Record<string, unknown>[] = []
 ) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init as RequestInit | undefined)?.method ?? 'GET';
+    if (url === '/monitor-definitions' && method === 'GET') return json({ data: catalog });
     if (url === '/configuration-policies/pol-1' && method === 'GET') {
       return json({
         id: 'pol-1',
@@ -409,4 +411,96 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
       window.history.replaceState(null, '', originalSearch);
     }
   });
+});
+
+
+describe('ConfigPolicyDetailPage — inherited duplicate conditions', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => { window.location.hash = ''; });
+
+  const cases = [
+    {
+      tab: 'alert_rule',
+      settings: { items: [{ name: 'Legacy CPU', severity: 'high', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }], cooldownMinutes: 15 }] },
+      monitor: { id: 'cpu-monitor', name: 'CPU monitor', kind: 'cpu' },
+      pair: 'Legacy CPU ↔ CPU monitor',
+    },
+    {
+      tab: 'monitoring',
+      settings: { watches: [{ watchType: 'service', name: 'nginx', enabled: true }] },
+      monitor: { id: 'service-monitor', name: 'Service monitor', kind: 'service', condition: { serviceName: 'nginx' } },
+      pair: 'nginx ↔ Service monitor',
+    },
+  ];
+
+  it.each(cases)('warns on $tab for an inherited monitor and own legacy condition', async ({ tab, settings, monitor, pair }) => {
+    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
+    const monitorLink = { id: 'parent-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } };
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink], {
+      parentPolicyId: 'parent-1',
+      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [monitorLink] },
+    }, [monitor]);
+    window.location.hash = tab;
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
+  });
+
+  it.each(cases)('warns on $tab for parent monitor B even with own monitor A', async ({ tab, settings, monitor, pair }) => {
+    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
+    const monitorLink = { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } };
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink, monitorLink], {
+      parentPolicyId: 'parent-1',
+      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [{ ...monitorLink, id: 'parent-monitors', inlineSettings: { items: [{ monitorId: 'parent-monitor', enabled: true }] } }] },
+    }, [monitor, { ...monitor, id: 'parent-monitor', name: 'Inherited monitor B' }]);
+    window.location.hash = tab;
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    const notice = await screen.findByTestId('duplicate-condition-notice');
+    expect(notice).toHaveTextContent(pair);
+    expect(notice).toHaveTextContent('Inherited monitor B');
+  });
+
+  it.each(cases)('respects an own disabled monitor on $tab', async ({ tab, settings, monitor }) => {
+    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
+    const monitorLink = { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: false }] } };
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink, monitorLink], {
+      parentPolicyId: 'parent-1',
+      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [
+        { ...monitorLink, id: 'parent-monitors', inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } },
+      ] },
+    }, [monitor]);
+    window.location.hash = tab;
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByTestId('legacy-freeze-notice');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions'));
+    expect(screen.queryByTestId('duplicate-condition-notice')).not.toBeInTheDocument();
+  });
+
+  it.each(cases)('retains duplicate warnings without a parent on $tab', async ({ tab, settings, monitor, pair }) => {
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [
+      { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings },
+      { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id }] } },
+    ], {}, [monitor]);
+    window.location.hash = tab;
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
+  });
+
+  it.each(['alert_rule', 'monitoring'])('warns on %s for an inherited watch and inherited monitor', async (tab) => {
+    const { settings, monitor, pair } = cases[1];
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [], {
+      parentPolicyId: 'parent-1',
+      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [
+        { id: 'parent-watch', featureType: 'monitoring', featurePolicyId: null, inlineSettings: settings },
+        { id: 'parent-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id }] } },
+      ] },
+    }, [monitor]);
+    window.location.hash = tab;
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
+  });
+
 });

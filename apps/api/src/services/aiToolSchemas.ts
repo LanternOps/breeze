@@ -1006,6 +1006,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     path: safePath.optional(),
     categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
     paths: z.array(cleanupPath).min(1).max(200).optional(),
+    // Execute needs an explicit id or the run remembered by this tool's preview.
+    // The handler enforces the latter because it is process-local state.
+    cleanupRunId: uuid.optional(),
     maxCandidates: z.number().int().min(1).max(200).optional(),
   }).refine(
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),

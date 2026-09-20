@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -37,7 +37,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
-import '../../lib/i18n';
+import { i18n } from '../../lib/i18n';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -140,16 +140,51 @@ export interface MonitorEditorProps {
 
 type EditorTab = 'settings' | 'activity';
 
-// Pure hash parser (leading `#` already stripped by useHashState), following
-// the CLAUDE.md hash-tab convention (see DeviceDetails.tsx's tabFromHash).
-function tabFromHash(hash: string): EditorTab | undefined {
-  const seg = hash.split('/')[0] ?? '';
-  return seg === 'settings' || seg === 'activity' ? seg : undefined;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function editorHashParams(hash: string): URLSearchParams {
+  const raw = hash.replace(/^#/, '');
+  const first = raw.split('/')[0];
+  if (!raw.includes('=') && (first === 'settings' || first === 'activity')) {
+    return new URLSearchParams({ tab: first });
+  }
+  return new URLSearchParams(raw);
+}
+export function tabFromHash(hash: string): EditorTab | undefined {
+  const params = editorHashParams(hash);
+  const tab = params.get('tab');
+  if (tab === 'settings' || tab === 'activity') return tab;
+  return params.has('policy') ? 'settings' : undefined;
+}
+export function editorHashForTab(hash: string, tab: EditorTab): string {
+  const params = editorHashParams(hash);
+  if (!params.has('policy')) return `#${tab}`;
+  params.set('tab', tab);
+  return `#${params.toString()}`;
+}
+export async function attachAfterCreate(
+  monitorId: string,
+  hash: string,
+  fetcher: (url: string, init?: RequestInit) => Promise<Response> = fetchWithAuth,
+): Promise<string> {
+  const policyId = editorHashParams(hash).get('policy');
+  if (!policyId || !UUID_RE.test(policyId)) return `/alerts/monitors/${monitorId}`;
+  const attachFailure = `${i18n.t('monitoring:editor.saved')}. ${i18n.t('monitoring:deploy.errors.attach')}`;
+  await runAction({
+    request: () => fetcher(`/monitor-definitions/${monitorId}/attachments`, {
+      method: 'POST', body: JSON.stringify({ configPolicyId: policyId }),
+    }),
+    errorFallback: attachFailure,
+    friendly: () => attachFailure,
+    successMessage: i18n.t('monitoring:editor.attachedToPolicy'),
+    onUnauthorized: UNAUTHORIZED,
+  });
+  return `/configuration-policies/${policyId}#monitors`;
 }
 
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const isNew = !monitorId;
+  const createdEditorUrl = useRef<string | undefined>(undefined);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
@@ -350,19 +385,22 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     void fetchMonitor();
   }, [fetchKinds, fetchScripts, fetchChannels, fetchSoftwareCatalog, fetchAiAgents, fetchEscalationPolicies, fetchMonitor]);
 
-  const activeKindMeta = kindsMeta.find((k) => k.kind === watchKind);
-
   const handleKindChange = (kind: MonitorKind) => {
     setValue('kind', kind, { shouldDirty: true });
     setValue('condition', defaultConditionFor(kind), { shouldDirty: true });
   };
 
   const switchTab = (tab: EditorTab) => {
-    window.location.hash = tab;
+    window.location.hash = editorHashForTab(window.location.hash, tab);
     setHashTab(tab);
   };
 
   const onSubmit = async (values: MonitorFormValues) => {
+    // Navigation can lag behind a successful create; never POST a second monitor.
+    if (createdEditorUrl.current) {
+      void navigateTo(createdEditorUrl.current);
+      return;
+    }
     setSaving(true);
     setError(undefined);
     try {
@@ -400,8 +438,16 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         onUnauthorized: UNAUTHORIZED,
       });
       const savedId = data?.data?.id ?? monitorId;
-      if (isNew) {
-        void navigateTo(`/alerts/monitors/${savedId}`);
+      if (isNew && savedId) {
+        const hash = window.location.hash;
+        createdEditorUrl.current = `/alerts/monitors/${savedId}${hash}`;
+        try {
+          void navigateTo(await attachAfterCreate(savedId, hash));
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 401) return;
+          handleActionError(err, `${t('monitoring:editor.saved')}. ${t('monitoring:deploy.errors.attach')}`);
+          void navigateTo(createdEditorUrl.current);
+        }
       } else {
         void fetchMonitor();
       }
@@ -695,9 +741,6 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 ))}
               </select>
             </div>
-            {activeKindMeta?.agentDelivered && (
-              <p className="text-xs text-muted-foreground">{t('monitoring:editor.agentDeliveredHint')}</p>
-            )}
             <MonitorConditionFields kind={watchKind} name="condition" />
           </section>
 

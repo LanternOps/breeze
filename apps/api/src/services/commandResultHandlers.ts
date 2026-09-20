@@ -972,6 +972,21 @@ async function handleFilesystemAnalysisResult({
   await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
 }
 
+/** Both transports authorize the command before invoking this registry. */
+async function handleFileDeleteResult({ command, commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  if (typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+  const { recordLateCleanupResult } = await import('./filesystemCleanupRuns');
+  await recordLateCleanupResult({
+    cleanupRunId: payload.cleanupRunId,
+    commandId,
+    path: typeof payload.path === 'string' ? payload.path : '',
+    status: result.status,
+    error: result.error,
+    completedAt: new Date(),
+  });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -998,4 +1013,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   pam_cleanup_v2: handlePamActuationV2Result,
   install_patches: handleInstallPatchesResult,
   filesystem_analysis: handleFilesystemAnalysisResult,
+  file_delete: handleFileDeleteResult,
 };

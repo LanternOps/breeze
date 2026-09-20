@@ -7,16 +7,6 @@
     "badgeHint": "Gestionado por un monitor: edítelo desde el monitor en su lugar.",
     "monitorLabel": "Monitor"
   },
-  "hub": {
-    "title": "Monitoreo y automatización",
-    "tabs": {
-      "monitors": "Monitores",
-      "network": "Red",
-      "delivery": "Entrega",
-      "legacyRules": "Reglas heredadas"
-    },
-    "ariaLabel": "Secciones de monitoreo"
-  },
   "list": {
     "title": "Monitores",
     "description": "Observe una condición, responda en el dispositivo, notifique y escale cuando siga ocurriendo.",
@@ -45,6 +35,7 @@
     "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
   },
   "editor": {
+    "attachedToPolicy": "Monitor creado y adjuntado a la política",
     "titleNew": "Nuevo monitor",
     "titleEdit": "Editar monitor",
     "breadcrumb": {
@@ -83,7 +74,6 @@
       "channels": "Reglas de enrutamiento más estos canales",
       "none": "No notificar"
     },
-    "agentDeliveredHint": "Esta observación se ejecuta en el dispositivo y, hasta que eso se unifique, también debe existir en la pestaña de monitoreo de servicios y procesos de la política.",
     "responsesHint": "Las respuestas se ejecutan en orden en el dispositivo que incumplió la condición.",
     "recurrenceHint": "Se cuenta en episodios de incumplimiento: un episodio nuevo comienza solo después de que la condición se haya recuperado.",
     "ownerScope": {
