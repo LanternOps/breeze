@@ -158,7 +158,7 @@ async function ensurePatchAlertRule(
   const [existing] = await db
     .select({ id: alertRules.id })
     .from(alertRules)
-    .where(and(eq(alertRules.orgId, orgId), eq(alertRules.name, ruleName)))
+    .where(and(eq(alertRules.orgId, orgId), eq(alertRules.name, ruleName), isNull(alertRules.retiredAt)))
     .limit(1);
 
   if (existing) {

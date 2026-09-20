@@ -376,7 +376,23 @@ const stripEscalationIds = (rules: EscalationRule[]) =>
     route: rule.route
   }));
 
-export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
+export default function AlertTemplateEditor(props: AlertTemplateEditorProps) {
+  const { t } = useTranslation('alerts');
+  if (props.templateId === 'new') {
+    return (
+      <div data-testid="alert-template-editor-frozen" role="note" className="rounded-md border bg-muted/40 p-3 text-sm">
+        <p className="font-medium">{t('templates.frozen.title')}</p>
+        <p>{t('templates.frozen.body')}</p>
+        <a data-testid="alert-template-editor-frozen-link" href="/alerts/monitors" className="text-primary hover:underline">
+          {t('templates.frozen.link')}
+        </a>
+      </div>
+    );
+  }
+  return <ExistingAlertTemplateEditor {...props} />;
+}
+
+function ExistingAlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
   const { t } = useTranslation('alerts');
   const isNew = templateId === 'new';
   const [loading, setLoading] = useState(!isNew);

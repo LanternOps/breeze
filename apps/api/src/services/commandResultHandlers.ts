@@ -13,10 +13,20 @@
  */
 
 import { z } from 'zod';
-import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
+import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
+import {
+  AGENT_UPDATE_REQUIRED_ERROR,
+  isUnknownCommandTypeError,
+  parseAgentJson,
+  systemCleanupRunResultSchema,
+} from './systemCleanup';
+
+import { eq, ne, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import {
   deviceCommands,
+  deviceFilesystemCleanupRuns,
+  devices,
   discoveryJobs,
   scriptExecutions,
   scriptExecutionBatches,
@@ -32,6 +42,7 @@ import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
+import { applyRebuildCommandResult } from './bareMetalRecoveryService';
 import { captureException } from './sentry';
 import { applyScriptCustomFieldWrites } from './customFields/scriptWriteBack';
 import type { ScriptCustomFieldWriteSummary } from '../db/schema/scripts';
@@ -205,6 +216,45 @@ async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceI
     });
   } catch (err) {
     console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
+    captureException(err);
+  }
+}
+
+/**
+ * W05a `bare_metal_rebuild`: close the restore_jobs row by the
+ * transport-authorized command id (same as every queued restore), then apply
+ * the terminal status to the recovery row for a rebuild host whose
+ * /bmr/recover/progress posts never reached the server. The progress route
+ * stays the primary path — applyRebuildCommandResult is idempotent on a row
+ * it already terminalised.
+ */
+async function handleBareMetalRebuildResult({ agentId, command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    await updateRestoreJobByCommandId({
+      commandId,
+      deviceId: resolvedDeviceId,
+      commandType: command.type,
+      result,
+    });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process bare-metal rebuild restore job for ${agentId}:`, err);
+    captureException(err);
+  }
+
+  const payload =
+    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+      ? (command.payload as Record<string, unknown>)
+      : {};
+  const recoveryId = typeof payload.recoveryId === 'string' && UUID_REGEX.test(payload.recoveryId) ? payload.recoveryId : null;
+  // The recovery was created in the host's org (queueBareMetalRebuild passes
+  // expectedOrgId), so the enqueue-time org is the scope for this write.
+  const orgId = typeof command.submittedOrgId === 'string' ? command.submittedOrgId : null;
+  if (!recoveryId || !orgId) return;
+
+  try {
+    await applyRebuildCommandResult({ recoveryId, orgId, result: result as unknown as Record<string, unknown> });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to apply bare-metal rebuild result to recovery ${recoveryId} for ${agentId}:`, err);
     captureException(err);
   }
 }
@@ -894,6 +944,208 @@ async function handleScriptCancelResult({ agentId, commandId, result }: Paramete
   }
 }
 
+/**
+ * §13 row 9: filesystem_analysis results delivered over the WebSocket were
+ * never persisted. The scan is dispatched with `preferHeartbeat: false`, so the
+ * socket is the NORMAL leg — the handler existed only on the HTTP route
+ * (routes/agents/commands.ts:525), and a completed scan silently wrote nothing.
+ *
+ * The HTTP leg keeps its direct call: its registry dispatch is gated on the
+ * separate REGISTRY_DISPATCHED_COMMAND_TYPES allowlist, which this type is
+ * deliberately NOT added to, so nothing is saved twice.
+ *
+ * `orgId` is not a handler parameter, so it is read from the device the
+ * transport already authorized — the same shape handleDiscoveryResult uses for
+ * its job lookup.
+ */
+async function handleFilesystemAnalysisResult({
+  command,
+  result,
+  resolvedDeviceId,
+  commandId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleFilesystemAnalysisCommandResult } = await import('../routes/agents/helpers');
+  const [device] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, resolvedDeviceId))
+    .limit(1);
+  if (!device) {
+    const message = `[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`;
+    console.warn(message);
+    // A dropped scan result is silent data loss otherwise: nothing but this
+    // console line (which most deployments don't ship) ever showed it.
+    captureException(new Error(message), undefined, { commandId, resolvedDeviceId });
+    return;
+  }
+  await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
+}
+
+/** Both transports authorize the command before invoking this registry. */
+async function handleFileDeleteResult({ command, commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  if (typeof payload?.cleanupRunId !== 'string' || !payload.cleanupRunId) return;
+  const { recordLateCleanupResult } = await import('./filesystemCleanupRuns');
+  await recordLateCleanupResult({
+    cleanupRunId: payload.cleanupRunId,
+    commandId,
+    path: typeof payload.path === 'string' ? payload.path : '',
+    status: result.status,
+    error: result.error,
+    completedAt: new Date(),
+  });
+}
+
+/**
+ * Close an OS-native cleanup run (Disk Cleanup v2 §5.3).
+ *
+ * Registered HERE rather than mirrored off handleFilesystemAnalysisCommandResult
+ * in routes/agents/helpers.ts, which is dispatched only by the HTTP leg
+ * (routes/agents/commands.ts). agentWs.ts dispatches this registry and nothing
+ * else, so a run whose result arrives over the live socket would otherwise
+ * stay `running` until the stored run deadline — a failure that depends on
+ * which transport the device happened to be using.
+ */
+export async function handleSystemCleanupRunResult(
+  { command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0],
+): Promise<void> {
+  const payload = (command.payload ?? {}) as Record<string, unknown>;
+  const runId = typeof payload.runId === 'string' ? payload.runId : null;
+  if (!runId || !PG_UUID_REGEX.test(runId)) {
+    console.warn(`[commandResultHandlers] system_cleanup_run ${command.id} has no usable runId; nothing to close`);
+    return;
+  }
+
+  const [run] = await db
+    .select({
+      id: deviceFilesystemCleanupRuns.id,
+      orgId: deviceFilesystemCleanupRuns.orgId,
+      requestedBy: deviceFilesystemCleanupRuns.requestedBy,
+      status: deviceFilesystemCleanupRuns.status,
+    })
+    .from(deviceFilesystemCleanupRuns)
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, runId),
+      eq(deviceFilesystemCleanupRuns.deviceId, resolvedDeviceId),
+      eq(deviceFilesystemCleanupRuns.kind, 'system'),
+    ))
+    .limit(1);
+
+  if (!run) return;
+
+  // LATE RESULT (spec §13 #13). The run is already terminal — closed by the
+  // lazy timeout, by an org-move cancel, or by a racing duplicate. The answer
+  // is recorded, not applied: flipping a `failed` row back to `executed`
+  // would contradict what the operator was already told and what the audit
+  // already says, while dropping it silently would erase the only evidence
+  // that the work DID happen (which matters when the freed bytes show up on
+  // the next scan and nobody can explain them).
+  // ONE representation of late evidence, whichever window the race lands in
+  // (here, or below when the timeout commits between this read and the finish
+  // CAS): the poll projection reads `executedActions.actions` and
+  // `bytesReclaimed` for the run's own outcome, so late evidence must sit
+  // beside them under `lateResult`, never replace them.
+  const recordLateResult = (late: z.infer<typeof systemCleanupRunResultSchema> | null) =>
+    db
+      .update(deviceFilesystemCleanupRuns)
+      .set({
+        executedActions: sql`jsonb_set(
+          COALESCE(${deviceFilesystemCleanupRuns.executedActions}, '{}'::jsonb),
+          '{lateResult}',
+          ${JSON.stringify({
+            receivedAt: new Date().toISOString(),
+            commandId: command.id,
+            commandStatus: result.status,
+            ...(late ? { actions: late.actions, volumes: late.volumes, freedBytes: late.freedBytes } : { unreadable: true }),
+          })}::jsonb,
+          true
+        )`,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.deviceId, resolvedDeviceId),
+        ne(deviceFilesystemCleanupRuns.status, 'running'),
+      ));
+
+  if (run.status !== 'running') {
+    await recordLateResult(parseAgentJson(systemCleanupRunResultSchema, stdout));
+    console.warn(
+      `[commandResultHandlers] system_cleanup_run ${command.id} answered a ${run.status} run ${runId}; recorded as lateResult without changing its status`,
+    );
+    return;
+  }
+
+  const now = new Date();
+  const finish = async (fields: Record<string, unknown>) => {
+    const rows = await db
+      .update(deviceFilesystemCleanupRuns)
+      .set({ ...fields, updatedAt: now })
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.status, 'running'),
+      ))
+      .returning({ id: deviceFilesystemCleanupRuns.id });
+    return rows.length > 0;
+  };
+
+  if (result.status !== 'completed') {
+    const agentError = result.error ?? result.stderr ?? null;
+    await finish({
+      status: 'failed',
+      error: isUnknownCommandTypeError(agentError) ? AGENT_UPDATE_REQUIRED_ERROR : (agentError ?? 'the cleanup run failed'),
+    });
+    return;
+  }
+
+  const parsed = parseAgentJson(systemCleanupRunResultSchema, stdout);
+  if (!parsed) {
+    // Never `executed`: claiming a successful cleanup on output we could not
+    // read is the one outcome a tech cannot act on.
+    await finish({ status: 'failed', error: 'the agent returned an unreadable cleanup result' });
+    return;
+  }
+
+  const succeeded = parsed.actions.filter((action) => action.status === 'completed').length;
+  const status = succeeded > 0 ? 'executed' : 'failed';
+  const failedCount = parsed.actions.length - succeeded;
+
+  const finished = await finish({
+    status,
+    approvedAt: now,
+    bytesReclaimed: parsed.freedBytes,
+    executedActions: parsed,
+    error: failedCount > 0 ? `${failedCount} cleanup action(s) did not complete` : null,
+  });
+
+  if (!finished) {
+    // A timeout may win after the initial read. Preserve what ran without
+    // contradicting the terminal status already shown to the operator — in
+    // the SAME shape as the branch above.
+    await recordLateResult(parsed);
+  }
+
+  // No Hono context on this path, so the actor is attributed explicitly —
+  // the pattern jobs/quoteSendQueue.ts uses for the same reason.
+  writeAuditEvent(requestLikeFromSnapshot({}), {
+    orgId: run.orgId,
+    action: finished ? 'device.filesystem.system_cleanup.run' : 'device.filesystem.system_cleanup.late_result',
+    resourceType: 'device',
+    resourceId: resolvedDeviceId,
+    actorId: run.requestedBy,
+    details: {
+      cleanupRunId: runId,
+      commandId: command.id,
+      bytesReclaimed: parsed.freedBytes,
+      actions: parsed.actions.map((action) => ({ id: action.id, status: action.status })),
+      volumes: parsed.volumes,
+    },
+    // On `late_result` this describes the agent's answer, not the run's
+    // status, which whoever finalised the run already decided.
+    result: status === 'executed' ? 'success' : 'failure',
+  });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -902,6 +1154,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vm_restore_from_backup: handleVmRestoreResult,
   vm_instant_boot: handleVmRestoreResult,
   bmr_recover: handleVmRestoreResult,
+  bare_metal_rebuild: handleBareMetalRebuildResult,
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,
@@ -918,4 +1171,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,
   install_patches: handleInstallPatchesResult,
+  system_cleanup_run: handleSystemCleanupRunResult,
+  filesystem_analysis: handleFilesystemAnalysisResult,
+  file_delete: handleFileDeleteResult,
 };

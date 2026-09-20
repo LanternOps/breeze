@@ -1,6 +1,6 @@
 // Shared with extensions so every Drizzle caller unwraps the same error shapes.
 import { pgErrorCode } from '@breeze/shared/pgErrors';
-export { isPgUniqueViolation, pgErrorCode, pgErrorNode, pgErrorConstraint } from '@breeze/shared/pgErrors';
+export { isPgForeignKeyViolation, isPgUniqueViolation, pgErrorCode, pgErrorNode, pgErrorConstraint } from '@breeze/shared/pgErrors';
 
 /**
  * 40P01 = deadlock_detected, 40001 = serialization_failure, 55P03 =

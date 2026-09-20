@@ -7,8 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // (agentAuthContext.ts) — an unconditional insert dies on 23503, which made
 // the `disk_cleanup` act step (both `preview` and `execute`) unreachable
 // under act mode. This suite drives both branches under an agent auth
-// context whose id does NOT resolve against `users` and asserts the insert
-// succeeds with `requestedBy: null` instead of throwing.
+// context whose id does NOT resolve against `users` and asserts preview
+// inserts requestedBy: null and execute finalises that same row.
 // ---------------------------------------------------------------------------
 
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
@@ -22,7 +22,18 @@ const dbMockState = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   db: {
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(() => {
+          const row = dbMockState.insertedRuns[0]!;
+          Object.assign(row, values);
+          return { returning: vi.fn(async () => [row]) };
+        }),
+      })),
+    })),
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => {
         const chain: Record<string, unknown> = {};
@@ -37,7 +48,7 @@ vi.mock('../db', () => ({
       values: vi.fn((row: Record<string, unknown>) => ({
         returning: vi.fn(async () => {
           const id = `run-${dbMockState.insertedRuns.length + 1}`;
-          dbMockState.insertedRuns.push({ ...row, id });
+          dbMockState.insertedRuns.push({ ...row, id, requestedAt: new Date() });
           return [{ id, ...row }];
         }),
       })),
@@ -46,13 +57,16 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
+  executeCommand: vi.fn(),
+  executeCommandWithSystemPrecheck: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
 
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({})) }));
+
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({
-    candidates: [{ path: '/tmp/junk.log', category: 'temp', sizeBytes: 1024 }],
+    candidates: [{ path: '/tmp/junk.log', category: 'temp_files', sizeBytes: 1024, safe: true, modifiedAt: new Date(Date.now() - 72 * 3600_000).toISOString() }],
     estimatedBytes: 1024,
     candidateCount: 1,
     categories: ['temp'],
@@ -61,6 +75,7 @@ vi.mock('./filesystemAnalysis', () => ({
   getLatestFilesystemCleanupSnapshot: vi.fn(async () => ({ id: 'snap-1' })),
   parseFilesystemAnalysisStdout: vi.fn(),
   saveFilesystemSnapshot: vi.fn(),
+  readPlanPreviewCandidates: vi.fn((plan) => plan.preview.candidates),
   safeCleanupCategories: ['temp'],
 }));
 
@@ -97,7 +112,7 @@ describe('disk_cleanup requestedBy FK under an agent principal', () => {
     vi.clearAllMocks();
     dbMockState.userRows = []; // agent id never resolves against `users`
     dbMockState.deviceRows = [
-      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online' },
+      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' },
     ];
     dbMockState.insertedRuns = [];
   });
@@ -113,8 +128,9 @@ describe('disk_cleanup requestedBy FK under an agent principal', () => {
     expect(dbMockState.insertedRuns[0]).toMatchObject({ requestedBy: null });
   });
 
-  it('execute does not throw on the FK — requestedBy degrades to null', async () => {
+  it('execute finalises its preview without a second requestedBy FK insert', async () => {
     const tool = getDiskCleanupTool();
+    await tool.handler({ deviceId: DEVICE_ID, action: 'preview' }, makeAgentAuth());
     const raw = await tool.handler(
       { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/junk.log'] },
       makeAgentAuth(),

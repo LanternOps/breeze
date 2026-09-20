@@ -1,0 +1,20 @@
+{
+  "//": "These scripts are run with apps/api's toolchain (`pnpm --filter @breeze/api exec tsx ../../scripts/topology/<file>.ts`), so they typecheck against apps/api's compiler options and its installed dependencies.",
+  "extends": "../../apps/api/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "baseUrl": "../..",
+    "typeRoots": ["../../apps/api/node_modules/@types", "../../node_modules/@types"],
+    "paths": {
+      "@/*": ["apps/api/src/*"],
+      "@breeze/shared": ["packages/shared/src"],
+      "@breeze/shared/*": ["packages/shared/src/*"],
+      "drizzle-orm": ["apps/api/node_modules/drizzle-orm"],
+      "drizzle-orm/*": ["apps/api/node_modules/drizzle-orm/*"],
+      "zod": ["apps/api/node_modules/zod"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "exclude": []
+}

@@ -620,7 +620,75 @@
       "correlations": "Corrélations",
       "monitors": "Moniteurs",
       "rules": "Règles",
-      "channels": "Chaînes"
+      "delivery": "Livraison"
+    }
+  },
+  "deliveryPage": {
+    "loading": "Chargement des réglages de livraison…",
+    "loadFailed": "Impossible de charger les réglages de livraison.",
+    "title": "Livraison",
+    "subtitle": "Qui est prévenu, et comment.",
+    "precedence": "Le réglage de notification propre au moniteur l'emporte ; sinon, la première ligne correspondante en partant du haut.",
+    "sections": {
+      "channels": "Canaux",
+      "routing": "Routage",
+      "escalation": "Politiques d'escalade"
+    },
+    "routing": {
+      "everythingElse": "Tout le reste",
+      "everythingElseHint": "Capte toute alerte qu'aucune ligne au-dessus ne couvre. Videz ses canaux pour « boîte de réception seulement ».",
+      "inboxOnly": "Boîte de réception seulement",
+      "partnerRowHint": "Appartient à votre partenaire ; en lecture seule ici.",
+      "customizeForOrg": "Personnaliser pour cette organisation",
+      "matchAll": "Toutes les alertes",
+      "severities": "Gravités",
+      "monitorKinds": "Types de moniteur",
+      "sites": "Sites concernés",
+      "sendTo": "Envoyer à",
+      "escalateVia": "Escalader via",
+      "noEscalation": "Pas d'escalade",
+      "addRule": "Ajouter une règle de routage",
+      "editRule": "Modifier la règle de routage",
+      "newRule": "Nouvelle règle de routage",
+      "editDefault": "Modifier « Tout le reste »",
+      "priority": "Priorité (la plus basse s'exécute en premier)",
+      "leaveEmptyForAll": "Laisser vide pour tout faire correspondre",
+      "defaultSaved": "Ligne « Tout le reste » enregistrée",
+      "failedToSaveDefault": "Échec de l'enregistrement de la ligne « Tout le reste »",
+      "deleteConfirm": "Supprimer la règle de routage « {{name}} » ?",
+      "usePartnerDefault": "Utiliser la configuration du partenaire",
+      "usePartnerDefaultConfirm": "Cette organisation utilisera de nouveau la ligne « Tout le reste » du partenaire.",
+      "usePartnerDefaultInboxConfirm": "Aucune configuration par défaut du partenaire. Les alertes ne correspondant à aucune ligne iront uniquement dans la boîte de réception.",
+      "customizeForOrgHint": "La personnalisation cesse de suivre les modifications de la configuration par défaut du partenaire. La configuration propre à cette organisation pourra être supprimée plus tard.",
+      "sitesLoadFailed": "Impossible de charger les sites. Réessayez."
+    },
+    "escalation": {
+      "occurrenceLimit": "Une politique peut envoyer au maximum 50 notifications.",
+      "new": "Nouvelle politique d'escalade",
+      "edit": "Modifier la politique d'escalade",
+      "empty": "Aucune politique d'escalade pour l'instant. Une politique envoie des notifications de relance tant qu'une alerte reste non acquittée.",
+      "steps": "Étapes",
+      "addStep": "Ajouter une étape",
+      "removeStep": "Retirer l'étape",
+      "delayMinutes": "Après (minutes)",
+      "notifyChannels": "Notifier",
+      "notifyUsers": "Notifier les utilisateurs (dans l’application)",
+      "repeat": "Répéter",
+      "everyMinutes": "Toutes les (minutes)",
+      "maxTimes": "Envois supplémentaires",
+      "stepCount_one": "{{count}} étape",
+      "stepCount_other": "{{count}} étapes",
+      "created": "Politique d'escalade créée",
+      "saved": "Politique d'escalade enregistrée",
+      "deleted": "Politique d'escalade supprimée",
+      "failedToSave": "Échec de l'enregistrement de la politique d'escalade",
+      "failedToDelete": "Échec de la suppression de la politique d'escalade",
+      "deleteConfirm": "Supprimer la politique d'escalade « {{name}} » ? Les moniteurs et lignes de routage qui la référencent cesseront d'escalader.",
+      "legacyRepaired": "La politique enregistrée contenait des étapes qui ne correspondaient pas au format actuel et qui ont été ajustées.",
+      "delayRange": "Entrez un nombre entier de 1 à 10080 minutes (7 jours).",
+      "minutesRange": "Entrez un nombre entier de 1 à 1440 minutes.",
+      "timesRange": "Entrez un nombre entier de 1 à 10 répétitions.",
+      "targetRequired": "Sélectionnez au moins un canal ou un utilisateur par étape."
     }
   },
   "correlatedAlertGroups": {
@@ -905,7 +973,7 @@
     "notificationRoutingRules": "Règles de routage des notifications",
     "routeAlertsToSpecificChannelsBasedOn": "Orientez les alertes vers des canaux spécifiques en fonction de la gravité. La première règle de correspondance l’emporte.",
     "rule": "Règle",
-    "noRoutingRulesConfiguredAllAlertsGo": "Aucune règle de routage configurée. Toutes les alertes sont envoyées à tous les canaux activés.",
+    "newChannelsRequireRouting": "Les nouveaux canaux ne transmettent aucune alerte tant qu’ils ne sont pas sélectionnés dans une règle de routage ou dans la ligne « Tout le reste ».",
     "addRoutingRule": "Ajouter une règle de routage",
     "partnerWideRuleRoutesAlertsFromEvery": "Règle à l’échelle des partenaires — achemine les alertes de chaque organisation",
     "allOrgs": "À l’échelle du partenaire",
@@ -976,5 +1044,12 @@
     "forever": "Pour toujours",
     "cancel": "Annuler",
     "suppress": "Masquer"
+  },
+  "templates": {
+    "frozen": {
+      "title": "Les nouveaux modèles d'alerte sont créés sous forme de moniteurs",
+      "body": "Les modèles existants restent modifiables ici et seront convertis dans la prochaine version.",
+      "link": "Ouvrir les moniteurs"
+    }
   }
 }

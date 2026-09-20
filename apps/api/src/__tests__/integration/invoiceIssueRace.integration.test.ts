@@ -200,7 +200,7 @@ describe.runIf(RUN)('issueInvoice race safety (B10)', () => {
         userId: f.userId,
         name: 'Billing admin',
         partnerId: f.partnerId,
-        manageAll: true,
+        manageAll: true, manageBilling: false,
         accessibleOrgIds: [f.orgId],
       }));
       await waitForBlockedBackends(2);
@@ -227,7 +227,7 @@ describe.runIf(RUN)('issueInvoice race safety (B10)', () => {
         userId: f.userId,
         name: 'Billing admin',
         partnerId: f.partnerId,
-        manageAll: true,
+        manageAll: true, manageBilling: false,
         accessibleOrgIds: [f.orgId],
       }));
       const afterDelete = await withSystemDbAccessContext(() =>

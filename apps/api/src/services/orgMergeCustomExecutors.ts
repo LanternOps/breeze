@@ -186,7 +186,6 @@ function describeRehomed(rehomed: Array<{ table: string; count: number }>): stri
 // discovered_assets' dedupe key is `ip_address` (discovered_assets_org_ip_unique).
 const DISCOVERED_ASSET_KEY = ['ip_address'] as const;
 const DISCOVERED_ASSET_CHILDREN: readonly ChildRef[] = [
-  { table: 'network_monitors', column: 'asset_id' },
   { table: 'snmp_devices', column: 'asset_id' },
   { table: 'unifi_clients', column: 'discovered_asset_id' },
   { table: 'unifi_devices', column: 'discovered_asset_id' },
@@ -205,6 +204,12 @@ const DISCOVERED_ASSET_CHILDREN: readonly ChildRef[] = [
  * hundreds of tables earlier. See `MergePolicyPhase` in orgMerge.ts.
  */
 const resolveDiscoveredAssets: CustomMergeExecutor = async (loser, survivor) => {
+  // Same-IP collision is not same-site identity. Disable/detach before deleting
+  // the source asset; retain monitor IDs, source-site history and canonical nodes.
+  await dbModule.db.execute(sql`SELECT breeze_detach_topology_monitor_authority('asset',a.id,a.org_id,a.site_id,'asset_merge_collision')
+    FROM discovered_assets a WHERE a.org_id=${uuid(loser)} AND EXISTS
+    (SELECT 1 FROM discovered_assets b WHERE b.org_id=${uuid(survivor)} AND b.ip_address=a.ip_address)`);
+
   const { dropped, rehomed } = await rehomeChildrenThenDelete(
     'discovered_assets',
     DISCOVERED_ASSET_KEY,

@@ -276,14 +276,14 @@ describe('GET /monitor-definitions', () => {
 });
 
 describe('GET /monitor-definitions/kinds', () => {
-  it('returns one entry per monitor kind (18 after W04) with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
+  it('returns one entry per monitor kind (19 after W05c1) with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
     const res = await jsonRequest(buildApp(), 'GET', '/kinds');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: Array<{ kind: string; overridableKeys: string[]; defaultSeverity: string; agentDelivered: boolean }>;
     };
-    expect(body.data).toHaveLength(18);
+    expect(body.data).toHaveLength(19);
     expect(body.data).toHaveLength(MONITOR_KINDS.length);
     expect(new Set(body.data.map((d) => d.kind))).toEqual(new Set(MONITOR_KINDS));
     for (const entry of body.data) {

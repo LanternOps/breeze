@@ -672,7 +672,7 @@ export default function AlertRuleForm({
             <p className="text-sm text-muted-foreground">
               {t('alertRuleForm.noNotificationChannelsConfigured')}{' '}
             <a
-              href="/alerts/channels"
+              href="/alerts/delivery"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary hover:underline"

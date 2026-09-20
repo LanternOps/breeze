@@ -1108,7 +1108,8 @@ export async function resolvePolicyRemediationAutomationIdForOrg(
     .where(
       and(
         await automationOwnershipConditionForOrg(orgId, auth),
-        eq(automations.enabled, true)
+        eq(automations.enabled, true),
+        isNull(automations.retiredAt)
       )
     );
 
@@ -1259,6 +1260,7 @@ async function triggerRemediationAutomation(
     .where(
       and(
         eq(automations.id, remediationAutomationId),
+        isNull(automations.retiredAt),
         await automationOwnershipConditionForOrg(device.orgId, auth)
       )
     )
@@ -1918,7 +1920,8 @@ async function triggerConfigPolicyRemediation(
     .where(
       and(
         deviceOrgAutomationCondition,
-        eq(automations.enabled, true)
+        eq(automations.enabled, true),
+        isNull(automations.retiredAt)
       )
     );
 
@@ -1953,6 +1956,7 @@ async function triggerConfigPolicyRemediation(
     .where(
       and(
         eq(automations.id, automationId),
+        isNull(automations.retiredAt),
         deviceOrgAutomationCondition
       )
     )

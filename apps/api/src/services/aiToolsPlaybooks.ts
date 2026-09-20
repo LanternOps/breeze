@@ -58,6 +58,8 @@ export function registerPlaybookTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  domain: 'scripts',
+  searchHint: 'self-healing playbooks, remediation templates and verification loops',
   definition: {
     name: 'list_playbooks',
     description: 'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
@@ -114,6 +116,8 @@ registerTool({
 
 registerTool({
   tier: 3,
+  domain: 'scripts',
+  searchHint: 'self-healing playbook execution record and audit trail for a device',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'execute_playbook',
@@ -273,6 +277,8 @@ registerTool({
 
 registerTool({
   tier: 1,
+  domain: 'scripts',
+  searchHint: 'playbook execution history, remediation auditing and trends',
   deviceArgs: ['deviceId'],
   definition: {
     name: 'get_playbook_history',

@@ -3,11 +3,13 @@
 package patching
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -677,5 +679,152 @@ func TestBrewInstallCaskCallsUpgradeCask(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "brew upgrade failed") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- W04: BrewCleanup is exported so the system-cleanup catalogue can run it
+// as a first-class action and REPORT its outcome. runBrewCleanup keeps the
+// swallow-and-log behaviour its patch-job caller depends on (spec §7.2). ---
+
+func TestBrewCleanupDryRunArgsAreNonMutating(t *testing.T) {
+	got := brewCleanupDryRunArgs()
+	want := []string{"cleanup", "--prune=all", "-n"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("brewCleanupDryRunArgs() = %v, want %v", got, want)
+	}
+}
+
+// The exported entry point must SURFACE failures. runBrewCleanup swallowing
+// them is correct for a post-install maintenance hook and wrong for an action
+// a tech explicitly asked for and is watching a spinner on.
+func TestBrewCleanupReturnsItsErrorWhenBrewIsAbsent(t *testing.T) {
+	if _, err := exec.LookPath("brew"); err == nil {
+		t.Skip("brew is installed; this case needs the absent-binary path")
+	}
+	if _, err := BrewCleanup(context.Background(), true); err == nil {
+		t.Fatal("BrewCleanup must return an error when brew is not installed")
+	}
+}
+
+// The swallow-and-log wrapper still exists and still swallows — the patch job
+// must never be failed by a maintenance cleanup (#4912).
+func TestRunBrewCleanupStillSwallowsErrors(t *testing.T) {
+	// A failing fixture keeps this test from ever executing a real cleaner.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	h := &HomebrewProvider{}
+	h.runBrewCleanup() // must not panic and must not propagate anything
+}
+
+func TestRunBrewCleanupBoundedCancelsDescendants(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n/bin/sh -c 'echo ready > \"$BREW_TEST_READY\"; /bin/sleep 3' &\nwait\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BREW_TEST_READY", ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := RunBrewCleanupBounded(ctx, false); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fixture child never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started := time.Now()
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup retained descendant pipe for %s after cancellation", elapsed)
+	}
+}
+
+func TestRunBrewCleanupBoundedSerializesWithInstall(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+cleanup)
+  echo ready > "$BREW_TEST_DIR/ready"
+  while [ ! -f "$BREW_TEST_DIR/release" ]; do /bin/sleep 0.01; done
+  ;;
+upgrade)
+  echo installed > "$BREW_TEST_DIR/installed"
+  exit 1
+  ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BREW_TEST_DIR", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupDone := make(chan error, 1)
+	go func() { _, err := RunBrewCleanupBounded(ctx, false); cleanupDone <- err }()
+	defer func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0600); <-cleanupDone }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cleanup fixture never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	installDone := make(chan struct{})
+	go func() { _, _ = NewHomebrewProvider().Install("fixture"); close(installDone) }()
+	defer func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0600); <-installDone }()
+	select {
+	case <-installDone:
+		t.Fatal("Install overlapped a bounded cleanup from another provider")
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := os.Stat(filepath.Join(dir, "installed")); err == nil {
+		t.Fatal("Install entered brew while cleanup was active")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-installDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Install did not resume after cleanup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "installed")); err != nil {
+		t.Fatalf("Install did not execute: %v", err)
+	}
+}
+
+// A cleanup blocked behind a long brew mutation must give up when its own
+// context ends instead of stalling for the mutation's full 30-minute budget
+// (W04 review round 2): the caller holds the process-wide maintenance lock.
+func TestRunBrewCleanupBoundedHonoursContextWhileWaitingForMutation(t *testing.T) {
+	brewMutateSem <- struct{}{} // simulate an in-flight Install/Uninstall
+	defer func() { <-brewMutateSem }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := RunBrewCleanupBounded(ctx, true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded while waiting for the brew mutation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("waited %s: the acquire did not honour the context", elapsed)
 	}
 }

@@ -114,7 +114,9 @@
   "operatorTaskFeed": {
     "loading": "Caricamento attività Operator...",
     "loadFailed": "Impossibile caricare le attività Operator.",
-    "empty": "Nessuna attività Operator per questo dispositivo."
+    "empty": "Nessuna attività Operator per questo dispositivo.",
+    "emptyHint": "L'Operatore IA indaga e risolve i problemi di un dispositivo quando gli deleghi un avviso. Le attività delegate per questo dispositivo appariranno qui.",
+    "learnMore": "Scopri di più sull'Operatore IA"
   },
   "delegate": {
     "button": "Delega all'Operatore",

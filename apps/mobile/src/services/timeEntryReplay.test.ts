@@ -208,6 +208,12 @@ describe('makeReplaySender — suggestion writes', () => {
     };
   }
 
+  it('preserves an explicitly chosen billing override on offline replay', async () => {
+    const deps = suggestionSenders();
+    await makeReplaySender(deps)(write({ kind: 'suggestion.confirm', payload: { signals: [SIG], startedAt: '2026-08-30T09:00:00.000Z', isBillable: false } }));
+    expect(deps.confirmSuggestion).toHaveBeenCalledWith(expect.objectContaining({ isBillable: false }));
+  });
+
   it('replays a confirm with the SERVER session bounds, never shifted', async () => {
     // The decisive case: `create` shifts a future-dated span into the past to
     // survive the server's notFarFuture refine. A confirm must NOT — these

@@ -48,6 +48,13 @@ export function classifyTimeEntryDenial(error: unknown): TimeEntryDenial | null 
   const code = getStringField(error, 'code');
   const serverMessage = getStringField(error, 'message') ?? 'No reason was provided by the server.';
 
+  if (code === 'MANAGE_BILLING_REQUIRED') {
+    return {
+      reason: 'entry',
+      message: 'Changing billing requires the time-entry billing permission. Ask an administrator to grant it, or keep the billing profile defaults.',
+    };
+  }
+
   if (code === 'NOT_OWN_ENTRY') {
     return {
       reason: 'ownership',

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 import { and, eq, notInArray } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
@@ -5283,5 +5284,32 @@ describe('orphaned SNMP poll outcomes (#6021)', () => {
       type: 'command_result', commandId, status: 'failed', error: 'forged', result: { deviceId },
     });
     expect(set).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('cleanup supplemental command results', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  it.each(['cancelled', 'completed', 'failed'])('records a %s cleanup result without changing the command', async (status) => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const handler = vi.spyOn(commandResultHandlers, 'file_delete').mockResolvedValue(undefined);
+    try {
+      const { handlers, ws } = await connectedAgent('agent-cleanup-late', {
+        deviceId: 'device-cleanup', orgId: 'org-cleanup', partnerId: 'partner-cleanup',
+      });
+      const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const command = { id: commandId, deviceId: 'device-cleanup', type: 'file_delete', status, targetRole: 'agent',
+        payload: { cleanupRunId: 'stored-run', path: '/tmp/a' }, result: { status } };
+      const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([command]) });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+      await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, status: 'failed', error: 'password=secret-value' }) } as never, ws as never);
+      const lookup = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+      expect(lookup.params).toEqual(expect.arrayContaining([commandId, 'device-cleanup', 'agent', 'file_delete']));
+      expect(lookup.sql).toContain("? 'cleanupRunId'");
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        command, result: expect.objectContaining({ status: 'failed', error: expect.not.stringContaining('secret-value') }),
+      }));
+      expect(db.update).not.toHaveBeenCalled();
+    } finally { handler.mockRestore(); }
   });
 });

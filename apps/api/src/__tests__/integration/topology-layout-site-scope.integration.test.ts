@@ -34,6 +34,7 @@ import {
 } from './db-utils';
 import { authMiddleware } from '../../middleware/auth';
 import { discoveryRoutes } from '../../routes/discovery';
+import { discoveredAssets } from '../../db/schema';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -58,14 +59,19 @@ async function countLayoutRows(siteId: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-function layoutBody(siteId: string, orgId?: string) {
+async function createLayoutAsset(orgId: string, siteId: string): Promise<string> {
+  const [asset] = await getTestDb().insert(discoveredAssets).values({ orgId, siteId, ipAddress: '192.0.2.91' }).returning({ id: discoveredAssets.id });
+  return asset!.id;
+}
+
+function layoutBody(siteId: string, orgId?: string, nodeId: string = crypto.randomUUID()) {
   return {
     siteId,
     ...(orgId ? { orgId } : {}),
     positions: [
       {
         nodeType: 'discovered_asset' as const,
-        nodeId: crypto.randomUUID(),
+        nodeId,
         x: 1,
         y: 2,
       },
@@ -85,7 +91,7 @@ describe('PATCH /discovery/topology/layout — site-belongs-to-org (#1728)', () 
     const res = await app.request('/discovery/topology/layout', {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${env.token}`, ...JSON_HEADERS },
-      body: JSON.stringify(layoutBody(env.site.id)),
+      body: JSON.stringify(layoutBody(env.site.id, undefined, await createLayoutAsset(env.organization.id, env.site.id))),
     });
 
     expect(res.status).toBe(200);
@@ -118,7 +124,7 @@ describe('PATCH /discovery/topology/layout — site-belongs-to-org (#1728)', () 
       const res = await app.request('/discovery/topology/layout', {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${envP.token}`, ...JSON_HEADERS },
-        body: JSON.stringify(layoutBody(otherEnv.site.id, envP.organization.id)),
+        body: JSON.stringify(layoutBody(otherEnv.site.id, envP.organization.id, await createLayoutAsset(otherEnv.organization.id, otherEnv.site.id))),
       });
 
       expect(res.status).toBe(404);
@@ -141,6 +147,7 @@ describe('PATCH /discovery/topology/layout — site-belongs-to-org (#1728)', () 
       // Second org + site under the SAME partner.
       const orgA = await createOrganization({ partnerId: envP.partner.id });
       const siteA = await createSite({ orgId: orgA.id });
+      const assetA = await createLayoutAsset(orgA.id, siteA.id);
 
       // The partner-scope role from setup grants org_access='all', so envP can
       // reach both its base org (org B) and orgA. Re-assert org_access='all'
@@ -151,7 +158,7 @@ describe('PATCH /discovery/topology/layout — site-belongs-to-org (#1728)', () 
       const res = await app.request('/discovery/topology/layout', {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${envP.token}`, ...JSON_HEADERS },
-        body: JSON.stringify(layoutBody(siteA.id, envP.organization.id)),
+        body: JSON.stringify(layoutBody(siteA.id, envP.organization.id, assetA)),
       });
 
       expect(res.status).toBe(404);
@@ -161,7 +168,7 @@ describe('PATCH /discovery/topology/layout — site-belongs-to-org (#1728)', () 
       const ok = await app.request('/discovery/topology/layout', {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${envP.token}`, ...JSON_HEADERS },
-        body: JSON.stringify(layoutBody(siteA.id, orgA.id)),
+        body: JSON.stringify(layoutBody(siteA.id, orgA.id, assetA)),
       });
       expect(ok.status).toBe(200);
       expect(await countLayoutRows(siteA.id)).toBe(1);

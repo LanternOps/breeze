@@ -272,6 +272,7 @@ export const devices = pgTable('devices', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => ({
+  idOrgSiteUnique: uniqueIndex('devices_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
 }));
 

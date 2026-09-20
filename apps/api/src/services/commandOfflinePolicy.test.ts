@@ -126,6 +126,7 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RUN)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RESTORE)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BMR_RECOVER)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.BARE_METAL_REBUILD)).toEqual({ kind: 'reject' });
   });
 
   it('standard TTL is 7 days by default and env-tunable', () => {
@@ -191,5 +192,23 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
   it('REJECT_RACE_GRACE_MS is only the `live` TTL class value, never stamped on a row', () => {
     expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
     expect(deliverByFor(defaultOfflinePolicy('list_processes'))).toBeNull();
+  });
+
+  it('delivers destructive cleanup commands live-only, not for a week', () => {
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_list).toBe('live_only');
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_run).toBe('live_only');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
+    // The point of the class: strictly shorter than everything that existed.
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('short'));
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('standard'));
+    // Still QUEUEABLE — a device that reconnects inside the window gets it.
+    expect(defaultOfflinePolicy('system_cleanup_run')).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60 * 1000 });
+  });
+
+  it('live_only TTL is env-tunable with a one-minute floor', () => {
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '5');
+    expect(deliveryTtlMs('live_only')).toBe(5 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '0');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
   });
 });

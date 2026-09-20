@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from './billingProfileService';
 /**
  * AI Organization/Site Tools (issue #2366)
  *
@@ -287,6 +288,7 @@ async function handleCreateOrg(
           status: organizations.status,
         });
       if (!org) throw new Error('Organization insert returned no row');
+      await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
 
       // Default site, same invariant as partnerCreate + the QB customer
       // import — a brand-new org must be immediately usable for quoting
@@ -552,6 +554,9 @@ async function handleAddContact(
 export function registerOrgTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_organizations', {
     tier: 1 as AiToolTier,
+    domain: 'core',
+    searchHint: 'organizations, customers, sites, organization IDs and site IDs by name',
+    alwaysLoad: true,
     deviceArgs: [],
     definition: {
       name: 'list_organizations',
@@ -581,6 +586,8 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
 
   aiTools.set('manage_organizations', {
     tier: 2 as AiToolTier,
+    domain: 'accounts',
+    searchHint: 'customer intake: create or update organizations, create sites, add contacts',
     deviceArgs: [],
     definition: {
       name: 'manage_organizations',

@@ -141,6 +141,7 @@ export const partnerBillingSettingsSchema = z.object({
 });
 
 export const orgBillingSettingsSchema = z.object({
+  billingProfileId: z.string().uuid().nullable().optional(),
   taxId: z.string().max(100).nullable().optional(),
   taxExempt: z.boolean().optional(),
   taxRate: taxRate.nullable().optional(),

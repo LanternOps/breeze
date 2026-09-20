@@ -335,6 +335,12 @@ export default function ConfigPolicyDetailPage({
     featureLinks.find((l) => l.featureType === t);
   const parentLinkFor = (t: FeatureType) =>
     parentFeatureLinks.find((l) => l.featureType === t);
+  // Closest-wins advisory links. Monitor detection also receives the parent's
+  // attachments for cumulative resolution; existingLink still governs saves.
+  const effectiveLinks = [
+    ...featureLinks,
+    ...parentFeatureLinks.filter((link) => !linkFor(link.featureType)),
+  ];
   // Partner-wide ("all organizations") policies carry orgId === null (#1724).
   // A fixed, small set of feature types are fundamentally org-scoped (backup
   // storage credentials carry an org_id FK) and are rejected with a 400 by the
@@ -422,6 +428,8 @@ export default function ConfigPolicyDetailPage({
     const props = {
       policyId: policyId!,
       existingLink: linkFor(ft),
+      allLinks: effectiveLinks,
+      inheritedMonitorsLink: parentLinkFor('monitors'),
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),

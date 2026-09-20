@@ -26,6 +26,10 @@ describe('classifyDrainOutcome — the spec table IS the test', () => {
     expect(classifyDrainOutcome(status)).toBe(outcome);
   });
 
+  it('surfaces a billing override denial per item without disabling suggestions', () => {
+    expect(classifyDrainOutcome(403, 'MANAGE_BILLING_REQUIRED')).toBe('dropAndToast');
+  });
+
   it('never retries a 4xx other than 408 and 429', () => {
     for (let status = 400; status < 500; status += 1) {
       if (status === 408 || status === 429) continue;

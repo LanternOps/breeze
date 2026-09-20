@@ -1,8 +1,13 @@
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, peripheralPolicyDeviceStates } from '../db/schema';
-import { partitionClaimable } from './commandClaimEligibility';
+import { partitionClaimable, revalidateCommandForDelivery } from './commandClaimEligibility';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+// Side-effect import: registers the `network_diagnostic` delivery
+// revalidation. Both delivery legs live in this module, so this is the one
+// place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
+// fails the row closed if it ever is not.
+import './topology/diagnosticDispatch';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
@@ -13,8 +18,41 @@ export async function claimPendingCommandForDelivery(
   // device_commands is system-scoped (agent WS path) and this runs from
   // executeCommand's runOutsideDbContext block — establish a system context so
   // the write isn't a contextless bare-pool write (#1375 warning flood).
-  const rows = await withSystemDbAccessContext(() =>
-    db
+  const rows = await withSystemDbAccessContext(async () => {
+    // M1 Task 15: the WebSocket push leg runs the SAME delivery-time
+    // revalidation as the heartbeat claim below, so a diagnostic whose origin,
+    // site, context or deadline moved cannot reach the agent through the direct
+    // push instead. The claim itself stays a compare-and-set on `pending`, so a
+    // concurrent heartbeat claim still wins or loses atomically.
+    const [candidate] = await db
+      .select({
+        id: deviceCommands.id,
+        type: deviceCommands.type,
+        deviceId: deviceCommands.deviceId,
+        payload: deviceCommands.payload,
+      })
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')))
+      .limit(1);
+    if (!candidate) return [];
+    const revalidation = await revalidateCommandForDelivery(db, candidate);
+    if (revalidation) {
+      await db
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: executedAt,
+          result: {
+            status: 'cancelled',
+            reason: revalidation,
+            cancelledBy: 'delivery_revalidation',
+          },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')));
+      return [];
+    }
+    return db
       .update(deviceCommands)
       .set({ status: 'sent', executedAt })
       .where(
@@ -27,8 +65,8 @@ export async function claimPendingCommandForDelivery(
           or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, executedAt)),
         ),
       )
-      .returning({ id: deviceCommands.id }),
-  );
+      .returning({ id: deviceCommands.id });
+  });
 
   return rows.length > 0 ? { id: commandId, executedAt } : null;
 }

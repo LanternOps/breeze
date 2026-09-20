@@ -87,6 +87,11 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  // Disk Cleanup v2 W04. Listed here because this route has NO inline block
+  // for it — the handler is registry-only precisely so both transports run
+  // exactly the same code.
+  'system_cleanup_run',
+  'file_delete',
   'network_discovery',
   'hyperv_backup',
   'mssql_backup',
@@ -100,6 +105,11 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'peripheral_policy_sync_v2',
   'pam_apply_v2',
   'pam_cleanup_v2',
+  // W05a: the handler both closes the restore job AND applies the terminal
+  // status to the bare_metal_recoveries row, so it is dispatched here rather
+  // than through the inline restore branch below (which would only do the
+  // first half and, if listed in both, do it twice).
+  'bare_metal_rebuild',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
@@ -136,7 +146,8 @@ function buildStoredCommandResult(
 function normalizeCriticalResultIfNeeded(
   commandType: string,
   commandId: string,
-  data: z.infer<typeof commandResultSchema>
+  data: z.infer<typeof commandResultSchema>,
+  commandPayload?: unknown
 ) {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -156,7 +167,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: data.durationMs,
       error: data.error,
       result: data.result,
-    });
+    }, { commandPayload });
 
     if (!validated) {
       return {
@@ -366,7 +377,8 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
+    const acceptsResult = commandAcceptsAgentResult(command.status, command.result, command.type);
+    if (!acceptsResult && command.type !== 'file_delete' && command.type !== 'system_cleanup_run') {
       return c.json({ success: true });
     }
 
@@ -374,7 +386,7 @@ commandsRoutes.post(
       normalizedData: rawNormalizedData,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
+    } = normalizeCriticalResultIfNeeded(command.type, commandId, data, command.payload);
 
     // #2434 chokepoint (REST twin of agentWs.processCommandResult): redact
     // agent-supplied error/stderr ONCE before the device_commands write and
@@ -396,6 +408,24 @@ commandsRoutes.post(
       heuristicallyRedacted,
       rawStdout,
     );
+
+    // Cleanup evidence can arrive after cancellation or a terminal result.
+    // Authorize using the stored command above and redact before persisting;
+    // this supplements the run without reopening the command.
+    const recordSupplementalCleanup = async () => {
+      const payload = command.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = command.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(command.type) || typeof runId !== 'string' || !runId) return;
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      await commandResultHandlers[command.type]!({
+        agentId: agent.agentId ?? agentId, command, commandId, result: normalizedData,
+        resolvedDeviceId: command.deviceId, stdout,
+      });
+    };
+    if (!acceptsResult) {
+      await recordSupplementalCleanup();
+      return c.json({ success: true });
+    }
 
     // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
     // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
@@ -475,6 +505,7 @@ commandsRoutes.post(
     }
 
     if (updatedRows.length === 0) {
+      await recordSupplementalCleanup();
       return c.json({ success: true });
     }
 
@@ -660,6 +691,24 @@ commandsRoutes.post(
         });
       } catch (err) {
         console.error(`[agents] vault sync post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        const { ingestTopologyDiagnosticCommandResult } = await import(
+          '../../services/topology/diagnosticResults'
+        );
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: command.deviceId,
+          agentId: agent?.agentId ?? agentId,
+          commandId,
+          result: normalizedData.result,
+        });
+      } catch (err) {
+        console.error(`[agents] topology diagnostic post-processing failed for ${commandId}:`, err);
         captureException(err);
       }
     }

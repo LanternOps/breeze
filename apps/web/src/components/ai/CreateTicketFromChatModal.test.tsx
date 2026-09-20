@@ -1,9 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AiTicketDraft } from '@breeze/shared';
 
 import CreateTicketFromChatModal, { type CreateTicketFromChatModalProps } from './CreateTicketFromChatModal';
+
+const permissions = vi.hoisted(() => ({ canManageBilling: false }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ can: (resource: string, action: string) => resource === 'time_entries' && action === 'manage_billing' && permissions.canManageBilling }),
+}));
+beforeEach(() => { permissions.canManageBilling = false; });
 
 const draft: AiTicketDraft = {
   subject: 'Outlook would not open',
@@ -35,6 +41,29 @@ function setup(over: Partial<CreateTicketFromChatModalProps> = {}) {
 }
 
 describe('CreateTicketFromChatModal', () => {
+  it('hides billing controls and omits the override without manage_billing', () => {
+    const { onSubmit } = setup();
+    expect(screen.queryByRole('checkbox', { name: /billable/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /create ticket/i }));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty('billable');
+  });
+
+  it('omits untouched billing for a billing manager', () => {
+    permissions.canManageBilling = true;
+    const { onSubmit } = setup();
+    expect(screen.getByRole('checkbox', { name: /billable/i })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /create ticket/i }));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty('billable');
+  });
+
+  it('sends an explicit billing change for a billing manager', () => {
+    permissions.canManageBilling = true;
+    const { onSubmit } = setup();
+    fireEvent.click(screen.getByRole('checkbox', { name: /billable/i }));
+    fireEvent.click(screen.getByRole('button', { name: /create ticket/i }));
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ billable: false });
+  });
+
   it('prefills fields from the draft', () => {
     setup();
 
@@ -75,7 +104,6 @@ describe('CreateTicketFromChatModal', () => {
       status: 'open',
       resolutionNote: undefined,
       timeMinutes: 0,
-      billable: true,
     });
   });
 });

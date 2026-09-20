@@ -392,6 +392,7 @@ describe('topology manual DELETE — site-axis IDOR + provenance + duplicate (#1
     const env = await setupTestEnvironment({
       scope: 'organization',
       rolePermissions: [
+        { resource: 'devices', action: 'read' },
         { resource: 'topology', action: 'read' },
         { resource: 'topology', action: 'write' },
       ],

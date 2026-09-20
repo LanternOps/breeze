@@ -32,6 +32,7 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './workTypes';
 export * from './mlFeedback';
 export * from './quotes';
 export * from './contractTemplates';
@@ -41,6 +42,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';
 export * from './deviceFunctions';
@@ -1171,3 +1173,16 @@ export * from './monitors';
 
 // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
 export * from './toolSources';
+
+// Intelligent network topology canonical wire contracts (#5996)
+export * from './topology';
+
+export * from './topologyCollection';
+
+export * from './topologyConfiguration';
+
+export * from './topologyDiagnostics';
+
+export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';
+
+export * from './billingProfiles';

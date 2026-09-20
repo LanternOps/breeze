@@ -140,6 +140,12 @@ x-api-env: &api-env
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
   # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
   BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
+  # Backup storage reclamation (D18, #5429). All optional; unset = default. Production floors apply.
+  BACKUP_BASE_LEASE_MS: ${BACKUP_BASE_LEASE_MS:-}
+  BACKUP_PUBLISH_MARGIN_MS: ${BACKUP_PUBLISH_MARGIN_MS:-}
+  BACKUP_RESTORE_PIN_LINGER_MS: ${BACKUP_RESTORE_PIN_LINGER_MS:-}
+  BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: ${BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS:-}
+  BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: ${BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -500,6 +506,7 @@ x-api-env: &api-env
   MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}
+  MCP_TOOLS_LIST_PAGE_SIZE: ${MCP_TOOLS_LIST_PAGE_SIZE:-}
   # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}

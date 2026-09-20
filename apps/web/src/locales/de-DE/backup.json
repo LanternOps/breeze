@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "GB-Festplatte",
-    "mode": "Modus"
+    "mode": "Modus",
+    "rebuildHost": "Rebuild-Host",
+    "outputPath": "Ausgabepfad",
+    "rebuildEngine": "Rebuild-Engine (Linux)",
+    "manualAttachNote": "Hängen Sie die VHDX-Datei manuell an eine Hyper-V-VM an; die automatische VM-Erstellung für Linux-Gäste kommt mit der Windows-Engine.",
+    "newIdentityNote": "Das umgebaute Abbild erhält immer eine neue Maschinenidentität und übernimmt nie die Identität des ursprünglichen Geräts."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM-Spezifikationen",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Startet die VM direkt vom Backup-Speicher. In Sekundenschnelle fertig. Bei der Hintergrundmigration werden Daten auf den Host kopiert.",
     "back": "Zurück",
     "continue": "Weiter",
-    "starting": "Beginnt..."
+    "starting": "Beginnt...",
+    "rebuildEngineLinux": "Rebuild-Engine (Linux)",
+    "rebuildEngineDescription": "Baut diesen Linux-Ganzmaschinen-Snapshot auf einem Linux-Gerät mit dem Breeze-Helper zu einem Hyper-V-VHDX-Datenträgerabbild um. Das Abbild erhält immer eine neue Maschinenidentität.",
+    "selectRebuildHost": "Linux-Rebuild-Host auswählen",
+    "chooseALinuxDeviceWithQemuUtils": "Wählen Sie ein Linux-Gerät, das online ist, qemu-utils installiert hat und genügend freien Speicher für das Abbild bietet.",
+    "outputPath": "Ausgabepfad",
+    "outputPathHint": "Absoluter Pfad auf dem Rebuild-Host, der auf .vhdx endet.",
+    "outputPathInvalid": "Geben Sie einen absoluten Pfad ein, der auf .vhdx endet.",
+    "startRebuild": "Rebuild starten",
+    "rebuildStarted": "Rebuild gestartet. Die VHDX-Datei erscheint auf dem Rebuild-Host, sobald der Rebuild abgeschlossen ist."
   },
   "vaultConfigDialog": {
     "device": "Gerät",
@@ -739,7 +753,28 @@
     "executionDetailsAreUnavailable": "Ausführungsdetails sind nicht verfügbar.",
     "abortDisasterRecoveryExecution": "Ausführung der Notfallwiederherstellung abbrechen?",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "recoveryStatus": {
+      "created": "Code ausgestellt",
+      "media_booted": "Medium gestartet",
+      "planned": "Geplant",
+      "restoring": "Wiederherstellung läuft",
+      "validated": "Validiert",
+      "rebooted": "Neu gestartet",
+      "checked_in": "Angemeldet",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "refused": "Abgelehnt",
+      "unknown": "Wiederherstellung ausstehend"
+    },
+    "reissueCode": "Code neu ausstellen",
+    "reissueCodeFailed": "Der Wiederherstellungscode konnte nicht neu ausgestellt werden",
+    "cancelRecovery": "Wiederherstellung abbrechen",
+    "cancelRecoveryFailed": "Die Wiederherstellung konnte nicht abgebrochen werden",
+    "recoveryCancelled": "Wiederherstellung abgebrochen",
+    "codeShownOnce": "Dieser Code wird nur einmal angezeigt und läuft in 15 Minuten ab. Geben Sie ihn an der Eingabeaufforderung des Wiederherstellungsmediums ein.",
+    "copyCode": "Code kopieren",
+    "copied": "Kopiert"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Definieren Sie Wiederherstellungsziele, ordnen Sie Gruppen zu und weisen Sie Geräte in der Wiederherstellungsreihenfolge zu.",
@@ -769,7 +804,9 @@
     "groupCount_one": "{{count}} Gruppe",
     "groupCount_other": "{{count}} Gruppen",
     "uniqueDeviceCount_one": "{{count}} einzigartiges Gerät",
-    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte"
+    "uniqueDeviceCount_other": "{{count}} einzigartige Geräte",
+    "chooseAStepTypeForEachGroup": "Wählen Sie für jede Wiederherstellungsgruppe einen Schritttyp.",
+    "rebuildWaitTimeoutOutOfRange": "Das Wartezeitlimit für den Bare-Metal-Neuaufbau muss eine ganze Zahl zwischen {{min}} und {{max}} Minuten sein."
   },
   "dRPlanGroupCard": {
     "device": "Gerät",
@@ -784,7 +821,23 @@
     "deviceSelection": "Geräteauswahl",
     "noDevicesAvailableToAssign": "Es sind keine Geräte zum Zuweisen verfügbar.",
     "deviceCount_one": "{{count}} Gerät",
-    "deviceCount_other": "{{count}} Geräte"
+    "deviceCount_other": "{{count}} Geräte",
+    "stepType": "Schritttyp",
+    "chooseAStepType": "Schritttyp wählen",
+    "stepTypes": {
+      "vmRestoreFromBackup": "VM aus Backup wiederherstellen",
+      "vmInstantBoot": "VM-Sofortstart",
+      "hypervRestore": "Hyper-V-Wiederherstellung",
+      "mssqlRestore": "SQL-Server-Wiederherstellung",
+      "bmrRecover": "Bare-Metal-Wiederherstellung (Startmedium)",
+      "bareMetalRebuild": "Bare-Metal-Neuaufbau (Rebuild-Engine)"
+    },
+    "rebuildHost": "Rebuild-Host",
+    "rebuildHostHint": "Linux-Gerät mit qemu-utils, das Proben ausführt. Beim Failover wird stattdessen auf jedem Gerät das Wiederherstellungsmedium gestartet.",
+    "outputDir": "Ausgabeverzeichnis",
+    "outputDirHint": "Verzeichnis auf dem Rebuild-Host, das pro Gerät ein VHDX-Image erhält.",
+    "waitTimeout": "Wartezeitlimit (Min.)",
+    "waitTimeoutHint": "Minuten, die auf die Anmeldung jedes Geräts gewartet wird, bevor der Schritt fehlschlägt."
   },
   "profiles": {
     "title": "Sicherungsprofile",

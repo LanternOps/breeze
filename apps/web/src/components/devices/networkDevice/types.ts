@@ -85,5 +85,5 @@ export type NetworkAssetExtras = {
 
 export type DeviceOption = { id: string; name: string; online: boolean };
 
-export const VALID_TABS = ['overview', 'monitoring'] as const;
+export const VALID_TABS = ['overview', 'monitoring', 'topology'] as const;
 export type Tab = (typeof VALID_TABS)[number];

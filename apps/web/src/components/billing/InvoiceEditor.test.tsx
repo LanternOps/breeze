@@ -81,6 +81,23 @@ describe('InvoiceEditor', () => {
     expect(link).toHaveTextContent('Globex Inc');
   });
 
+  // Sweep paper cut #16: the API falls back invoice.billToName to the org's
+  // name for a draft with no bill-to name of its own, and surfaces the org's
+  // billing contact email alongside it (billToEmail) — the card must show
+  // both, not just the name link.
+  it('shows the fallback billing-contact email under the Bill To name (sweep paper cut #16)', async () => {
+    const detail = draft([manualLine], { orgId: 'org-9', billToName: 'Sweep Org B' });
+    render(<InvoiceEditor detail={{ ...detail, billToEmail: 'ap@sweeporgb.example' }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-bill-to')).toHaveTextContent('ap@sweeporgb.example');
+  });
+
+  it('does not show a billing-contact email line when billToEmail is absent', async () => {
+    render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-bill-to-email')).not.toBeInTheDocument();
+  });
+
   it('characterizes a contract overage sibling as editable while a bundle child is read-only (#3205 W04)', async () => {
     const overage = {
       ...manualLine, id: 'over', sourceType: 'contract' as const, parentLineId: null,

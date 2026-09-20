@@ -54,6 +54,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent versions: list releases and check devices for available upgrades',
     definition: {
       name: 'query_agent_versions',
       description: 'List available agent versions and check which devices need upgrades.',
@@ -214,6 +216,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent software upgrades: queue a target version for devices',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_upgrade',
@@ -464,6 +468,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'silent or unresponsive agent recovery: request a restart through the watchdog',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_restart',

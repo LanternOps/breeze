@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
 
 // Avatars are stored as a bytea blob on the user row via avatarStorage, which
@@ -638,6 +639,76 @@ describe('user routes', () => {
   });
 
   describe('POST /users/invite', () => {
+    it('returns CONFLICT when the user already belongs to the target scope', async () => {
+      const ROLE_ID = '22222222-2222-4222-8222-222222222222';
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: ROLE_ID,
+                scope: 'partner',
+                name: 'Admin',
+                description: null,
+                isSystem: true,
+                partnerId: null,
+                orgId: null,
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        } as any);
+
+      vi.mocked(db.transaction).mockResolvedValueOnce({
+        user: {
+          id: 'existing-user',
+          email: 'existing@example.com',
+          name: 'Existing User',
+          status: 'active',
+        },
+        linkCreated: false,
+        delegatedSiteIds: undefined,
+      } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'existing@example.com',
+          name: 'Existing User',
+          roleId: ROLE_ID,
+          orgAccess: 'none',
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'User already exists in this scope',
+        code: ERROR_CODES.CONFLICT,
+      });
+    });
+
     it('does not let a site-restricted org inviter create an unrestricted sibling by omitting siteIds', async () => {
       const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
       const ROLE_ID = '22222222-2222-4222-8222-222222222222';
@@ -2557,6 +2628,10 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({
+        error: 'User not found',
+        code: ERROR_CODES.NOT_FOUND,
+      });
       expect(vi.mocked(terminateUserRemoteSessions)).not.toHaveBeenCalled();
     });
 

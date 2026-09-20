@@ -10,6 +10,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import { getOrgScope } from '@/hooks/useOrgScope';
 import { useAiStore } from '@/stores/aiStore';
+import { usePermissions } from '@/lib/permissions';
 import FindingsFeed from './FindingsFeed';
 import FixPickerModal from './FixPickerModal';
 import RunProgressPanel from './RunProgressPanel';
@@ -271,7 +272,12 @@ export default function FleetOrchestrationPage() {
     loadStats();
   }, []);
 
+  // #6396: the assistant sidebar is unmounted for roles without
+  // ai_sessions:use, so every AI launcher on this page is gated on it too —
+  // a chip click must not silently open nothing and 403 in the background.
+  const canUseAi = usePermissions().can('ai_sessions', 'use');
   const handleQuickAction = (prompt: string) => {
+    if (!canUseAi) return;
     const store = useAiStore.getState();
     store.open();
     store.sendMessage(prompt);
@@ -344,7 +350,7 @@ export default function FleetOrchestrationPage() {
             icon={Shield}
             value={s.policies.total}
             accent="blue"
-            onClick={() => handleQuickAction('Show me a compliance summary for all configuration policies')}
+            onClick={canUseAi ? () => handleQuickAction('Show me a compliance summary for all configuration policies') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.deployments')}
@@ -353,7 +359,7 @@ export default function FleetOrchestrationPage() {
             value={s.deployments.active}
             accent={s.deployments.failed > 0 ? 'red' : 'green'}
             badge={s.deployments.failed > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.deployments.failed }) : undefined}
-            onClick={() => handleQuickAction('List all active deployments and their progress')}
+            onClick={canUseAi ? () => handleQuickAction('List all active deployments and their progress') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.patches')}
@@ -362,7 +368,7 @@ export default function FleetOrchestrationPage() {
             value={s.patches.pendingPatches}
             accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
             badge={s.patches.failedPatches > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.patches.failedPatches }) : undefined}
-            onClick={() => handleQuickAction('What critical patches are pending approval?')}
+            onClick={canUseAi ? () => handleQuickAction('What critical patches are pending approval?') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
@@ -370,7 +376,7 @@ export default function FleetOrchestrationPage() {
             icon={Bell}
             value={s.alerts?.total ?? '—'}
             accent={!s.alerts ? 'gray' : s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
-            onClick={() => handleQuickAction('Give me a summary of active alerts by severity')}
+            onClick={canUseAi ? () => handleQuickAction('Give me a summary of active alerts by severity') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.groups')}
@@ -378,7 +384,7 @@ export default function FleetOrchestrationPage() {
             icon={FolderTree}
             value={s.groupCount}
             accent="blue"
-            onClick={() => handleQuickAction('Show me all device groups and their member counts')}
+            onClick={canUseAi ? () => handleQuickAction('Show me all device groups and their member counts') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.automations')}
@@ -386,7 +392,7 @@ export default function FleetOrchestrationPage() {
             icon={Zap}
             value={s.automationCount}
             accent="purple"
-            onClick={() => handleQuickAction('List all enabled automations and their recent run history')}
+            onClick={canUseAi ? () => handleQuickAction('List all enabled automations and their recent run history') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
@@ -395,7 +401,7 @@ export default function FleetOrchestrationPage() {
             // "—" (unknown), never a fabricated 0 — see fetchFleetStats.
             value={s.maintenanceActive ?? '—'}
             accent={s.maintenanceActive == null ? 'gray' : s.maintenanceActive > 0 ? 'yellow' : 'green'}
-            onClick={() => handleQuickAction('What maintenance windows are active right now?')}
+            onClick={canUseAi ? () => handleQuickAction('What maintenance windows are active right now?') : undefined}
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.reports')}
@@ -403,7 +409,7 @@ export default function FleetOrchestrationPage() {
             icon={FileText}
             value={s.reportCount}
             accent="blue"
-            onClick={() => handleQuickAction('Generate an executive summary report for the fleet')}
+            onClick={canUseAi ? () => handleQuickAction('Generate an executive summary report for the fleet') : undefined}
           />
         </div>
       )}
@@ -442,28 +448,30 @@ export default function FleetOrchestrationPage() {
       )}
 
       {/* Quick Actions */}
-      <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <div className="flex items-center gap-2 mb-4">
-          <MessageSquare className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActions')}</h2>
-          <span className="text-xs text-muted-foreground ml-2">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActionsHint')}</span>
+      {canUseAi && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <div className="flex items-center gap-2 mb-4">
+            <MessageSquare className="h-5 w-5 text-primary" />
+            <h2 className="text-lg font-semibold">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActions')}</h2>
+            <span className="text-xs text-muted-foreground ml-2">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActionsHint')}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {quickActions.map((action) => (
+              <button
+                key={action.label}
+                onClick={canUseAi ? () => handleQuickAction(action.prompt) : undefined}
+                className="flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium
+                           hover:bg-primary hover:text-primary-foreground hover:border-primary
+                           transition-colors cursor-pointer"
+              >
+                <action.icon className="h-4 w-4" />
+                {t(/* i18n-dynamic */ action.labelKey)}
+                <ChevronRight className="h-3 w-3 opacity-50" />
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {quickActions.map((action) => (
-            <button
-              key={action.label}
-              onClick={() => handleQuickAction(action.prompt)}
-              className="flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium
-                         hover:bg-primary hover:text-primary-foreground hover:border-primary
-                         transition-colors cursor-pointer"
-            >
-              <action.icon className="h-4 w-4" />
-              {t(/* i18n-dynamic */ action.labelKey)}
-              <ChevronRight className="h-3 w-3 opacity-50" />
-            </button>
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Status Overview Panels — omitted entirely when the stats never loaded,
           rather than rendered against fabricated zeros. */}

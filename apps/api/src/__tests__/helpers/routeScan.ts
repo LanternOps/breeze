@@ -367,6 +367,10 @@ const JOIN_DEVICES_PATTERN = /\b(?:inner|left|right)Join\s*\(\s*devices\b/;
 
 const CANONICAL_GATE_NAMES = [
   'requireSiteAccess',
+  // Topology middleware resolves missing permissions and checks both caller
+  // ceilings and current site ownership before entering the leaf handler.
+  'requireTopologySiteCapability',
+  'requireTopologySiteAccess',
   'canAccessDeviceSite',
   'getDeviceWithOrgAndSiteCheck',
   'canAccessSite',
@@ -523,7 +527,7 @@ const PERMS_SITE_TOKEN = /\bcanAccessSite\b|\ballowedSiteIds\b/;
 /** A live source of permissions in the route's middleware chain or handler:
  *  `requirePermission(` populates the context; `getUserPermissions(` is the
  *  inline fallback; `requireSiteAccess` self-resolves perms and gates itself. */
-const LIVE_PERMS_SOURCE = /\brequirePermission\s*\(|\bgetUserPermissions\s*\(|\brequireSiteAccess\b/;
+const LIVE_PERMS_SOURCE = /\brequirePermission\s*\(|\bgetUserPermissions\s*\(|\brequireSiteAccess\b|\brequireTopologySiteCapability\b/;
 /** Fail-closed guard: `if (!perms) { … throw … }`. A handler/helper that
  *  throws when the permissions context is absent breaks the request rather
  *  than silently granting cross-site access, so a missing `requirePermission`

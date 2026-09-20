@@ -16,6 +16,7 @@ import {
   scanDueComplianceChecks,
   resolveAlertRulesForDevice,
   resolveAutomationsForDeviceWithPolicy,
+  resolveAutomationAssignmentForDevice,
   resolveAllVulnerabilityEnabledDevices,
   resolveGoverningAlertRulePolicyForDevice,
   resolvePatchConfigDetailsForDevice,
@@ -236,4 +237,19 @@ describe('resolveAutomationsForDeviceWithPolicy', () => {
     queue([]); // loadDeviceHierarchy: no device row
     expect(await resolveAutomationsForDeviceWithPolicy('nope')).toBeNull();
   });
+});
+
+it('a converted child still wins; only its legacy executable rows disappear', async () => {
+  const rows = [
+    { automation: { id: 'parent-auto', retiredAt: null }, policyId: 'parent', assignmentId: 'parent-asg',
+      assignmentLevel: 'organization', assignmentPriority: 0, assignmentCreatedAt: new Date(0) },
+    { automation: { id: 'child-auto', retiredAt: new Date(0) }, policyId: 'child', assignmentId: 'child-asg',
+      assignmentLevel: 'site', assignmentPriority: 0, assignmentCreatedAt: new Date(0) },
+  ];
+  queueHierarchy([...rows]);
+  expect(await resolveAutomationAssignmentForDevice('dev-1')).toEqual({ configPolicyId: 'child', automations: [rows[1]!.automation] });
+  queueHierarchy([...rows]);
+  expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'child', automations: [] });
+  queueHierarchy(rows.slice(0, 1));
+  expect((await resolveAutomationsForDeviceWithPolicy('dev-1'))?.automations.map((a) => a.id)).toEqual(['parent-auto']);
 });

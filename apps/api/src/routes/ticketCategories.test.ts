@@ -87,14 +87,25 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     partnerId: 'partnerId',
     name: 'name',
-    defaultHourlyRate: 'defaultHourlyRate',
-    rateCurrency: 'rateCurrency',
+    color: 'color',
+    parentId: 'parentId',
+    defaultPriority: 'defaultPriority',
+    responseSlaMinutes: 'responseSlaMinutes',
+    resolutionSlaMinutes: 'resolutionSlaMinutes',
+    defaultTimeEntryMinutes: 'defaultTimeEntryMinutes',
+    createdAt: 'createdAt',
+    defaultWorkTypeId: 'defaultWorkTypeId',
     sortOrder: 'sortOrder',
     isActive: 'isActive',
     updatedAt: 'updatedAt'
   },
   organizations: { id: 'id', partnerId: 'partnerId' },
   partners: { id: 'id', currencyCode: 'currencyCode' }
+}));
+
+const workTypeMocks = vi.hoisted(() => ({ getActiveWorkType: vi.fn() }));
+vi.mock('../services/workTypeService', () => ({
+  getActiveWorkType: (...args: unknown[]) => workTypeMocks.getActiveWorkType(...args),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -257,6 +268,7 @@ describe('GET /ticket-categories', () => {
       color: '#1c8a9e',
       parentId: null,
       defaultPriority: 'normal',
+      defaultWorkTypeId: '9a8b7c6d-2222-4333-8444-555566667777',
       sortOrder: 0,
       isActive: true
     };
@@ -281,7 +293,7 @@ describe('GET /ticket-categories', () => {
     const projectionArg = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
     expect(projectionArg).toBeDefined();
     expect(Object.keys(projectionArg!).sort()).toEqual(
-      ['color', 'defaultPriority', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
+      ['color', 'defaultPriority', 'defaultWorkTypeId', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
     );
     // The WHERE must filter to active categories (isActive condition present).
     const whereArg = vi.mocked(db.select).mock.results[1]?.value.from.mock.results[0]?.value.where.mock.calls[0]?.[0];
@@ -304,6 +316,22 @@ describe('GET /ticket-categories', () => {
 describe('POST /ticket-categories', () => {
   beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
 
+  it.each(['defaultHourlyRate', 'defaultBillable', 'rateCurrency'])('ignores deprecated %s with a warning', async (field) => {
+    dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', [field]: 'ignored' }),
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()).deprecationWarnings).toContain(field);
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).not.toHaveProperty(field);
+    const projection = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value.returning.mock.calls[0]?.[0];
+    expect(projection).toHaveProperty('defaultWorkTypeId');
+    expect(projection).not.toHaveProperty(field);
+  });
+
   it('stamps partnerId from auth (never from body)', async () => {
     dbInsertReturning.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
     const res = await makeApp().request('/ticket-categories', {
@@ -318,7 +346,7 @@ describe('POST /ticket-categories', () => {
     const { db } = await import('../db');
     const insertValuesCalls = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0];
     expect(insertValuesCalls?.[0]?.partnerId).toBe('p-1');
-    expect(insertValuesCalls?.[0]?.rateCurrency).toBeNull();
+    expect(insertValuesCalls?.[0]).not.toHaveProperty('rateCurrency');
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: null,
@@ -363,21 +391,7 @@ describe('POST /ticket-categories', () => {
     expect(body).toHaveProperty('error', 'Partner context required');
   });
 
-  it('converts defaultHourlyRate to a string and stamps the partner currency', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
-    dbInsertReturning.mockResolvedValue([{ id: 'cat-2', name: 'Billable', partnerId: 'p-1', defaultHourlyRate: '150.00' }]);
-    const res = await makeApp().request('/ticket-categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Billable', defaultHourlyRate: 150 })
-    });
-    expect(res.status).toBe(201);
-    const { db } = await import('../db');
-    const insertValuesCalls = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0];
-    expect(insertValuesCalls?.[0]?.defaultHourlyRate).toBe('150');
-    expect(insertValuesCalls?.[0]?.rateCurrency).toBe('CAD');
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
+
 });
 
 describe('PATCH /ticket-categories/:id', () => {
@@ -403,75 +417,32 @@ describe('PATCH /ticket-categories/:id', () => {
     }));
   });
 
-  it('restamps the partner currency when the normalized hourly rate changes', async () => {
-    dbSelectResult
-      .mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }])
-      .mockResolvedValueOnce([{ currencyCode: 'CAD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1', defaultHourlyRate: '90.00', rateCurrency: 'CAD' }]);
-
+  it.each([
+    { defaultHourlyRate: 90 },
+    { name: 'Renamed', defaultHourlyRate: 100 },
+    { defaultHourlyRate: 100.001 },
+    { defaultHourlyRate: null },
+    { defaultBillable: false },
+    { rateCurrency: 'CAD' },
+  ])('ignores deprecated pricing on PATCH: %j', async (input) => {
+    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1' }]);
     const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultHourlyRate: 90 })
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
     });
-
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.deprecationWarnings).toEqual(Object.keys(input).filter((key) => key !== 'name'));
     const { db } = await import('../db');
     const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(setArg?.defaultHourlyRate).toBe('90');
-    expect(setArg?.rateCurrency).toBe('CAD');
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not restamp currency when a resent hourly rate has the same normalized value', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Renamed', partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Renamed', color: '#ffffff', defaultHourlyRate: 100 })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(Object.prototype.hasOwnProperty.call(setArg, 'rateCurrency')).toBe(false);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not restamp currency when the resent rate differs only beyond the column scale (100.001 vs 100.00)', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Renamed', partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Renamed', defaultHourlyRate: 100.001 })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(Object.prototype.hasOwnProperty.call(setArg, 'rateCurrency')).toBe(false);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-  });
-
-  it('clears rateCurrency when the hourly rate is cleared without reading the partner', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
-    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1', defaultHourlyRate: null, rateCurrency: null }]);
-
-    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultHourlyRate: null })
-    });
-
-    expect(res.status).toBe(200);
-    const { db } = await import('../db');
-    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
-    expect(setArg?.rateCurrency).toBeNull();
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
+      expect(setArg).not.toHaveProperty(field);
+      expect(body.data).not.toHaveProperty(field);
+    }
+    const projection = vi.mocked(db.update).mock.results[0]?.value.set.mock.results[0]?.value.where.mock.results[0]?.value.returning.mock.calls[0]?.[0];
+    expect(projection).toHaveProperty('defaultWorkTypeId');
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) expect(projection).not.toHaveProperty(field);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 
   it('does not read or update currency when defaultHourlyRate is omitted', async () => {
@@ -791,7 +762,11 @@ describe('category default time entry minutes', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).data[0].defaultTimeEntryMinutes).toBe(45);
     const { db } = await import('../db');
-    expect(db.select).toHaveBeenCalledWith();
+    const projection = vi.mocked(db.select).mock.calls[0]?.[0];
+    expect(projection).toMatchObject({ defaultTimeEntryMinutes: 'defaultTimeEntryMinutes', defaultWorkTypeId: 'defaultWorkTypeId' });
+    for (const field of ['defaultBillable', 'defaultHourlyRate', 'rateCurrency']) {
+      expect(projection).not.toHaveProperty(field);
+    }
   });
 
   describe.each(['POST', 'PATCH'])('%s', (method) => {
@@ -836,5 +811,115 @@ describe('category default time entry minutes', () => {
         : vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
       expect(write).not.toHaveProperty('defaultTimeEntryMinutes');
     });
+  });
+});
+
+
+describe('category default work type', () => {
+  const WORK_TYPE_ID = '9a8b7c6d-2222-4333-8444-555566667777';
+
+  beforeEach(() => {
+    vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth();
+    workTypeMocks.getActiveWorkType.mockResolvedValue({ id: WORK_TYPE_ID, partnerId: 'p-1', name: 'Remote', isActive: true });
+  });
+
+  it.each([WORK_TYPE_ID, null])('PATCH accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {
+    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId }]);
+    const res = await makeApp().request(`/ticket-categories/${CATEGORY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultWorkTypeId }),
+    });
+    expect(res.status).toBe(200);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update).mock.results[0]?.value.set).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultWorkTypeId }),
+    );
+    expect((await res.json()).data.defaultWorkTypeId).toBe(defaultWorkTypeId);
+  });
+
+  it.each([WORK_TYPE_ID, null])('POST accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {
+    dbInsertReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId }),
+    });
+    expect(res.status).toBe(201);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert).mock.results[0]?.value.values).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultWorkTypeId }),
+    );
+    expect((await res.json()).data.defaultWorkTypeId).toBe(defaultWorkTypeId);
+  });
+
+  it.each(['POST', 'PATCH'])('%s rejects malformed defaultWorkTypeId before writing', async (method) => {
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: 'wt-1' }),
+    });
+    expect(res.status).toBe(400);
+    const { db } = await import('../db');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('GET returns defaultWorkTypeId for partner scope', async () => {
+    dbSelectResult.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: WORK_TYPE_ID }]);
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].defaultWorkTypeId).toBe(WORK_TYPE_ID);
+  });
+});
+
+// The composite FK (default_work_type_id, partner_id) -> work_types(id, partner_id)
+// raises 23503 INSIDE the request transaction, aborting it -- so the 400 has to
+// come from a pre-write check, exactly like the parentId guard above it.
+describe('category default work type tenancy guard', () => {
+  const FOREIGN_WORK_TYPE = 'cccccccc-3333-4333-8333-333333333333';
+
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
+
+  it.each(['POST', 'PATCH'])('%s rejects a work type belonging to another partner with 400', async (method) => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: FOREIGN_WORK_TYPE }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/work type/i);
+    const { db } = await import('../db');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(workTypeMocks.getActiveWorkType).toHaveBeenCalledWith(FOREIGN_WORK_TYPE, 'p-1');
+  });
+
+  it.each(['POST', 'PATCH'])('%s rejects an ARCHIVED work type with 400', async (method) => {
+    // getActiveWorkType filters is_active, so an archived row is the same miss.
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: 'dddddddd-4444-4444-8444-444444444444' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['POST', 'PATCH'])('%s does NOT look up an explicit null (clearing the default)', async (method) => {
+    dbInsertReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: null }]);
+    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: null }]);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: null }),
+    });
+    expect(res.status).toBe(method === 'POST' ? 201 : 200);
+    expect(workTypeMocks.getActiveWorkType).not.toHaveBeenCalled();
   });
 });

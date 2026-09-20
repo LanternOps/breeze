@@ -95,7 +95,7 @@
     "loading": "Hizmet sorumluları yükleniyor…",
     "loadFailed": "Hizmet sorumluları yüklenemedi.",
     "retry": "Tekrar deneyin",
-    "empty": "Henüz hizmet sorumlusu yok.",
+    "empty": "Henüz hizmet sorumlusu yok. Başlamak için bir tane oluşturun.",
     "name": "Ad",
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
@@ -551,7 +551,14 @@
         "description": "Durumlar, SLA'lar, kategoriler, formlar",
         "linkCta": "Bilet ayarlarını yönet →"
       },
-      "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
+      "emailTemplates": {
+        "label": "E-posta şablonları",
+        "description": "Biletler, teklifler, faturalar, davetler"
+      },
+      "sendingDomains": {
+        "label": "Gönderen adresleri",
+        "description": "E-postaları kendi alan adınızdan gönderin"
+      },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
@@ -701,7 +708,8 @@
     "errorCheckFailed": "DNS denetimi başlatılamadı.",
     "errorRemoveFailed": "Alan adı kaldırılamadı.",
     "errorIdentityFailed": "Gönderen adresi kaydedilemedi.",
-    "errorTestFailed": "Deneme e-postası gönderilemedi."
+    "errorTestFailed": "Deneme e-postası gönderilemedi.",
+    "removeTitle": "Gönderim alan adı kaldırılsın mı?"
   },
   "loginBranding": {
     "saved": "Giriş markası kaydedildi",
@@ -841,6 +849,45 @@
     "deleteExpiredTitle": "Süresi dolmuş kayıt anahtarlarını silin",
     "deleteExpiredConfirm": "Süresi dolmuş tüm kayıt anahtarları silinsin mi? Canlı yükleyici indirme bağlantısını destekleyen anahtarlar hâlâ korunuyor. Bu geri alınamaz."
   },
+  "emailTemplates": {
+    "title": "E-posta şablonları",
+    "description": "Müşterilerin biletler, teklifler, faturalar ve portal davetleri için aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
+    "usingDefault": "Varsayılan",
+    "custom": "Özel",
+    "subject": "Konu",
+    "heading": "Başlık",
+    "buttonLabel": "Düğme etiketi",
+    "html": "HTML gövdesi",
+    "htmlAria": "E-posta HTML gövdesi",
+    "insert": "Ekle:",
+    "preview": "Önizleme",
+    "save": "Şablonu kaydet",
+    "reset": "Varsayılana sıfırla",
+    "saved": "E-posta şablonu kaydedildi",
+    "saveFailed": "E-posta şablonu kaydedilemedi",
+    "loadFailed": "E-posta şablonları yüklenemedi.",
+    "back": "Listeye dön",
+    "markupRemoved": "Bazı işaretleme kaldırıldı: {{tags}}",
+    "variables": {
+      "ticket_number": "Bilet numarası",
+      "ticket_subject": "Bilet konusu",
+      "requester_name": "Talep edenin adı",
+      "requester_email": "Talep edenin e-postası",
+      "org_name": "Kuruluş adı",
+      "partner_name": "Şirket adı",
+      "portal_url": "Portal URL'si",
+      "email_only_hint": "Yalnızca e-posta ipucu",
+      "resolution_note": "Çözüm notu",
+      "quote_number": "Teklif numarası",
+      "total": "Toplam",
+      "expiry_date": "Son geçerlilik tarihi",
+      "accept_url": "Kabul URL'si",
+      "invoice_number": "Fatura numarası",
+      "due_date": "Vade tarihi",
+      "invite_url": "Davet URL'si",
+      "cta_button": "Düğme"
+    }
+  },
   "inboundEmail": {
     "saveError": "Gelen e-posta ayarları kaydedilemedi — oturumunuzun MFA'nın yeniden doğrulanması gerekebilir. Tekrar dene.",
     "orgNotAccessible": "Bu organizasyon ortağınızın bünyesinde mevcut değil.",
@@ -871,6 +918,8 @@
     "dropUnverified": "Gönderen kimlik doğrulamasını geçemeyen postaları bırakın (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Kapatıldığında, doğrulanmamış postalar incelenmek üzere karantinaya alınır. Açıkken sessizce bırakılır. Bu, <all>tümü</all> doğrulanmamış gönderenler için geçerlidir; bireysel mesajları kontrolde başarısız olan eşlenen müşteriler de dahil.",
     "enableAutoresponse": "Yeni e-posta bildirimlerini onaylayan bir otomatik yanıt gönderin",
+    "editEmailTemplates": "Onay e-postası E-posta şablonları altında düzenlenir.",
+    "editEmailTemplatesLink": "E-posta şablonlarını düzenle",
     "autoresponseMessage": "Otomatik yanıt mesajı",
     "subject": "Konu",
     "subjectPlaceholder": "Talebinizi aldık: {{ticket_subject}}",
@@ -3786,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "Hesabınızın mevcut faktörü burada onaylanamıyor. Geçiş anahtarı eklemek için bir yöneticiyle iletişime geçin.",
     "passkeyStepUpIncorrectCode": "Kod hatalı. Lütfen tekrar deneyin.",
     "passkeyStepUpTooManyAttempts": "Çok fazla deneme. Lütfen birkaç dakika içinde tekrar deneyin.",
-    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın."
+    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın.",
+    "passkeyRegistrationServerError": "Geçiş anahtarı kaydı başarısız oldu. Lütfen tekrar deneyin.",
+    "deletePasskeyVerifyHeading": "Bir geçiş anahtarını silmek için doğrulayın",
+    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez."
   },
   "roleManager": {
     "roles": "Roller",
@@ -4254,7 +4306,6 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ({{currency}})",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -4269,7 +4320,8 @@
     "active": "Aktif",
     "inactive": "Etkin değil",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "slaMinutesMustBeNumbers": "SLA dakikaları sayı olmalıdır."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Öncelikler ve SLA'lar kaydedildi",
@@ -5741,5 +5793,25 @@
     "saveError": "Katalog varsayılanları kaydedilemedi",
     "saveSuccess": "Katalog varsayılanları kaydedildi",
     "saveButton": "Kaydet"
+  },
+  "workTypes": {
+    "title": "İş türleri",
+    "description": "Süre kayıtlarında yapılan işi belirtin. Kategori varsayılanları, teknisyenlerin iş türü seçmesine yardımcı olur.",
+    "newName": "Yeni iş türü",
+    "create": "İş türü ekle",
+    "archive": "Arşivle",
+    "archived": "Arşivlendi",
+    "archivedClearedDefaults_one": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "archivedClearedDefaults_other": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "saveError": "İş türü kaydedilemedi. Lütfen tekrar deneyin.",
+    "saveSuccess": "İş türü kaydedildi.",
+    "nameTaken": "Bu ada sahip bir iş türü zaten var.",
+    "rename": "Yeniden adlandır",
+    "loadError": "İş türleri yüklenemedi.",
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Varsayılan iş türü",
+    "defaultWorkTypeHelp": "Bu kategori için iş türü belirtilmeden süre kaydedildiğinde kullanılır."
   }
 }

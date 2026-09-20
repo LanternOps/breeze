@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
+import { jsonError } from '../../lib/jsonError';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
@@ -450,7 +452,7 @@ passwordRoutes.get('/me', authMiddleware, async (c) => {
     .limit(1);
 
   if (!user) {
-    return c.json({ error: 'User not found' }, 404);
+    return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
   }
 
   const { phoneNumber: rawPhone, passwordHash, ...userWithoutPhone } = user;

@@ -1,3 +1,5 @@
+import { usePermissions } from '../../lib/permissions';
+import BillingOutcome from './BillingOutcome';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Clock, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +12,8 @@ const POLL_MS = 60_000;
 
 export default function TimerWidget() {
   const { t } = useTranslation('common');
+  const { can } = usePermissions();
+  const canManageBilling = can('time_entries', 'manage_billing');
   const [timer, setTimer] = useState<RunningTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -78,7 +82,7 @@ export default function TimerWidget() {
   const submitStop = async () => {
     setStopping(true);
     try {
-      await stopTimerAction({ description: description || undefined, isBillable: billable });
+      await stopTimerAction({ description: description || undefined, ...(canManageBilling && billable !== timer.isBillable ? { isBillable: billable } : {}) });
       setPopoverOpen(false);
       setTimer(null);
     } catch (err) {
@@ -104,9 +108,10 @@ export default function TimerWidget() {
       {popoverOpen && (
         <div ref={popoverRef} role="dialog" aria-label={t('longTail.time.TimerWidget.stopTimer')} className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border bg-popover p-3 shadow-lg" data-testid="timer-stop-popover">
           <p className="mb-2 text-sm font-medium">{t('longTail.time.TimerWidget.stopTimer')}</p>
+          <BillingOutcome stamp={timer} overrides={canManageBilling && billable !== timer.isBillable ? { isBillable: billable } : undefined} testId="timer-stop-outcome" />
           <textarea ref={textareaRef} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t('longTail.time.TimerWidget.descriptionPlaceholder')} rows={2} aria-label={t('common:labels.description')} className="mb-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm" data-testid="timer-stop-description" />
           <label className="mb-3 flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} data-testid="timer-stop-billable" />
+            <input type="checkbox" disabled={!canManageBilling} checked={billable} onChange={(e) => setBillable(e.target.checked)} data-testid="timer-stop-billable" />
             {t('longTail.time.TimerWidget.billable')}
           </label>
           <div className="flex justify-end gap-2">

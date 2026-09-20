@@ -66,6 +66,12 @@ interface SeededTenants {
  * `source`.
  */
 async function openPreMigrationWindow(): Promise<void> {
+  // Capture was installed after this backfill and requires the now-NOT-NULL
+  // source. Recreate the historical schema without disabling the export-lock
+  // triggers whose ordering this regression exercises.
+  await getTestDb().execute(
+    sql`ALTER TABLE public.discovered_assets DISABLE TRIGGER topology_capture_legacy_change`,
+  );
   await getTestDb().execute(
     sql`ALTER TABLE public.discovered_assets ALTER COLUMN source DROP NOT NULL`,
   );
@@ -82,6 +88,16 @@ async function openPreMigrationWindow(): Promise<void> {
  * every row below is `pending`, so the cleanup itself cannot deadlock.
  */
 async function closePreMigrationWindow(): Promise<void> {
+  try {
+    await restoreSourceColumn();
+  } finally {
+    await getTestDb().execute(
+      sql`ALTER TABLE public.discovered_assets ENABLE TRIGGER topology_capture_legacy_change`,
+    );
+  }
+}
+
+async function restoreSourceColumn(): Promise<void> {
   await getTestDb().execute(sql`DELETE FROM public.discovered_assets WHERE source IS NULL`);
   await getTestDb().execute(
     sql`ALTER TABLE public.discovered_assets ALTER COLUMN source SET DEFAULT 'scan'`,

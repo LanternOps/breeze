@@ -49,6 +49,7 @@ import {
 import type { ActAssetPin } from './actRevalidation';
 
 const RUN = { id: 'run-1', orgId: 'org-1', agentId: 'agent-1', deviceId: 'device-1' };
+const RUN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const AGENT_USER_ID = 'agent-1';
 
 const restartOp = ACT_MANIFEST.find((op) => op.key === 'manage_services.restart')!;
@@ -233,7 +234,7 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
 });
 
 describe('verifyActExecution — disk_cleanup.execute (disk_usage_improved)', () => {
-  const target = { kind: 'disk_cleanup' as const, paths: ['/tmp/a'] };
+  const target = { kind: 'disk_cleanup' as const, cleanupRunId: RUN_ID, paths: ['/tmp/a'] };
 
   it('executed with zero failures → succeeded/passed', async () => {
     const result = await verifyActExecution({
@@ -334,7 +335,7 @@ describe('actTargetSummary — sanitized identity, never a full input/output blo
     expect(actTargetSummary({ kind: 'script', scriptId: 'script-1' })).toBe('script-1');
     expect(actTargetSummary({ kind: 'playbook', playbookId: 'pb-1' })).toBe('pb-1');
     expect(actTargetSummary({ kind: 'suggestion', suggestionId: 'sugg-1' })).toBe('sugg-1');
-    expect(actTargetSummary({ kind: 'disk_cleanup', paths: ['/tmp/a', '/tmp/b', '/tmp/c'] })).toBe('3 path(s)');
+    expect(actTargetSummary({ kind: 'disk_cleanup', cleanupRunId: RUN_ID, paths: ['/tmp/a', '/tmp/b', '/tmp/c'] })).toBe(`3 path(s) from run ${RUN_ID}`);
   });
 });
 

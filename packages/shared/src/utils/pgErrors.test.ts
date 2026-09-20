@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPgUniqueViolation, pgErrorCode, pgErrorConstraint, pgErrorNode } from './pgErrors';
+import { isPgForeignKeyViolation, isPgUniqueViolation, pgErrorCode, pgErrorConstraint, pgErrorNode } from './pgErrors';
 
 // postgres.js surfaces the index as `constraint_name` (the real shape we hit in prod)
 const pgErr = (constraint?: string) =>
@@ -126,5 +126,31 @@ describe('pgErrorConstraint', () => {
 
   it('returns undefined when the node carries a code but no constraint field', () => {
     expect(pgErrorConstraint(Object.assign(new Error('x'), { code: '23505' }))).toBeUndefined();
+  });
+});
+
+describe('isPgForeignKeyViolation', () => {
+  it('matches a bare postgres.js 23503', () => {
+    expect(isPgForeignKeyViolation(Object.assign(new Error('fk'), { code: '23503' }))).toBe(true);
+  });
+
+  it('matches a DRIZZLE-WRAPPED 23503 (SQLSTATE on .cause)', () => {
+    expect(isPgForeignKeyViolation(drizzleWrap(Object.assign(new Error('fk'), {
+      code: '23503', constraint_name: 'time_entries_work_type_partner_fk',
+    })))).toBe(true);
+  });
+
+  it('narrows to a named constraint when one is given', () => {
+    const err = drizzleWrap(Object.assign(new Error('fk'), {
+      code: '23503', constraint_name: 'time_entries_work_type_partner_fk',
+    }));
+    expect(isPgForeignKeyViolation(err, 'time_entries_work_type_partner_fk')).toBe(true);
+    expect(isPgForeignKeyViolation(err, 'some_other_fk')).toBe(false);
+  });
+
+  it('does not match a unique violation or a plain error', () => {
+    expect(isPgForeignKeyViolation(Object.assign(new Error('dup'), { code: '23505' }))).toBe(false);
+    expect(isPgForeignKeyViolation(new Error('plain'))).toBe(false);
+    expect(isPgForeignKeyViolation(null)).toBe(false);
   });
 });

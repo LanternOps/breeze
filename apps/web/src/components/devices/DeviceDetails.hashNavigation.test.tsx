@@ -1,3 +1,4 @@
+import { topologyGraphFixture, topologySettingsFixture, SITE, NODE, ASSET } from '../topology/topologyFixtures';
 /**
  * #4229 — hash links inside the device detail page must switch tabs on click,
  * not only after a page refresh.
@@ -15,6 +16,8 @@ import {
   installAstroClientRouterStandIn,
   type ClientRouterStandIn,
 } from '../../__tests__/astroClientRouterStandIn';
+
+vi.mock('../topology/TopologyCanvas', () => ({ default: () => <div data-testid="topology-canvas" /> }));
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', async (importOriginal) => {
@@ -116,6 +119,24 @@ afterEach(() => {
 });
 
 describe('DeviceDetails hash-link navigation (#4229)', () => {
+  it('opens #topology and resolves the managed device without creating an asset', async () => {
+    window.location.hash = '#topology';
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/settings')) return jsonResponse(topologySettingsFixture());
+      if (url.includes('/nodes?')) return jsonResponse({ siteId: SITE, graphRevision: '1', total: 1, nodes: topologyGraphFixture().nodes, cursor: null });
+      if (url.includes('/graph?')) return jsonResponse(topologyGraphFixture());
+      return notFound();
+    });
+    const { unmount } = render(<DeviceDetails device={{ ...device, id: ASSET, siteId: SITE }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeVisible();
+    expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes(`deviceId=${ASSET}`))).toBe(true);
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes(`focusNodeId=${NODE}`))).toBe(true);
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url).includes('/topology')).every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+    unmount(); vi.unstubAllGlobals();
+  });
+
   it('opens the Activity view when "View all activity" is clicked, without a refresh', async () => {
     const user = userEvent.setup();
     render(<DeviceDetails device={device} />);

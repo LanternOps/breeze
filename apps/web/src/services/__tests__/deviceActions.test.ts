@@ -14,6 +14,8 @@ import {
   enterMaintenanceMode,
   exitMaintenanceMode,
   MaintenanceActionError,
+  DeviceActionError,
+  moveDeviceOrg,
   watchWakeOutcome,
   WakeCommandError,
   wakeFriendlyErrorMessage,
@@ -178,6 +180,7 @@ describe('deviceActions service', () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({}, false, 500));
 
       await expect(exitMaintenanceMode('dev-1')).rejects.toBeInstanceOf(MaintenanceActionError);
+      await expect(exitMaintenanceMode('dev-1')).rejects.toBeInstanceOf(DeviceActionError);
     });
 
     it('bulkEnterMaintenanceMode makes ONE call with every id', async () => {
@@ -196,6 +199,50 @@ describe('deviceActions service', () => {
       expect(JSON.parse(init.body as string).deviceIds).toEqual(['a', 'b', 'c']);
     });
 
+  });
+
+  describe('moveDeviceOrg', () => {
+    it('POSTs the body verbatim to /devices/:id/move-org and unwraps the JSON', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ success: true, device: { id: 'dev-1', orgId: 'o2' } }));
+
+      const result = await moveDeviceOrg('dev-1', { orgId: 'o2', siteId: 's2', acceptCurrencyMismatch: false });
+
+      const [path, init] = fetchWithAuthMock.mock.calls[0] as [string, RequestInit];
+      expect(path).toBe('/devices/dev-1/move-org');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({ orgId: 'o2', siteId: 's2', acceptCurrencyMismatch: false });
+      expect(result).toEqual({ success: true, device: { id: 'dev-1', orgId: 'o2' } });
+    });
+
+    it('surfaces status + code so the dialog can branch on STEP_UP_REQUIRED vs MFA_REQUIRED', async () => {
+      fetchWithAuthMock.mockResolvedValue(
+        makeResponse({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' }, false, 403)
+      );
+
+      await expect(
+        moveDeviceOrg('dev-1', { orgId: 'o2', siteId: 's2' })
+      ).rejects.toMatchObject({ status: 403, code: 'STEP_UP_REQUIRED', message: 'Step-up required' });
+    });
+
+    it('carries the 409 currency-guard details so the dialog can render what is blocking', async () => {
+      const details = {
+        sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 3, unbilledParts: 1,
+        blockedByCurrency: [{ currency: 'USD', timeEntries: 3, parts: 1 }],
+      };
+      fetchWithAuthMock.mockResolvedValue(
+        makeResponse({ error: 'Unbilled work in another currency', code: 'TICKET_MOVE_CURRENCY_BLOCKED', details }, false, 409)
+      );
+
+      const err = await moveDeviceOrg('dev-1', { orgId: 'o2', siteId: 's2' }).catch((e) => e);
+      expect(err).toBeInstanceOf(DeviceActionError);
+      expect(err).toMatchObject({ status: 409, code: 'TICKET_MOVE_CURRENCY_BLOCKED', details });
+    });
+
+    it('a failed request still rejects with DeviceActionError when the body carries no error string', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({}, false, 500));
+
+      await expect(moveDeviceOrg('dev-1', { orgId: 'o2', siteId: 's2' })).rejects.toBeInstanceOf(DeviceActionError);
+    });
   });
 
   describe('executeScript', () => {

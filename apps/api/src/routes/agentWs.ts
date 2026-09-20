@@ -4,7 +4,7 @@ import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
-import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
+import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -86,6 +86,7 @@ import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts }
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
 import {
+  commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
@@ -760,7 +761,8 @@ function rejectMalformedCriticalResult(
 
 function normalizeCriticalResultIfNeeded(
   commandType: string,
-  result: AgentCommandResult
+  result: AgentCommandResult,
+  commandPayload?: unknown
 ): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -780,7 +782,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: result.durationMs,
       error: result.error,
       result: result.result,
-    });
+    }, { commandPayload });
     if (!validated) {
       return {
         normalizedResult: result,
@@ -1991,7 +1993,11 @@ async function processCommandResult(
               eq(deviceCommands.id, result.commandId),
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
-              commandAcceptsAgentResultCondition()
+              or(
+                commandAcceptsAgentResultCondition(),
+                and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+              )
             )
           )
           .limit(1)
@@ -2019,7 +2025,11 @@ async function processCommandResult(
                 eq(deviceCommands.id, result.commandId),
                 eq(devices.agentId, agentId),
                 eq(deviceCommands.targetRole, 'agent'),
-                commandAcceptsAgentResultCondition()
+                or(
+                  commandAcceptsAgentResultCondition(),
+                  and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                )
               )
             )
             .limit(1)
@@ -2069,7 +2079,7 @@ async function processCommandResult(
       normalizedResult: rawNormalizedResult,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, result);
+    } = normalizeCriticalResultIfNeeded(command.type, result, command.payload);
 
     // #3409 PR4a — exact-value redaction against the secrets THIS command
     // carried, before either the device_commands.result write below or (via
@@ -2083,6 +2093,23 @@ async function processCommandResult(
       rawNormalizedResult,
       rawStdout,
     );
+
+    const cleanupCommand = command;
+    const recordSupplementalCleanup = async () => {
+      const payload = cleanupCommand.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = cleanupCommand.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(cleanupCommand.type) || typeof runId !== 'string' || !runId) return;
+      await runWithAgentOrgDbAccess('agentWs.commandResult.cleanupEvidence', orgId, partnerId, () =>
+        commandResultHandlers[cleanupCommand.type]!({
+          agentId, command: cleanupCommand, commandId: result.commandId, result: normalizedResult,
+          resolvedDeviceId: resolvedDeviceId!, stdout,
+        })
+      );
+    };
+    if (['file_delete', 'system_cleanup_run'].includes(command.type) && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
+      await recordSupplementalCleanup();
+      return;
+    }
 
     // D20-D: mssql_backup/hyperv_backup are QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES
     // — the agent's FIRST reply for these can be a non-terminal queue-
@@ -2175,6 +2202,7 @@ async function processCommandResult(
     );
 
     if (updatedCommands.length === 0) {
+      await recordSupplementalCleanup();
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
       return;
     }
@@ -2283,6 +2311,24 @@ async function processCommandResult(
         await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        // No org wrap: the topology result path establishes its own bounded
+        // system context, and the producer identity comes from this connection.
+        const { ingestTopologyDiagnosticCommandResult } = await import('../services/topology/diagnosticResults');
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: resolvedDeviceId!,
+          agentId,
+          commandId: result.commandId,
+          result: normalizedResult.result,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology diagnostic result ${result.commandId}:`, err);
         captureException(err);
       }
     }

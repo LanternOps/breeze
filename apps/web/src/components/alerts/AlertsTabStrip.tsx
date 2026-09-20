@@ -8,7 +8,7 @@ const TABS = [
   { href: '/alerts/correlations', labelKey: 'correlations' },
   { href: '/alerts/monitors', labelKey: 'monitors' },
   { href: '/alerts/rules', labelKey: 'rules' },
-  { href: '/alerts/channels', labelKey: 'channels' },
+  { href: '/alerts/delivery', labelKey: 'delivery' },
 ] as const;
 
 interface AlertsTabStripProps {
@@ -41,7 +41,8 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
   const path = useCurrentPath(currentPath);
   const activeHref = useMemo(() => {
     if (path.startsWith('/alerts/correlations')) return '/alerts/correlations';
-    if (path.startsWith('/alerts/channels')) return '/alerts/channels';
+    // Legacy paths redirect permanently to Delivery.
+    if (path.startsWith('/alerts/delivery') || path.startsWith('/alerts/channels') || path.startsWith('/alerts/routing-rules')) return '/alerts/delivery';
     if (path.startsWith('/alerts/monitors')) return '/alerts/monitors';
     if (path.startsWith('/alerts/rules')) return '/alerts/rules';
     return '/alerts';
@@ -72,6 +73,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
           <a
             key={tab.href}
             href={tab.href}
+            data-testid={`alerts-tab-${tab.labelKey}`}
             className={
               'inline-flex h-10 items-center px-4 -mb-px border-b-2 transition ' +
               (isActive

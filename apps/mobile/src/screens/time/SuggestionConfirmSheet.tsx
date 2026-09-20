@@ -9,6 +9,7 @@ import { classifyDrainOutcome, suggestionDedupeKey } from '../../services/timeSu
 import { enqueue } from '../../services/timeEntryQueue';
 import { reportInternalError } from '../../lib/errorReporting';
 import { track } from '../../lib/analytics';
+import { useTimeEntryBillingPermission } from '../../lib/useTimeEntryBillingPermission';
 
 import { confirmToast, rowSummary, ticketChipLabel } from './timeSuggestionCopy';
 
@@ -30,7 +31,9 @@ interface Props {
 export function SuggestionConfirmSheet({ suggestion, timeZone, onClose, onLogged }: Props): React.JSX.Element {
   const dispatch = useAppDispatch();
   const [description, setDescription] = useState('');
+  const canManageBilling = useTimeEntryBillingPermission();
   const [isBillable, setIsBillable] = useState(true);
+  const [billableChanged, setBillableChanged] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +49,7 @@ export function SuggestionConfirmSheet({ suggestion, timeZone, onClose, onLogged
       ...(suggestion.endedAt === null ? {} : { endedAt: suggestion.endedAt }),
       ...(suggestion.candidateTicket === null ? {} : { ticketId: suggestion.candidateTicket.id }),
       ...(description.trim() === '' ? {} : { description: description.trim() }),
-      isBillable,
+      ...(canManageBilling && billableChanged ? { isBillable } : {}),
     };
 
     // Optimistic: the row leaves the list now and its key is pending, so a
@@ -59,7 +62,7 @@ export function SuggestionConfirmSheet({ suggestion, timeZone, onClose, onLogged
       dispatch(suggestionSettled(suggestion.key));
       onLogged(confirmToast(suggestion));
     } catch (err) {
-      const outcome = classifyDrainOutcome((err as { status?: number }).status);
+      const outcome = classifyDrainOutcome((err as { status?: number }).status, (err as { code?: string }).code);
 
       if (outcome === 'retry') {
         // Offline. The queue owns it from here; the key stays pending until a
@@ -98,7 +101,7 @@ export function SuggestionConfirmSheet({ suggestion, timeZone, onClose, onLogged
       setError((err as { message?: string }).message ?? 'Could not log this session');
       setSubmitting(false);
     }
-  }, [description, dispatch, isBillable, onLogged, submitting, suggestion]);
+  }, [billableChanged, canManageBilling, description, dispatch, isBillable, onLogged, submitting, suggestion]);
 
   return (
     <Modal transparent animationType="slide" visible onRequestClose={onClose}>
@@ -117,10 +120,10 @@ export function SuggestionConfirmSheet({ suggestion, timeZone, onClose, onLogged
           multiline
         />
 
-        <View style={styles.billableRow}>
+        {canManageBilling ? <View style={styles.billableRow}>
           <Text style={styles.billableLabel}>Billable</Text>
-          <Switch value={isBillable} onValueChange={setIsBillable} />
-        </View>
+          <Switch value={isBillable} onValueChange={value => { setIsBillable(value); setBillableChanged(true); }} />
+        </View> : null}
 
         {error !== null ? <Text style={styles.error}>{error}</Text> : null}
 

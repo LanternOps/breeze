@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Ban,
   CheckCircle2,
   Clock3,
+  Copy,
+  KeyRound,
   Loader2,
-  PlayCircle,
   Square,
   X,
   XCircle,
@@ -13,6 +15,8 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { ActionError, handleActionError, runAction } from '../../lib/runAction';
+import { navigateTo } from '@/lib/navigation';
 import { useTranslation } from 'react-i18next';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import '../../lib/i18n';
@@ -54,6 +58,55 @@ type GroupFailure = {
   error: string;
   deviceId?: string;
 };
+
+/** `bare_metal_recoveries.status` values (W04a), mirrored in the execution
+ *  results for BARE_METAL_REBUILD steps (W05b). */
+const RECOVERY_STATUSES = [
+  'created',
+  'media_booted',
+  'planned',
+  'restoring',
+  'validated',
+  'rebooted',
+  'checked_in',
+  'completed',
+  'failed',
+  'refused',
+] as const;
+type RecoveryStatus = (typeof RECOVERY_STATUSES)[number];
+
+/** Mirrors BARE_METAL_RECOVERY_TERMINAL on the API: nothing left to cancel. */
+const RECOVERY_TERMINAL: ReadonlySet<RecoveryStatus> = new Set(['checked_in', 'completed', 'failed', 'refused']);
+/** The reissue route only rotates a code that has not been consumed yet. */
+const RECOVERY_REISSUABLE: ReadonlySet<RecoveryStatus> = new Set(['created', 'media_booted']);
+
+function isRecoveryStatus(value: unknown): value is RecoveryStatus {
+  return typeof value === 'string' && (RECOVERY_STATUSES as readonly string[]).includes(value);
+}
+
+type DeviceRecovery = {
+  recoveryId: string;
+  recoveryStatus: RecoveryStatus | null;
+  executingDeviceId: string | null;
+  reason?: string;
+};
+
+function readDeviceRecovery(record: Record<string, unknown> | undefined): DeviceRecovery | null {
+  if (!record || typeof record.recoveryId !== 'string' || !record.recoveryId) return null;
+  return {
+    recoveryId: record.recoveryId,
+    recoveryStatus: isRecoveryStatus(record.recoveryStatus) ? record.recoveryStatus : null,
+    executingDeviceId: typeof record.executingDeviceId === 'string' ? record.executingDeviceId : null,
+    reason: typeof record.reason === 'string' && record.reason ? record.reason : undefined,
+  };
+}
+
+function recoveryStatusClass(status: RecoveryStatus | null): string {
+  if (status === 'checked_in' || status === 'completed') return 'text-success bg-success/10';
+  if (status === 'failed' || status === 'refused') return 'text-destructive bg-destructive/10';
+  if (status === 'created' || status === 'media_booted') return 'text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300';
+  return 'text-primary bg-primary/10';
+}
 
 function formatDate(value: string | null): string {
   return formatDateTime(value, { fallback: '-' });
@@ -101,6 +154,11 @@ export default function DRExecutionView({
   const [aborting, setAborting] = useState(false);
   const [confirmAbort, setConfirmAbort] = useState(false);
   const [error, setError] = useState<string>();
+  // Codes are never persisted server-side (W05b): a reissued code lives only
+  // in this component until the dialog closes or the row is reissued again.
+  const [revealedCodes, setRevealedCodes] = useState<Record<string, string>>({});
+  const [copiedRecoveryId, setCopiedRecoveryId] = useState<string | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState<Record<string, 'reissue' | 'cancel'>>({});
   const executionDeviceIds = useMemo(
     () => [...new Set((execution?.groups ?? []).flatMap((group) => group.devices))],
     [execution?.groups]
@@ -205,6 +263,7 @@ export default function DRExecutionView({
             typeof deviceMap.get(deviceId)?.error === 'string'
               ? deviceMap.get(deviceId)?.error as string
               : undefined,
+          recovery: readDeviceRecovery(deviceMap.get(deviceId)),
         })),
       };
     });
@@ -231,6 +290,85 @@ export default function DRExecutionView({
       : null;
 
   const canAbort = execution && !['completed', 'failed', 'aborted'].includes(execution.status);
+
+  useEffect(() => {
+    if (open) return;
+    setRevealedCodes({});
+    setCopiedRecoveryId(null);
+  }, [open]);
+
+  const onUnauthorized = useCallback(() => navigateTo('/login'), []);
+
+  const handleReissueCode = useCallback(
+    async (recoveryId: string) => {
+      setRecoveryBusy((current) => ({ ...current, [recoveryId]: 'reissue' }));
+      try {
+        const code = await runAction<string>({
+          request: () => fetchWithAuth(`/backup/bmr/recoveries/${recoveryId}/reissue-code`, { method: 'POST' }),
+          errorFallback: t('dRExecutionView.reissueCodeFailed'),
+          parseSuccess: (data) => {
+            const body = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+            const value = body?.code ?? (body?.data as Record<string, unknown> | undefined)?.code;
+            if (typeof value !== 'string' || !value) throw new Error('malformed reissue response');
+            return value;
+          },
+          onUnauthorized,
+        });
+        setRevealedCodes((current) => ({ ...current, [recoveryId]: code }));
+        setCopiedRecoveryId(null);
+      } catch (err) {
+        handleActionError(err, t('dRExecutionView.reissueCodeFailed'));
+        if (err instanceof ActionError && err.status !== 401) setError(err.message);
+      } finally {
+        setRecoveryBusy((current) => {
+          const next = { ...current };
+          delete next[recoveryId];
+          return next;
+        });
+      }
+    },
+    [onUnauthorized, t]
+  );
+
+  const handleCancelRecovery = useCallback(
+    async (recoveryId: string) => {
+      setRecoveryBusy((current) => ({ ...current, [recoveryId]: 'cancel' }));
+      try {
+        await runAction({
+          request: () => fetchWithAuth(`/backup/bmr/recoveries/${recoveryId}/cancel`, { method: 'POST' }),
+          errorFallback: t('dRExecutionView.cancelRecoveryFailed'),
+          successMessage: t('dRExecutionView.recoveryCancelled'),
+          onUnauthorized,
+        });
+        setRevealedCodes((current) => {
+          const next = { ...current };
+          delete next[recoveryId];
+          return next;
+        });
+        await fetchExecution();
+        onUpdated?.();
+      } catch (err) {
+        handleActionError(err, t('dRExecutionView.cancelRecoveryFailed'));
+        if (err instanceof ActionError && err.status !== 401) setError(err.message);
+      } finally {
+        setRecoveryBusy((current) => {
+          const next = { ...current };
+          delete next[recoveryId];
+          return next;
+        });
+      }
+    },
+    [fetchExecution, onUnauthorized, onUpdated, t]
+  );
+
+  const handleCopyCode = useCallback(async (recoveryId: string, code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedRecoveryId(recoveryId);
+    } catch {
+      setCopiedRecoveryId(null);
+    }
+  }, []);
 
   const handleAbort = useCallback(async () => {
     if (!executionId) return;
@@ -394,19 +532,91 @@ export default function DRExecutionView({
                           {group.devices.map((device) => {
                             const deviceMeta = statusMeta(device.status);
                             const DeviceIcon = deviceMeta.icon;
+                            const recovery = device.recovery;
+                            const recoveryStatus = recovery?.recoveryStatus ?? null;
+                            const canReissue = !!recovery && !!recoveryStatus && RECOVERY_REISSUABLE.has(recoveryStatus);
+                            const canCancel = !!recovery && (!recoveryStatus || !RECOVERY_TERMINAL.has(recoveryStatus));
+                            const revealedCode = recovery ? revealedCodes[recovery.recoveryId] : undefined;
+                            const busy = recovery ? recoveryBusy[recovery.recoveryId] : undefined;
                             return (
-                              <div key={device.id} className="flex items-center justify-between rounded-md border bg-muted/20 px-3 py-2">
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-foreground">{deviceName(devices[device.id], device.id)}</p>
-                                  <p className="text-xs text-muted-foreground">{device.id.slice(0, 8)}</p>
-                                  {device.error ? (
-                                    <p className="mt-1 text-xs text-destructive">{device.error}</p>
-                                  ) : null}
+                              <div key={device.id} className="space-y-2 rounded-md border bg-muted/20 px-3 py-2">
+                                <div className="flex items-center justify-between">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-medium text-foreground">{deviceName(devices[device.id], device.id)}</p>
+                                    <p className="text-xs text-muted-foreground">{device.id.slice(0, 8)}</p>
+                                    {device.error ? (
+                                      <p className="mt-1 text-xs text-destructive">{device.error}</p>
+                                    ) : null}
+                                  </div>
+                                  <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium capitalize', deviceMeta.className)}>
+                                    <DeviceIcon className={cn('h-3.5 w-3.5', device.status === 'running' && 'animate-spin')} />
+                                    {device.status}
+                                  </span>
                                 </div>
-                                <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium capitalize', deviceMeta.className)}>
-                                  <DeviceIcon className={cn('h-3.5 w-3.5', device.status === 'running' && 'animate-spin')} />
-                                  {device.status}
-                                </span>
+                                {recovery ? (
+                                  <div className="space-y-2 border-t pt-2" data-testid="dr-device-recovery">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span
+                                        className={cn('inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium', recoveryStatusClass(recoveryStatus))}
+                                        data-testid="dr-device-recovery-status"
+                                      >
+                                        {recoveryStatus
+                                          ? t(/* i18n-dynamic */ `dRExecutionView.recoveryStatus.${recoveryStatus}`)
+                                          : t('dRExecutionView.recoveryStatus.unknown')}
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        {canReissue ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleReissueCode(recovery.recoveryId)}
+                                            disabled={!!busy}
+                                            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                                            data-testid="dr-device-reissue-code"
+                                          >
+                                            {busy === 'reissue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+                                            {t('dRExecutionView.reissueCode')}
+                                          </button>
+                                        ) : null}
+                                        {canCancel ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleCancelRecovery(recovery.recoveryId)}
+                                            disabled={!!busy}
+                                            className="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                                            data-testid="dr-device-cancel-recovery"
+                                          >
+                                            {busy === 'cancel' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                                            {t('dRExecutionView.cancelRecovery')}
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                    {recovery.reason ? (
+                                      <p className="text-xs text-destructive" data-testid="dr-device-recovery-reason">{recovery.reason}</p>
+                                    ) : null}
+                                    {revealedCode ? (
+                                      <div className="space-y-1 rounded-md border bg-background p-2">
+                                        <p className="text-xs text-muted-foreground">{t('dRExecutionView.codeShownOnce')}</p>
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="font-mono text-lg tracking-widest text-foreground" data-testid="dr-device-recovery-code">
+                                            {revealedCode}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleCopyCode(recovery.recoveryId, revealedCode)}
+                                            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                                            data-testid="dr-device-recovery-code-copy"
+                                          >
+                                            <Copy className="h-3.5 w-3.5" />
+                                            {copiedRecoveryId === recovery.recoveryId
+                                              ? t('dRExecutionView.copied')
+                                              : t('dRExecutionView.copyCode')}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })}

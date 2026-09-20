@@ -147,3 +147,10 @@ describe('agentToolCatalog contract', () => {
     }
   });
 });
+
+it('makes delivery reachable without changing prior frozen gaps', () => {
+  expect(TOOL_CAPABILITY.manage_delivery).toBe('alerts_monitoring');
+  expect(listAgentReachableTools()).toContain('manage_delivery');
+  expect(listUnreachableRegisteredTools()).not.toContain('manage_delivery');
+  expect(listUnreachableRegisteredTools()).toContain('manage_notification_channels');
+});

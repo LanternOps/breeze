@@ -64,6 +64,12 @@ export const alertTemplates = pgTable('alert_templates', {
   // severity enum and escalation policies from this file); the FK itself is in
   // the migration and drift detection compares columns, not FK declarations.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   // Fleet Designer W03 (#5653): free-text "why" when a template is created
   // from a design; NULL otherwise.
   rationale: text('rationale'),
@@ -93,6 +99,12 @@ export const alertRules = pgTable('alert_rules', {
   // #5289 — see alertTemplates.managedByMonitorId. A compiled rule uses
   // targetType 'monitor' with targetId = the monitor definition id.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
@@ -225,21 +237,39 @@ export const notificationChannels = pgTable('notification_channels', {
   partnerIdIdx: index('notification_channels_partner_id_idx').on(table.partnerId),
 }));
 
+/** Evaluated by services/delivery/resolveDelivery.ts. Unknown keys are ignored. */
+export interface RoutingRuleConditions {
+  severities?: string[];
+  monitorKinds?: string[];
+  siteIds?: string[];
+}
+
 export const notificationRoutingRules = pgTable('notification_routing_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   priority: integer('priority').notNull(),
-  conditions: jsonb('conditions').notNull(), // { severities?, conditionTypes?, deviceTags?, siteIds? }
+  conditions: jsonb('conditions').notNull().$type<RoutingRuleConditions>(),
   channelIds: jsonb('channel_ids').notNull().$type<string[]>(),
   enabled: boolean('enabled').notNull().default(true),
+  // W05b (alerting consolidation): the winning row may name an escalation
+  // policy; one is_default "Everything else" row per axis replaces the
+  // dispatcher's all-enabled-channels fallback (migration 2026-10-23-100000-delivery-routing-default-rows.sql).
+  escalationPolicyId: uuid('escalation_policy_id').references(() => escalationPolicies.id, { onDelete: 'set null' }),
+  isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('notification_routing_rules_org_id_idx').on(table.orgId),
   priorityIdx: index('notification_routing_rules_priority_idx').on(table.orgId, table.priority),
   partnerIdIdx: index('notification_routing_rules_partner_id_idx').on(table.partnerId),
+  orgDefaultUidx: uniqueIndex('notification_routing_rules_org_default_uidx')
+    .on(table.orgId)
+    .where(sql`${table.isDefault} AND ${table.partnerId} IS NULL`),
+  partnerDefaultUidx: uniqueIndex('notification_routing_rules_partner_default_uidx')
+    .on(table.partnerId)
+    .where(sql`${table.isDefault} AND ${table.orgId} IS NULL`),
 }));
 
 export const escalationPolicies = pgTable('escalation_policies', {

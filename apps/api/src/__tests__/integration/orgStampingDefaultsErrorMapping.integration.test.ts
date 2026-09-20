@@ -85,7 +85,7 @@ describe.runIf(RUN)('readOrgStampingDefaults error mapping (#3778, finding 1)', 
 
   it('upsertOrgTicketSettings maps ORG_NOT_FOUND onto TicketConfigServiceError 404', async () => {
     const err = await withSystemDbAccessContext(() =>
-      upsertOrgTicketSettings(MISSING_ORG, { defaultHourlyRate: 100 })
+      upsertOrgTicketSettings(MISSING_ORG, { slaOverrides: {} })
         .then(() => null, (e: unknown) => e));
     expect(err).toBeInstanceOf(TicketConfigServiceError);
     expect(err).toMatchObject({ status: 404, code: 'ORG_NOT_FOUND' });

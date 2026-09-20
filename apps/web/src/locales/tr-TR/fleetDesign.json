@@ -9,6 +9,7 @@
     "startButton": "Filo Tasarımı Başlat",
     "startError": "Filo Tasarımı çalıştırması başlatılamadı.",
     "startSuccess": "Filo Tasarımı çalıştırması başlatıldı.",
+    "running": "Filo Tasarımı çalışıyor…",
     "empty": "Bu kuruluş için henüz Filo Tasarımı yok.",
     "loadError": "Filo Tasarımları yüklenemedi.",
     "detailLoadError": "Bu Filo Tasarımı yüklenemedi.",

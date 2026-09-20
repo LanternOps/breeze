@@ -59,6 +59,18 @@ export const CommandTypes = {
   FILE_TRASH_RESTORE: 'file_trash_restore',
   FILE_TRASH_PURGE: 'file_trash_purge',
   FILE_LIST_DRIVES: 'file_list_drives',
+  // OS-native disk cleanup (Disk Cleanup v2 §5.3). A SECOND cleanup engine
+  // beside FILESYSTEM_ANALYSIS: opaque platform maintenance (cleanmgr
+  // handlers, DISM component cleanup, Time Machine local snapshots, brew
+  // cleanup, package caches, journal vacuum) whose safety model is a closed
+  // catalogue of action ids rather than a previewed path list.
+  //
+  // Defined HERE and not in commandQueue.ts: #5128 moved this table into a
+  // leaf module precisely because commandOfflinePolicy.ts builds its
+  // fail-closed registry from it at load time, and the round trip through
+  // commandQueue was a real ESM initialisation cycle.
+  SYSTEM_CLEANUP_LIST: 'system_cleanup_list',
+  SYSTEM_CLEANUP_RUN: 'system_cleanup_run',
 
   // Terminal
   TERMINAL_START: 'terminal_start',
@@ -171,10 +183,20 @@ export const CommandTypes = {
   VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
   VM_INSTANT_BOOT: 'vm_instant_boot',
   BMR_RECOVER: 'bmr_recover',
+  // W05a: server-driven rebuild on a helper host (Restore-as-VM engine path, DR rehearsal).
+  BARE_METAL_REBUILD: 'bare_metal_rebuild',
   // Vault
   VAULT_SYNC: 'vault_sync',
   VAULT_STATUS: 'vault_status',
   VAULT_CONFIGURE: 'vault_configure',
+  // Explicitly requested, bounded network topology diagnostics (M1). The
+  // payload is a server-compiled, digest-sealed plan with an absolute expiry;
+  // the agent runs it and nothing else. There is no recurring variant in M1.
+  NETWORK_DIAGNOSTIC: 'network_diagnostic',
+  // Best-effort stop for an in-flight diagnostic (M1 Task 18). Carries only
+  // the run/attempt/command identity, never a new plan.
+  NETWORK_DIAGNOSTIC_CANCEL: 'network_diagnostic_cancel',
+
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',

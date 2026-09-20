@@ -28,6 +28,19 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Disk Cleanup v2 W04 (spec §13 #5). `startSystemCleanupRun` claims the run
+  // in a SHORT COMMITTED transaction, dispatches the command outside any
+  // transaction, and finalises in a second one. Under the auth middleware's
+  // ambient request transaction none of that works: the `running` row a
+  // concurrent request just wrote is invisible (so the single-run-per-device
+  // check passes twice), a crash after the agent began deleting rolls the
+  // claim away, and the websocket push happens before the commit — the agent
+  // can answer a run row that does not exist yet.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/run\/?$/ },
+  // Same reasoning, smaller blast radius: the list route queues a command
+  // (and therefore pushes over the socket) and writes only an audit, which
+  // manages its own context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/list\/?$/ },
   // Commit source changes and record the audit before enqueueing discovery.
   { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },
@@ -268,6 +281,20 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // ambient context; writeRouteAudit already manages its own (via
   // createAuditLogAsync's runOutsideDbContext + withSystemDbAccessContext).
   { method: 'POST', pattern: /^\/api\/v1\/agent-versions\/sync-github\/?$/ },
+  // Disk Cleanup v2 W03 (spec §13 #5). `cleanup-execute` claims its pinned run
+  // (`UPDATE … WHERE status='previewed' RETURNING`) and must COMMIT that claim
+  // before dispatching, for two reasons the ambient request transaction defeats:
+  //   - a concurrent execute on the same run must see `running` and get a 409,
+  //     which it cannot while the claim is uncommitted in another transaction;
+  //   - a crash between the deletes and the finalise must leave the row
+  //     `running`, not roll it back to `previewed` — the files are already gone,
+  //     and re-offering that candidate set is a lie about the device's state.
+  // The dispatch itself is an agent round-trip bounded by
+  // CLEANUP_EXECUTE_BUDGET_MS (240s); holding a pooled connection
+  // idle-in-transaction across it is the #1105 pool-poison class on its own.
+  // The handler opens its own short `withAuthDbAccessContext` blocks around the
+  // claim and the finalise, and runs the dispatch between them.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/cleanup-execute\/?$/ },
 ];
 
 /**

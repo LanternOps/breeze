@@ -146,7 +146,8 @@ const namespaceDuplicateBaselines = {
     // `identityDisplayNamePlaceholder` are sample values — a domain example and
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
-    'settings.json': 128,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
+    'settings.json': 129,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -155,6 +156,8 @@ const namespaceDuplicateBaselines = {
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical pt-BR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -280,13 +283,15 @@ const namespaceDuplicateBaselines = {
     // `identityDisplayNamePlaceholder` are sample values — a domain example and
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
-    'settings.json': 130,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
+    'settings.json': 131,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -438,13 +443,17 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in French.
-    'settings.json': 177,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
+    'settings.json': 178,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 23,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-FR cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -592,13 +601,17 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in Canadian French too.
-    'settings.json': 183,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
+    'settings.json': 184,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 22,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-CA cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -749,6 +762,9 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
+    // ('Hostname'/'Port') are identical de-DE cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -859,6 +875,7 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
@@ -950,6 +967,8 @@ const namespaceDuplicateBaselines = {
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical tr-TR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

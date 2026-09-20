@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('./billingProfileService', () => ({ ensureDefaultProfile }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -330,6 +332,7 @@ describe('manage_organizations create_org', () => {
 
     expect(out.organization).toEqual({ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental', status: 'active' });
     expect(out.defaultSite).toEqual({ id: SITE_1, name: 'Main Office' });
+    expect(ensureDefaultProfile).toHaveBeenCalledWith(PARTNER_ID, 'CAD', expect.anything());
 
     // Org insert pinned to the CALLER's partner, slug derived from the name.
     expect(insertValuesSpy).toHaveBeenNthCalledWith(1, organizations, {
