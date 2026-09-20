@@ -2423,6 +2423,56 @@ describe('validateConfig', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // TURN over TLS pairing warnings (#6163)
+  // ---------------------------------------------------------------------------
+  describe('TURN TLS pairing warnings (#6163)', () => {
+    const turnWarnings = (extra: Record<string, string>): string[] => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let calls: string[] = [];
+      withEnv({ ...validEnv, ...extra }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        calls = warnSpy.mock.calls
+          .map((args) => args[0] as string)
+          .filter((msg) => msg.includes('TURN_TLS_'));
+      });
+      warnSpy.mockRestore();
+      return calls;
+    };
+
+    it('warns when TURN_TLS_HOST is set without TURN_TLS_DIR (turns: advertised, nothing listening)', () => {
+      const calls = turnWarnings({ TURN_HOST: '203.0.113.10', TURN_TLS_HOST: 'turn.example.com' });
+      expect(calls.join('\n')).toMatch(/TURN_TLS_HOST is set but TURN_TLS_DIR is not/);
+    });
+
+    it('warns when TURN_TLS_DIR is set without TURN_TLS_HOST (listener nobody is told about)', () => {
+      const calls = turnWarnings({ TURN_HOST: '203.0.113.10', TURN_TLS_DIR: '/opt/breeze/coturn-tls' });
+      expect(calls.join('\n')).toMatch(/TURN_TLS_DIR is set but TURN_TLS_HOST is not/);
+    });
+
+    it('warns when TURN_TLS_HOST is set but TURN_HOST is empty (no TURN advertised at all)', () => {
+      const calls = turnWarnings({
+        TURN_HOST: '',
+        TURN_TLS_HOST: 'turn.example.com',
+        TURN_TLS_DIR: '/opt/breeze/coturn-tls',
+      });
+      expect(calls.join('\n')).toMatch(/TURN_TLS_HOST is set but TURN_HOST is empty/);
+    });
+
+    it('stays silent when both halves are set together', () => {
+      expect(
+        turnWarnings({
+          TURN_HOST: '203.0.113.10',
+          TURN_TLS_HOST: 'turn.example.com',
+          TURN_TLS_DIR: '/opt/breeze/coturn-tls',
+        }),
+      ).toEqual([]);
+    });
+
+    it('stays silent when TURN TLS is not configured at all', () => {
+      expect(turnWarnings({ TURN_HOST: '203.0.113.10' })).toEqual([]);
+    });
+  });
+
   // ENABLE_2FA=false warning (Finding #3)
   // ---------------------------------------------------------------------------
   describe('ENABLE_2FA=false warning', () => {

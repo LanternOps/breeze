@@ -719,6 +719,15 @@ services:
         printf 'static-auth-secret=%s\n' "$$(cat /run/secrets/turn_secret)" > /tmp/turn-secret.conf
         if [ -r /etc/coturn/tls/cert.pem ] && [ -r /etc/coturn/tls/privkey.pem ]; then
           echo 'coturn: TLS certificate found — TURNS will listen on 5349.' >&2
+          # Readability is checked as the uid this shell runs as, which is the
+          # uid the server process inherits — so `-r` is exactly the right test.
+          # Expiry is not fatal (coturn still binds), but it must not pass
+          # silently: an expired certificate fails every handshake and the only
+          # symptom is a client that cannot connect (#6163).
+          if command -v openssl >/dev/null 2>&1 && \
+             ! openssl x509 -checkend 0 -noout -in /etc/coturn/tls/cert.pem >/dev/null 2>&1; then
+            echo 'coturn: WARNING — /etc/coturn/tls/cert.pem is EXPIRED (or unparseable). TURNS handshakes will fail until it is renewed and coturn restarted.' >&2
+          fi
           set -- "$$@" --cert=/etc/coturn/tls/cert.pem --pkey=/etc/coturn/tls/privkey.pem
         else
           echo 'coturn: no readable certificate at /etc/coturn/tls — TURNS (5349) is disabled; only 3478 will listen.' >&2

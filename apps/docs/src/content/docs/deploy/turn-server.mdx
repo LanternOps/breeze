@@ -260,7 +260,14 @@ TURN_TLS_HOST=turn.your-domain.example.com
 `TURN_TLS_DIR` is bind-mounted read-only at `/etc/coturn/tls`, and coturn is
 given `--cert`/`--pkey` only when both files are readable. Leave `TURN_TLS_DIR`
 unset and nothing changes — except that the container now logs *why* 5349 is
-not listening instead of saying nothing.
+not listening instead of saying nothing. An expired or unparseable certificate
+still enables the listener (coturn binds it either way) but logs a loud
+`WARNING` at startup, since every handshake against it will fail.
+
+The API also warns at startup when only one half is configured — a
+`TURN_TLS_HOST` with no `TURN_TLS_DIR` advertises a `turns:` URL that nothing
+is listening for, and a `TURN_TLS_DIR` with no `TURN_TLS_HOST` brings up a
+listener no client is ever told about.
 
 The API advertises `turns:` only when `TURN_TLS_HOST` is set, because a
 certificate cannot validate against the bare public IP that `TURN_HOST` holds.
