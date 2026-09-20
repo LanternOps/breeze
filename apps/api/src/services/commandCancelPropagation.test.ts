@@ -32,6 +32,7 @@ vi.mock('./scriptExecutionTerminal', () => ({
 vi.mock('./automationActionResults', () => ({
   applyAutomationActionTerminal: (...a: unknown[]) => applyAutomationMock(...(a as [])),
 }));
+vi.mock('./filesystemCleanupRuns', () => ({ cancelCleanupRunForCommand: vi.fn() }));
 vi.mock('./sentry', () => ({
   captureException: (...a: unknown[]) => captureExceptionMock(...(a as [])),
 }));
@@ -189,5 +190,41 @@ describe('propagateCancelledDeviceCommand (#5128 §G)', () => {
       completedAt: COMPLETED_AT,
     });
     expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+  it('fails the owning cleanup run when a cleanup file_delete is cancelled', async () => {
+    const { handle: executorStub } = executor();
+    const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+    const spy = vi.mocked(cancelCleanupRunForCommand);
+    spy.mockResolvedValue(true);
+
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1',
+      type: 'file_delete',
+      payload: { path: '/tmp/a', cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      completedAt: new Date('2026-09-19T10:00:00.000Z'),
+      executor: executorStub,
+    });
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+      cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      reason: 'cancelled: device moved',
+      executor: executorStub,
+    }));
+  });
+
+  it('is a no-op for an ordinary File Manager delete, which has no cleanup run', async () => {
+    const { handle: executorStub } = executor();
+    const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+    const spy = vi.mocked(cancelCleanupRunForCommand);
+
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-2',
+      type: 'file_delete',
+      payload: { path: '/tmp/a' },
+      completedAt: new Date(),
+      executor: executorStub,
+    });
+
+    expect(spy).not.toHaveBeenCalled();
   });
 });

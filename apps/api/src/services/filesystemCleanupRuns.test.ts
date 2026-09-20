@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn() },
+  db: { select: vi.fn(), update: vi.fn() },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -26,6 +26,8 @@ import {
   CLEANUP_RUNS_MAX_LIMIT,
   decodeCleanupRunCursor,
   encodeCleanupRunCursor,
+  cancelCleanupRunForCommand,
+  recordLateCleanupResult,
   getCleanupRun,
   listCleanupRuns,
 } from './filesystemCleanupRuns';
@@ -200,5 +202,95 @@ describe('getCleanupRun', () => {
     } as never);
 
     expect(await getCleanupRun(DEVICE, RUN_B)).toBeNull();
+  });
+});
+
+describe('cancelCleanupRunForCommand', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('fails only a RUNNING file run, and says so in the error column', async () => {
+    const whereMock = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: RUN_A }]) });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+
+    const cancelled = await cancelCleanupRunForCommand({
+      cleanupRunId: RUN_A,
+      reason: 'cancelled: device moved',
+      completedAt: new Date('2026-09-19T10:00:00.000Z'),
+    });
+
+    expect(cancelled).toBe(true);
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      status: 'failed',
+      error: 'cancelled: device moved',
+    });
+  });
+
+  it('returns false when the run was already terminal', async () => {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+
+    expect(await cancelCleanupRunForCommand({
+      cleanupRunId: RUN_A, reason: 'cancelled: device moved', completedAt: new Date(),
+    })).toBe(false);
+  });
+});
+
+describe('recordLateCleanupResult', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('ignores a result for a run that is still running — the route owns that finalise', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ status: 'running', executedActions: [] }]),
+        }),
+      }),
+    } as never);
+
+    expect(await recordLateCleanupResult({
+      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
+      status: 'completed', completedAt: new Date(),
+    })).toBe('ignored');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['array', 'envelope'])('appends a lateResult to a finalised %s WITHOUT changing its status', async (shape) => {
+    const original = [{ path: '/tmp/a', category: 'temp_files', sizeBytes: 1, status: 'skipped_budget' }];
+    const executedActions = shape === 'array' ? original : { partial: true, budgetMs: 240_000, actions: original };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            status: 'executed',
+            executedActions,
+          }]),
+        }),
+      }),
+    } as never);
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+
+    expect(await recordLateCleanupResult({
+      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
+      status: 'completed', completedAt: new Date('2026-09-19T11:00:00.000Z'),
+    })).toBe('recorded');
+
+    const written = setMock.mock.calls[0]![0] as { executedActions: Array<Record<string, unknown>>; status?: unknown };
+    // The original action row is untouched; the late one is additive and tagged.
+    const actions = shape === 'array' ? written.executedActions
+      : (written.executedActions as unknown as { actions: Array<Record<string, unknown>> }).actions;
+    if (shape === 'envelope') expect(written.executedActions).toMatchObject({ partial: true, budgetMs: 240_000 });
+    expect(actions).toHaveLength(2);
+    expect(actions[0]).toEqual(original[0]);
+    expect(actions[1]).toMatchObject({
+      path: '/tmp/a', status: 'completed', lateResult: true, commandId: 'cmd-1',
+    });
+    // Status must NOT be in the update set at all — a late `completed` cannot
+    // turn a `failed` run into a success after the operator has read it.
+    expect(written).not.toHaveProperty('status');
   });
 });

@@ -125,6 +125,35 @@ export async function propagateCancelledDeviceCommand(params: {
     });
   }
 
+  // Disk Cleanup v2 W03 (spec §13 #13). A cleanup `file_delete` carries the id
+  // of the run that dispatched it (routes/devices/filesystem.ts). Cancelling
+  // the command without terminalising that run leaves it `running` until the
+  // 24-hour retention sweep, which is the same "waiting forever on a delivery
+  // that will never happen" this module exists to prevent.
+  //
+  // DYNAMIC import for the same reason as the patch branch above: keeping this
+  // module a leaf. An ordinary File Manager delete carries no `cleanupRunId`
+  // and falls through untouched.
+  if (type === 'file_delete') {
+    const cleanupRunId =
+      payload && typeof payload.cleanupRunId === 'string' && payload.cleanupRunId.length > 0
+        ? payload.cleanupRunId
+        : null;
+    if (cleanupRunId) {
+      const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+      // Not try/caught, exactly like the two branches above: `executor` is
+      // frequently the caller's open transaction (the org-move flip), and
+      // swallowing a failure here would commit a cancelled command alongside a
+      // run still claiming to be `running`.
+      await cancelCleanupRunForCommand({
+        cleanupRunId,
+        reason: 'cancelled: device moved',
+        completedAt,
+        executor,
+      });
+    }
+  }
+
   await executor
     .update(deploymentResults)
     .set({ status: 'cancelled', errorMessage, completedAt })

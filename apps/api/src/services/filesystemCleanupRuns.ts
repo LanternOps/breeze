@@ -212,3 +212,92 @@ export async function getCleanupRun(
     bytesReclaimed: Number(run.bytesReclaimed ?? 0),
   };
 }
+
+/** Anything that can run these UPDATEs: the ambient `db`, or a caller's open tx. */
+type CleanupRunExecutor = Pick<typeof db, 'update' | 'select'>;
+
+/**
+ * Terminalise a cleanup run whose dispatched command was cancelled (spec §13
+ * #13). Only a `running` run moves; a `previewed` one was never dispatched and
+ * an already-terminal one keeps the outcome the operator has read.
+ *
+ * Takes the caller's executor because the cancel-on-event paths (device
+ * org-move, decommission) run inside their own transaction and must
+ * terminalise the owning record atomically with the cancel itself.
+ */
+export async function cancelCleanupRunForCommand(params: {
+  cleanupRunId: string;
+  reason: string;
+  completedAt: Date;
+  executor?: CleanupRunExecutor;
+}): Promise<boolean> {
+  const executor = params.executor ?? db;
+  const [row] = await executor
+    .update(deviceFilesystemCleanupRuns)
+    .set({ status: 'failed', error: params.reason, updatedAt: params.completedAt })
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId),
+      eq(deviceFilesystemCleanupRuns.status, 'running'),
+    ))
+    .returning({ id: deviceFilesystemCleanupRuns.id });
+  return Boolean(row);
+}
+
+/**
+ * Record a `file_delete` result that arrived after its run was finalised.
+ *
+ * It is appended to `executed_actions` tagged `lateResult: true` and the run's
+ * `status` is deliberately NOT in the update set: a late `completed` must never
+ * turn a run the operator has already read as `failed` into a success, and a
+ * late `failed` must not reopen a closed one. Dropping it instead would lose
+ * the only record that the device eventually acted.
+ */
+export async function recordLateCleanupResult(params: {
+  cleanupRunId: string;
+  commandId: string;
+  path: string;
+  status: string;
+  error?: string | null;
+  completedAt: Date;
+}): Promise<'recorded' | 'ignored'> {
+  const [run] = await db
+    .select({
+      status: deviceFilesystemCleanupRuns.status,
+      executedActions: deviceFilesystemCleanupRuns.executedActions,
+    })
+    .from(deviceFilesystemCleanupRuns)
+    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId))
+    .limit(1);
+
+  // `previewed` was never dispatched; `running` is still owned by the route
+  // that claimed it, and that route writes the authoritative action list.
+  if (!run || run.status === 'previewed' || run.status === 'running') return 'ignored';
+
+  // W01 stores an envelope; historical runs use a bare array. Preserve both.
+  const envelope = run.executedActions && typeof run.executedActions === 'object'
+    && !Array.isArray(run.executedActions)
+    ? run.executedActions as Record<string, unknown>
+    : null;
+  const existing = Array.isArray(run.executedActions) ? run.executedActions
+    : envelope && Array.isArray(envelope.actions) ? envelope.actions : [];
+  const actions = [
+    ...existing,
+    {
+      path: params.path,
+      status: params.status,
+      error: params.error ?? undefined,
+      commandId: params.commandId,
+      lateResult: true,
+      receivedAt: params.completedAt.toISOString(),
+    },
+  ];
+  await db
+    .update(deviceFilesystemCleanupRuns)
+    .set({
+      executedActions: envelope ? { ...envelope, actions } : actions,
+      updatedAt: params.completedAt,
+    })
+    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId));
+
+  return 'recorded';
+}
