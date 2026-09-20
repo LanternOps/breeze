@@ -31,7 +31,7 @@ branch: (set by feature-lifecycle after registration)
 
 ## Global Constraints
 
-- **Migration filename `2026-10-22-110000-network-checks-as-monitors.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1` must sort **before** it (newest at planning time on `main`: `2026-10-20-130000-partner-sending-daily-stats.sql`; W05b/c1/d claim `2026-10-21-*` and `2026-10-22-100000-*`). Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date.
+- **Migration filename `2026-10-24-110000-network-checks-as-monitors.sql`** (assigned by the common brief). Before pushing: `git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1` must sort **before** it (newest at planning time on `main`: `2026-10-21-100200-billing-profiles-permissions.sql`; W05b/c1/d claim `2026-10-21-*` and `2026-10-22-100000-*`). Rename with a later `HHMMSS` if anything newer landed. Never name it for today's real date.
 - Migration is idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`), has **no inner `BEGIN`/`COMMIT`**, and contains **no DML** — so no `set_config('breeze.scope','system',true)` is needed and none is added (`migrationRlsScope.test.ts` only requires the elevation before a write; if you add any `UPDATE`/`INSERT`/`DELETE`, put `SELECT set_config('breeze.scope', 'system', true);` first and report row counts with `GET DIAGNOSTICS … RAISE WARNING`).
 - **No new tenant tables. New columns on registered tables:** `network_monitors.retired_at`/`retired_reason` must be classified `included` in `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts:401`) in the same PR — the export-policy row is the one registration that fires on a **column**. `network_monitor_alert_rules` has no `org_id` (it reaches its tenant through `network_monitors`, `rls-coverage.integration.test.ts:832`), so it needs no export-policy entry and no cascade entry. No `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_*` or `DUAL_AXIS_TENANT_TABLES` change.
 - `partner-wide-write-coverage.test.ts` scans every file that mutates a dual-axis table. `network_monitors` is dual-axis, so the new conversion file needs an allowlist entry with a reason (Task 5 Step 6). `site-ceiling-write-coverage.test.ts` likewise; the conversion refuses site-restricted callers outright (Task 5), which is the reason recorded there.
@@ -46,7 +46,7 @@ branch: (set by feature-lifecycle after registration)
 
 | File | Change |
 |---|---|
-| `apps/api/migrations/2026-10-22-110000-network-checks-as-monitors.sql` | **Create.** `retired_at`/`retired_reason` on `network_monitors` and `network_monitor_alert_rules`; partial index for the pending count. |
+| `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql` | **Create.** `retired_at`/`retired_reason` on `network_monitors` and `network_monitor_alert_rules`; partial index for the pending count. |
 | `apps/api/src/db/schema/monitors.ts` | Modify (lines 10-56, 80-88): add the four columns. |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` | Modify (line 401): classify `retired_at`, `retired_reason` as `included`. |
 | `packages/shared/src/validators/monitors.ts` | Modify (lines 173-189): widen `network_check` — `assetId`, per-type options, `degradedIsFailure`, `maxResponseMs`, legacy ranges; export `NetworkCheckMonitorCondition`. |
@@ -108,7 +108,7 @@ branch: (set by feature-lifecycle after registration)
 ### Task 1: Migration, schema and export-policy registration (PR1)
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-22-110000-network-checks-as-monitors.sql`
+- Create: `apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql`
 - Modify: `apps/api/src/db/schema/monitors.ts` (lines 10-56, 80-88)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (line 401)
 - Test: `apps/api/src/db/autoMigrate.test.ts`, `apps/api/src/db/migrationRlsScope.test.ts` (existing), `apps/api/src/__tests__/integration/tenant-export-policy.integration.test.ts` (existing, live DB)
@@ -182,7 +182,7 @@ branch: (set by feature-lifecycle after registration)
   pnpm db:check-drift
   ```
   (Run the export-policy suite once **before** editing the registry to see it name `network_monitors.retired_at` — that is the red for the registration.)
-- [ ] **Step 5: Commit.** `git add apps/api/migrations/2026-10-22-110000-network-checks-as-monitors.sql apps/api/src/db/schema/monitors.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/monitors/monitorCompiler.w04.test.ts && git commit -m "feat(monitors): W05e retirement columns on network checks and their alert rules"`
+- [ ] **Step 5: Commit.** `git add apps/api/migrations/2026-10-24-110000-network-checks-as-monitors.sql apps/api/src/db/schema/monitors.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/monitors/monitorCompiler.w04.test.ts && git commit -m "feat(monitors): W05e retirement columns on network checks and their alert rules"`
 
 ---
 
@@ -1662,7 +1662,7 @@ branch: (set by feature-lifecycle after registration)
   pnpm db:check-drift
   pnpm test-stack down
   cd apps/web && npx tsc --noEmit -p . && npx vitest run src/components/monitoring src/components/monitors src/components/layout/Sidebar.nav.test.tsx src/components/devices/networkDevice src/lib/__tests__
-  git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1   # must sort BEFORE 2026-10-22-110000-…; rename if not
+  git fetch origin && git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1   # must sort BEFORE 2026-10-24-110000-…; rename if not
   ```
   Then the manual walk on a `pnpm wt-stack up` stack: seed a legacy check via SQL, open `/monitoring#checks` (lands on Results), banner → convert, the row links to its monitor, the monitor editor shows the asset chip, `POST /monitors` returns 410, the device page's Add check opens the editor bound to the asset.
 - [ ] **Step 5: Commit.** `git add apps/docs/src/content/docs/features/network-monitors.mdx apps/docs/src/content/docs/features/monitors.mdx docs/release-notes/next-release-draft.md CHANGELOG.md && git commit -m "docs(monitoring): network checks as monitors — Network page, conversion, retired write endpoints"`
