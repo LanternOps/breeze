@@ -2650,6 +2650,12 @@ describe('getInvoice — effectiveTaxRate on drafts (#6338)', () => {
 
   it('is null for an issued invoice — its rate is already committed on the row', async () => {
     queueDetailPreamble({ ...draftInvoice, status: 'sent', taxRate: '0.07500' });
+    // Queue rows that WOULD resolve to 7.5%, so this discriminates the
+    // `status === 'draft'` guard itself. Without them the resolver would throw
+    // OrgNotVisibleForTaxError on an empty org read and degrade to null anyway,
+    // and the assertion would pass whether the guard existed or not.
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07500' }]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.effectiveTaxRate).toBeNull();
   });

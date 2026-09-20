@@ -146,6 +146,22 @@ describe('InvoiceEditor', () => {
     expect(hint).toHaveTextContent('$107.50');
   });
 
+  it('excludes internal (non customer-visible) taxable lines from the preview (#6338)', async () => {
+    const visible = { ...manualLine, id: 'vis', taxable: true };
+    const internal = { ...manualLine, id: 'int', taxable: true, customerVisible: false, lineTotal: '40.00' };
+    render(
+      <InvoiceEditor
+        detail={{ ...draft([visible, internal], { subtotal: '100.00' }), effectiveTaxRate: '0.07500' }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    const hint = screen.getByTestId('invoice-tax-inherited-hint');
+    // 7.5% of the $100.00 CUSTOMER-VISIBLE basis only — never $140.00 ($10.50).
+    expect(hint).toHaveTextContent('$7.50');
+    expect(hint).not.toHaveTextContent('$10.50');
+  });
+
   it('still warns when neither the invoice nor the inherited rate has one (#6338)', async () => {
     const taxable = { ...manualLine, taxable: true };
     render(<InvoiceEditor detail={{ ...draft([taxable]), effectiveTaxRate: null }} onChanged={vi.fn()} />);

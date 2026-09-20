@@ -17,7 +17,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
-import { resolveOrgTaxRate } from './taxRateResolver';
+import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -762,9 +762,27 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // failure degrades to null and NEVER to the partner rate, keeping
   // resolveOrgTaxRate's fail-closed contract (OrgNotVisibleForTaxError must not
   // silently tax an invisible, possibly exempt, org at the partner default).
+  //
+  // Deliberately NOT quoteService's mapping of that error to a 404: there the
+  // rate is being COMMITTED to a row, so an invisible org must stop the write.
+  // Here it decorates a read of an invoice the caller has already been granted
+  // (requireInvoiceAccess passed above) — 404-ing the whole detail load because
+  // the org went archived/suspended would break opening the very invoices that
+  // still need collecting. Dropping the preview is the proportionate response.
+  // Every OTHER error is unexpected (DB connectivity, a timeout) and would
+  // otherwise vanish without a trace on a money surface, so it gets a line.
   let effectiveTaxRate: string | null = null;
   if (inv.status === 'draft') {
-    effectiveTaxRate = await resolveOrgTaxRate({ orgId: inv.orgId, partnerId: inv.partnerId }).catch(() => null);
+    try {
+      effectiveTaxRate = await resolveOrgTaxRate({ orgId: inv.orgId, partnerId: inv.partnerId });
+    } catch (err) {
+      if (!(err instanceof OrgNotVisibleForTaxError)) {
+        console.error('[invoiceService] EFFECTIVE_TAX_RATE_PREVIEW_FAILED', {
+          invoiceId, orgId: inv.orgId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      effectiveTaxRate = null;
+    }
   }
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before

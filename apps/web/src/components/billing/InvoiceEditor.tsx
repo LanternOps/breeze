@@ -16,7 +16,7 @@ import {
   lineTitle,
   computeInvoiceProfit,
 } from './invoiceTypes';
-import { toCents, fromCents } from '@breeze/shared';
+import { toCents, fromCents, roundToCurrency } from '@breeze/shared';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -620,11 +620,16 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       if (!l.customerVisible || !l.taxable) continue;
       taxableCents += toCents(l.lineTotal);
     }
-    // Same round-half-up at the cent boundary as computeInvoiceTotals, so the
-    // preview settles to exactly what issuing produces.
+    // Mirrors computeInvoiceTotals step for step, so the preview settles to
+    // exactly what issuing produces: round half-up at the classic cent boundary
+    // FIRST (rounding the major-unit float instead loses ties to FP noise), then
+    // let the CURRENCY decide each figure's final boundary — JPY rounds to whole
+    // units, so a preview built on 2-decimal `fromCents` alone would promise a
+    // fractional yen that issueInvoice will never produce.
     const taxCents = Math.floor(taxableCents * rate + 0.5);
-    return { rate, tax: fromCents(taxCents), total: fromCents(toCents(railSubtotal) + taxCents) };
-  }, [effectiveTaxRate, noTaxRate, hasTaxableLine, lines, railSubtotal]);
+    const tax = roundToCurrency(taxCents / 100, currency);
+    return { rate, tax, total: roundToCurrency(Number(railSubtotal) + Number(tax), currency) };
+  }, [effectiveTaxRate, noTaxRate, hasTaxableLine, lines, railSubtotal, currency]);
 
   return (
     <div className="space-y-6" data-testid="invoice-editor">
