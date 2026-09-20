@@ -751,3 +751,61 @@ func TestRunBrewCleanupBoundedCancelsDescendants(t *testing.T) {
 		t.Fatalf("cleanup retained descendant pipe for %s after cancellation", elapsed)
 	}
 }
+
+func TestRunBrewCleanupBoundedSerializesWithInstall(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+cleanup)
+  echo ready > "$BREW_TEST_DIR/ready"
+  while [ ! -f "$BREW_TEST_DIR/release" ]; do /bin/sleep 0.01; done
+  ;;
+upgrade)
+  echo installed > "$BREW_TEST_DIR/installed"
+  exit 1
+  ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BREW_TEST_DIR", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupDone := make(chan error, 1)
+	go func() { _, err := RunBrewCleanupBounded(ctx, false); cleanupDone <- err }()
+	defer func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0600); <-cleanupDone }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cleanup fixture never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	installDone := make(chan struct{})
+	go func() { _, _ = NewHomebrewProvider().Install("fixture"); close(installDone) }()
+	defer func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0600); <-installDone }()
+	select {
+	case <-installDone:
+		t.Fatal("Install overlapped a bounded cleanup from another provider")
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := os.Stat(filepath.Join(dir, "installed")); err == nil {
+		t.Fatal("Install entered brew while cleanup was active")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-installDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Install did not resume after cleanup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "installed")); err != nil {
+		t.Fatalf("Install did not execute: %v", err)
+	}
+}

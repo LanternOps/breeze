@@ -44,17 +44,11 @@ type HomebrewProvider struct {
 	cleanupDebounce time.Duration // overridden in tests; <=0 means use defaultCleanupDebounce
 	cleanupFunc     func()        // overridden in tests; nil means use h.runBrewCleanup
 
-	// brewMutateMu serializes brew invocations that mutate the
-	// Cellar/Caskroom (upgrade, uninstall, cleanup) against each other.
-	// scheduleCleanup's debounced cleanup fires on its own timer goroutine,
-	// independent of whatever Install/Uninstall call scheduled it — without
-	// this, a cleanup firing mid-batch (e.g. one package's upgrade running
-	// longer than defaultCleanupDebounce, which patchMutateTimeout allows up
-	// to 30 minutes for) could run `brew cleanup --prune=all` concurrently
-	// with an in-flight `brew upgrade`/`brew uninstall`, and Homebrew does
-	// not guarantee that's safe.
-	brewMutateMu sync.Mutex
 }
+
+// brewMutateMu serializes mutations across all provider instances and native
+// cleanup runs. If both locks are needed, acquire maintenance before this mutex.
+var brewMutateMu sync.Mutex
 
 // defaultCleanupDebounce is how long scheduleCleanup waits after the most
 // recent successful Install before actually running `brew cleanup`. Patch
@@ -261,9 +255,9 @@ func (h *HomebrewProvider) Install(patchID string) (InstallResult, error) {
 	}
 	args = append(args, name)
 
-	h.brewMutateMu.Lock()
+	brewMutateMu.Lock()
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
-	h.brewMutateMu.Unlock()
+	brewMutateMu.Unlock()
 	if err != nil {
 		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, truncatePatchOutput(output))
 	}
@@ -343,8 +337,8 @@ func truncateBrewOutputTail(output []byte) string {
 // caller's context, with a tail-preserving 16 KiB output cap, and returns both
 // the output and the error.
 //
-// It takes NO lock. Two callers need this invocation and they hold the
-// maintenance lock at different levels: `BrewCleanup` below (the patch-job
+// It takes the brew mutation mutex, but not the maintenance lock. Callers
+// hold the maintenance lock at different levels: `BrewCleanup` below (the patch-job
 // entry point) acquires it around this call, while the system-cleanup
 // catalogue's `mac_brew_cleanup` action runs underneath a lock its whole run
 // already holds — locking here as well would deadlock that path.
@@ -361,6 +355,8 @@ func truncateBrewOutputTail(output []byte) string {
 // would leave brew running for up to patchMutateTimeout (30 minutes) after the
 // command it belonged to was already reported.
 func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
+	brewMutateMu.Lock()
+	defer brewMutateMu.Unlock()
 	args := brewCleanupArgs()
 	if dryRun {
 		args = brewCleanupDryRunArgs()
@@ -401,9 +397,9 @@ func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
 // action is reported as failed instead of vanishing into a warn log).
 //
 // The lock is the process-wide maintenance lock (spec §13 #4/#12), not the
-// provider's instance mutex: a `brew cleanup` firing on its debounce timer
+// brew mutation mutex: a `brew cleanup` firing on its debounce timer
 // while a `system_cleanup_run` is mid-flight is exactly the interleaving that
-// mutex cannot see, since the two live in different packages. Acquire (not
+// mutex alone cannot cover, since the cleanup run includes other actions. Acquire (not
 // TryAcquire) because this path is background work with nobody waiting —
 // queueing behind a cleanup run is strictly better than skipping the cleanup.
 func BrewCleanup(ctx context.Context, dryRun bool) (string, error) {
@@ -425,9 +421,7 @@ func (h *HomebrewProvider) runBrewCleanup() {
 	ctx, cancel := context.WithTimeout(context.Background(), patchMutateTimeout)
 	defer cancel()
 
-	h.brewMutateMu.Lock()
 	output, err := BrewCleanup(ctx, false)
-	h.brewMutateMu.Unlock()
 	if err != nil {
 		log.Warn("brew cleanup failed", "error", err.Error(), "output", output)
 		return
@@ -447,9 +441,9 @@ func (h *HomebrewProvider) Uninstall(patchID string) error {
 	}
 	args = append(args, name)
 
-	h.brewMutateMu.Lock()
+	brewMutateMu.Lock()
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
-	h.brewMutateMu.Unlock()
+	brewMutateMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("brew uninstall failed: %w: %s", err, truncatePatchOutput(output))
 	}
