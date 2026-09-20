@@ -26,6 +26,35 @@ describe('interpolateAlertTemplate', () => {
     ).toBe('FRONTDESK-1 is offline');
   });
 
+  it('fills the dotted {{device.name}} form reported in #6112', () => {
+    expect(
+      interpolateAlertTemplate('{{device.name}} - MagicINFO Player OFFLINE', {
+        deviceName: 'LOBBY-SIGNAGE',
+      }),
+    ).toBe('LOBBY-SIGNAGE - MagicINFO Player OFFLINE');
+  });
+
+  it('fills {{device.hostname}} from hostname', () => {
+    expect(interpolateAlertTemplate('{{device.hostname}} offline', { hostname: 'KHPC' })).toBe(
+      'KHPC offline',
+    );
+  });
+
+  it('prefers an exact dotted context key over the alias', () => {
+    expect(
+      interpolateAlertTemplate('{{device.name}} offline', {
+        'device.name': 'EXACT',
+        deviceName: 'ALIAS',
+      }),
+    ).toBe('EXACT offline');
+  });
+
+  it('leaves an unknown dotted token unchanged', () => {
+    expect(interpolateAlertTemplate('{{device.serial}} missing', { deviceName: 'HOST' })).toBe(
+      '{{device.serial}} missing',
+    );
+  });
+
   it('leaves unknown tokens unchanged', () => {
     expect(interpolateAlertTemplate('CPU {{metric}} high', { deviceName: 'HOST' })).toBe(
       'CPU {{metric}} high',
