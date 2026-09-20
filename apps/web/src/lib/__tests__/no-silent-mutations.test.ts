@@ -164,6 +164,8 @@ const TARGET_GLOBS = [
   // its first commit rather than after the first regression.
   'src/components/billing/AccountingSyncCard.tsx',
   'src/components/billing/PartnerBillingSettingsPage.tsx',
+  'src/components/billing/BillingRatesTab.tsx',
+  'src/components/billing/OrgBillingProfile.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
   'src/components/contracts/ContractDetail.tsx',
@@ -718,7 +720,8 @@ describe('no silent mutations in targeted set', () => {
     // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
     // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
     // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
-    expect(absoluteFiles.length).toBe(153);
+    // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
+    expect(absoluteFiles.length).toBe(155);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

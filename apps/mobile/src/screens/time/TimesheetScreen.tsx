@@ -36,6 +36,7 @@ import { getSuggestions } from '../../services/timeSuggestions';
 import { suggestionsLoaded } from '../../store/timeSuggestionsSlice';
 import { selectSuggestionsEnabled, selectUnloggedCount } from '../../store/timeSuggestionsSlice';
 import { track } from '../../lib/analytics';
+import { useTimeEntryBillingPermission } from '../../lib/useTimeEntryBillingPermission';
 import { buildLocalWeek, neighbourWeekOffsets } from './timesheetLocalDays';
 import { entriesForWeek, timesheetPhase, type LoadedWeek } from './timesheetLoadState';
 
@@ -63,6 +64,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
   // TicketsScreen so the Time tab starts on the line the Tickets tab does.
   const insets = useSafeAreaInsets();
   const dispatch = useAppDispatch();
+  const canManageBilling = useTimeEntryBillingPermission();
   const suggestionsEnabled = useAppSelector(selectSuggestionsEnabled);
   const unloggedCount = useAppSelector(selectUnloggedCount);
   // W06 (#3900). `entryPointVisible` is the single rule for whether any
@@ -336,7 +338,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         ) : (
           <>
             <Text style={styles.entryBody}>{entry.description || 'No description'}</Text>
-            {lock.canEditDescription || lock.canToggleBillable ? (
+            {lock.canEditDescription || (canManageBilling && lock.canToggleBillable) ? (
               <View style={styles.editRow}>
                 {lock.canEditDescription ? (
                   <Pressable
@@ -348,7 +350,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
                     <Text style={styles.chipText}>Edit</Text>
                   </Pressable>
                 ) : null}
-                {lock.canToggleBillable ? (
+                {canManageBilling && lock.canToggleBillable ? (
                   <Pressable
                     onPress={() => void applyEdit(entry, { isBillable: !entry.isBillable })}
                     disabled={saving}

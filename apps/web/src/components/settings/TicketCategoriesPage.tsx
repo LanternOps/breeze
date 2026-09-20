@@ -5,11 +5,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
+import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
-import { formatMoney } from '@/components/billing/shared/format';
-import { formatNumber } from '@/lib/i18n/format';
-import WorkTypesCard from './WorkTypesCard';
 import WorkTypeSelect, { type WorkTypeOption } from '../shared/WorkTypeSelect';
 
 interface Category {
@@ -22,11 +19,6 @@ interface Category {
   resolutionSlaMinutes: number | null;
   defaultTimeEntryMinutes: number | null;
   defaultWorkTypeId?: string | null;
-  defaultBillable: boolean;
-  defaultHourlyRate: string | null;
-  /** Currency the rate was stamped in — always set when `defaultHourlyRate` is
-   *  set (DB CHECK); null for unrated rows. */
-  rateCurrency: string | null;
   sortOrder: number;
   isActive: boolean;
 }
@@ -40,8 +32,6 @@ interface EditDraft {
   resolutionSlaMinutes: string;
   defaultTimeEntryMinutes: string;
   defaultWorkTypeId: string | null;
-  defaultBillable: boolean;
-  defaultHourlyRate: string;
 }
 
 // Single comparator shared by hierarchyOrder and moveWithinSiblings — the
@@ -91,31 +81,11 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
   return order;
 }
 
-/** Hourly rate for the summary cell. Until the partner currency is KNOWN the
- *  rate renders as a bare number with no currency label — never a USD guess
- *  (#3777 review F8): a EUR partner must not see `$150.00/h` because the
- *  lookup is slow or failed. */
-function hourlyRateLabel(rate: string, currencyCode: string | null): string {
-  if (currencyCode) return formatMoney(rate, currencyCode);
-  const n = Number(rate);
-  return Number.isFinite(n) ? formatNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : rate;
-}
-
-function defaultsSummary(c: Category, partnerCurrency: string | null): string {
+function defaultsSummary(c: Category): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
   if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
-  // A rated row carries its own stamped currency (wave 4); the partner value
-  // only covers legacy/unrated rows — never a conversion. Until a currency is
-  // KNOWN the rate renders unlabelled rather than guessing USD (#3777 F8).
-  if (c.defaultHourlyRate) {
-    parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', {
-      rate: hourlyRateLabel(c.defaultHourlyRate, c.rateCurrency ?? partnerCurrency),
-    }));
-  }
-  if (c.defaultBillable) parts.push('billable');
-  else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
@@ -127,11 +97,6 @@ export default function TicketCategoriesPage() {
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // Partner currency labels the rate input; category rates themselves display
-  // in their own stamped `rateCurrency`. Null when unknown (non-partner session
-  // or the lookup failed) — never toasted, the page is fully usable without it.
-  const [partnerCurrency, setPartnerCurrency] = useState<string | null>(null);
-
   // Create form state
   const [name, setName] = useState('');
   const [color, setColor] = useState('#1c8a9e');
@@ -141,7 +106,7 @@ export default function TicketCategoriesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>({
     name: '', color: '#1c8a9e', parentId: '', defaultPriority: '',
-    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultTimeEntryMinutes: '', defaultWorkTypeId: null, defaultBillable: false, defaultHourlyRate: ''
+    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultTimeEntryMinutes: '', defaultWorkTypeId: null
   });
 
   const validDefaultTimeEntryMinutes = draft.defaultTimeEntryMinutes === '' || (
@@ -165,22 +130,12 @@ export default function TicketCategoriesPage() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    // `/orgs/partners/me` is requireScope('partner') — skip it outright for
-    // org/system sessions instead of eating a 403.
-    if (getJwtClaims().scope !== 'partner') return;
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth('/orgs/partners/me');
-        if (!res.ok) return;
-        const data = (await res.json()) as { currencyCode?: unknown };
-        if (!cancelled && typeof data?.currencyCode === 'string' && data.currencyCode) {
-          setPartnerCurrency(data.currencyCode);
-        }
-      } catch {
-        /* best-effort; label falls back to no currency */
-      }
-    })();
+    void fetchWithAuth('/billing-profiles/work-types?includeInactive=true').then(async (res) => {
+      if (!res.ok) return;
+      const body = await res.json();
+      if (!cancelled) setWorkTypes(body.workTypes ?? []);
+    }).catch(() => { /* The active picker reports its own load failures. */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -199,7 +154,8 @@ export default function TicketCategoriesPage() {
       setCreateParentId('');
       void load();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketCategoriesPage.updateFailedRetry') });
     }
   }, [name, color, createParentId, load]);
 
@@ -212,7 +168,8 @@ export default function TicketCategoriesPage() {
       });
       void load();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketCategoriesPage.updateFailedRetry') });
     }
   }, [load]);
 
@@ -227,8 +184,6 @@ export default function TicketCategoriesPage() {
       resolutionSlaMinutes: cat.resolutionSlaMinutes?.toString() ?? '',
       defaultTimeEntryMinutes: cat.defaultTimeEntryMinutes?.toString() ?? '',
       defaultWorkTypeId: cat.defaultWorkTypeId ?? null,
-      defaultBillable: cat.defaultBillable,
-      defaultHourlyRate: cat.defaultHourlyRate ?? ''
     });
   }, []);
 
@@ -236,9 +191,9 @@ export default function TicketCategoriesPage() {
     if (!draft.name.trim() || !validDefaultTimeEntryMinutes) return;
     // Number('60a') is NaN and Number('1e999') is Infinity — both JSON-serialize
     // to null, so refuse anything non-finite instead of silently nulling.
-    const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes, draft.defaultHourlyRate];
+    const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes];
     if (numeric.some((v) => v !== '' && !Number.isFinite(Number(v)))) {
-      showToast({ type: 'error', message: t('ticketCategoriesPage.sLAMinutesAndHourlyRateMustBeNumbers') });
+      showToast({ type: 'error', message: t('ticketCategoriesPage.slaMinutesMustBeNumbers') });
       return;
     }
     const payload = {
@@ -250,8 +205,6 @@ export default function TicketCategoriesPage() {
       resolutionSlaMinutes: draft.resolutionSlaMinutes === '' ? null : Number(draft.resolutionSlaMinutes),
       defaultTimeEntryMinutes: draft.defaultTimeEntryMinutes === '' ? null : Number(draft.defaultTimeEntryMinutes),
       defaultWorkTypeId: draft.defaultWorkTypeId,
-      defaultBillable: draft.defaultBillable,
-      defaultHourlyRate: draft.defaultHourlyRate === '' ? null : Number(draft.defaultHourlyRate)
     };
     try {
       await runAction({
@@ -263,7 +216,8 @@ export default function TicketCategoriesPage() {
       setEditingId(null);
       void load();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketCategoriesPage.updateFailedRetry') });
     }
   }, [draft, load, validDefaultTimeEntryMinutes]);
 
@@ -281,7 +235,8 @@ export default function TicketCategoriesPage() {
       });
     } catch (err) {
       void load();
-      if (!(err instanceof ActionError)) throw err;
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketCategoriesPage.updateFailedRetry') });
     }
   }, [categories, load]);
 
@@ -376,7 +331,7 @@ export default function TicketCategoriesPage() {
                   <span className="mr-1.5 inline-block h-3 w-3 rounded-sm align-middle" style={{ backgroundColor: c.color }} />
                   {c.name}
                 </td>
-                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c, partnerCurrency)}</td>
+                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c)}</td>
                 <td className="px-4 py-2 text-sm">{c.isActive ? t('ticketCategoriesPage.active') : t('ticketCategoriesPage.inactive')}</td>
                 <td className="px-4 py-2 text-right space-x-2">
                   <button
@@ -521,29 +476,6 @@ export default function TicketCategoriesPage() {
                         </label>
                         <p className="mt-1 text-xs text-muted-foreground">{t('ticketCategories.defaultWorkTypeHelp')}</p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id={`billable-${c.id}`}
-                          checked={draft.defaultBillable}
-                          onChange={(e) => setDraft((d) => ({ ...d, defaultBillable: e.target.checked }))}
-                          data-testid="ticket-category-edit-billable"
-                        />
-                        <label htmlFor={`billable-${c.id}`} className="text-xs font-medium">{t('ticketCategoriesPage.billableByDefault')}</label>
-                      </div>
-                      <div>
-                        <label className="text-xs font-medium" htmlFor="edit-rate">{t('ticketCategoriesPage.defaultHourlyRate', { currency: partnerCurrency ?? '' })}</label>
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={draft.defaultHourlyRate}
-                          onChange={(e) => setDraft((d) => ({ ...d, defaultHourlyRate: e.target.value }))}
-                          className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                          id="edit-rate"
-                          data-testid="ticket-category-edit-rate"
-                        />
-                      </div>
                     </div>
                     <div className="mt-3 flex gap-2">
                       <button
@@ -569,7 +501,6 @@ export default function TicketCategoriesPage() {
           ))}
         </tbody>
       </table>
-      <WorkTypesCard onLoad={setWorkTypes} />
     </div>
   );
 }

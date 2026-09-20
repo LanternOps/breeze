@@ -39,7 +39,7 @@ import {
   type CatalogPricingSnapshot,
 } from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
-import { createTimeEntry } from '../services/timeEntryService';
+import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
@@ -623,22 +623,26 @@ aiRoutes.post(
     }
 
     let timeLogged = false;
+    let timeLogError: string | undefined;
     if (body.timeMinutes > 0 && (auth.scope === 'partner' || auth.scope === 'system')) {
       try {
         const endedAt = new Date();
         const startedAt = new Date(endedAt.getTime() - body.timeMinutes * 60_000);
         await createTimeEntry(
-          { ticketId: ticket.id, startedAt, endedAt, description: 'Logged from AI conversation', isBillable: body.billable },
+          { ticketId: ticket.id, startedAt, endedAt, description: 'Logged from AI conversation', ...(body.billable !== undefined ? { isBillable: body.billable } : {}) },
           timeActorFrom(c),
         );
         timeLogged = true;
       } catch (err) {
         console.error(`[AI] Ticket ${ticket.id} created but time entry failed:`, err);
+        timeLogError = err instanceof TimeEntryServiceError
+          ? err.message
+          : 'The time entry could not be logged. Please log it on the ticket.';
       }
     }
 
     writeRouteAudit(c, { orgId: session.orgId, action: 'ai.session.create_ticket', resourceType: 'ticket', resourceId: ticket.id });
-    return c.json({ data: ticket, resolved, timeLogged }, 201);
+    return c.json({ data: ticket, resolved, timeLogged, ...(timeLogError ? { timeLogError } : {}) }, 201);
   }
 );
 

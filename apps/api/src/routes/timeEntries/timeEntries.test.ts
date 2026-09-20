@@ -15,6 +15,7 @@ const { serviceMocks, authRef, permsRef, auditMock, suggestionMocks } = vi.hoist
   authRef: {
     current: {
       scope: 'partner' as string,
+      principal: { kind: 'user_session' as string },
       user: { id: '1f2f1d8e-0001-4000-8000-000000000001', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
       partnerId: 'p-1' as string | null,
       orgId: null as string | null,
@@ -605,4 +606,48 @@ describe('explicit time-entry mutation audits', () => {
       consoleSpy.mockRestore();
     }
   });
+});
+
+
+describe('billing override actor plumbing', () => {
+  it.each([false, true])('passes manageBilling=%s on REST create/update and timer start', async manageBilling => {
+    if (manageBilling) permsRef.current.permissions.push({ resource: 'time_entries', action: 'manage_billing' });
+    serviceMocks.createTimeEntry.mockResolvedValue({ id: TIME_ENTRY_ID });
+    serviceMocks.updateTimeEntry.mockResolvedValue({ id: TIME_ENTRY_ID });
+    serviceMocks.startTimer.mockResolvedValue({ id: TIME_ENTRY_ID });
+    const requests = [
+      ['/', 'POST', { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z', hourlyRate: 225 }, serviceMocks.createTimeEntry],
+      [`/${TIME_ENTRY_ID}`, 'PATCH', { resetBilling: true, minimumMinutes: 30 }, serviceMocks.updateTimeEntry],
+      ['/start', 'POST', {}, serviceMocks.startTimer],
+    ] as const;
+    for (const [path, method, body, service] of requests) {
+      const res = await timeEntriesRoutes.request(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      expect(res.status).toBe(method === 'PATCH' ? 200 : 201);
+      expect(service.mock.calls[0]?.at(-1)).toMatchObject({ manageBilling });
+    }
+    expect(serviceMocks.updateTimeEntry.mock.calls[0]?.[1]).toMatchObject({ resetBilling: true, minimumMinutes: 30 });
+  });
+});
+
+
+// Exercise the real service gate behind the route/tool actor, with only the
+// org link and card lookup controlled. No database writes should be reached.
+vi.mock('../../services/billingProfileService', () => ({
+  loadCardsForOrg: vi.fn(async () => ({ assignedCard: null, partnerDefaultCard: {
+    id: 'card-1', currencyCode: 'USD', roundingIncrementMinutes: null,
+    baseCoverage: 'billable', baseHourlyRate: '225.00', baseMinimumMinutes: null, rules: [],
+  } })),
+}));
+
+it('REST off-card rates reach the service and are refused without manage_billing', async () => {
+  const actual = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+  serviceMocks.createTimeEntry.mockImplementation((input, actor) => actual.createTimeEntry(input, actor, {
+    source: 'manual', orgLink: { orgId: 'org-1', currencyCode: 'USD' },
+  }));
+  const res = await timeEntriesRoutes.request('/', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z', hourlyRate: 999 }),
+  });
+  expect(res.status).toBe(403);
+  expect(await res.json()).toMatchObject({ code: 'MANAGE_BILLING_REQUIRED' });
 });

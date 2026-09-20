@@ -28,7 +28,7 @@ branch: feature/6154-mcp-modernization/wave-6155
 - **`MCP_EXECUTE_TOOL_ALLOWLIST` (`:85,1338`) is probably dead code** (#6141, *inferred*). Do not delete it in passing.
 - **`buildInitializeResult()` is exported and pinned by `mcpServer.initialize.test.ts`** — its signature changes here, and that test is rewritten in the same commit.
 - **`serverInfo.version` = `API_VERSION` from `apps/api/src/version.ts:1`** (`APP_VERSION` env, fallback `'0.2.0'`). Not `HOST_BREEZE_VERSION` (`extensions/hostDescriptor.ts:62`), not the agent-binary `BREEZE_VERSION`. Tests must not assert a literal.
-- **Annotations are per tool; tiering is per action.** Rule: `readOnlyHint` is true only when **every** action (or the whole tool, when there is no `action` enum) resolves read-only; `destructiveHint` is true when **any** action resolves to tier ≥ 3; `idempotentHint` = `readOnlyHint`; `openWorldHint` = `domain === 'integrations'`. Annotations may be **stricter** than `checkGuardrails`, never looser — the contract test enforces the direction.
+- **Annotations are per tool; tiering is per action.** Rule (**amended 2026-09-20, see Plan amendments**): `readOnlyHint` is true only when **every** action (or the whole tool, when there is no `action` enum) resolves read-only; `destructiveHint` = `!readOnlyHint`; `idempotentHint` = `readOnlyHint`; `openWorldHint` = `!readOnlyHint || domain === 'integrations'`. Actions are enumerated with the canonical `toolActionEnum()` (`aiToolActions.ts`). Annotations may be **stricter** than `checkGuardrails`, never looser — the contract test enforces the direction as an additional invariant.
 - **`readOnlyHint` comes from `isReadOnlyResolution`** (`aiGuardrails.ts:1681`) fed with the per-action tier, not from `tier === 1` (`TIER1_NON_READONLY_TOOLS` and `TIER2_READONLY_*` both exist).
 - **`structuredContent` must be built from the redacted `safeResult`**, never from the raw `result` (`compactToolResultForChat` is the redaction boundary, `:1415`). The existing image branch parses raw `result` at `:1421`; leave it, do not copy it.
 - **Deterministic order = `localeCompare('en')` by name**, core registry first then tenant (BYO MCP) tools, both sorted. The tenant read may fail and degrade to `[]` (`:1186-1200`); a cursor is an offset into the per-principal list and is best-effort across that degradation (documented).
@@ -37,6 +37,19 @@ branch: feature/6154-mcp-modernization/wave-6155
   ```
   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
   ```
+
+---
+
+## Plan amendments (2026-09-20, advisor quorum on D8)
+
+The Codex `xhigh` quorum confirmed D8 with changes. These supersede the task text below wherever they differ; the shipped code follows them.
+
+- **Approval tier does not imply destructiveness.** The original rule set `destructiveHint` only for tier ≥ 3. Verified counter-example: `manage_saved_filters` lists `delete` under `TIER2_ACTIONS` and its handler runs `db.delete(savedFilters)`, so the original rule advertised a row-deleting tool as `destructiveHint: false` — which the MCP spec defines as additive-only. The rule is now fail-closed: every tool with any mutating action is `destructiveHint: true` and `openWorldHint: true`; only fully read-only tools outside `integrations` report `false`. There is no allowlist of "additive-only mutators"; relaxing a tool is a reviewed follow-up that needs per-tool effect metadata.
+- **Action enumeration is canonical.** `mcpToolPresentation.ts` uses `toolActionEnum()` rather than re-deriving actions from the schema (it handles tools keyed on `commandType`). Tools whose escalation depends on payload contents are mutators and take the conservative values.
+- **Task 7 fixture error.** The `manage_groups` create/update "non-destructive" fixture contradicted `TIER3_ACTIONS`; under the amended rule every mutator is destructive.
+- **Batches.** `preflightMcpRequest` rejects JSON-RPC batches and this wave must not change it, so the conformance test asserts rejection for every negotiated version and the docs say batches are unsupported — the wave does not claim `2025-03-26` batch support.
+- **Path and count corrections.** `MCP_TOOLS_LIST_PAGE_SIZE` is documented in the root `./.env.example` (`apps/api/.env.example` does not exist). There are 17 `mcpServer.*.test.ts` files after this wave, not 18.
+- **Known gaps deliberately left for follow-ups:** `tools/list` advertises tenant tier-3 tools that `tools/call` always denies (#6401); pagination cursors are offset-only, acceptable only while pagination ships dormant.
 
 ---
 

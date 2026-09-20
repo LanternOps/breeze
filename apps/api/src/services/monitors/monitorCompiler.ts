@@ -236,9 +236,16 @@ export function buildCompiledNetworkMonitor(
     // `checkType` IS the monitor_type pgEnum vocabulary — nothing is mapped.
     monitorType: c.checkType,
     target: c.target,
+    // `buildMonitorCommand` (`services/monitorCommands.ts`) spreads this
+    // `config` verbatim into the agent command payload — there is no
+    // translation layer downstream. So every key written here must already be
+    // the exact key `agent/internal/heartbeat/handlers_monitor.go` reads for
+    // that checkType, even where it differs from the kind's own condition
+    // schema field name (`expectStatus` here vs. the agent's `expectedStatus`,
+    // #6352). `port` already matches the agent key and needs no translation.
     config: {
       ...(c.port != null ? { port: c.port } : {}),
-      ...(c.expectStatus != null ? { expectStatus: c.expectStatus } : {}),
+      ...(c.expectStatus != null ? { expectedStatus: c.expectStatus } : {}),
     },
     pollingInterval: c.pollingIntervalSeconds,
     timeout: c.timeoutSeconds,

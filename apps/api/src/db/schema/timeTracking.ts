@@ -8,6 +8,7 @@ import { users } from './users';
 import { tickets } from './portal';
 import { catalogItems } from './catalog';
 import { workTypes } from './workTypes';
+import { billingProfiles } from './billingProfiles';
 
 export const billingStatusEnum = pgEnum('billing_status', ['not_billed', 'billed', 'no_charge', 'contract']);
 
@@ -63,6 +64,13 @@ export const timeEntries = pgTable('time_entries', {
   // In W01 this column is inert with respect to money -- nothing prices an
   // entry from it. W02's resolveBillingRule() is what gives it meaning.
   workTypeId: uuid('work_type_id').references(() => workTypes.id),
+  // SQL owns the NO ACTION (billing_profile_id, partner_id) composite FK.
+  // These are billing snapshots; configuration edits never restamp entries.
+  billingProfileId: uuid('billing_profile_id').references(() => billingProfiles.id),
+  coverage: text('coverage').$type<'billable' | 'included' | 'non_billable'>(),
+  billingOverridden: boolean('billing_overridden').notNull().default(false),
+  minimumMinutes: integer('minimum_minutes'),
+  roundingIncrementMinutes: integer('rounding_increment_minutes'),
   // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
   // Values enforced by CHECK time_entries_source_chk in SQL:
   // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |

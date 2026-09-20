@@ -4253,7 +4253,6 @@
     "responseSLAMinutes": "Respuesta SLA (minutos)",
     "resolutionSLAMinutes": "Resolución SLA (minutos)",
     "billableByDefault": "Facturable por defecto",
-    "defaultHourlyRate": "Tarifa por hora predeterminada ({{currency}})",
     "save": "Guardar",
     "cancel": "Cancelar",
     "responseMinutes": "respuesta {{count}}m",
@@ -4268,7 +4267,8 @@
     "active": "Activo",
     "inactive": "Inactivo",
     "deactivate": "Desactivar",
-    "activate": "Activar"
+    "activate": "Activar",
+    "slaMinutesMustBeNumbers": "Los minutos del SLA deben ser números."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Prioridades y SLA guardados",

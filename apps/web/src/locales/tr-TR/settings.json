@@ -4306,7 +4306,6 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ({{currency}})",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -4321,7 +4320,8 @@
     "active": "Aktif",
     "inactive": "Etkin değil",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "slaMinutesMustBeNumbers": "SLA dakikaları sayı olmalıdır."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Öncelikler ve SLA'lar kaydedildi",

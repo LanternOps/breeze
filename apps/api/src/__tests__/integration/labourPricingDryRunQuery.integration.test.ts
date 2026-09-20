@@ -1,3 +1,4 @@
+// W04: Retire this pre-conversion dry-run query test when its legacy pricing columns are dropped.
 // apps/api/src/__tests__/integration/labourPricingDryRunQuery.integration.test.ts
 /**
  * The SQL half of the W02 labour-pricing dry run.

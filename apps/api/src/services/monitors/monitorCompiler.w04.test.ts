@@ -206,6 +206,84 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(buildCompiledNetworkMonitor(makeDef({ enabled: false } as never)).isActive).toBe(false);
   });
 
+  /**
+   * #6352: `buildMonitorCommand` (`services/monitorCommands.ts`) spreads
+   * `network_monitors.config` verbatim into the agent command payload — no
+   * translation layer exists there. So every key the compiler writes into
+   * `config` for a given `checkType` MUST already be the exact key the
+   * agent's handler for that check type reads
+   * (`agent/internal/heartbeat/handlers_monitor.go`), even though the kind's
+   * own condition schema (`packages/shared/src/validators/monitors.ts`,
+   * `network_check`) uses a different name (`expectStatus`) for it. This
+   * table pins that contract per checkType so a future compiled field can't
+   * silently reintroduce the same mismatch.
+   */
+  it.each([
+    {
+      label: 'tcp_port',
+      condition: { checkType: 'tcp_port', target: '10.0.0.1', port: 8080, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { port: 8080 }, // agent: tools.GetPayloadInt(payload, "port", 443)
+    },
+    {
+      label: 'http_check with expectStatus set',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301 }, // agent: tools.GetPayloadInt(payload, "expectedStatus", 200)
+    },
+    {
+      label: 'http_check with expectStatus omitted',
+      condition: { checkType: 'http_check', target: 'https://example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {}, // expectStatus omitted -> agent falls back to its own default (200)
+    },
+    {
+      label: 'icmp_ping',
+      condition: { checkType: 'icmp_ping', target: '10.0.0.2', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+    {
+      label: 'dns_check',
+      condition: { checkType: 'dns_check', target: 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+  ])('compiles $label config keys to the agent payload keys it reads', ({ condition, expectedConfig }) => {
+    const row = buildCompiledNetworkMonitor(makeDef({ condition } as never));
+    expect(row.config).toEqual(expectedConfig);
+  });
+
+  /**
+   * Closes the loop the table above stops short of: `buildCompiledNetworkMonitor`
+   * only proves the compiler's OUTPUT object carries the right key. The actual
+   * bug (#6352) was in what happens to that `config` object one layer further
+   * downstream — `buildMonitorCommand` (`services/monitorCommands.ts`) spreads it
+   * verbatim into the agent command payload. This drives a compiled row through
+   * `buildMonitorCommand` too, so a regression in that spread (e.g. someone
+   * renaming or filtering keys there) would fail here even if the compiler's
+   * own output looked correct.
+   */
+  it('the compiled http_check config keys survive buildMonitorCommand into the agent payload', async () => {
+    const { buildMonitorCommand } = await import('../monitorCommands');
+    const row = buildCompiledNetworkMonitor(
+      makeDef({
+        condition: {
+          checkType: 'http_check',
+          target: 'https://example.com',
+          expectStatus: 301,
+          pollingIntervalSeconds: 60,
+          timeoutSeconds: 5,
+          consecutiveFailures: 2,
+        },
+      } as never),
+    );
+    const command = buildMonitorCommand({
+      id: 'nm0000000-0000-4000-8000-000000000001',
+      monitorType: row.monitorType,
+      target: row.target,
+      config: row.config,
+      timeout: row.timeout as number,
+    });
+    expect(command.payload.expectedStatus).toBe(301);
+    expect(command.payload).not.toHaveProperty('expectStatus');
+  });
+
   it('INSERTS the managed row on a first compile', async () => {
     const tx = makeTx();
     await compileMonitorInTx(tx, makeDef());

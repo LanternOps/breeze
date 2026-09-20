@@ -50,7 +50,10 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (_c: any, next: any) => next(),
+  requirePermission: (resource: string) => async (c: any, next: any) => {
+    if (resource === 'billing_profiles' && authState.value.profileWriteDenied) return c.json({ error: 'Permission denied' }, 403);
+    await next();
+  },
   requireMfa: () => async (c: any, next: any) => {
     if ((c.get('auth') as any)?.token?.mfa !== true) {
       return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
@@ -63,6 +66,7 @@ import { invoiceSettingsRoutes } from './settings';
 import * as reporting from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
 import * as svc from '../../services/invoiceService';
+import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import * as auditEvents from '../../services/auditEvents';
@@ -278,6 +282,42 @@ describe('billing settings routes', () => {
       expect.objectContaining({ taxId: 'GB123', taxExempt: true, billingAddressCountry: 'GB' }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  it.each(['33333333-3333-4333-8333-333333333333', null])('accepts billingProfileId %s alongside settings', async billingProfileId => {
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId, taxExempt: true }));
+    expect(res.status).toBe(200);
+    expect(svc.updateOrgBillingSettings).toHaveBeenCalledWith(ORG_ID, { billingProfileId, taxExempt: true }, expect.anything());
+  });
+
+  it('requires profile write permission when changing the assignment', async () => {
+    authState.value.profileWriteDenied = true;
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId: null, taxExempt: true }));
+    expect(res.status).toBe(403);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps settings-only patches available without profile write permission', async () => {
+    authState.value.profileWriteDenied = true;
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ taxExempt: true }));
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    [404, 'PROFILE_NOT_FOUND'], [404, 'ORG_NOT_FOUND'], [409, 'PROFILE_CURRENCY_MISMATCH'],
+  ])('maps assignment errors to %s %s', async (status, code) => {
+    vi.mocked(svc.updateOrgBillingSettings).mockRejectedValueOnce(new BillingProfileServiceError('Invalid assignment', status as number, code as string));
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId: '33333333-3333-4333-8333-333333333333' }));
+    expect(res.status).toBe(status);
+    expect(await res.json()).toMatchObject({ code });
+  });
+
+  it.each(['bad-id', 123, {}])('rejects invalid billingProfileId %j', async billingProfileId => {
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId }));
+    expect(res.status).toBe(400);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
   });
 
   it('PATCH /orgs/:orgId/billing-settings rejects a non-UUID orgId (→ 400, no service call)', async () => {

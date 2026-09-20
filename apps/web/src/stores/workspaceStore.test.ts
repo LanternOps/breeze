@@ -445,6 +445,18 @@ describe('workspace store ticket actions', () => {
     });
   });
 
+  it('saveTicketFromChat displays the server timeLogError in the partial-success toast', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({
+      data: { ticketNumber: 'ORG-1' }, resolved: false, timeLogged: false,
+      timeLogError: 'Changing billing terms requires manage billing permission',
+    }));
+    await useWorkspaceStore.getState().saveTicketFromChat('tab-1', { ...ticketPayload, timeMinutes: 15 });
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: 'warning',
+      message: 'Ticket created, but the time entry could not be logged. Changing billing terms requires manage billing permission',
+    });
+  });
+
   it('saveTicketFromChat warns when requested time does not log', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse({ data: { ticketNumber: 'ORG-1' }, resolved: false, timeLogged: false }),

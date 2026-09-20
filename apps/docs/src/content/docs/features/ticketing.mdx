@@ -296,9 +296,7 @@ Under the **Priorities** tab you can rename each of the four priority levels (Lo
 
 ### Per-organization SLA tiers
 
-In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. You can also set the organization's **default hourly rate** and whether new time entries default to billable.
-
-The organization's default hourly rate is always in **that organization's billing currency** -- the label shows the currency code, and the rate is stored as entered, never converted. Partner-wide category rates are in your partner's currency, so they only apply to an organization that bills in the same currency. If an organization bills in a different currency than your partner default, the Ticketing tab shows a notice reminding you to set a local rate; until you do, time entries on its tickets carry no rate. The rate a time entry picks up is resolved in this order: an hourly rate set on the entry itself, then the organization's default rate, then the ticket category's rate (the last two only when their currency matches the organization's).
+In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. Labour pricing is no longer set here -- it lives on the organization's **Billing** tab as a billing profile (see [Rates](#rates-billing-profiles) below).
 
 <Aside>
   Saving organization-level ticketing settings requires MFA confirmation. SLA precedence: a category's SLA beats an organization override, which beats the partner-wide priority default.
@@ -310,9 +308,9 @@ Breeze lets technicians log time and record parts against any ticket. These reco
 
 ### Work types
 
-A **work type** says *what* the work was -- Remote, On-site, Project, After hours -- not what it costs. It is a label on a time entry, nothing more: adding one to an entry does not change its rate, its billable flag or its total. Work types are partner-wide, so one list covers every customer organization you manage.
+A **work type** says *what* the work was -- Remote, On-site, Project, After hours. The technician picks it; Breeze decides what the customer pays for it by looking the work type up on the organization's billing profile (see [Rates](#rates-billing-profiles)). Work types are partner-wide, so one list covers every customer organization you manage.
 
-Manage them under **Settings → Ticketing → Categories**, in the **Work types** card. Add a work type by typing its name and clicking **Add work type**; rename one in place at any time. Names are case-insensitive within your partner, so "On-site" and "ON-SITE" cannot both exist.
+Manage them under **Settings → Billing → Rates**, in the **Work types** card. Add a work type by typing its name and clicking **Add work type**; rename one in place at any time. Names are case-insensitive within your partner, so "On-site" and "ON-SITE" cannot both exist.
 
 Once you have work types, the picker appears in all three places technicians log time: the ticket's **Log time** quick-add, the **Start timer** form, and the row editor on **/timesheet**, which also gains a **Work Type** column. Choosing nothing is always allowed -- an entry with no work type is valid.
 
@@ -320,8 +318,22 @@ Once you have work types, the picker appears in all three places technicians log
 
 **Archiving preserves history.** A work type you no longer use is **archived**, never deleted. It disappears from the pickers for new entries, but every historical entry keeps the label it was stamped with, and archived work types still render (marked *(archived)*) on the entries that carry them. Archived work types stay listed in the **Work types** card with an **Archived** badge, so you can always see what a historical label meant.
 
-<Aside>
-  Work types are descriptive only in this release. They are the dimension a future **Rates** screen will price against -- until then, time entries keep being priced exactly as described under [Per-organization SLA tiers](#per-organization-sla-tiers).
+### Rates (billing profiles)
+
+Labour pricing lives in exactly one place: **Settings → Billing → Rates**. A **billing profile** is a rate card -- one row per work type plus a required **All other work** row that covers entries with no work type or a work type the card does not name. Each row has one of three outcomes:
+
+- **Billable at a rate** -- the entry is billed at that hourly rate (an optional minimum, in minutes, can also be set).
+- **Included** -- the work is covered by the customer's plan; the entry is billable but carries no rate and adds nothing to any total.
+- **Non-billable** -- internal or goodwill work; never billed.
+
+Every organization uses **one** profile: the one assigned on its **Billing** tab, otherwise your partner's default profile for that organization's currency. Every partner always has a default profile (**Standard rates**), so there is never an organization without pricing. A profile is bound to one currency; the profile assigned to an organization must match the organization's billing currency, or the partner default applies instead and the Billing tab says so.
+
+**Pricing is stamped, not linked.** When a time entry is saved, Breeze looks up the organization's profile, finds the row for the entry's work type (or the *All other work* row) and stamps the outcome -- billable flag, rate and minimum -- on the entry itself. Editing a profile later, or assigning a different profile to the organization, **never re-prices existing entries**; it applies to new entries only. Changing the work type on an entry re-prices that entry against the card.
+
+The quick-add form, the timer stop popover and the timesheet row editor show the resolved outcome (for example *Billable at $150/h* or *Included*) as the technician logs time. Overriding the card on a single entry -- typing a different rate, or flipping the billable flag -- requires the **`time_entries:manage_billing`** permission; without it the rate field is read-only. Partner Admins (`*:*`) have it implicitly. Overridden entries are marked so reports can tell them from card-priced ones.
+
+<Aside type="caution">
+  **Upgrading from a release before Rates.** Your existing category rates and per-organization rates are converted into billing profiles automatically on upgrade: one *Standard rates* card per currency, one work type per priced category (set as that category's default work type), and a per-organization card for each organization that had its own rate or billable default. Existing time entries are not touched. Two things change for *new* entries: (1) an entry on an **uncategorised** ticket in an organization that had a rate but never set a billable default used to be silently non-billable and is now billable at that rate; (2) non-billable entries no longer carry a rate. Self-hosters should run `pnpm --filter @breeze/api dry-run:labour-pricing` **before** upgrading and read its *WILL START BILLING* section -- it names every organization affected by (1).
 </Aside>
 
 ### Timer widget

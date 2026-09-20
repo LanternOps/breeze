@@ -1,3 +1,4 @@
+import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
 import { isDeepStrictEqual } from 'node:util';
@@ -82,6 +83,7 @@ import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
+import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 
 /**
@@ -567,6 +569,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
       })
       .returning(partnerPublicColumns());
     if (newPartner) {
+      await ensureDefaultProfile(newPartner.id, newPartner.currencyCode, tx);
       await seedSystemTicketStatuses(tx, newPartner.id);
       // createdBy stays NULL: the platform admin creating this partner is a
       // foreign tenant identifier here, and users.id has no ON DELETE on this FK.
@@ -1850,6 +1853,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const insertOrganization = () => runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const created = await db.insert(organizations).values(insertValues).returning();
+      if (created[0]) await ensureDefaultProfile(insertValues.partnerId, partnerRow.currencyCode, db);
       // The `contacts` mirror is written inside this SAME system-scoped context,
       // for the same reason the insert above needs one: the new org's id is not
       // in the caller's accessible_org_ids yet, so breeze_has_org_access(org_id)
@@ -2548,6 +2552,7 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
+registerOrgBillingProfileRoutes(orgRoutes);
 // Audit-log retention policy (audit_retention_policies) — see routes/orgAuditRetentionSettings.ts
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts

@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
   lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
@@ -196,7 +198,7 @@ describe('organization routes', () => {
       });
 
       const partners = [
-        { id: 'partner-1', name: 'Acme', slug: 'acme' },
+        { id: 'partner-1', name: 'Acme', slug: 'acme', currencyCode: 'USD' },
         { id: 'partner-2', name: 'Globex', slug: 'globex' }
       ];
 
@@ -244,7 +246,7 @@ describe('organization routes', () => {
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([
-            { id: 'partner-1', name: 'Acme', slug: 'acme' }
+            { id: 'partner-1', name: 'Acme', slug: 'acme', currencyCode: 'USD' }
           ])
         })
       } as any);
@@ -261,6 +263,7 @@ describe('organization routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-1', 'USD', db);
     });
 
     it('should update a partner tenant', async () => {
@@ -425,6 +428,7 @@ describe('organization routes', () => {
       const body = await res.json();
       expect(body.id).toBe('org-1');
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'CAD' }));
+      expect(ensureDefaultProfile).toHaveBeenCalledWith('partner-123', 'CAD', db);
     });
 
     it('should fetch an organization by id', async () => {

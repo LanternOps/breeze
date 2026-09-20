@@ -107,7 +107,7 @@ interface WorkspaceState {
   interruptResponse: (tabId: string) => Promise<void>;
   flagSession: (tabId: string, reason?: string) => Promise<void>;
   draftTicketFromChat: (tabId: string) => Promise<AiTicketDraft>;
-  saveTicketFromChat: (tabId: string, payload: CreateTicketFromChatInput) => Promise<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>;
+  saveTicketFromChat: (tabId: string, payload: CreateTicketFromChatInput) => Promise<{ ticketNumber: string; resolved: boolean; timeLogged: boolean; timeLogError?: string }>;
   unflagSession: (tabId: string) => Promise<void>;
   clearError: (tabId: string) => void;
 
@@ -584,7 +584,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           const sessionId = tab.sessionId;
           const requestedResolve = payload.status === 'resolved';
           const requestedTime = payload.timeMinutes > 0;
-          const result = await runAction<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>({
+          const result = await runAction<{ ticketNumber: string; resolved: boolean; timeLogged: boolean; timeLogError?: string }>({
             request: () => fetchWithAuth(`/ai/sessions/${sessionId}/ticket`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -592,11 +592,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             }),
             errorFallback: 'Could not create the ticket.',
             parseSuccess: (data) => {
-              const d = data as { data?: { internalNumber?: string | null; ticketNumber?: string }; resolved?: boolean; timeLogged?: boolean };
+              const d = data as { data?: { internalNumber?: string | null; ticketNumber?: string }; resolved?: boolean; timeLogged?: boolean; timeLogError?: string };
               return {
                 ticketNumber: d.data?.internalNumber ?? d.data?.ticketNumber ?? '',
                 resolved: !!d.resolved,
                 timeLogged: !!d.timeLogged,
+                ...(d.timeLogError ? { timeLogError: d.timeLogError } : {}),
               };
             },
             successMessage: (r) => `Ticket ${r.ticketNumber} created${r.resolved ? ' and resolved' : ''}`,
@@ -606,7 +607,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             showToast({ type: 'warning', message: 'Ticket created, but it could not be resolved automatically — please resolve it manually.' });
           }
           if (requestedTime && !result.timeLogged) {
-            showToast({ type: 'warning', message: 'Ticket created, but the time entry could not be logged.' });
+            showToast({ type: 'warning', message: `Ticket created, but the time entry could not be logged.${result.timeLogError ? ` ${result.timeLogError}` : ''}` });
           }
           return result;
         },

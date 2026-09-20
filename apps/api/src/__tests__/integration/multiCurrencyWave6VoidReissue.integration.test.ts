@@ -44,9 +44,8 @@ import { invoiceLines, invoices, organizations, partners, ticketParts, timeEntri
 import { createCatalogItem, setBundleComponents } from '../../services/catalogService';
 import { addBundleLine, assembleDraftFromOrg, issueInvoice, voidInvoice } from '../../services/invoiceService';
 import { addTicketPart, createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
-import { upsertOrgTicketSettings } from '../../services/ticketConfigService';
 import { createTicket } from '../../services/ticketService';
-import { gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
+import { assignGateBillingProfile, gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -75,7 +74,7 @@ function timeActor(fixture: GateOrgFixture): TimeEntryActor {
     userId: fixture.userId,
     name: 'Gate Technician',
     partnerId: fixture.partnerId,
-    manageAll: true,
+    manageAll: true, manageBilling: false,
     accessibleOrgIds: [fixture.orgId],
   };
 }
@@ -134,9 +133,7 @@ describe.runIf(RUN)(gateLabel('G5', 'void / reissue'), () => {
   it('reissue clones the ORIGINAL EUR document after the org flipped to GBP and the partner language changed', async () => {
     // --- Seed: USD partner (language de-DE) + EUR org -----------------------
     const fixture = await seedGateOrg('EUR', { partnerCurrency: 'USD', partnerLanguage: 'de-DE' });
-    await withSystemDbAccessContext(() => upsertOrgTicketSettings(
-      fixture.orgId, { defaultHourlyRate: 85.5, defaultBillable: true },
-    ));
+    await assignGateBillingProfile(fixture, 85.5);
     const ticket = await withSystemDbAccessContext(() => createTicket(
       { orgId: fixture.orgId, subject: 'W6 G5 EUR void/reissue', source: 'manual' },
       { userId: fixture.userId, name: 'Gate Technician' },

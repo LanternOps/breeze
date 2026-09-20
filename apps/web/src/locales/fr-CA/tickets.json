@@ -525,5 +525,14 @@
       "message": "Cela masque le billet de toutes les files d’attente. Un administrateur peut le restaurer depuis la file d’attente Archivée.",
       "confirm": "Supprimer le billet"
     }
+  },
+  "billingOutcome": {
+    "included": "Inclus",
+    "nonBillable": "Non facturable",
+    "hourly": "{{rate}} par heure",
+    "minimum": "Minimum de {{minutes}} min",
+    "missingRate": "Facturable · tarif non configuré",
+    "recalculated": "La facturation est recalculée pour ce type de travail à l’enregistrement.",
+    "unavailable": "Résultat de facturation indisponible"
   }
 }

@@ -14,11 +14,10 @@
 import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { closeDb } from '../../../db';
-import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
 import { resolveLlmConfig } from '../llmConfigResolver';
-import { runSurfaceCapture } from '../toolCapture/runSurface';
+import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { GOLDEN_CASES, type GoldenCase } from '../toolEval/goldenPrompts';
 import { renderMarkdownReport, type EvalReport } from '../toolEval/report';
@@ -111,7 +110,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }));
     const report: EvalReport = {
       generatedAt: new Date().toISOString(), model: args.model, surface: args.surface,
-      toolSearch: args.toolSearch, systemPromptBytes: Buffer.byteLength(AI_SYSTEM_PROMPT_BASE),
+      toolSearch: args.toolSearch, systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(CAPTURE_SURFACES[args.surface]), 'utf8'),
       cases, summary: summarize(cases),
       meanFirstCallInputTokens: cases.length ? cases.reduce((sum, c) => sum + c.inputTokens, 0) / cases.length : 0,
     };

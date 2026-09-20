@@ -1,3 +1,5 @@
+const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
+vi.mock('../billingProfileService', () => ({ ensureDefaultProfile }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the db module: select/insert/update plus pass-through context helpers.
@@ -376,6 +378,7 @@ describe('commitOrgImport — create', () => {
     ], 'p1', { userId: 'u1' }, 'skip');
 
     expect(summary.errors).toEqual([]);
+    expect(ensureDefaultProfile).toHaveBeenCalledWith('p1', 'CAD', expect.anything());
     expect(summary.imported).toHaveLength(2);
     expect(summary.imported[0]).toMatchObject({ createdOrganization: true, createdLink: true, slug: 'acme' });
     expect(summary.imported[1]).toMatchObject({ createdOrganization: false });

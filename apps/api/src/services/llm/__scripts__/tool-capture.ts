@@ -17,12 +17,11 @@
  */
 import { appendFile } from 'node:fs/promises';
 import { closeDb } from '../../../db';
-import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
 import { resolveLlmConfig } from '../llmConfigResolver';
 import { startCaptureProxy, type CaptureProxy } from '../toolCapture/captureProxy';
-import { runSurfaceCapture } from '../toolCapture/runSurface';
+import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 
 class UsageError extends Error {}
@@ -109,7 +108,7 @@ async function main(): Promise<void> {
           toolSearch: args.toolSearch, proxy: args.proxy, model,
           host: new URL(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').host,
           label, upstreamHost, toolSearchForcedByProxy: args.proxy,
-          systemPromptBytes: Buffer.byteLength(AI_SYSTEM_PROMPT_BASE), proxyRequests,
+          systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(surface), 'utf8'), proxyRequests,
         }) + '\n');
         const usage = observation.apiCalls.reduce((sum, call) => ({
           input: sum.input + call.inputTokens,

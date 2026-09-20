@@ -114,7 +114,10 @@ export default function MoveDeviceOrgDialog({
     let cancelled = false;
     setSitesLoading(true);
     setTargetSiteId('');
-    fetchWithAuth(`/orgs/sites?organizationId=${targetOrgId}`)
+    // Explicit limit: the route defaults to 50 (utils/pagination.ts) and caps at
+    // 100, and a site missing from this list is a target the tech simply cannot
+    // move to. Same as OrgDevicesTab.
+    fetchWithAuth(`/orgs/sites?organizationId=${targetOrgId}&limit=100`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('sites'))))
       .then((data) => {
         if (cancelled) return;

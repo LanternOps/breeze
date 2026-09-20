@@ -50,6 +50,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import { listChecklist } from './ticketChecklistService';
 import { listWorkTypes } from './workTypeService';
 
@@ -130,14 +131,21 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
-function timeEntryActorFrom(auth: AuthContext) {
+async function timeEntryActorFrom(auth: AuthContext) {
+  const userBacked = auth.principal?.kind === 'user_session' || auth.principal?.kind === 'oauth_grant';
+  const permissions = userBacked && !auth.user.isPlatformAdmin ? await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  }) : null;
   return {
     userId: auth.user.id,
     name: auth.user.name,
     partnerId: auth.partnerId,
     accessibleOrgIds: auth.accessibleOrgIds,
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
-    manageAll: false as const
+    manageAll: false as const,
+    manageBilling: canManageTimeEntryBilling(auth, permissions),
   };
 }
 
@@ -579,7 +587,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from the resolved billing profile; overrides require time_entries:manage_billing)'
           }
         },
         required: ['action']
@@ -1167,7 +1175,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth),
+            await timeEntryActorFrom(auth),
             // Provenance: a released AI proposal is `ai_suggested` (#4177) so
             // invoiceAssembly / time-saved reporting can tell it apart; a
             // human's own tool call stays the column default.
@@ -1199,7 +1207,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               ticketId: input.ticketId ? String(input.ticketId) : undefined,
               description: input.description ? String(input.description) : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
@@ -1225,7 +1233,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               description: input.description ? String(input.description) : undefined,
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined
             },
-            timeEntryActorFrom(auth)
+            await timeEntryActorFrom(auth)
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

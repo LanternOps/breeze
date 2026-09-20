@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { ensureDefaultProfile } from '../services/billingProfileService';
 import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
@@ -169,6 +170,7 @@ export const DEFAULT_PERMISSIONS = [
   // time_entries:write, and an unseeded grant is dropped silently by seedRoles.
   { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
   { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
+  { resource: 'time_entries', action: 'manage_billing', description: 'Override and reset time entry billing terms' },
 
   { resource: 'billing_profiles', action: 'read', description: 'View work types and billing profiles (rate cards)' },
   { resource: 'billing_profiles', action: 'write', description: 'Create and manage work types and billing profiles' },
@@ -1285,6 +1287,7 @@ export async function seedDefaultAdmin() {
           settings: DEV_SEED_DEFAULT_PARTNER_SETTINGS
         })
         .returning();
+      await ensureDefaultProfile(newPartner!.id, newPartner!.currencyCode, tx);
       await seedSystemTicketStatuses(tx, newPartner!.id);
       return newPartner!.id;
     });
@@ -1326,6 +1329,7 @@ export async function seedDefaultAdmin() {
         status: 'active'
       })
       .returning();
+    await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
     orgId = newOrg!.id;
     console.log('  Created default organization.');
   }

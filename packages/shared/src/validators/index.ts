@@ -1184,3 +1184,5 @@ export * from './topologyConfiguration';
 export * from './topologyDiagnostics';
 
 export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topologyCollectionCanonical';
+
+export * from './billingProfiles';

@@ -15,6 +15,7 @@ import {
   approveTimeEntries, listTimeEntries, getRunningTimer, getTimesheet,
   TimeEntryServiceError, type TimeEntryActor, type TimeEntryAuditMutation
 } from '../../services/timeEntryService';
+import { canManageTimeEntryBilling } from '../../services/timeEntryBillingPermission';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { timeSuggestionRoutes } from './suggestions';
 
@@ -45,6 +46,7 @@ export function timeActorFrom(
     accessibleOrgIds: auth.accessibleOrgIds,
     // v1 admin proxy (plan decision): wildcard-permission roles approve + manage others
     manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false),
+    manageBilling: canManageTimeEntryBilling(auth, perms),
     recordAuditMutation,
   };
 }

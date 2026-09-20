@@ -580,6 +580,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 |---|---|---|
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | SSE connection rate limit per API key |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Message rate limit per API key |
+| `MCP_TOOLS_LIST_PAGE_SIZE` | `0` | 0/unset = single page; set to e.g. 50 once every connected client honours `nextCursor`. Cursor offsets are best-effort if the visible tool list changes or tenant-tool resolution fails. |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `false` | Require `ai:execute_admin` scope for Tier 3 tools |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |

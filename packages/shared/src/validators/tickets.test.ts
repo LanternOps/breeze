@@ -224,9 +224,9 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
-  it('category strips client-supplied rateCurrency', () => {
-    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
-    expect(parsed).not.toHaveProperty('rateCurrency');
+  it.each(['defaultBillable', 'defaultHourlyRate', 'rateCurrency'])('category strips deprecated %s', (field) => {
+    const parsed = ticketCategoryInputSchema.parse({ name: 'a', [field]: 'ignored' });
+    expect(parsed).not.toHaveProperty(field);
   });
 
   describe('bulkTicketActionSchema', () => {
@@ -365,5 +365,19 @@ describe('ticket category default time entry minutes', () => {
     it.each([0, -1, 1441, 1.5, '30', true])('rejects %s', (defaultTimeEntryMinutes) => {
       expect(schema.safeParse({ ...base, defaultTimeEntryMinutes }).success).toBe(false);
     });
+  });
+});
+
+describe('createTicketFromChatSchema billing defaults', () => {
+  const payload = { subject: 'Printer repair', status: 'open', timeMinutes: 15 };
+  it('omits billable so the card determines billing', () => {
+    const parsed = createTicketFromChatSchema.parse(payload);
+    expect(parsed).not.toHaveProperty('billable');
+  });
+  it.each([true, false])('preserves an explicit billable override of %s', (billable) => {
+    expect(createTicketFromChatSchema.parse({ ...payload, billable }).billable).toBe(billable);
+  });
+  it('rejects a non-boolean override', () => {
+    expect(createTicketFromChatSchema.safeParse({ ...payload, billable: 'true' }).success).toBe(false);
   });
 });
