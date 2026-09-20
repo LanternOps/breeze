@@ -365,7 +365,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },
           rules: { type: 'object', description: 'Rules definition: { software: [{ name, vendor?, minVersion?, maxVersion?, catalogId?, reason? }], allowUnknown?: false }' },
           enforceMode: { type: 'boolean', description: 'Whether to enforce (block/uninstall) or just alert (default: false)' },
-          remediationOptions: { type: 'object', description: "Remediation options. autoInstall is forbidden via AI; arming installation requires a human with devices.execute and MFA." },
+          remediationOptions: { type: 'object', description: "Options: autoUninstall, notifyUser, gracePeriod, cooldownMinutes, maintenanceWindowOnly. autoInstall is forbidden here; arming installs needs a human with MFA." },
           isActive: { type: 'boolean', description: 'Active state (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
