@@ -828,6 +828,54 @@ export function classifyMissingBaseReason(
   return 'no_prior_snapshot';
 }
 
+/**
+ * #6351: the newest snapshot for this device+config with EVERY eligibility
+ * filter dropped, so `classifyMissingBaseReason` can name the first filter it
+ * fails. Read-only and diagnostic — run after the dispatch transaction has
+ * committed, never inside it.
+ *
+ * Deliberately NOT scoped by storage identity: when the newest snapshot sits
+ * under a different bucket/path than this dispatch, "the config was
+ * re-pointed" is the answer an operator wants first. The cost is that an
+ * older, same-identity row's own rejection reason stays unreported in that
+ * case — acceptable for a log line, and never consulted by the fallback
+ * decision itself.
+ */
+async function readBaseCandidateProbe(
+  deviceId: string,
+  configId: string,
+): Promise<BaseCandidateProbe | null> {
+  const [row] = await db
+    .select({
+      expiresAt: backupSnapshots.expiresAt,
+      storageIdentity: backupSnapshots.storageIdentity,
+      backupType: backupSnapshots.backupType,
+      jobStatus: backupJobs.status,
+      retirementId: backupSnapshotRetirements.id,
+    })
+    .from(backupSnapshots)
+    .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+    .leftJoin(
+      backupSnapshotRetirements,
+      and(
+        eq(backupSnapshotRetirements.storageIdentity, backupSnapshots.storageIdentity),
+        eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
+      ),
+    )
+    .where(and(eq(backupSnapshots.deviceId, deviceId), eq(backupSnapshots.configId, configId)))
+    .orderBy(desc(backupSnapshots.timestamp))
+    .limit(1);
+
+  if (!row) return null;
+  return {
+    expiresAt: row.expiresAt ?? null,
+    storageIdentity: row.storageIdentity ?? null,
+    backupType: row.backupType ?? null,
+    jobStatus: row.jobStatus ?? null,
+    retired: row.retirementId != null,
+  };
+}
+
 function logFullBackupFallback(
   reason: FullBackupFallbackReason,
   params: { jobId: string; deviceId: string; configId: string; storageIdentity: string },
@@ -888,7 +936,15 @@ async function stampDispatchPinAndIdentity(params: {
   const dispatchedAt = new Date();
   const publishLeaseExpiresAt = new Date(dispatchedAt.getTime() + leaseMs);
 
-  return db.transaction(async (tx) => {
+  // #6351 review fix: the fallback-reason diagnosis runs AFTER the
+  // transaction commits, never inside it. A failure in a purely explanatory
+  // query must not roll back the job-row stamp and turn an accepted
+  // full-copy dispatch into a failed backup (and in Postgres a statement
+  // error aborts the surrounding transaction outright, so catching it inside
+  // would not help).
+  let pendingFallback: FullBackupFallbackReason | 'diagnose' | null = null;
+
+  const outcome = await db.transaction(async (tx) => {
     // Review fix (spec §3.1 selection criteria): "no retirement row" is part
     // of the SELECTION itself, not a post-hoc check on whatever sorted first
     // — a LEFT JOIN + IS NULL here means a retired newest snapshot simply
@@ -957,46 +1013,7 @@ async function stampDispatchPinAndIdentity(params: {
       .where(eq(backupJobs.id, params.jobId));
 
     if (!candidate) {
-      // #6351: explain the fallback. One extra read, only on the path that is
-      // about to cost a full upload anyway.
-      const [probeRow] = await tx
-        .select({
-          expiresAt: backupSnapshots.expiresAt,
-          storageIdentity: backupSnapshots.storageIdentity,
-          backupType: backupSnapshots.backupType,
-          jobStatus: backupJobs.status,
-          retirementId: backupSnapshotRetirements.id,
-        })
-        .from(backupSnapshots)
-        .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
-        .leftJoin(
-          backupSnapshotRetirements,
-          and(
-            eq(backupSnapshotRetirements.storageIdentity, backupSnapshots.storageIdentity),
-            eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
-          ),
-        )
-        .where(
-          and(eq(backupSnapshots.deviceId, params.deviceId), eq(backupSnapshots.configId, params.configId)),
-        )
-        .orderBy(desc(backupSnapshots.timestamp))
-        .limit(1);
-
-      logFullBackupFallback(
-        classifyMissingBaseReason(
-          probeRow
-            ? {
-                expiresAt: probeRow.expiresAt ?? null,
-                storageIdentity: probeRow.storageIdentity ?? null,
-                backupType: probeRow.backupType ?? null,
-                jobStatus: probeRow.jobStatus ?? null,
-                retired: probeRow.retirementId != null,
-              }
-            : null,
-          { storageIdentity, mode, now: dispatchedAt },
-        ),
-        { jobId: params.jobId, deviceId: params.deviceId, configId: params.configId, storageIdentity },
-      );
+      pendingFallback = 'diagnose';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
@@ -1011,9 +1028,7 @@ async function stampDispatchPinAndIdentity(params: {
     if (!locked) {
       // Row already gone — a concurrent retention delete won the race.
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
-      logFullBackupFallback('base_deleted_race', {
-        jobId: params.jobId, deviceId: params.deviceId, configId: params.configId, storageIdentity,
-      });
+      pendingFallback = 'base_deleted_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
@@ -1030,14 +1045,40 @@ async function stampDispatchPinAndIdentity(params: {
 
     if (retirement) {
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
-      logFullBackupFallback('base_retired_race', {
-        jobId: params.jobId, deviceId: params.deviceId, configId: params.configId, storageIdentity,
-      });
+      pendingFallback = 'base_retired_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
     return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt };
   });
+
+  if (pendingFallback !== null) {
+    const logParams = {
+      jobId: params.jobId,
+      deviceId: params.deviceId,
+      configId: params.configId,
+      storageIdentity,
+    };
+    if (pendingFallback !== 'diagnose') {
+      logFullBackupFallback(pendingFallback, logParams);
+    } else {
+      try {
+        const probe = await readBaseCandidateProbe(params.deviceId, params.configId);
+        logFullBackupFallback(
+          classifyMissingBaseReason(probe, { storageIdentity, mode, now: dispatchedAt }),
+          logParams,
+        );
+      } catch (err) {
+        // Diagnosis only — the dispatch itself already committed.
+        console.warn(
+          `[BackupWorker] Job ${params.jobId} has no incremental base and will upload a FULL copy; ` +
+            `the reason probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return outcome;
 }
 
 /**
