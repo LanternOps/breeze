@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { deploymentResults } from '../db/schema';
+import { deploymentResults, deviceFilesystemCleanupRuns } from '../db/schema';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
 import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
@@ -123,6 +123,36 @@ export async function propagateCancelledDeviceCommand(params: {
       completedAt,
       executor,
     });
+  }
+
+  // Disk Cleanup v2 (spec §13 #13). A cancelled native cleanup command leaves
+  // its `device_filesystem_cleanup_runs` row `running` — on a device that has
+  // just moved org or been decommissioned, nothing will ever revisit it: the
+  // poll route that applies the lazy deadline is no longer reachable from the
+  // tech who started the run, and the reaper terminalises COMMANDS, not this
+  // row.
+  //
+  // In the caller's transaction (the org flip, the decommission write) for the
+  // same reason every branch above is: a rollback must not leave a cancelled
+  // command beside a run row that still claims to be executing.
+  //
+  // CAS on `running` so a real result that landed first keeps its outcome.
+  if (type === 'system_cleanup_run') {
+    const runId =
+      payload && typeof payload.runId === 'string' && payload.runId.trim().length > 0
+        ? payload.runId
+        : null;
+    if (runId) {
+      await executor
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: errorMessage, updatedAt: completedAt })
+        .where(
+          and(
+            eq(deviceFilesystemCleanupRuns.id, runId),
+            eq(deviceFilesystemCleanupRuns.status, 'running'),
+          ),
+        );
+    }
   }
 
   // Disk Cleanup v2 W03 (spec §13 #13). A cleanup `file_delete` carries the id
