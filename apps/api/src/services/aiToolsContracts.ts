@@ -199,7 +199,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           showing: rows.length,
           // Defence in depth beside the scope gate above: if a site-restricted
           // caller ever does reach this tool, say so, so the model reads a short
-          // page as "limited by access" rather than "this is all that exists".
+          // page as 'limited by access' rather than "this is all that exists".
           ...(auth.allowedSiteIds ? { scopeNote: CONTRACT_SITE_SCOPE_NOTE } : {}),
         });
       } catch (err) {
@@ -250,9 +250,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_contracts',
       description:
-        'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. ' +
-        'Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.' +
-        ' Contract line prices and totals are in the contract\'s currencyCode.',
+        "Manage recurring contracts for accessible orgs; prices and totals use the contract currencyCode. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line; activate, pause, resume, cancel change lifecycle state and require approval.",
       input_schema: {
         type: 'object' as const,
         properties: {

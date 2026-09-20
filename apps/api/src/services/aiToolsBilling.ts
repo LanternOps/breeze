@@ -253,7 +253,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
         '{ line, pricedFrom, overages }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
         'gap and the contract line\'s stamped price was billed. overages reports bill/flag allowance overages and ' +
-        'the bill-mode sibling invoiceLineId.',
+        'the bill-mode sibling invoiceLineId. Actions: create_draft, update_line, remove_line, update_header, delete_draft, assemble_from_org, assemble_from_ticket, record_payment, void_payment.',
       input_schema: {
         type: 'object' as const,
         properties: {

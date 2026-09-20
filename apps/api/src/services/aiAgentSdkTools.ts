@@ -1451,14 +1451,14 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_delivery',
-      'Resolve delivery or manage routing rules and escalation policies. Channel CRUD remains manage_notification_channels.',
+      'resolve delivery or manage routing rules and escalation policies. Channel CRUD remains manage_notification_channels. Actions: list_routing, create_routing, update_routing, delete_routing, set_default, list_escalation, create_escalation, update_escalation, delete_escalation.',
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'manage_alerts',
-      'Query, view, acknowledge, or resolve alerts.',
+      'Query, view, acknowledge, or resolve alerts. Actions: list, get.',
       {
         action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
         alertId: uuid.optional(),
@@ -1473,7 +1473,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_dns_security',
-      'Get DNS security statistics: blocked domains, threat categories, and top offending devices.',
+      'Get DNS security statistics: blocked domains, threat categories, and top offending devices. Actions: allowed, redirected.',
       {
         timeRange: z.object({
           start: z.string().datetime({ offset: true }),
@@ -1517,7 +1517,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_dns_policy',
-      'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider.',
+      'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider. Actions: add_block, remove_block, add_allow, remove_allow.',
       {
         integrationId: uuid,
         action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),
@@ -1640,7 +1640,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_services',
-      'List, start, stop, or restart system services on a device.',
+      'list, start, stop, or restart system services on a device.',
       {
         deviceId: uuid,
         action: z.enum(['list', 'start', 'stop', 'restart']),
@@ -1651,7 +1651,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'security_scan',
-      'Run security scans on a device, or manage detected threats.',
+      'Run security scans on a device, or manage detected threats. Actions: status, quarantine, remove, restore.',
       {
         deviceId: uuid,
         action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
@@ -1703,7 +1703,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'apply_cis_remediation',
-      'Queue approved CIS remediation actions for one device and one or more failed checks.',
+      'Queue approved CIS remediation actions for one device and one or more failed checks. Actions: apply, rollback.',
       {
         deviceId: uuid,
         baselineId: uuid.optional(),
@@ -1809,7 +1809,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'disk_cleanup',
-      'Preview or execute disk cleanup. Preview is read-only. Execute deletes approved candidates.',
+      'preview or execute disk cleanup. Preview is read-only. Execute deletes approved candidates.',
       {
         deviceId: uuid,
         action: z.enum(['preview', 'execute']),
@@ -1903,7 +1903,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_deployments',
-      'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel.',
+      'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel. Actions: device_status.',
       {
         action: z.enum(['list', 'get', 'device_status', 'create', 'start', 'pause', 'resume', 'cancel']),
         deploymentId: uuid.optional(),
@@ -1922,7 +1922,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope. Actions: bulk_approve, setup_auto_approval.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
@@ -1986,7 +1986,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_groups',
-      'Manage device groups: list, get with members, preview filters, membership log, create, update, delete, add/remove devices.',
+      'Manage device groups: list, get with members, preview filters, membership log, create, update, delete, add/remove devices. Actions: membership_log, add_devices, remove_devices.',
       {
         action: z.enum(['list', 'get', 'preview', 'membership_log', 'create', 'update', 'delete', 'add_devices', 'remove_devices']),
         groupId: uuid.optional(),
@@ -2002,7 +2002,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_maintenance_windows',
-      'Manage maintenance windows: list, get with occurrences, check active now, create, update, delete.',
+      'Manage maintenance windows: list, get with occurrences, check active now, create, update, delete. Actions: active_now.',
       {
         action: z.enum(['list', 'get', 'active_now', 'create', 'update', 'delete']),
         windowId: uuid.optional(),
@@ -2046,7 +2046,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_alert_rules',
-      'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets.',
+      'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets. Actions: list_rules, get_rule, update_rule, delete_rule, test_rule, list_channels, alert_summary.',
       {
         action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
@@ -2065,7 +2065,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_service_monitors',
-      'Manage service and process monitoring watches. List existing monitors, add new service/process watches that alert when stopped or exceed thresholds, or remove monitors.',
+      'Manage service and process monitoring watches. List existing monitors, add new service/process watches that alert when stopped or exceed thresholds, or remove monitors. Actions: list.',
       {
         action: z.enum(['list', 'add', 'remove']),
         configPolicyId: uuid.optional(),
@@ -2149,7 +2149,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_startup_items',
-      'Disable or enable startup items on a device. Device must be online. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+      'disable or enable startup items on a device. Device must be online. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
       {
         deviceId: uuid,
         itemName: z.string().min(1).max(255),
@@ -2369,7 +2369,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_configuration_policy',
-      'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, monitoring, etc.) and are assigned to targets in the hierarchy.',
+      'create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, monitoring, etc.) and are assigned to targets in the hierarchy.',
       {
         action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
         policyId: uuid.optional(),
@@ -2575,7 +2575,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_monitors',
-      'Get monitor details with recent check history, or create/update/delete network monitors.',
+      'get monitor details with recent check history, or create/update/delete network monitors.',
       {
         action: z.enum(['get', 'create', 'update', 'delete']),
         monitorId: uuid.optional(),
@@ -2797,7 +2797,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_invoices',
-      'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, delete a draft, assemble from an org or ticket, issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment actions finalize financial state and require approval.',
+      'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, delete a draft, assemble from an org or ticket, issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment actions finalize financial state and require approval. Actions: create_draft, add_manual_line, add_catalog_line, add_bundle_line, add_contract_line, update_line, remove_line, update_header, delete_draft, assemble_from_org, assemble_from_ticket, record_payment, void_payment, create_pay_link.',
       {
         action: z.enum([
           'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
@@ -2890,7 +2890,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_org_documents',
-      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here.',
+      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here. Actions: update_metadata, set_portal_visibility, supersede.',
       {
         action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
         orgId: uuid,
@@ -2904,7 +2904,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_contracts',
-      'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.',
+      'Manage recurring contracts for accessible orgs. Lifecycle changes require approval. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line, activate, pause, resume, cancel.',
       {
         action: z.enum([
           'create_draft',

@@ -665,7 +665,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'software deployments: list, get, device status, create, start, pause, resume, cancel',
     definition: {
       name: 'manage_deployments',
-      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments.',
+      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments. Actions: device_status.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1523,7 +1523,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
-      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices.',
+      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices. Actions: membership_log, add_devices, remove_devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1856,7 +1856,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',
+      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance". Actions: active_now.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -3177,7 +3177,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'service and process monitoring watches: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
+      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy. Actions: list.',
       input_schema: {
         type: 'object' as const,
         properties: {

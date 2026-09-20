@@ -450,7 +450,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_tags',
-      description: 'List all tags used across devices, or add/remove tags on a specific device.',
+      description: 'List all tags used across devices, or add/remove tags on a specific device. Actions: list.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -564,7 +564,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_custom_fields',
-      description: 'Get custom field definitions for the organization, or get custom field values for a specific device.',
+      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values.',
       input_schema: {
         type: 'object' as const,
         properties: {

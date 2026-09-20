@@ -434,7 +434,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'alert delivery channels: list, test, create, update, delete; email, Slack, Teams, webhook, PagerDuty, SMS',
     definition: {
       name: 'manage_notification_channels',
-      description: 'Manage notification channels for alert delivery. List channels, test connectivity, or create/update/delete channels. Channel types: email, slack, teams, webhook, pagerduty, sms.',
+      description: 'Manage notification channels for alert delivery. List channels, test connectivity, or create/update/delete channels. Channel types: email, slack, teams, webhook, pagerduty, sms. Actions: list.',
       input_schema: {
         type: 'object' as const,
         properties: {

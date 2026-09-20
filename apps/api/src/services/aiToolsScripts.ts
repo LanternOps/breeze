@@ -790,7 +790,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_services',
-      description: 'List, start, stop, or restart system services on a device.',
+      description: 'List, start, stop, or restart system services on a device. Actions: list.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -837,7 +837,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_processes',
-      description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+      description: 'List running processes on a device with CPU and memory usage, or terminate a process. Actions: list, kill.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1429,7 +1429,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
-      description: 'List, run, enable, or disable Windows scheduled tasks on a device.',
+      description: 'List, run, enable, or disable Windows scheduled tasks on a device. Actions: list.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1502,7 +1502,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',
-      description: 'Read or modify Windows registry keys and values on a device.',
+      description: 'Read or modify Windows registry keys and values on a device. Actions: read_key, get_value, set_value, create_key, delete_key.',
       input_schema: {
         type: 'object' as const,
         properties: {

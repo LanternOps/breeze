@@ -188,7 +188,7 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
       + 'all-or-nothing: if any item name already exists on the target nothing is written and the colliding names are returned. '
       + 'A template item with an autoEvidenceReportType is resolved to that organization\'s managed evidence report definition '
       + '(created on demand) and the deliverable is linked to it; the evidence run is generated on the due day and becomes '
-      + 'customer-visible only when the occurrence is delivered.',
+      + 'customer-visible only when the occurrence is delivered. Actions: link_evidence.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -273,9 +273,7 @@ export const MANAGE_KEY_DATES_TOOL: AiTool = {
   definition: {
     name: 'manage_key_dates',
     description:
-      'List, create, update or delete organization key dates (insurance renewals, vendor contract ends, compliance deadlines, audits). '
-      + 'A key date with remindDaysBefore opens a reminder ticket that many days ahead; recursAnnually rolls it forward each year. '
-      + 'Listing also returns upcoming contract end dates.',
+      'Organization key dates: list, create, update or delete insurance renewals, vendor contract ends, compliance deadlines and audits. remindDaysBefore opens a reminder ticket that many days ahead; recursAnnually rolls it forward yearly. Lists also include upcoming contract end dates.',
     input_schema: {
       type: 'object' as const,
       properties: {

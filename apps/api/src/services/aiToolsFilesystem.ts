@@ -325,7 +325,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'disk_cleanup',
-      description: 'Preview or execute disk cleanup. Preview is read-only. Execute deletes approved safe candidates and reports reclaimed space.',
+      description: 'Preview or execute disk cleanup. Preview is read-only. Execute deletes approved safe candidates and reports reclaimed space. Actions: preview.',
       input_schema: {
         type: 'object' as const,
         properties: {

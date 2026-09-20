@@ -452,7 +452,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         '"start_timer" to start a running timer (auto-stops any existing timer), ' +
         '"stop_timer" to stop the currently running timer, ' +
         '"link_device" to link a device to a ticket by exact hostname or serial number, ' +
-        '"draft" to store a proposed reply or resolution-note draft for human review.',
+        '"draft" to store a proposed reply or resolution-note draft for human review. Actions: update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org.',
       input_schema: {
         type: 'object' as const,
         properties: {

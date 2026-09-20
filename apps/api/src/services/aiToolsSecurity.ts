@@ -62,7 +62,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'security_scan',
-      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data.',
+      description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: status, vulnerabilities.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -479,7 +479,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'sensitive data: encrypt, quarantine, secure delete, accept risk, mark false positive or remediated',
     definition: {
       name: 'remediate_sensitive_data',
-      description: 'Queue or apply sensitive-data remediation actions for findings. Supports dry-run and manual status actions.',
+      description: 'Queue or apply sensitive-data remediation actions for findings. Supports dry-run and manual status actions. Actions: encrypt, quarantine, secure_delete, accept_risk, false_positive, mark_remediated.',
       input_schema: {
         type: 'object' as const,
         properties: {

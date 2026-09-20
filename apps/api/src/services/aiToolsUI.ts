@@ -58,7 +58,7 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
     searchHint: 'saved device filters: list, get, create and delete',
     definition: {
       name: 'manage_saved_filters',
-      description: 'List, create, or delete saved device filters.',
+      description: 'List, create, or delete saved device filters. Actions: list, get.',
       input_schema: {
         type: 'object' as const,
         properties: {

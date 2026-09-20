@@ -58,7 +58,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'agent versions: list releases and check devices for available upgrades',
     definition: {
       name: 'query_agent_versions',
-      description: 'List available agent versions and check which devices need upgrades.',
+      description: 'List available agent versions and check which devices need upgrades. Actions: list_versions, check_upgrades.',
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -915,7 +915,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
 - software_policy: featurePolicyId → existing software policy UUID
 - peripheral_control: featurePolicyId → existing peripheral policy UUID
 - backup: featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? } (destination omitted = the device org's default destination). Legacy links with featurePolicyId → backup config UUID still work. Partner-wide policies may link partner-wide profiles; their destination always resolves per device org.
-- patch: can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
+- patch: can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot Actions: add.`,
       input_schema: {
         type: 'object' as const,
         properties: {
