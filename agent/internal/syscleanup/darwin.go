@@ -131,6 +131,12 @@ func (a macSnapshotsAction) Run(ctx context.Context, _ Params) ActionResult {
 	}
 
 	listing := runProcess(ctx, darwinEstimateTimeout, binary, tmutilListSnapshotsArgs()...)
+	if listing.Err != nil || listing.ExitCode != 0 || listing.TimedOut {
+		result := resultFromProc(a.ID(), listing)
+		result.Status = StatusFailed
+		result.DurationMs = time.Since(started).Milliseconds()
+		return result
+	}
 	before := len(parseTmutilSnapshots(listing.Stdout))
 	if before == 0 {
 		return ActionResult{ID: a.ID(), Status: StatusCompleted, ExitCode: 0,

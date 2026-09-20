@@ -1,6 +1,7 @@
 package syscleanup
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -108,5 +109,17 @@ func TestDarwinActionsShape(t *testing.T) {
 		if containsFold(info.RiskFlags, RiskRemovesPackages) {
 			t.Errorf("%s must not carry removes_packages", id)
 		}
+	}
+}
+
+func TestSnapshotListingCancellationIsFailed(t *testing.T) {
+	if _, ok := resolveBinary(tmutilBinary); !ok {
+		t.Skip("tmutil is not installed on this platform")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := (macSnapshotsAction{}).Run(ctx, Params{})
+	if result.Status != StatusFailed || result.Error == "" {
+		t.Fatalf("failed snapshot listing reported %+v", result)
 	}
 }
