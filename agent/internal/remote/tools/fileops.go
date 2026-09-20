@@ -3,15 +3,19 @@ package tools
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
 )
 
 const (
@@ -57,16 +61,123 @@ func readTrashMetadata(metaPath string) (*TrashMetadata, error) {
 	return &meta, nil
 }
 
-func getTrashDir() (string, error) {
-	home, err := os.UserHomeDir()
+// Home/data-dir resolvers, indirected for test injection (#6413).
+var (
+	userHomeDirFunc   = os.UserHomeDir
+	passwdHomeDirFunc = passwdHomeDir
+	agentDataDirFunc  = config.GetDataDir
+)
+
+// passwdHomeDir resolves the current user's home directory from the system
+// user database rather than the environment. os.UserHomeDir only reads $HOME
+// (USERPROFILE on Windows), which is unset in non-login execution contexts
+// such as a systemd unit without a User= home, cron, or a bare service
+// manager — the exact condition that made every delete fail in #6413.
+func passwdHomeDir() (string, error) {
+	u, err := user.Current()
 	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+		return "", fmt.Errorf("user database lookup failed: %w", err)
 	}
-	trashDir := filepath.Join(home, ".breeze-trash")
-	if err := os.MkdirAll(trashDir, 0700); err != nil {
-		return "", fmt.Errorf("failed to create trash directory: %w", err)
+	if u.HomeDir == "" {
+		return "", fmt.Errorf("user database entry for %q has no home directory", u.Username)
 	}
-	return trashDir, nil
+	return u.HomeDir, nil
+}
+
+// resolveHomeDir returns the current user's home directory, preferring the
+// environment and falling back to the system user database. Both attempts are
+// reported on failure so an operator can tell which one is broken.
+func resolveHomeDir() (string, error) {
+	home, envErr := userHomeDirFunc()
+	if envErr == nil && home != "" {
+		return home, nil
+	}
+	if envErr == nil {
+		envErr = errors.New("home directory is empty")
+	}
+	home, pwErr := passwdHomeDirFunc()
+	if pwErr == nil && home != "" {
+		return home, nil
+	}
+	if pwErr == nil {
+		pwErr = errors.New("home directory is empty")
+	}
+	return "", fmt.Errorf("failed to get home directory (environment: %v; user database: %v)", envErr, pwErr)
+}
+
+// trashDirCandidate is one candidate location for the trash, tried in order.
+type trashDirCandidate struct {
+	label   string
+	resolve func() (string, error)
+}
+
+// trashDirCandidates lists trash locations in preference order. The per-user
+// home trash stays first so existing installs keep their trash path; the agent
+// data directory is the service-context fallback, since the agent always owns
+// it regardless of environment state (#6413).
+func trashDirCandidates() []trashDirCandidate {
+	return []trashDirCandidate{
+		{
+			label: "home directory from environment",
+			resolve: func() (string, error) {
+				home, err := userHomeDirFunc()
+				if err != nil {
+					return "", err
+				}
+				if home == "" {
+					return "", errors.New("home directory is empty")
+				}
+				return filepath.Join(home, ".breeze-trash"), nil
+			},
+		},
+		{
+			label: "home directory from user database",
+			resolve: func() (string, error) {
+				home, err := passwdHomeDirFunc()
+				if err != nil {
+					return "", err
+				}
+				if home == "" {
+					return "", errors.New("home directory is empty")
+				}
+				return filepath.Join(home, ".breeze-trash"), nil
+			},
+		},
+		{
+			label: "agent data directory",
+			resolve: func() (string, error) {
+				dataDir := agentDataDirFunc()
+				if dataDir == "" {
+					return "", errors.New("agent data directory is not configured")
+				}
+				return filepath.Join(dataDir, "trash"), nil
+			},
+		},
+	}
+}
+
+// getTrashDir returns a usable trash directory, walking the candidate list
+// until one can be created. Before #6413 this resolved $HOME only, so an agent
+// running without $HOME failed every soft delete outright even though the
+// target file was perfectly deletable.
+func getTrashDir() (string, error) {
+	attempts := make([]string, 0, 3)
+	for _, candidate := range trashDirCandidates() {
+		dir, err := candidate.resolve()
+		if err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s: %v", candidate.label, err))
+			continue
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s (%s): %v", candidate.label, dir, err))
+			continue
+		}
+		return dir, nil
+	}
+	return "", fmt.Errorf(
+		"no usable trash directory (tried %s) — retry with \"permanent\": true to delete without moving to trash",
+		strings.Join(attempts, "; "),
+	)
 }
 
 const trashMaxAgeDays = 30
@@ -355,9 +466,9 @@ func ListFiles(payload map[string]any) CommandResult {
 	path := GetPayloadString(payload, "path", "")
 	if path == "" {
 		// Default to home directory
-		home, err := os.UserHomeDir()
+		home, err := resolveHomeDir()
 		if err != nil {
-			return NewErrorResult(fmt.Errorf("failed to get home directory: %w", err), time.Since(start).Milliseconds())
+			return NewErrorResult(err, time.Since(start).Milliseconds())
 		}
 		path = home
 	}
