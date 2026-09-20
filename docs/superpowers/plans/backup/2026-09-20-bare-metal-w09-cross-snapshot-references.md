@@ -92,8 +92,9 @@ else:
   if token.negotiated_capabilities already set and membership ∉ client → 409 capability_downgrade   (re-auth only)
   if snapshot.storage_identity IS NULL → 409 snapshot_storage_identity_unknown
   if resolved provider identity ≠ pinned identity → 409 storage_identity_drift
-  if file_index_status ∈ {none, agent, failed}: enqueue hydration; → 409 snapshot_index_pending {retryAfterSeconds: 30}  (failed → 409 snapshot_index_failed {reason} and enqueue again only if the failure is retryable: manifest fetch/network)
-  if file_index_status = hydrating → 409 snapshot_index_pending
+  if file_index_status ∈ {none, agent} → enqueue hydration; 409 snapshot_index_pending {retryAfterSeconds: 30}
+  if file_index_status = hydrating       → 409 snapshot_index_pending {retryAfterSeconds: 30} (no enqueue)
+  if file_index_status = failed          → 409 snapshot_index_failed {reason}; enqueue hydration iff the failure is retryable (retryability is derived from the failure code — see §3)
   if complete → granted = {membership}; persist recovery_tokens.negotiated_capabilities; fileIndex = {complete, sha, externalCount, originSnapshotIds}
 ```
 Public 409 body: `{ "error": "<code>", "message": "<human sentence>", "retryAfterSeconds"?: number, "details"?: {...} }`. Human messages (exact copy):
@@ -127,7 +128,8 @@ Drizzle: `backupSnapshots` gains `fileIndexStatus`, `fileIndexManifestSha256`, `
 `apps/api/src/services/backupSnapshotFileIndex.ts`:
 ```ts
 export type FileIndexStatus = 'none' | 'agent' | 'hydrating' | 'complete' | 'failed';
-export type HydrationFailure = 'storage_identity_unknown' | 'storage_identity_drift' | 'manifest_missing' | 'manifest_invalid' | 'manifest_key_invalid' | 'origin_unverifiable' | 'provider_error';
+export type HydrationFailure = 'storage_identity_unknown' | 'storage_identity_drift' | 'manifest_missing' | 'manifest_invalid' | 'manifest_key_invalid' | 'origin_unverifiable' | 'origin_identity_pending' | 'provider_error';
+export const RETRYABLE_HYDRATION_FAILURES: ReadonlySet<HydrationFailure> = new Set(['manifest_missing', 'provider_error', 'origin_identity_pending']); // retryability is a pure function of the failure code; `file_index_error` is stored as `<failure>: <reason>` so readers derive it from the prefix
 export type HydrationOutcome = { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] } | { status: 'failed'; failure: HydrationFailure; reason: string; retryable: boolean } | { status: 'skipped'; reason: 'not_referenced' | 'already_complete' | 'in_progress' };
 export async function hydrateSnapshotFileIndex(snapshotDbId: string, opts?: { force?: boolean; deps?: HydrationDeps }): Promise<HydrationOutcome>;
 export type HydrationDeps = { fetchManifestBytes: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<Uint8Array>; now?: () => Date };
@@ -138,10 +140,10 @@ Algorithm (system context; `runOutsideDbContext` first when called from a reques
 3. `resolveSnapshotProviderConfig(snapshotDbId)`; `storageIdentity IS NULL` → fail `storage_identity_unknown` (not retryable); `normalizeStorageIdentity(providerType, providerConfig) !== storageIdentity` → fail `storage_identity_drift`.
 4. `fetchBackupObjectBytes({provider, providerConfig, key: backupSnapshotManifestKey(snapshot.snapshotId)})` (new in `backupSnapshotStorage.ts`, byte-exact: S3 `transformToByteArray()`, local `readFile` with no encoding) → not found → fail `manifest_missing` (retryable); other error → `provider_error` (retryable). `sha = sha256hex(bytes)`.
 5. Parse with `hydrationManifestSchema` = `reconcileManifestSchema` + `.refine(m => m.id === snapshot.snapshotId)`; invalid → `manifest_invalid`. For each file entry with a non-empty `backupPath`: `parseBackupObjectKey` → null → `manifest_key_invalid` (fail closed, name the first bad key); classify own/external; collect `origins: Map<originId, count>`.
-6. For each origin id: live row `backup_snapshots WHERE snapshot_id = origin AND org_id = snapshot.orgId AND device_id = snapshot.deviceId AND storage_identity = pinned` (→ `provenance 'live'`, `origin_storage_prefix = row.metadata.storagePrefix ?? null`); else retirement `backup_snapshot_retirements WHERE snapshot_id = origin AND storage_identity = pinned AND org_id = snapshot.orgId AND device_id = snapshot.deviceId` (→ `'retired'`, prefix null); else fail `origin_unverifiable` (`reason: 'origin <id>: no live snapshot or retirement record for this device/destination'`, not retryable). A live row with `storage_identity IS NULL` does not match (fail closed; GC heals it later → retryable = true for this sub-case).
+6. For each origin id: live row `backup_snapshots WHERE snapshot_id = origin AND org_id = snapshot.orgId AND device_id = snapshot.deviceId AND storage_identity = pinned` (→ `provenance 'live'`, `origin_storage_prefix = row.metadata.storagePrefix ?? null`); else retirement `backup_snapshot_retirements WHERE snapshot_id = origin AND storage_identity = pinned AND org_id = snapshot.orgId AND device_id = snapshot.deviceId` (→ `'retired'`, prefix null); else fail `origin_unverifiable` (`reason: 'origin <id>: no live snapshot or retirement record for this device/destination'`, not retryable). A live row for that origin/org/device whose `storage_identity IS NULL` does not match either — fail closed with the distinct code `origin_identity_pending` (retryable: GC heals identities by row id on its next listing).
 7. Write: delete existing `backup_snapshot_files` rows for the snapshot; insert all entries (own AND external; `sourcePath = originalPath ?? sourcePath`, `size`, `modifiedAt`) in 1,000-row batches, each batch in its own `db.transaction`; then ONE final transaction: delete+insert `backup_snapshot_origins`, set `file_index_status='complete'`, `file_index_manifest_sha256`, `file_index_hydrated_at=now()`, `file_index_external_count`, `file_index_error=NULL`, and merge `metadata.hasIndexedFiles=true, fileIndexVersion=2`. On any failure: `file_index_status='failed'`, `file_index_error='<failure>: <reason>'` (rows may be partial — status is the authority, never row presence).
 
-Job: `apps/api/src/jobs/backupSnapshotFileIndexWorker.ts` — queue `backup-snapshot-file-index`, `enqueueSnapshotFileIndexHydration(snapshotDbId, reason: 'result' | 'recovery_create' | 'exchange' | 'manual')` with `jobId: \`hydrate:${snapshotDbId}\`` (BullMQ dedupe), attempts 3, exponential backoff 60 s, concurrency 2, registered in `workerRegistry.ts`. Triggers: `applyBackupCommandResultToJob` when `referencedFiles > 0` (after the snapshot upsert commits — enqueue via the existing post-commit hook pattern if one exists, otherwise after the transaction in `backupWorker.ts`), `createBareMetalRecovery` / `POST /bmr/tokens` preflight, exchange/authenticate pending branch. Persistence guard: the delete+reinsert at `backupResultPersistence.ts:1373` is skipped when `file_index_status = 'complete'` (server index is authoritative); otherwise it sets `file_index_status = 'agent'` when it writes rows.
+Job: `apps/api/src/jobs/backupSnapshotFileIndexWorker.ts` — queue `backup-snapshot-file-index`, `enqueueSnapshotFileIndexHydration(snapshotDbId, reason: 'result' | 'recovery_create' | 'authenticate' | 'exchange' | 'manual')` with `jobId: \`hydrate:${snapshotDbId}\`` (BullMQ dedupe), attempts 3, exponential backoff 60 s, concurrency 2, registered in `workerRegistry.ts`. Triggers: `applyBackupCommandResultToJob` when `referencedFiles > 0` (after the snapshot upsert commits — enqueue via the existing post-commit hook pattern if one exists, otherwise after the transaction in `backupWorker.ts`), `createBareMetalRecovery` / `POST /bmr/tokens` preflight, exchange/authenticate pending branch. Persistence guard: the delete+reinsert at `backupResultPersistence.ts:1373` is skipped when `file_index_status = 'complete'` (server index is authoritative); otherwise it sets `file_index_status = 'agent'` when it writes rows.
 
 ## 4. Refusal / outcome matrix (acceptance criteria — every row has a test)
 
@@ -784,7 +786,10 @@ export async function fetchBackupObjectBytes(input: {
 export type FileIndexStatus = 'none' | 'agent' | 'hydrating' | 'complete' | 'failed';
 export type HydrationFailure =
   | 'storage_identity_unknown' | 'storage_identity_drift' | 'manifest_missing'
-  | 'manifest_invalid' | 'manifest_key_invalid' | 'origin_unverifiable' | 'provider_error';
+  | 'manifest_invalid' | 'manifest_key_invalid' | 'origin_unverifiable' | 'origin_identity_pending' | 'provider_error';
+export const RETRYABLE_HYDRATION_FAILURES: ReadonlySet<HydrationFailure>;
+export function isRetryableHydrationFailure(failure: HydrationFailure): boolean;
+export function hydrationFailureFromError(error: string | null): HydrationFailure | null; // parses the `<failure>: ` prefix of file_index_error
 export type HydrationOutcome =
   | { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] }
   | { status: 'failed'; failure: HydrationFailure; reason: string; retryable: boolean }
@@ -801,7 +806,9 @@ export async function readSnapshotFileIndexState(snapshotDbId: string): Promise<
   status: FileIndexStatus;
   manifestSha256: string | null;
   externalCount: number | null;
+  originSnapshotIds: string[];      // from backup_snapshot_origins, sorted; [] unless status === 'complete'
   error: string | null;
+  retryable: boolean;               // hydrationFailureFromError(error) ∈ RETRYABLE_HYDRATION_FAILURES; false when error is null
   referencedFiles: number | null;
   storageIdentity: string | null;
 } | null>;
@@ -1010,7 +1017,7 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(outcome).toMatchObject({ status: 'complete', externalCount: 1, originSnapshotIds: ['snap-older'] });
   });
 
-  it('fails origin_unverifiable (retryable) when a live origin row exists but its storage_identity is NULL', async () => {
+  it('fails origin_identity_pending (retryable) when a live origin row exists but its storage_identity is NULL', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: null, metadata: {} }]))
@@ -1021,7 +1028,7 @@ describe('hydrateSnapshotFileIndex', () => {
       ),
     };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
-    expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_unverifiable', retryable: true });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_identity_pending', retryable: true });
   });
 
   it('fails origin_unverifiable (not retryable) when the only live row is under a DIFFERENT org', async () => {
@@ -1061,8 +1068,13 @@ describe('hydrateSnapshotFileIndex', () => {
     const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(Buffer.from('not json')) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid' });
-    const finalUpdateCall = updateMock.mock.calls.at(-1)![0];
-    expect(finalUpdateCall).toBeUndefined(); // update() takes no args; assert via .set() below instead
+    // `db.update(table)` is called with the table; the payload goes to `.set()`.
+    // Assert the LAST update chain carried the failed status + prefixed error.
+    const lastUpdateChain = updateMock.mock.results.at(-1)!.value as { set: ReturnType<typeof vi.fn> };
+    expect(lastUpdateChain.set).toHaveBeenCalledWith(
+      expect.objectContaining({ fileIndexStatus: 'failed', fileIndexError: expect.stringMatching(/^manifest_invalid: /) }),
+    );
+    expect(outcome).toMatchObject({ retryable: false });
   });
 });
 
@@ -1194,7 +1206,29 @@ export type HydrationFailure =
   | 'manifest_invalid'
   | 'manifest_key_invalid'
   | 'origin_unverifiable'
+  | 'origin_identity_pending'
   | 'provider_error';
+
+const HYDRATION_FAILURES: readonly HydrationFailure[] = [
+  'storage_identity_unknown', 'storage_identity_drift', 'manifest_missing', 'manifest_invalid',
+  'manifest_key_invalid', 'origin_unverifiable', 'origin_identity_pending', 'provider_error',
+];
+
+// Retryability is a pure function of the failure code so that the route glue
+// (authenticate/exchange) and the BullMQ worker agree without a second column:
+// transient storage/network conditions and "GC has not healed this identity
+// yet" retry; a malformed manifest or an unprovable origin never will.
+export const RETRYABLE_HYDRATION_FAILURES: ReadonlySet<HydrationFailure> = new Set<HydrationFailure>([
+  'manifest_missing', 'provider_error', 'origin_identity_pending',
+]);
+export function isRetryableHydrationFailure(failure: HydrationFailure): boolean {
+  return RETRYABLE_HYDRATION_FAILURES.has(failure);
+}
+export function hydrationFailureFromError(error: string | null): HydrationFailure | null {
+  if (!error) return null;
+  const prefix = error.split(':', 1)[0];
+  return (HYDRATION_FAILURES as readonly string[]).includes(prefix) ? (prefix as HydrationFailure) : null;
+}
 
 export type HydrationOutcome =
   | { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] }
@@ -1250,6 +1284,7 @@ async function loadSnapshotForHydration(snapshotDbId: string) {
       deviceId: backupSnapshots.deviceId,
       snapshotId: backupSnapshots.snapshotId,
       storageIdentity: backupSnapshots.storageIdentity,
+      jobId: backupSnapshots.jobId, // consumed by loadReferencedFiles below — without it hydration is a permanent no-op (review finding, 2026-09-20)
       fileIndexStatus: backupSnapshots.fileIndexStatus,
       fileIndexHydratedAt: backupSnapshots.fileIndexHydratedAt,
     })
@@ -1270,13 +1305,12 @@ async function fail(
   snapshotDbId: string,
   failure: HydrationFailure,
   reason: string,
-  retryable: boolean,
 ): Promise<HydrationOutcome> {
   await db
     .update(backupSnapshots)
     .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${reason}` })
     .where(eq(backupSnapshots.id, snapshotDbId));
-  return { status: 'failed', failure, reason, retryable };
+  return { status: 'failed', failure, reason, retryable: isRetryableHydrationFailure(failure) };
 }
 
 export async function hydrateSnapshotFileIndex(
@@ -1293,7 +1327,7 @@ export async function hydrateSnapshotFileIndex(
         return { status: 'failed', failure: 'manifest_missing', reason: 'snapshot not found', retryable: false } as const;
       }
 
-      const referencedFiles = await loadReferencedFiles(snapshotDbId, (snapshot as any).jobId);
+      const referencedFiles = await loadReferencedFiles(snapshotDbId, snapshot.jobId);
 
       if ((referencedFiles ?? 0) === 0) {
         return { status: 'skipped', reason: 'not_referenced' } as const;
@@ -1323,14 +1357,14 @@ export async function hydrateSnapshotFileIndex(
       const providerType = resolved?.providerType ?? null;
       const providerConfig = asRecord(resolved?.providerConfig);
       if (!snapshot.storageIdentity) {
-        return fail(snapshotDbId, 'storage_identity_unknown', 'snapshot has no pinned storage identity', false);
+        return fail(snapshotDbId, 'storage_identity_unknown', 'snapshot has no pinned storage identity');
       }
       if (!providerType) {
-        return fail(snapshotDbId, 'storage_identity_unknown', 'could not resolve a provider for this snapshot', false);
+        return fail(snapshotDbId, 'storage_identity_unknown', 'could not resolve a provider for this snapshot');
       }
       const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
       if (resolvedIdentity !== snapshot.storageIdentity) {
-        return fail(snapshotDbId, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${snapshot.storageIdentity}`, false);
+        return fail(snapshotDbId, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${snapshot.storageIdentity}`);
       }
 
       let bytes: Uint8Array;
@@ -1342,7 +1376,7 @@ export async function hydrateSnapshotFileIndex(
         });
       } catch (err) {
         if (isBackupObjectNotFound(err)) {
-          return fail(snapshotDbId, 'manifest_missing', 'manifest object not found in storage', true);
+          return fail(snapshotDbId, 'manifest_missing', 'manifest object not found in storage');
         }
         return fail(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err), true);
       }
@@ -1369,7 +1403,7 @@ export async function hydrateSnapshotFileIndex(
         if (!file.backupPath) continue;
         const parsedKey = parseBackupObjectKey(file.backupPath);
         if (!parsedKey) {
-          return fail(snapshotDbId, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`, false);
+          return fail(snapshotDbId, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`);
         }
         if (!file.backupPath.startsWith(ownPrefix)) {
           originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
@@ -1415,22 +1449,30 @@ export async function hydrateSnapshotFileIndex(
           continue;
         }
         // A live row existed on this device but with a NULL/mismatched
-        // identity (GC heals this eventually) is retryable; genuinely no
-        // record anywhere for this org/device is not.
-        const retryable = Boolean(live) && !live!.storageIdentity;
-        return fail(snapshotDbId, 'origin_unverifiable', `origin ${originId}: no live snapshot or retirement record for this device/destination`, retryable);
+        // identity (GC heals this eventually) is origin_identity_pending
+        // (retryable); genuinely no record anywhere for this org/device is
+        // origin_unverifiable (terminal).
+        if (live && !live.storageIdentity) {
+          return fail(snapshotDbId, 'origin_identity_pending', `origin ${originId}: live snapshot row has no storage identity yet (GC heals it on its next listing)`);
+        }
+        return fail(snapshotDbId, 'origin_unverifiable', `origin ${originId}: no live snapshot or retirement record for this device/destination`);
       }
 
       // Write file rows in 1,000-row batches, each its own transaction —
       // storage I/O already happened above, outside any DB transaction.
-      await db.transaction(async (tx) => {
-        await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
-      });
-      for (let i = 0; i < fileRows.length; i += FILE_ROW_BATCH_SIZE) {
+      // The delete rides in the SAME transaction as the first insert batch so a
+      // crash between them cannot leave a snapshot with zero rows; every later
+      // batch is its own short transaction. Status stays 'hydrating' until the
+      // final publish, so partial rows are never read as an index.
+      for (let i = 0; i < Math.max(fileRows.length, 1); i += FILE_ROW_BATCH_SIZE) {
         const batch = fileRows.slice(i, i + FILE_ROW_BATCH_SIZE);
-        if (batch.length === 0) continue;
         await db.transaction(async (tx) => {
-          await tx.insert(backupSnapshotFiles).values(batch);
+          if (i === 0) {
+            await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
+          }
+          if (batch.length > 0) {
+            await tx.insert(backupSnapshotFiles).values(batch);
+          }
         });
       }
 
@@ -1469,7 +1511,9 @@ export async function readSnapshotFileIndexState(snapshotDbId: string): Promise<
   status: FileIndexStatus;
   manifestSha256: string | null;
   externalCount: number | null;
+  originSnapshotIds: string[];
   error: string | null;
+  retryable: boolean;
   referencedFiles: number | null;
   storageIdentity: string | null;
 } | null> {
@@ -1487,11 +1531,25 @@ export async function readSnapshotFileIndexState(snapshotDbId: string): Promise<
     .limit(1);
   if (!row) return null;
   const referencedFiles = await loadReferencedFiles(snapshotDbId, row.jobId);
+  const status = row.status as FileIndexStatus;
+  const originSnapshotIds =
+    status === 'complete'
+      ? (
+          await db
+            .select({ originSnapshotId: backupSnapshotOrigins.originSnapshotId })
+            .from(backupSnapshotOrigins)
+            .where(eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId))
+            .orderBy(backupSnapshotOrigins.originSnapshotId)
+        ).map((o) => o.originSnapshotId)
+      : [];
+  const failure = hydrationFailureFromError(row.error);
   return {
-    status: row.status as FileIndexStatus,
+    status,
     manifestSha256: row.manifestSha256,
     externalCount: row.externalCount,
+    originSnapshotIds,
     error: row.error,
+    retryable: failure ? isRetryableHydrationFailure(failure) : false,
     referencedFiles,
     storageIdentity: row.storageIdentity,
   };
@@ -1576,7 +1634,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```ts
 export function enqueueSnapshotFileIndexHydration(
   snapshotDbId: string,
-  reason: 'result' | 'recovery_create' | 'exchange' | 'manual',
+  reason: 'result' | 'recovery_create' | 'authenticate' | 'exchange' | 'manual',
 ): Promise<string>; // returns the BullMQ job id
 export function initializeBackupSnapshotFileIndexWorker(): Promise<void>;
 export function shutdownBackupSnapshotFileIndexWorker(): Promise<void>;
@@ -1692,7 +1750,7 @@ const JOB_OPTIONS = {
 
 type HydrationJobData = {
   snapshotDbId: string;
-  reason: 'result' | 'recovery_create' | 'exchange' | 'manual';
+  reason: 'result' | 'recovery_create' | 'authenticate' | 'exchange' | 'manual';
 };
 
 let queue: Queue<HydrationJobData> | null = null;
@@ -2155,79 +2213,6 @@ export function negotiateRecoveryCapabilities(input: NegotiationInput): Negotiat
     return { ok: true, granted: clientHasCap ? [CAP] : [], fileIndex: null, enqueueHydration: false };
   }
 
-  if (!clientHasCap) {
-    return refuse('client_capability_required', { details: { referencedFiles: input.referencedFiles } });
-  }
-
-  if (input.previouslyNegotiated && hasMembershipCapability(input.previouslyNegotiated) && !clientHasCap) {
-    // Unreachable given the guard above (clientHasCap is already true here),
-    // kept ONLY to document the R5 shape explicitly — a re-authenticate call
-    // that OMITS capabilities on a token that already negotiated the
-    // membership capability is caught by the (!clientHasCap) branch above,
-    // which already fires 'client_capability_required'. R5's distinct code
-    // is for the narrower case: client sends SOME capabilities but drops the
-    // one this token already negotiated — handled by the block below.
-  }
-  if (input.previouslyNegotiated && hasMembershipCapability(input.previouslyNegotiated) && input.clientCapabilities !== undefined && !clientHasCap) {
-    return refuse('capability_downgrade');
-  }
-  // R5, precise form: a client that previously negotiated the capability and
-  // now authenticates with an EXPLICIT capabilities array that no longer
-  // contains it is a downgrade, not a plain "never sent one" (client_capability_required).
-  if (input.previouslyNegotiated && hasMembershipCapability(input.previouslyNegotiated) && !clientHasCap) {
-    return refuse('capability_downgrade');
-  }
-
-  if (!input.storageIdentity) {
-    return refuse('snapshot_storage_identity_unknown');
-  }
-  if (input.resolvedProviderIdentity !== input.storageIdentity) {
-    return refuse('storage_identity_drift');
-  }
-
-  if (input.fileIndex.status === 'none' || input.fileIndex.status === 'agent') {
-    return refuse('snapshot_index_pending', { retryAfterSeconds: 30, enqueueHydration: true });
-  }
-  if (input.fileIndex.status === 'hydrating') {
-    return refuse('snapshot_index_pending', { retryAfterSeconds: 30, enqueueHydration: false });
-  }
-  if (input.fileIndex.status === 'failed') {
-    return refuse('snapshot_index_failed', {
-      message: RECOVERY_REFUSAL_MESSAGES.snapshot_index_failed.replace('<reason>', input.fileIndex.error ?? 'unknown error'),
-      enqueueHydration: input.fileIndex.retryable,
-    });
-  }
-
-  // status === 'complete'
-  return {
-    ok: true,
-    granted: [CAP],
-    fileIndex: {
-      status: 'complete',
-      manifestSha256: input.fileIndex.manifestSha256!,
-      externalCount: input.fileIndex.externalCount ?? 0,
-      originSnapshotIds: input.fileIndex.originSnapshotIds,
-    },
-    enqueueHydration: false,
-  };
-}
-```
-Note: the duplicated/dead-looking R5 branches above are deliberately trimmed during implementation — write ONLY the final, precise form:
-```ts
-  if (input.previouslyNegotiated && hasMembershipCapability(input.previouslyNegotiated) && !clientHasCap) {
-    return refuse('capability_downgrade');
-  }
-```
-placed immediately after the `!clientHasCap → client_capability_required` guard is impossible to reach (clientHasCap is true past that point), so move this check to the TOP, before the `!clientHasCap` branch: a re-authenticate that drops a previously-negotiated capability must report `capability_downgrade`, not the more generic `client_capability_required` — reorder so `capability_downgrade` is checked first:
-```ts
-export function negotiateRecoveryCapabilities(input: NegotiationInput): NegotiationResult {
-  const clientHasCap = hasMembershipCapability(input.clientCapabilities);
-  const needs = typeof input.referencedFiles === 'number' && input.referencedFiles > 0;
-
-  if (!needs) {
-    return { ok: true, granted: clientHasCap ? [CAP] : [], fileIndex: null, enqueueHydration: false };
-  }
-
   const previouslyHadCap = hasMembershipCapability(input.previouslyNegotiated);
   if (previouslyHadCap && !clientHasCap) {
     return refuse('capability_downgrade');
@@ -2269,7 +2254,7 @@ export function negotiateRecoveryCapabilities(input: NegotiationInput): Negotiat
   };
 }
 ```
-This is the version to actually ship — implement this one, not the draft with the dead branches above it (left in this doc only to show the reasoning that ruled it out).
+This is the single implementation to ship (an earlier draft with dead R5 branches was removed from this doc after review).
 
 - [ ] **Step 4: Implement — schemas, recoveryBootstrap.ts, route glue**
 
@@ -2409,13 +2394,13 @@ export function buildAuthenticatedBootstrapPayload(args: {
           status: (indexState?.status ?? 'none'),
           manifestSha256: indexState?.manifestSha256 ?? null,
           externalCount: indexState?.externalCount ?? null,
-          originSnapshotIds: [],
+          originSnapshotIds: indexState?.originSnapshotIds ?? [],
           error: indexState?.error ?? null,
-          retryable: true,
+          retryable: indexState?.retryable ?? false,
         },
       });
       if (negotiation.enqueueHydration) {
-        await enqueueSnapshotFileIndexHydration(snapshot.id, 'exchange');
+        await enqueueSnapshotFileIndexHydration(snapshot.id, 'authenticate');
       }
       if (!negotiation.ok) {
         writeAuditEvent(c, {
@@ -2443,11 +2428,12 @@ and finally thread `grantedCapabilities: negotiation.granted, fileIndex: negotia
 
 `snapshot.jobId` must already be selected by `resolveSnapshotProviderConfig`'s `SELECT` (it is — `jobId: backupSnapshots.jobId` is in that function's column list, verified in `recoveryBootstrap.ts:174`), so `snapshot.jobId` above is valid. Import `readSnapshotFileIndexState` from `../../services/backupSnapshotFileIndex`, `negotiateRecoveryCapabilities` from `../../services/recoveryCapabilities`, `normalizeStorageIdentity` from `../../services/backupRetention`... — wait, `normalizeStorageIdentity` lives in `jobs/backupRetention.ts`, not `services/backupRetention.ts`; import from `../../jobs/backupRetention`. And `enqueueSnapshotFileIndexHydration` from `../../jobs/backupSnapshotFileIndexWorker`.
 
-`POST /bmr/tokens` bare_metal branch (currently the `if (payload.restoreType === 'bare_metal') { const refusal = externalReferenceRefusal(...) ... }` block) — replace with:
+`POST /bmr/tokens` bare_metal branch (currently the `if (payload.restoreType === 'bare_metal') { const refusal = externalReferenceRefusal(...) ... }` block). First extend that route's own snapshot select (`bmr.ts:448-456`, which today projects only `id`, `deviceId`, `referencedFiles`) with `storageIdentity: backupSnapshots.storageIdentity,` — without it every referenced-snapshot token is refused as identity-unknown (review finding, 2026-09-20). Then replace the block with:
 ```ts
     if (payload.restoreType === 'bare_metal') {
       const preflight = await externalReferencePreflight({
         referencedFiles: snapshot.referencedFiles, snapshotDbId: snapshot.id,
+        storageIdentity: snapshot.storageIdentity ?? null,
       });
       if (preflight) {
         return c.json({ error: preflight.code, ...(preflight.details ?? {}) }, preflight.status);
@@ -2553,7 +2539,8 @@ Rewritten cleanly — this is the version to implement:
         resolvedProviderIdentity: resolvedIdentity,
         fileIndex: {
           status: indexState?.status ?? 'none', manifestSha256: indexState?.manifestSha256 ?? null,
-          externalCount: indexState?.externalCount ?? null, originSnapshotIds: [], error: indexState?.error ?? null, retryable: true,
+          externalCount: indexState?.externalCount ?? null, originSnapshotIds: indexState?.originSnapshotIds ?? [],
+          error: indexState?.error ?? null, retryable: indexState?.retryable ?? false,
         },
       });
       if (negotiation.enqueueHydration && rec.snapshotId) {
