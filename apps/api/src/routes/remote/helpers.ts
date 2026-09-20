@@ -68,14 +68,25 @@ export function getIceServers(scope?: TurnCredentialScope): Array<{ urls: string
   const turnHost = process.env.TURN_HOST;
   const turnPort = process.env.TURN_PORT || '3478';
 
+  // TURNS (TLS) is opt-in and needs its own hostname: the certificate must
+  // validate, and TURN_HOST is documented as a bare public IP. Operators who
+  // terminate TLS on the bundled coturn set TURN_TLS_HOST to the FQDN on the
+  // certificate. Unset => plain turn: only, exactly as before (#6163).
+  const turnTlsHost = process.env.TURN_TLS_HOST;
+  const turnTlsPort = process.env.TURN_TLS_PORT || '5349';
+
   if (turnHost && scope) {
     const creds = generateTurnCredentials(scope);
     if (creds) {
+      const urls = [
+        `turn:${turnHost}:${turnPort}?transport=udp`,
+        `turn:${turnHost}:${turnPort}?transport=tcp`
+      ];
+      // TURNS is TCP-only: it is the fallback for networks that block UDP or
+      // allow only a short list of TCP ports.
+      if (turnTlsHost) urls.push(`turns:${turnTlsHost}:${turnTlsPort}?transport=tcp`);
       servers.push({
-        urls: [
-          `turn:${turnHost}:${turnPort}?transport=udp`,
-          `turn:${turnHost}:${turnPort}?transport=tcp`
-        ],
+        urls,
         username: creds.username,
         credential: creds.credential
       });
