@@ -9,6 +9,8 @@ import { randomUUID } from 'node:crypto';
  *   (SR5-01). list is recon-only and auto-executes with audit.
  * - analyze_disk_usage (Tier 1): Analyze filesystem usage for a device
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
+ * - system_cleanup (Tier 1 list, Tier 3 run): OS-native maintenance cleaners
+ *   (Disk Cleanup v2 §5.3). Thin handler over services/systemCleanup.ts.
  */
 
 import { normalizeScanPath, osRootScanPath, toCleanupOs } from '@breeze/shared';
@@ -37,12 +39,30 @@ import {
   safeCleanupCategories,
   readPlanPreviewCandidates,
 } from './filesystemAnalysis';
-import { aiExecuteCommand, aiExecuteCommandWithSystemPrecheck } from './aiDispatch';
+import { aiExecuteCommand, aiExecuteCommandWithSystemPrecheck, requireAiOrigin } from './aiDispatch';
+import {
+  MIN_AGENT_VERSION_SYSTEM_CLEANUP,
+  awaitSystemCleanupResult,
+  parseAgentJson,
+  queueSystemCleanupList,
+  startSystemCleanupRun,
+  systemCleanupCatalogSchema,
+  systemCleanupRunResultSchema,
+} from './systemCleanup';
+import { systemCleanupRunBudgetMs } from '@breeze/shared/validators';
+import { createAuditLogAsync } from './auditService';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * How long `system_cleanup list` waits for the catalog. The agent answers a
+ * list in seconds (it only sizes handlers); the rest is queue latency on a
+ * device that `verifyDeviceAccess` already confirmed online.
+ */
+const SYSTEM_CLEANUP_LIST_WAIT_MS = 180_000;
 
 /** Bounded hints keyed by conversation + user + device; the run row remains authoritative. */
 const MAX_PINNED_CLEANUP_RUNS = 500;
@@ -623,5 +643,148 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       }
       return JSON.stringify(responseData);
     }
+  });
+
+  // ============================================
+  // system_cleanup - Tier 1 list, Tier 3 run (spec §9.1)
+  // ============================================
+  //
+  // THIN on purpose. Every decision — the MIN_AGENT_VERSION gate, action-id
+  // validation, the `device_filesystem_cleanup_runs` row, the queued command —
+  // lives in services/systemCleanup.ts, shared verbatim with
+  // POST /devices/:id/filesystem/system-cleanup/{list,run}. A second
+  // implementation here is how the two lanes drift, and the destructive one is
+  // the lane with no human watching it.
+
+  registerTool({
+    tier: 1 as AiToolTier, // Base tier; `run` escalates to 3 in guardrails
+    domain: 'devices',
+    searchHint: 'OS-native disk cleanup: Windows Disk Cleanup/DISM, macOS snapshots/brew, Linux package cache/journal',
+    deviceArgs: ['deviceId'],
+    definition: {
+      name: 'system_cleanup',
+      description: 'List or run OS-native maintenance cleaners on a device: Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal. These reclaim space the file scanner cannot see. list is read-only and returns the device catalog with per-action "up to" estimates. run executes the selected actions sequentially and requires approval.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+          action: { type: 'string', enum: ['list', 'run'], description: 'list (read-only catalog) or run (execute selected actions)' },
+          actionIds: { type: 'array', items: { type: 'string' }, description: 'Catalog action ids to run, from a prior list call (required for run)' },
+          params: { type: 'object', description: 'Optional per-action parameters. journalVacuumBytes (67108864-4294967296) bounds journalctl --vacuum-size.' },
+        },
+        required: ['deviceId', 'action'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const action = input.action as 'list' | 'run';
+
+      // Throws (never returns) when the surface minted no origin — an
+      // unattributed destructive device command is refused, not degraded.
+      const aiOrigin = requireAiOrigin(auth, 'system_cleanup');
+
+      const access = await verifyDeviceAccess(deviceId, auth, true);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      // Same probe-degrade as disk_cleanup above: an `ai_agent` principal's
+      // auth.user.id is the agent's id, not a users row, and requested_by is an
+      // FK onto users.id.
+      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+      const requestedBy = userRow ? auth.user.id : null;
+
+      const device = {
+        id: access.device.id,
+        orgId: access.device.orgId,
+        agentVersion: access.device.agentVersion,
+        status: access.device.status,
+      };
+      const agentUpdateRequired = { error: 'agent_update_required', minAgentVersion: MIN_AGENT_VERSION_SYSTEM_CLEANUP };
+
+      if (action === 'list') {
+        const queued = await queueSystemCleanupList({ device, requestedBy, aiOrigin });
+        if (!queued.ok) {
+          return JSON.stringify(queued.error === 'agent_update_required' ? agentUpdateRequired : { error: queued.error });
+        }
+        const awaited = await awaitSystemCleanupResult(queued.commandId, device.orgId, SYSTEM_CLEANUP_LIST_WAIT_MS);
+        if (awaited.status !== 'completed') {
+          return JSON.stringify(
+            awaited.error === 'agent_update_required'
+              ? agentUpdateRequired
+              : { error: awaited.error ?? 'system cleanup catalog failed' },
+          );
+        }
+        // NOT an empty catalogue on an unreadable payload: "this device has no
+        // cleanup actions" is indistinguishable from the truth (spec defect 5).
+        const catalog = parseAgentJson(systemCleanupCatalogSchema, JSON.stringify(awaited.result));
+        if (!catalog) return JSON.stringify({ error: 'The agent returned an unreadable cleanup catalog' });
+        return JSON.stringify({ commandId: queued.commandId, catalog });
+      }
+
+      const actionIds = Array.isArray(input.actionIds)
+        ? input.actionIds.filter((v): v is string => typeof v === 'string' && v.length > 0)
+        : [];
+      if (actionIds.length === 0) {
+        return JSON.stringify({ error: 'actionIds are required for the run action' });
+      }
+      const params = (input.params ?? undefined) as { journalVacuumBytes?: number } | undefined;
+
+      const started = await startSystemCleanupRun({ device, requestedBy, actionIds, params, aiOrigin });
+      if (!started.ok) {
+        if (started.error === 'agent_update_required') return JSON.stringify(agentUpdateRequired);
+        if (started.error === 'run_in_progress') {
+          return JSON.stringify({ error: 'run_in_progress', cleanupRunId: started.cleanupRunId });
+        }
+        return JSON.stringify({ error: started.error });
+      }
+
+      // Wait for the SAME budget the service stored on the run row as its
+      // deadline (spec §13 #14): one number, derived once, for the route's
+      // lazy timeout and this wait alike.
+      const awaited = await awaitSystemCleanupResult(started.commandId, device.orgId, systemCleanupRunBudgetMs(actionIds));
+      const payload = awaited.status === 'completed'
+        ? parseAgentJson(systemCleanupRunResultSchema, JSON.stringify(awaited.result))
+        : null;
+      const status: 'completed' | 'failed' | 'timeout' = awaited.status === 'completed' && !payload ? 'failed' : awaited.status;
+      const error = awaited.status === 'completed' && !payload
+        ? 'The agent returned an unreadable cleanup result'
+        : awaited.error;
+
+      // Spec §10 item 9: the run is audited from this lane too. The agent
+      // result handler writes the measured device.filesystem.system_cleanup.run
+      // row for every path; this one records that an AI surface asked for it.
+      void createAuditLogAsync({
+        orgId: device.orgId,
+        actorType: requestedBy ? 'user' : 'ai_agent',
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'device.filesystem.system_cleanup.run',
+        resourceType: 'device',
+        resourceId: device.id,
+        resourceName: access.device.hostname,
+        initiatedBy: 'ai',
+        details: {
+          cleanupRunId: started.cleanupRunId,
+          commandId: started.commandId,
+          actionIds,
+          surface: 'ai_tool',
+          status,
+          freedBytes: payload?.freedBytes ?? null,
+        },
+        result: status === 'completed' ? 'success' : 'failure',
+        ...(error ? { errorMessage: error } : {}),
+      }).catch((auditError: unknown) => {
+        console.error('[system_cleanup] audit write failed (non-fatal)', { deviceId: device.id, error: auditError });
+      });
+
+      return JSON.stringify({
+        cleanupRunId: started.cleanupRunId,
+        commandId: started.commandId,
+        status,
+        freedBytes: payload?.freedBytes ?? 0,
+        actions: payload?.actions ?? [],
+        volumes: payload?.volumes ?? [],
+        ...(error ? { error } : {}),
+      });
+    },
   });
 }
