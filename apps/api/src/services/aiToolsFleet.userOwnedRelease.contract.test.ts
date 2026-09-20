@@ -65,6 +65,16 @@ const AGENT_UNREACHABLE: ReadonlySet<string> = new Set([
   // the manage_patches handler; the configuration_policies insert further down
   // is dead defense-in-depth.
   'manage_patches:setup_auto_approval',
+  // #6206 review: both write a `users` FK (`maintenance_windows.created_by`,
+  // `automations.created_by`) and both ARE in their tool's Zod enum, so the
+  // validator admits them — but each handler refuses the action as disabled
+  // ("managed through configuration policies") well above the insert, which
+  // the `AGENT_UNREACHABLE` proof below re-checks against the source on every
+  // run. Listed rather than skipped so the day a create action is re-enabled,
+  // the suite demands an agent-principal guard instead of silently allowing a
+  // 23503.
+  'manage_maintenance_windows:create',
+  'manage_automations:create',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -223,8 +233,11 @@ function hasAgentPrincipalRefusalBefore(tool: string, action: string, writeLine:
     if (!/return\s+refuseFleetAgentPrincipal\(/.test(window)) continue;
     // …and it must actually cover THIS action: either the enclosing/own guard
     // names it, or the guard chain it sits under does.
+    // The guard must be qualified by THIS action — a bare, unqualified guard
+    // is deliberately NOT accepted, so a refactor that hoists it above all
+    // action branching cannot register as covering a site it does not protect.
     const scope = lines.slice(Math.max(handlerLine, i - 12), i + 3).join('\n');
-    if (new RegExp(`action === '${action}'`).test(scope) || !/action ===/.test(scope)) return true;
+    if (new RegExp(`action === '${action}'`).test(scope)) return true;
   }
   return false;
 }
@@ -367,24 +380,23 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
     // This is a contract, not an inventory: it fails when a NEW tier-2
     // users-FK write lands without a guard, and it fails when an existing
     // guard is deleted.
-    const tier2Body = GUARDRAILS_SRC.slice(
-      GUARDRAILS_SRC.indexOf('const TIER2_ACTIONS'),
-      GUARDRAILS_SRC.indexOf('\n};', GUARDRAILS_SRC.indexOf('const TIER2_ACTIONS')),
-    );
-    const tier2 = new Set<string>();
-    for (const m of tier2Body.matchAll(/^\s{2}(\w+)\s*:\s*\[([^\]]*)\]/gm)) {
-      for (const a of m[2]!.matchAll(/'([^']+)'/g)) tier2.add(`${m[1]}:${a[1]}`);
-    }
-    expect(tier2.size, 'TIER2_ACTIONS parse produced nothing — the tier source moved').toBeGreaterThan(0);
-
+    // Scope is every action that is NOT tier 3 — i.e. everything that
+    // auto-executes inline. Membership of `TIER2_ACTIONS` is deliberately NOT
+    // the test: an action absent from every tier map falls back to its tool's
+    // base tier in `resolveGuardrailCheck`, which for these tools is 1 —
+    // auto-executing just the same. Keying off `TIER2_ACTIONS` would give this
+    // contract the same blind spot as the code it guards.
     const exposed: string[] = [];
     const guarded: string[] = [];
     for (const site of sites) {
       if (!usersFk.has(site.property)) continue;
       for (const action of site.actions) {
         const key = `${site.tool}:${action}`;
-        if (!tier2.has(key)) continue;
+        if (tier3.has(key)) continue; // governed by USER_OWNED_RELEASE_ACTIONS above
         if (!zodActions(site.tool).includes(action)) continue;
+        // Accepted by the validator but hard-refused before the write; proven
+        // against the source by its own `it`.
+        if (AGENT_UNREACHABLE.has(key)) continue;
         if (hasAgentPrincipalRefusalBefore(site.tool, action, site.line)) {
           guarded.push(`${key}@${site.line}`);
           continue;
@@ -397,7 +409,7 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
     // parse regression cannot turn this into an empty-set pass.
     expect(
       [...new Set(guarded.map((g) => g.split('@')[0]!))].sort(),
-      'the known #6206 tier-2 users-FK sites are no longer being found — the scan or the source moved',
+      'the known #6206 auto-executing users-FK sites are no longer being found — the scan or the source moved',
     ).toEqual([
       'generate_report:create',
       'generate_report:generate',

@@ -162,7 +162,7 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
  * avoid the write, never catch it.
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent';
+  return isAiAgentPrincipal(auth);
 }
 
 /**

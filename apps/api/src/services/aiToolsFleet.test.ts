@@ -1409,6 +1409,19 @@ describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
     expect(reportResult.error).not.toBe('agent_principal_unsupported_action');
   });
 
+  // #6206 review: both also write a `users` FK from auth.user.id and both ARE
+  // in their tool's Zod enum, so only the disabled-action refusal keeps them
+  // off the 23503 path. The contract test proves that refusal sits above the
+  // write; this proves it actually fires for an agent principal.
+  it.each([
+    ['manage_maintenance_windows', { action: 'create', name: 'W', startTime: '2026-01-01T00:00:00Z', endTime: '2026-01-01T01:00:00Z', targetType: 'org' }],
+    ['manage_automations', { action: 'create', name: 'A', trigger: {}, actions: [] }],
+  ])('%s:create stays disabled for an agent principal and writes nothing', async (toolName, input) => {
+    const result = JSON.parse(await toolMap.get(toolName)!.handler(input, agentAuth));
+    expect(result.error).toContain('is disabled');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('a users-FK 23503 is reported as an invalid acting identity, not a deleted record', async () => {
     // The generic 23503 mapping blamed a missing template/device/policy, which
     // is why #6200 took a prod incident to diagnose. A violated `*_users_id_fk`
