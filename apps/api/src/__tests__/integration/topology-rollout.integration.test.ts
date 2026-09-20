@@ -109,7 +109,7 @@ describe('topology foundation rollout proof', () => {
         expect(await getTestDb().select().from(table).where(and(eq(table.orgId, scope.orgId), eq(table.siteId, scope.siteId)))).toHaveLength(0);
       }
     } finally { await getTestDb().execute(sql`ALTER TABLE topology_layout ENABLE TRIGGER topology_capture_legacy_change`); }
-    const migration = readFileSync(new URL('../../../migrations/2026-10-20-150300-topology-inventory-lifecycle.sql', import.meta.url), 'utf8');
+    const migration = readFileSync(new URL('../../../migrations/2026-10-22-150300-topology-inventory-lifecycle.sql', import.meta.url), 'utf8');
     await getTestDb().transaction(async tx => { await tx.execute(sql.raw(migration)); await tx.execute(sql.raw(migration)); });
     const triggers = await getTestDb().execute(sql`SELECT tgname FROM pg_trigger WHERE tgname='breeze_topology_inventory_lifecycle' AND NOT tgisinternal`);
     expect(triggers).toHaveLength(3);
