@@ -2384,6 +2384,32 @@
     "cancel": "Cancel",
     "genericError": "Failed to start maintenance mode."
   },
+  "moveDeviceOrgDialog": {
+    "title": "Move to another organization",
+    "description": "Moves {{hostname}} out of {{orgName}}. Its history, tickets and policies move with it, and the agent reconnects under the new organization.",
+    "targetOrgLabel": "Target organization",
+    "targetOrgPlaceholder": "Choose an organization",
+    "targetSiteLabel": "Target site",
+    "targetSitePlaceholder": "Choose a site",
+    "loadingSites": "Loading sites…",
+    "noOtherOrgs": "There is no other active organization to move this device to.",
+    "noSites": "The chosen organization has no sites yet. Add a site to it first.",
+    "currencyMismatchHeading": "Unbilled work in another currency",
+    "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} unbilled time entries and {{parts}} unbilled parts keep their original currency after the move.",
+    "currencyMismatchAccept": "I understand — move the device and keep those rows in their original currency",
+    "currencyMismatchNoPermission": "Accepting this needs invoice write permission. Ask a billing administrator to bill or clear the open work first.",
+    "stepUpHeading": "Confirm it's you",
+    "stepUpIntro": "Moving a device between organizations requires a second factor.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpPasskeyNote": "You'll confirm with your passkey.",
+    "noStepUpFactor": "Add an authenticator app or passkey to your account before moving devices between organizations.",
+    "mfaRequired": "Complete MFA sign-in first, then try again.",
+    "submit": "Move device",
+    "submitStepUp": "Verify and move",
+    "submitting": "Working…",
+    "cancel": "Cancel",
+    "genericError": "Failed to move the device."
+  },
   "networkDeviceDetailPage": {
     "approval": {
       "pendingBanner": "Pending approval: nothing is monitored yet.",
