@@ -2,7 +2,9 @@ package syscleanup
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -144,5 +146,55 @@ func TestRunProcessRefusesARelativeBinary(t *testing.T) {
 	}
 	if !strings.Contains(res.Err.Error(), "absolute") {
 		t.Fatalf("error = %q, want it to name the absolute-path rule", res.Err)
+	}
+}
+
+// The leader exiting is not proof that a Windows job's real worker exited.
+type drainingTestTree struct {
+	events   []string
+	drainErr error
+}
+
+func (t *drainingTestTree) prepare(*exec.Cmd) {}
+func (t *drainingTestTree) adopt(*exec.Cmd)   { t.events = append(t.events, "adopt") }
+func (t *drainingTestTree) kill(*exec.Cmd)    {}
+func (t *drainingTestTree) drain(context.Context) error {
+	t.events = append(t.events, "drain")
+	return t.drainErr
+}
+func (t *drainingTestTree) release() { t.events = append(t.events, "release") }
+
+func TestRunProcessDrainsAssignedTreeBeforeRelease(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	for _, tc := range []struct {
+		name     string
+		script   string
+		drainErr error
+		timedOut bool
+		exitCode int
+	}{
+		{name: "leader success", script: "exit 0"},
+		{name: "leader failure", script: "exit 3", exitCode: 3},
+		{name: "tree deadline", script: "exit 0", drainErr: context.DeadlineExceeded, timedOut: true, exitCode: 1},
+		{name: "tree query failure", script: "exit 0", drainErr: errors.New("query failed"), exitCode: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := &drainingTestTree{drainErr: tc.drainErr}
+			result := runProcessWithTree(context.Background(), time.Second, tree, "/bin/sh", "-c", tc.script)
+			if got := strings.Join(tree.events, ","); got != "adopt,drain,release" {
+				t.Fatalf("events = %s", got)
+			}
+			if result.TimedOut != tc.timedOut {
+				t.Fatalf("TimedOut = %v, want %v", result.TimedOut, tc.timedOut)
+			}
+			if result.ExitCode != tc.exitCode {
+				t.Fatalf("ExitCode = %d, want %d", result.ExitCode, tc.exitCode)
+			}
+			if tc.drainErr != nil && result.Err == nil {
+				t.Fatal("drain failure must be reported")
+			}
+		})
 	}
 }

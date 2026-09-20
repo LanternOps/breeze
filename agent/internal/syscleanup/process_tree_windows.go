@@ -3,7 +3,10 @@
 package syscleanup
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -16,8 +19,7 @@ import (
 //
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is the kernel-enforced backstop the
 // installer twin uses: the tree cannot outlive the agent if the agent dies
-// mid-cleanup. It is cleared again before the handle is closed on every
-// non-timeout path — see release.
+// mid-cleanup. The handle stays protected until drain confirms completion.
 type windowsProcessTree struct {
 	handle windows.Handle
 }
@@ -86,19 +88,52 @@ func (t *windowsProcessTree) kill(*exec.Cmd) {
 	}
 }
 
-// release relinquishes ownership WITHOUT signalling. KILL_ON_JOB_CLOSE is
-// cleared FIRST, and that order is the whole point: closing the handle with
-// the flag still set would kill exactly the descendants a normally-completed
-// cleanup legitimately left running. If the flag cannot be cleared we LEAK the
-// handle rather than close it — one kernel handle versus taking those
-// descendants down.
+// jobBasicAccountingInformation mirrors JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.
+// x/sys exposes the information class but not this structure.
+type jobBasicAccountingInformation struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
+}
+
+func (t *windowsProcessTree) drain(ctx context.Context) error {
+	if t.handle == 0 {
+		return nil
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			t.kill(nil)
+			return err
+		}
+		var info jobBasicAccountingInformation
+		if err := windows.QueryInformationJobObject(t.handle, windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+			t.kill(nil)
+			return fmt.Errorf("query cleaner job accounting: %w", err)
+		}
+		if info.ActiveProcesses == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			t.kill(nil)
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// Keep KILL_ON_JOB_CLOSE as a backstop if draining failed. A successfully
+// drained job has no remaining workers to signal.
 func (t *windowsProcessTree) release() {
 	if t.handle == 0 {
-		return
-	}
-	if err := setJobKillOnClose(t.handle, false); err != nil {
-		log.Warn("could not clear cleaner job kill-on-close; retaining the handle", "error", err.Error())
-		t.handle = 0
 		return
 	}
 	_ = windows.CloseHandle(t.handle)

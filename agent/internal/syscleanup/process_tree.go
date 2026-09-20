@@ -1,6 +1,9 @@
 package syscleanup
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+)
 
 // processTree groups a cleaner with the descendants it spawns so a deadline
 // terminates the REAL worker rather than only the wrapper that launched it.
@@ -9,10 +12,8 @@ import "os/exec"
 // runner waits on the whole job object and the leader's exit code is
 // informational only (spec §7.2).
 //
-// Every method is best-effort by contract, exactly as the installer twin in
-// internal/remote/tools/software_install_process_tree.go states: a platform
-// that cannot contain the tree degrades to killing the direct child rather
-// than failing an otherwise healthy cleanup.
+// Containment setup is best-effort. Once assigned, drain must confirm tree
+// completion or return an error before the runner releases its resources.
 type processTree interface {
 	// prepare mutates cmd before Start.
 	prepare(cmd *exec.Cmd)
@@ -20,6 +21,8 @@ type processTree interface {
 	adopt(cmd *exec.Cmd)
 	// kill terminates every process in the tree.
 	kill(cmd *exec.Cmd)
+	// drain waits for all assigned workers to exit, terminating them on cancellation.
+	drain(ctx context.Context) error
 	// release drops the tree's OS resources WITHOUT terminating anything.
 	release()
 }

@@ -3,6 +3,7 @@
 package syscleanup
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"syscall"
@@ -38,3 +39,5 @@ func (unixProcessTree) kill(cmd *exec.Cmd) {
 }
 
 func (unixProcessTree) release() {}
+
+func (unixProcessTree) drain(context.Context) error { return nil }

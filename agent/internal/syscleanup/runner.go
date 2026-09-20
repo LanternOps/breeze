@@ -134,6 +134,11 @@ func (b *lockedBuffer) Bytes() []byte {
 // non-absolute path outright — the last line of defence behind the closed
 // catalogue and the server-side id validation.
 func runProcess(ctx context.Context, timeout time.Duration, path string, args ...string) ProcResult {
+	return runProcessWithTree(ctx, timeout, newProcessTree(), path, args...)
+}
+
+func runProcessWithTree(ctx context.Context, timeout time.Duration, tree processTree, path string, args ...string) ProcResult {
+	defer tree.release()
 	started := time.Now()
 	result := ProcResult{Path: path, Args: args}
 	if !filepath.IsAbs(path) {
@@ -156,8 +161,6 @@ func runProcess(ctx context.Context, timeout time.Duration, path string, args ..
 	// — which for cleanmgr's hidden session-0 UI can be well past the deadline.
 	cmd.WaitDelay = 30 * time.Second
 
-	tree := newProcessTree()
-	defer tree.release()
 	tree.prepare(cmd)
 	// CommandContext cancels while Wait is draining the output pipes. Kill
 	// descendants here: waiting until Wait returns lets them hold those pipes
@@ -179,6 +182,7 @@ func runProcess(ctx context.Context, timeout time.Duration, path string, args ..
 	tree.adopt(cmd)
 	close(adopted)
 	waitErr := cmd.Wait()
+	drainErr := tree.drain(runCtx)
 
 	result.Stdout = capOutput(stdout.Bytes())
 	result.Stderr = capOutput(stderr.Bytes())
@@ -200,7 +204,12 @@ func runProcess(ctx context.Context, timeout time.Duration, path string, args ..
 		result.Err = waitErr
 	}
 
-	if runCtx.Err() == context.DeadlineExceeded {
+	if drainErr != nil {
+		result.Err = drainErr
+		result.ExitCode = 1
+	}
+
+	if runCtx.Err() == context.DeadlineExceeded || errors.Is(drainErr, context.DeadlineExceeded) {
 		result.TimedOut = true
 		result.Err = fmt.Errorf("%s timed out after %s and its process tree was terminated",
 			filepath.Base(path), timeout)
