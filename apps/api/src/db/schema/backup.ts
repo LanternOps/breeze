@@ -367,6 +367,14 @@ export const backupSnapshots = pgTable(
     layoutManifest: jsonb('layout_manifest'),
     bareMetalRestorable: boolean('bare_metal_restorable'),
     bareMetalReasons: text('bare_metal_reasons').array(),
+    // W09 (#6464): server-verified file index. 'complete' is the ONLY state
+    // that authorizes an external-reference download — see
+    // services/backupSnapshotFileIndex.ts and services/recoveryDownloadService.ts.
+    fileIndexStatus: text('file_index_status').notNull().default('none'),
+    fileIndexManifestSha256: text('file_index_manifest_sha256'),
+    fileIndexHydratedAt: timestamp('file_index_hydrated_at', { withTimezone: true }),
+    fileIndexExternalCount: integer('file_index_external_count'),
+    fileIndexError: text('file_index_error'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
@@ -397,6 +405,44 @@ export const backupSnapshotFiles = pgTable(
   (table) => ({
     snapshotIdx: index('backup_snapshot_files_snapshot_idx').on(table.snapshotDbId),
     snapshotSourceIdx: index('backup_snapshot_files_snapshot_source_idx').on(table.snapshotDbId, table.sourcePath),
+    // W09 (#6464): the download-authorization membership check
+    // (authorizeExternalReference, Task 6) filters by (snapshot_db_id,
+    // backup_path) — index it so a 100k-row snapshot's per-download
+    // authorization stays an index lookup, not a sequential scan.
+    snapshotBackupPathIdx: index('backup_snapshot_files_snapshot_backup_path_idx').on(table.snapshotDbId, table.backupPath),
+  })
+);
+
+// W09 (#6464): verified provenance for every OLDER snapshot an incremental
+// manifest references. Written only by hydrateSnapshotFileIndex
+// (services/backupSnapshotFileIndex.ts) once the manifest has been read and
+// every referenced origin snapshot verified (live row or retirement record,
+// matching org/device/storage identity). Deliberately snapshot-keyed like
+// backupSnapshotFiles — no org_id/device_id column of its own — and
+// origin_org_id/origin_device_id are plain uuid columns, NOT FKs: provenance
+// must survive the origin device's own deletion. See Part 0 §2.
+export const backupSnapshotOrigins = pgTable(
+  'backup_snapshot_origins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    snapshotDbId: uuid('snapshot_db_id')
+      .notNull()
+      .references(() => backupSnapshots.id, { onDelete: 'cascade' }),
+    originSnapshotId: varchar('origin_snapshot_id', { length: BACKUP_SNAPSHOT_ID_MAX_LENGTH }).notNull(),
+    originOrgId: uuid('origin_org_id').notNull(),
+    originDeviceId: uuid('origin_device_id').notNull(),
+    originStorageIdentity: text('origin_storage_identity').notNull(),
+    originStoragePrefix: text('origin_storage_prefix'),
+    provenance: text('provenance').notNull(),
+    objectCount: integer('object_count').notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    snapshotOriginUq: uniqueIndex('backup_snapshot_origins_snapshot_origin_uq').on(
+      table.snapshotDbId,
+      table.originSnapshotId,
+    ),
+    snapshotIdx: index('backup_snapshot_origins_snapshot_idx').on(table.snapshotDbId),
   })
 );
 
