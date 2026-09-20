@@ -64,7 +64,6 @@ const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; p
   ['manage_org_documents', { description: 420, params: 180 }],
   ['manage_organizations', { description: 823 }],
   ['manage_patches', { description: 975, params: 315 }],
-  ['manage_policy_feature_link', { description: 8722 }],
   ['manage_processes', { params: 438 }],
   ['manage_quotes', { description: 891, params: 1419 }],
   ['manage_software_policies', { params: 248 }],

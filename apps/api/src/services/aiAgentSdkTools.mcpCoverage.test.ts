@@ -8,6 +8,7 @@ import { TOOL_TIERS, createBreezeMcpServer } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { TIER3_ACTIONS } from './aiGuardrails';
+import { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } from './aiToolsConfigPolicy';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 /**
@@ -305,8 +306,8 @@ describe('manage_organizations is wholly gated over MCP (#3258 W02)', () => {
 /**
  * The configuration-policy family takes its `tool()` description from the
  * `aiTools` registry (`registryDescription`) instead of a second inline literal,
- * because `manage_policy_feature_link`'s description IS the reference for every
- * feature type's `inlineSettings` shape. `registryDescription` throws when a
+ * while `manage_policy_feature_link` returns per-feature `inlineSettings`
+ * shapes through its describe action. `registryDescription` throws when a
  * name is absent from the registry, which is the single way that indirection
  * can fail — so assert the registry actually answers for all five.
  */
@@ -331,6 +332,9 @@ describe('registry-sourced tool descriptions resolve (#2814)', () => {
     // The three-step workflow in aiAgentSystemPrompt.ts (:60-64) is only
     // followable if the model is told how a prerequisite policy attaches.
     const description = aiTools.get('manage_policy_feature_link')!.definition.description;
+    expect(description).toContain('describe');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.backup).toContain('manage_backup_profiles');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.backup).toContain('backup PROFILE');
     expect(description).toContain('featurePolicyId');
     expect(description).toContain('inlineSettings');
     for (const name of PREREQUISITE_TOOLS) {
@@ -466,5 +470,35 @@ describe('search_documentation reaches the chat model (A-W02, #3300 class)', () 
   it('is declared on the breeze SDK server and tiered', () => {
     expect(declaredToolNames().has('search_documentation')).toBe(true);
     expect(TOOL_TIERS.search_documentation).toBe(1);
+  });
+});
+
+
+describe('policy feature reference input and read-only resolution (A-W03)', () => {
+  it('accepts describe without a policy in SDK and dispatch schemas', async () => {
+    const { buildBreezeSdkTools } = await import('./aiAgentSdkTools');
+    const declared = buildBreezeSdkTools((() => { throw new Error('no handlers'); }) as never)
+      .find(t => t.name === 'manage_policy_feature_link')!;
+    const input = { action: 'describe', featureType: 'backup' };
+    expect(z.object(declared.inputSchema).safeParse(input).success).toBe(true);
+    const schema = toolInputSchemas.manage_policy_feature_link!;
+    expect(schema.safeParse(input).success).toBe(true);
+    expect(schema.safeParse({ action: 'describe' }).success).toBe(false);
+    for (const action of ['add', 'update', 'remove', 'list']) {
+      expect(schema.safeParse({ action, featureType: 'backup' }).success).toBe(false);
+      expect(schema.safeParse({ action, configPolicyId: '11111111-1111-4111-8111-111111111111' }).success).toBe(true);
+    }
+  });
+
+  it('resolves describe as read-only with read permission', async () => {
+    const { checkGuardrails, isReadOnlyResolution, requiredPermissionsForTool, TIER2_ACTIONS, TIER2_READONLY_ACTIONS } = await import('./aiGuardrails');
+    const name = 'manage_policy_feature_link';
+    const input = { action: 'describe', featureType: 'backup' };
+    expect(TIER2_ACTIONS[name]).toContain('describe');
+    expect(TIER2_READONLY_ACTIONS[name]).toContain('describe');
+    const result = checkGuardrails(name, input);
+    expect(result).toMatchObject({ allowed: true, readOnly: true });
+    expect(isReadOnlyResolution(name, result)).toBe(true);
+    expect(requiredPermissionsForTool(name, input)).toEqual([{ resource: 'devices', action: 'read' }]);
   });
 });

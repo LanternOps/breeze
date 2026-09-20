@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
+import { CONFIG_FEATURE_TYPES, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
@@ -221,6 +221,38 @@ export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
   'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
 export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
   'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
+
+/** Per-feature inline settings reference, returned on demand by describe. */
+export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
+  patch: `{ sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
+  alert_rule: `server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.`,
+  monitoring: `agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.`,
+  maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }`,
+  automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
+  event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }`,
+  compliance: `{ items: [{ name, enforcementLevel: "monitor"|"warn"|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"|"prohibited_software"|"disk_space_minimum"|"os_version"|"registry_check"|"config_file_check", name?|minGb?|osType?|path?|valueName?|expectedValue?|minVersion? }] }] }`,
+  security: `{ realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }`,
+  backup: `{ schedule: { frequency: "daily"|"weekly"|"monthly", time: "02:00", dayOfWeek?: 2 (0=Sunday..6=Saturday), dayOfMonth?: 1 (1..28), timezone?: "UTC" }, retention: { preset: "standard"|"extended"|"compliance"|"custom", retentionDays?: 30, maxVersions?: 5 }, paths: [], targets: { paths: [], excludes: [] }, backupMode: "file"|"hyperv"|"mssql"|"system_image", destinationConfigId?: "UUID" }. featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? } (destination omitted = the device org's default destination). Legacy links with featurePolicyId → backup config UUID still work. Partner-wide policies may link partner-wide profiles; their destination always resolves per device org. Compression, encryption and notification flags are not persisted by configuration-policy backup settings.`,
+  sensitive_data: `{ detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"|"interval"|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }`,
+  warranty: `{ enabled: true, warnDays: 90, criticalDays: 30 }`,
+  helper: `{ enabled: true, showTrayIcon: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" } — showTrayIcon:false hides the system-tray icon while the helper keeps serving chat, remote-access consent and PAM dialogs.`,
+  pam: `inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.`,
+  vulnerability: `inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.`,
+  device_lifecycle: `inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.`,
+  remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
+  onedrive_helper: `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }`,
+  software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.`,
+  peripheral_control: `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.`,
+  monitors: `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"|"replace" (default "cumulative") }. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.`,
+};
+
+const LINK_ONLY_FEATURE_TYPES = new Set<ConfigFeatureType>(['software_policy', 'peripheral_control']);
+const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
+  backup: 'featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? }',
+  patch: 'featurePolicyId → existing update ring UUID (approval deferral), combined with inlineSettings for schedule/reboot',
+  software_policy: 'featurePolicyId → existing software policy UUID',
+  peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
+};
 
 export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -890,58 +922,40 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'configuration policy feature links and bundled settings: add, update, remove, list',
     definition: {
       name: 'manage_policy_feature_link',
-      description: `Add, update, remove, or list feature links on a configuration policy. Feature links define the actual settings bundled into a policy. Each policy can have one link per feature type. This is the STANDARD way to configure all device management features.
-
-Inline settings shapes by feature type:
-- patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" }
-- alert_rule: server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.
-- monitoring: agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.
-- maintenance: { recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }
-- automation: { items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }
-- event_log: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }
-- compliance: { items: [{ name, enforcementLevel: "monitor"|"warn"|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"|"prohibited_software"|"disk_space_minimum"|"os_version"|"registry_check"|"config_file_check", name?|minGb?|osType?|path?|valueName?|expectedValue?|minVersion? }] }] }
-- security: { realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }
-- backup: { scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", retentionPreset: "standard"|"extended"|"compliance"|"custom", retentionDays?: 30, retentionVersions?: 5, compression: true, encryption: true, paths: [], excludePatterns: [], notifyOnFailure: true, notifyOnSuccess: false, notifyOnMissed: true }
-- sensitive_data: { detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"|"interval"|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }
-- warranty: { enabled: true, warnDays: 90, criticalDays: 30 }
-- helper: { enabled: true, showTrayIcon: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" } — showTrayIcon:false hides the system-tray icon while the helper keeps serving chat, remote-access consent and PAM dialogs.
-- pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.
-- vulnerability: inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.
-- device_lifecycle: inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.
-- remote_access: { webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.
-- onedrive_helper: { silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }
-
-For link-only types, set featurePolicyId instead of inlineSettings:
-- software_policy: featurePolicyId → existing software policy UUID
-- peripheral_control: featurePolicyId → existing peripheral policy UUID
-- backup: featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? } (destination omitted = the device org's default destination). Legacy links with featurePolicyId → backup config UUID still work. Partner-wide policies may link partner-wide profiles; their destination always resolves per device org.
-- patch: can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot Actions: add.`,
+      description: 'Manage configuration-policy feature links. Actions: add, update, remove, list, describe. Use describe with featureType for inlineSettings and featurePolicyId guidance. Device lifecycle purge is irreversible and destroys device history. Backup destinations resolve per device org.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['add', 'update', 'remove', 'list'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['add', 'update', 'remove', 'list', 'describe'], description: 'The action to perform' },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID' },
           featureLinkId: { type: 'string', description: 'Feature link UUID (required for update/remove)' },
           featureType: {
             type: 'string',
-            enum: [
-              'patch', 'alert_rule', 'backup', 'security', 'monitoring',
-              'maintenance', 'compliance', 'automation', 'event_log',
-              'software_policy', 'sensitive_data', 'peripheral_control',
-              'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability',
-              'device_lifecycle',
-            ],
-            description: 'Feature type (required for add)',
+            enum: [...CONFIG_FEATURE_TYPES],
+            description: 'Feature type (required for add/describe)',
           },
           featurePolicyId: { type: 'string', description: 'Standalone policy UUID to link (for linked policy types)' },
-          inlineSettings: { type: 'object', description: 'Inline configuration settings (see description for shapes per feature type)' },
+          inlineSettings: { type: 'object', description: 'Inline configuration settings (use describe for the feature type shape)' },
         },
-        required: ['action', 'configPolicyId'],
+        required: ['action'],
+        anyOf: [
+          { properties: { action: { const: 'describe' } }, required: ['featureType'] },
+          { properties: { action: { enum: ['add', 'update', 'remove', 'list'] } }, required: ['configPolicyId'] },
+        ],
       },
     },
     handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
       const action = input.action as string;
+      if (action === 'describe') {
+        const featureType = input.featureType;
+        if (typeof featureType !== 'string' || !Object.prototype.hasOwnProperty.call(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE, featureType)) {
+          return JSON.stringify({ error: `featureType must be one of: ${CONFIG_FEATURE_TYPES.join(', ')}` });
+        }
+        const ft = featureType as ConfigFeatureType;
+        return JSON.stringify({ featureType: ft, linkOnly: LINK_ONLY_FEATURE_TYPES.has(ft), inlineSettings: POLICY_FEATURE_INLINE_SETTINGS_REFERENCE[ft], featurePolicyIdHint: FEATURE_POLICY_ID_HINTS[ft] });
+      }
       const configPolicyId = input.configPolicyId as string;
+      if (!configPolicyId) return JSON.stringify({ error: 'configPolicyId is required' });
 
       if (action === 'add' || action === 'update' || action === 'remove') {
         const mfaError = configPolicyMutationMfaError(auth);

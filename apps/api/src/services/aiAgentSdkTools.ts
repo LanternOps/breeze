@@ -2415,8 +2415,9 @@ export function buildBreezeSdkTools(
       'manage_policy_feature_link',
       registryDescription('manage_policy_feature_link'),
       {
-        action: z.enum(['add', 'update', 'remove', 'list']),
-        configPolicyId: uuid,
+        action: z.enum(['add', 'update', 'remove', 'list', 'describe']),
+        // Conditional requirements are enforced by toolInputSchemas at dispatch.
+        configPolicyId: uuid.optional(),
         featureLinkId: uuid.optional(),
         featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
         featurePolicyId: uuid.optional().nullable(),
