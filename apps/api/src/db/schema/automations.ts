@@ -63,6 +63,12 @@ export const automations = pgTable('automations', {
    * schema imports acyclic — the FK (ON DELETE CASCADE) lives in the migration.
    */
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),

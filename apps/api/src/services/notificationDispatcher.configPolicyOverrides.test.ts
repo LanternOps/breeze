@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
  * Delivery parity for config-policy alerts (#5289 Task 9, spec §Delivery).
@@ -18,7 +21,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * shape already proven against `processAlertNotifications`).
  */
 
-const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock } = vi.hoisted(() => ({
+const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock, predicates, resolveDeliveryMock } = vi.hoisted(() => ({
+  predicates: [] as SQL[],
+  resolveDeliveryMock: vi.fn(),
   channelEligibilityMock: vi.fn(),
   selectQueue: [] as unknown[][],
   queueAddBulkMock: vi.fn(),
@@ -29,7 +34,7 @@ vi.mock('../db', () => {
   const makeSelect = () => {
     const chain: any = {
       from: () => chain,
-      where: () => chain,
+      where: (predicate: SQL) => { predicates.push(predicate); return chain; },
       orderBy: () => chain,
       limit: () => chain,
       then: (resolve: (value: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -58,6 +63,12 @@ vi.mock('bullmq', () => ({
   Worker: class {},
   Job: class {}
 }));
+
+vi.mock('./delivery/resolveDelivery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./delivery/resolveDelivery')>();
+  resolveDeliveryMock.mockImplementation(actual.resolveDelivery);
+  return { ...actual, resolveDelivery: resolveDeliveryMock };
+});
 
 vi.mock('./redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
@@ -137,6 +148,8 @@ function makeJobStub(id: string, state: string = 'waiting') {
 
 beforeEach(() => {
   selectQueue.length = 0;
+  predicates.length = 0;
+  resolveDeliveryMock.mockClear();
   channelEligibilityMock.mockReset().mockResolvedValue(
     ['aaaaaaaa-0000-4000-8000-000000000011', 'aaaaaaaa-0000-4000-8000-000000000012', 'aaaaaaaa-0000-4000-8000-000000000013', 'aaaaaaaa-0000-4000-8000-000000000014']
       .map(id => ({ id, orgId: 'org-1', partnerId: null, enabled: true })),
@@ -156,6 +169,30 @@ const DEFAULT_ROW = {
 };
 
 describe('processAlertNotifications config-policy delivery overrides (#5289 Task 9, on resolveDelivery since W05b)', () => {
+  it('documents the converter dependency for alerts queued before retirement', () => {
+    const source = readFileSync(new URL('./notificationDispatcher.ts', import.meta.url), 'utf8');
+    expect(source).toContain('PR 3 open-alert carry-over');
+  });
+
+  it.each(['rule', 'policy'] as const)('queued %s dispatch excludes a source retired after enqueue', async (axis) => {
+    resolveDeliveryMock.mockResolvedValueOnce({ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'none' });
+    selectQueue.push(
+      [makeAlert(axis === 'rule' ? { ruleId: 'old-rule' } : { configPolicyId: 'old-policy-rule' })],
+      [{ id: 'device-1', siteId: 'site-1' }],
+      [], // Live-only source lookup: source has been retired.
+    );
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    const sql = predicates.map((predicate) => new PgDialect().sqlToQuery(predicate).sql).join('\n');
+    expect(sql).toContain(`"${axis === 'rule' ? 'alert_rules' : 'config_policy_alert_rules'}"."retired_at" is null`);
+    expect(resolveDeliveryMock).toHaveBeenCalledExactlyOnceWith({
+      orgId: 'org-1',
+      severity: 'high',
+      monitorId: null,
+      siteId: 'site-1',
+      legacyOverride: null,
+    });
+  });
+
   it('routes to the config-policy rule channels and schedules its escalation policy (transitional legacy override)', async () => {
     selectQueue.push(
       [makeAlert({ ruleId: null, configPolicyId: 'cpar1' })],

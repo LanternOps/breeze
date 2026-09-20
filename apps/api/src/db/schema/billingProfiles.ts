@@ -5,7 +5,7 @@ import { supportedCurrencies } from './currency';
 import { workTypes } from './workTypes';
 
 // Partner-axis tables. Composite same-partner FKs, CHECKs and unique indexes
-// are maintained in 2026-10-23-200000-billing-profiles.sql, matching timeTracking.ts.
+// are maintained in 2026-10-24-200000-billing-profiles.sql, matching timeTracking.ts.
 // The base row is columns so every profile always has an answer.
 export const billingProfiles = pgTable('billing_profiles', {
   id: uuid('id').primaryKey().defaultRandom(),

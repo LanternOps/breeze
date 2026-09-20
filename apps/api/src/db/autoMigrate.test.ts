@@ -1398,3 +1398,8 @@ describe('filesystem scan_path contraction (Disk Cleanup v2 W03)', () => {
     expect(migration).not.toMatch(/\bBEGIN;|\bCOMMIT;/);
   });
 });
+
+it('keeps the retirement migration scoped to legacy source columns', () => {
+  const sql = readFileSync(new URL('../../migrations/2026-10-23-120000-legacy-source-retirement-columns.sql', import.meta.url), 'utf8');
+  expect(sql).not.toMatch(/ALTER\s+TABLE\s+(?:public\.)?monitor_definitions\b/i);
+});

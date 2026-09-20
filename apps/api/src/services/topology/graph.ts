@@ -6,6 +6,7 @@ import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
 import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, nodeListQuerySchema, topologyReadEtag, type GraphTokenClaims, type NodeListQuery } from './graphCursor';
 import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, unknownHealth, safeCount, missingSubject, type NodeRow, type RelationshipRow } from './graphRead';
+import { overlayHealthSummary, readTopologyMonitorOverlays, type TopologyMonitorOverlay, type TopologyOverlaySubject } from './monitorOverlays';
 
 type ReadTx = Pick<typeof db, 'execute'>;
 type Authority = Awaited<ReturnType<typeof graphAuthority>>;
@@ -35,6 +36,22 @@ async function readState(tx: ReadTx, ctx: TopologyRequestContext, claims?: Graph
 }
 function token(ctx: TopologyRequestContext, authority: Authority, revision: string, claims: Pick<GraphTokenClaims, 'kind' | 'filter' | 'after' | 'edgeAfter' | 'boundaryAfter' | 'boundaryOnly' | 'relationshipId'>): string {
   return issueGraphToken({ ...ctx.scope, authority: authority.digest, graphRevision: revision, ...claims });
+}
+/**
+ * Read the attributed overlays for one projection and key them by subject.
+ * Reads never dispatch a probe, create a monitor, or advance a revision: an
+ * overlay is only ever a view of monitoring that already ran.
+ */
+async function overlaysBySubject(
+  tx: ReadTx, ctx: TopologyRequestContext, subjects: TopologyOverlaySubject[],
+): Promise<Map<string, TopologyMonitorOverlay>> {
+  const overlays = await readTopologyMonitorOverlays(ctx, subjects, { executor: tx as Pick<typeof db, 'execute'> });
+  return new Map(overlays.map((overlay) => [`${overlay.subject.kind}:${overlay.subject.id}`, overlay]));
+}
+function subjectHealth(
+  overlays: Map<string, TopologyMonitorOverlay> | undefined, scope: 'node' | 'relationship', id: string,
+) {
+  return overlays ? overlayHealthSummary(scope, overlays.get(`${scope}:${id}`)) : undefined;
 }
 function emptyGraph(ctx: TopologyRequestContext, query: GraphQuery, authority: Authority): GraphResponse {
   return { schemaVersion: 1, siteId: ctx.scope.siteId, view: query.view, asOf: new Date().toISOString(),
@@ -98,8 +115,15 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
   const positions = layout ? await tx.execute<Position>(sql`SELECT p.node_id AS "nodeId", p.x, p.y, p.pinned, p.position_source AS source, p.revision::text AS "rowRevision"
     FROM topology_node_positions p WHERE ${scoped(ctx.scope, 'p')} AND p.layout_id = ${layout.id}::uuid
       AND p.deleted_at IS NULL AND p.node_id = ANY(${idArray}) ORDER BY p.node_id LIMIT ${query.limit}`) : [];
-  graph.nodes = rows.map((row) => presentNode(row, authority.canEdit));
-  graph.relationships = relationships.slice(0, edgeLimit).map((row) => presentRelationship(row, authority.canEdit));
+  const visibleRelationships = relationships.slice(0, edgeLimit);
+  const overlays = query.includeHealth
+    ? await overlaysBySubject(tx, ctx, [
+      ...ids.map((id) => ({ kind: 'node' as const, id })),
+      ...visibleRelationships.map((row) => ({ kind: 'relationship' as const, id: row.id })),
+    ])
+    : undefined;
+  graph.nodes = rows.map((row) => presentNode(row, authority.canEdit, subjectHealth(overlays, 'node', row.id)));
+  graph.relationships = visibleRelationships.map((row) => presentRelationship(row, authority.canEdit, subjectHealth(overlays, 'relationship', row.id)));
   graph.revisions = { graph: state.graph, health: state.health, layout: layout?.revision ?? '0' };
   const version = Number(layout?.version ?? 0);
   graph.layout = { algorithm: layout?.algorithm ?? 'none', version: Number.isSafeInteger(version) && version >= 0 ? version : 0, positions: [...positions] };
@@ -230,7 +254,10 @@ export async function getTopologyHealth(ctx: TopologyRequestContext, query: z.in
   return db.transaction(async (tx) => {
     const state = await readState(tx, ctx);
     if (parsed.graphRevision !== undefined && parsed.graphRevision !== (state?.graph ?? '0')) throw new GraphReadError('graph_revision_changed', 409, 'Topology graph changed; reload the projection');
-    const entities: { nodes: { id: string; health: ReturnType<typeof unknownHealth> }[]; relationships: { id: string; health: ReturnType<typeof unknownHealth> }[] } = { nodes: [], relationships: [] };
+    type HealthEntry = { id: string; health: ReturnType<typeof overlayHealthSummary> };
+    const entities: { nodes: HealthEntry[]; relationships: HealthEntry[] } = { nodes: [], relationships: [] };
+    const present: TopologyOverlaySubject[] = [];
+    const found: Record<'nodes' | 'relationships', string[]> = { nodes: [], relationships: [] };
     for (const [table, ids, key, kind] of [
       ['topology_nodes', parsed.nodeIds, 'nodes', 'node'], ['topology_relationships', parsed.relationshipIds, 'relationships', 'relationship'],
     ] as const) {
@@ -238,8 +265,12 @@ export async function getTopologyHealth(ctx: TopologyRequestContext, query: z.in
       const rows = await tx.execute<{ id: string }>(sql`SELECT e.id FROM ${sql.identifier(table)} e WHERE ${scoped(ctx.scope, 'e')}
         AND e.deleted_at IS NULL AND e.id IN (${sql.join(unique.map((id) => sql`${id}::uuid`), sql`, `)}) LIMIT ${unique.length}`);
       if (rows.length !== unique.length) throw missingSubject();
-      entities[key] = rows.map(({ id }) => ({ id, health: unknownHealth(kind) }));
+      found[key] = rows.map(({ id }) => id);
+      present.push(...rows.map(({ id }) => ({ kind, id })));
     }
+    const overlays = present.length ? await overlaysBySubject(tx, ctx, present) : undefined;
+    entities.nodes = found.nodes.map((id) => ({ id, health: subjectHealth(overlays, 'node', id) ?? overlayHealthSummary('node', undefined) }));
+    entities.relationships = found.relationships.map((id) => ({ id, health: subjectHealth(overlays, 'relationship', id) ?? overlayHealthSummary('relationship', undefined) }));
     return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', healthRevision: state?.health ?? '0', ...entities }, authority, parsed);
   });
 }

@@ -166,6 +166,12 @@ export * from './agentRollback';
 export * from './offlineTransitionEffects';
 export * from './monitorDefinitions';
 export * from './monitorEpisodes';
+export * from './monitorConversions';
 export * from './toolSources';
 export * from './topology';
+
+export * from "./topologyCollections";
+export * from './topologyOperations';
+
+export * from './topologyTemplates';
 export * from './emailSendingDomains';

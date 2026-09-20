@@ -897,6 +897,7 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
       and(
         ownershipCondition,
         eq(alertRules.isActive, true),
+        isNull(alertRules.retiredAt),
         or(...targetConditions)
       )
     );

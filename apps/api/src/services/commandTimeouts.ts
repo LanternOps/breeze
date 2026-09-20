@@ -89,6 +89,14 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.BACKUP_RESTORE,
 ]);
 
+/**
+ * A diagnostic plan's own lifetime ceiling (120s, topologyDiagnosticLimitsSchema)
+ * plus a delivery grace. Deliberately shorter than every other tier: an
+ * accepted-but-delayed diagnostic must EXPIRE, never acquire a fresh execution
+ * budget when the agent reconnects.
+ */
+export const NETWORK_DIAGNOSTIC_TIMEOUT_MS = 150 * 1000;
+
 const RESTORE_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
@@ -143,6 +151,11 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
+  if (
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC ||
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC_CANCEL
+  )
+    return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;

@@ -208,6 +208,12 @@ export const configPolicyAlertRules = pgTable('config_policy_alert_rules', {
   // honoured both. Nullable = "inherit", which is the pre-#5289 behaviour.
   escalationPolicyId: uuid('escalation_policy_id'),
   notificationChannelIds: jsonb('notification_channel_ids').$type<string[] | null>(),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -227,6 +233,12 @@ export const configPolicyAutomations = pgTable('config_policy_automations', {
   actions: jsonb('actions').notNull(),
   onFailure: automationOnFailureEnum('on_failure').notNull().default('stop'),
   sortOrder: integer('sort_order').notNull().default(0),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -429,6 +441,12 @@ export const configPolicyMonitoringWatches = pgTable('config_policy_monitoring_w
   rationale: text('rationale'),
 
   sortOrder: integer('sort_order').notNull().default(0),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

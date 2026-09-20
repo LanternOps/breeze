@@ -55,6 +55,7 @@ var allCommandTypes = []string{
 
 	// handlers_network.go init()
 	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll,
+	tools.CmdNetworkDiagnostic, tools.CmdNetworkDiagnosticCancel,
 	tools.CmdNetworkPing, tools.CmdNetworkTcpCheck,
 	tools.CmdNetworkHttpCheck, tools.CmdNetworkDnsCheck,
 

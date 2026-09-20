@@ -1463,3 +1463,16 @@ describe('featureLinks routes', () => {
     });
   });
 });
+
+describe('retired feature history response', () => {
+  it('reports that removal emptied a retained feature link', async () => {
+    mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }] });
+    removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule', kept: true, reason: 'retired_history' });
+    const response = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, kept: true, reason: 'retired_history' });
+    expect(removeFeatureLinkMock).toHaveBeenCalledWith(LINK_ID, POLICY_ID);
+  });
+});

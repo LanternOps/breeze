@@ -21,7 +21,7 @@ import './setup';
 import { getTestDb } from './setup';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, organizations, sites, devices } from '../../db/schema';
-import { configurationPolicies, configPolicyFeatureLinks } from '../../db/schema/configurationPolicies';
+import { configurationPolicies, configPolicyFeatureLinks, configPolicyAlertRules } from '../../db/schema/configurationPolicies';
 import { backupConfigs, backupJobs, backupSnapshots } from '../../db/schema/backup';
 import { backupVerifications } from '../../db/schema/backupVerification';
 import { removeFeatureLink } from '../../services/configurationPolicy';
@@ -171,5 +171,31 @@ describe('#2302 backup feature-link FK actions', () => {
     expect(
       await tdb.select().from(backupVerifications).where(eq(backupVerifications.backupJobId, backupJobId))
     ).toHaveLength(0);
+  });
+});
+
+describe('retired feature-link cascade preservation', () => {
+  it.each([true, false])('removing alert rules preserves retired history when present=%s', async (hasRetired) => {
+    const tdb = getTestDb();
+    const [link] = await tdb.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policyId, featureType: 'alert_rule', inlineSettings: { items: [{ name: 'Live' }] },
+    }).returning();
+    const [live] = await tdb.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id, name: 'Live', severity: 'medium', conditions: {},
+    }).returning();
+    const [retired] = hasRetired ? await tdb.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id, name: 'Retired', severity: 'medium', conditions: {},
+      retiredAt: new Date(), retiredReason: 'operator',
+    }).returning() : [];
+
+    const result = await withDbAccessContext(orgContext, () => removeFeatureLink(link!.id, policyId));
+    expect(result?.kept).toBe(hasRetired);
+    const remainingLinks = await tdb.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, link!.id));
+    expect(remainingLinks).toHaveLength(hasRetired ? 1 : 0);
+    expect(await tdb.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, live!.id))).toHaveLength(0);
+    if (retired) {
+      expect(remainingLinks[0]!.inlineSettings).toEqual({ items: [] });
+      expect(await tdb.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, retired.id))).toEqual([retired]);
+    }
   });
 });

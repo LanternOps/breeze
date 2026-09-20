@@ -270,7 +270,12 @@ function parseRegistrySource(): RegistryEntrySource[] {
 // contract, not a shared fixture, so an edit that silently drops/renames an
 // entry can't slip past both suites at once).
 const EXPECTED_NAMES = [
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
+  'topologyTemplateApplyWorker',
+  'topologyDiagnosticWorker',
+  'topologyDiagnosticSweeper',
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',

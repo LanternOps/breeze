@@ -12,6 +12,7 @@ export type RelationshipRow = {
   directness: GraphRelationship['directness']; confidence: GraphRelationship['confidence'];
   evidenceClass: 'observed' | 'inferred' | 'manual'; lifecycle: GraphRelationship['lifecycle'];
   lastSupportedAt: string | null; supportCount: string; legacy: boolean;
+  sourceInterfaceId?: string | null; targetInterfaceId?: string | null; observedFreshUntil?: string | null;
 };
 function column(alias: string, field: string): SQL { return sql`${sql.identifier(alias)}.${sql.identifier(field)}`; }
 export function scoped(scope: TopologyScope, alias: string): SQL {
@@ -47,6 +48,8 @@ export function listFilter(scope: TopologyScope, query: NodeListQuery): SQL {
   return sql`${scoped(scope, 'n')} AND n.deleted_at IS NULL AND n.alias_target_id IS NULL
     AND n.lifecycle = ${query.lifecycle ?? 'active'}
     AND ${query.kind ? sql`n.kind = ${query.kind}` : sql`true`}
+    AND ${query.deviceId ? sql`EXISTS (SELECT 1 FROM topology_node_bindings b WHERE ${scoped(scope, 'b')} AND b.node_id=n.id AND b.device_id=${query.deviceId}::uuid)` : sql`true`}
+    AND ${query.assetId ? sql`EXISTS (SELECT 1 FROM topology_node_bindings b WHERE ${scoped(scope, 'b')} AND b.node_id=n.id AND b.discovered_asset_id=${query.assetId}::uuid)` : sql`true`}
     AND ${query.health && query.health !== 'unknown' ? sql`false` : sql`true`}
     AND ${search ? sql`(coalesce(n.label_override, n.attributes->>'label', n.kind || ' ' || n.id::text) ILIKE ${search} ESCAPE ${'\\'} OR n.attributes->>'prefix' ILIKE ${search} ESCAPE ${'\\'})` : sql`true`}`;
 }
@@ -61,25 +64,30 @@ export function nodeColumns(scope: TopologyScope): SQL {
 }
 export const relationshipColumns = sql`r.id, r.kind, r.source_node_id AS "sourceNodeId", r.target_node_id AS "targetNodeId", r.directness, r.confidence,
   r.evidence_class AS "evidenceClass", r.lifecycle, r.last_supported_at AS "lastSupportedAt", r.support_count::text AS "supportCount",
-  (r.legacy_source_id IS NOT NULL) AS legacy`;
+  (r.legacy_source_id IS NOT NULL) AS legacy, r.source_interface_id AS "sourceInterfaceId", r.target_interface_id AS "targetInterfaceId",
+  (SELECT max(CASE WHEN cs.producer_epoch=rs.producer_epoch AND cs.revoked_at IS NULL
+      AND cs.published_digest=cs.content_digest AND rs.content_digest=cs.published_digest AND cs.last_outcome IN ('complete','partial')
+    THEN greatest(rs.fresh_until,cs.fresh_until) ELSE rs.fresh_until END)
+   FROM topology_relationship_support rs JOIN topology_collection_sources cs ON cs.id=rs.source_id AND cs.org_id=rs.org_id AND cs.site_id=rs.site_id
+   WHERE rs.org_id=r.org_id AND rs.site_id=r.site_id AND rs.relationship_id=r.id AND rs.lifecycle='active') AS "observedFreshUntil"`;
 export function unknownHealth(scope: 'node' | 'relationship') {
   return { status: 'unknown' as const, coverage: 'unmonitored' as const, scope, originNodeId: null, resultId: null,
     freshness: 'unknown' as const, reasons: [{ code: 'monitoring_unavailable', message: 'Topology monitoring is not available in this milestone.' }] };
 }
 function timestamp(value: string | Date | null): string | null { return value ? new Date(value).toISOString() : null; }
-export function presentNode(row: NodeRow, canEdit: boolean): GraphNode {
+export function presentNode(row: NodeRow, canEdit: boolean, health?: GraphNode['health']): GraphNode {
   if (row.bindings.length > 100) throw new GraphReadError('topology_binding_limit', 503, 'Node binding detail exceeds the supported projection limit');
   return { id: row.id, kind: row.kind, role: row.role?.trim() || null, label: row.label.trim().slice(0, 255) || `${row.kind} ${row.id}`, bindings: row.bindings,
     lifecycle: row.lifecycle, freshness: 'unknown', evidence: { classes: row.kind === 'manual' ? ['manual'] : [],
       methods: row.legacy ? ['legacy'] : [], count: row.legacy || row.kind === 'manual' ? '1' : '0', lastObservedAt: timestamp(row.lastObservedAt) },
-    health: unknownHealth('node'), availableActions: canEdit && row.kind === 'manual' ? ['edit', 'delete'] : [] };
+    health: health ?? unknownHealth('node'), availableActions: canEdit && row.kind === 'manual' ? ['edit', 'delete'] : [] };
 }
-export function presentRelationship(row: RelationshipRow, canEdit: boolean): GraphRelationship {
+export function presentRelationship(row: RelationshipRow, canEdit: boolean, health?: GraphRelationship['health']): GraphRelationship {
   return { id: row.id, kind: row.kind, directionality: row.kind === 'physical_link' ? 'undirected' : 'directed',
-    sourceNodeId: row.sourceNodeId, targetNodeId: row.targetNodeId, sourceInterfaceId: null, targetInterfaceId: null,
+    sourceNodeId: row.sourceNodeId, targetNodeId: row.targetNodeId, sourceInterfaceId: row.sourceInterfaceId ?? null, targetInterfaceId: row.targetInterfaceId ?? null,
     meaning: row.kind, directness: row.directness, confidence: row.confidence, lifecycle: row.lifecycle,
     evidence: { classes: [row.evidenceClass], methods: row.legacy ? ['legacy'] : row.evidenceClass === 'manual' ? ['manual'] : [],
-      count: row.supportCount, lastObservedAt: timestamp(row.lastSupportedAt) }, freshness: 'unknown', health: unknownHealth('relationship'),
+      count: row.supportCount, lastObservedAt: timestamp(row.lastSupportedAt) }, freshness: row.observedFreshUntil ? (Date.parse(row.observedFreshUntil)>Date.now()?'fresh':'stale') : 'unknown', health: health ?? unknownHealth('relationship'),
     excluded: false, availableActions: canEdit && row.evidenceClass === 'manual' ? ['edit', 'delete'] : [] };
 }
 export function safeCount(value: string | number | undefined): number {

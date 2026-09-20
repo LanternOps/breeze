@@ -28,7 +28,13 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
+  'topologyTemplateApplyWorker',
+  // M1 Task 18 — durable diagnostic dispatch and its expiry sweeper.
+  'topologyDiagnosticWorker',
+  'topologyDiagnosticSweeper',
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
@@ -92,11 +98,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    // Base was 142. Topology foundation (#6028) added
-    // jobs/topologyOutboxWorker.ts (142 → 143 on main); Disk Cleanup v2 W03
-    // independently added jobs/filesystemCleanupRunRetention.ts (142 → 143 on
-    // this branch). Merged, both land: 142 → 144.
-    expect(WORKER_REGISTRY.length).toBe(144);
+    expect(WORKER_REGISTRY.length).toBe(149);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -138,14 +140,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(144);
+    expect(selectWorkers('all').length).toBe(149);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(144);
+    expect(api.length + worker.length).toBe(149);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -153,7 +155,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(144);
+    expect(union.size).toBe(149);
   });
 
   it("'api' selects only socket-owner placements", () => {

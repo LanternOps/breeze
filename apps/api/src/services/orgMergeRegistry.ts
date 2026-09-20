@@ -806,6 +806,15 @@ const REPOINT_TABLES: readonly string[] = [
   "metric_anomaly_incidents",
   "metric_rollups",
   "metric_rollups_default",
+  // #6370 — conversion ledger rows follow their org, including outputs with
+  // their own denormalised org_id. Partner-owned rows have NULL org_id and
+  // never match the repoint's WHERE org_id = <loser>. The output-to-conversion
+  // composite FKs are deferrable; the merge defers them while both rows move.
+  // No dedupe: a legacy source has one owner, and the live (source_table,
+  // source_id) unique index is global, not org-scoped. Both orgs cannot have
+  // live conversions of the same source; rewriting org_id changes no key.
+  "monitor_conversion_outputs",
+  "monitor_conversions",
   // #5289 — an org-owned monitor definition repoints with the org like any
   // other config row; its compiled alert_rules/alert_templates/automations rows
   // are already in this list and repoint alongside it.
@@ -953,14 +962,28 @@ const REPOINT_TABLES: readonly string[] = [
   "time_entries",
   "time_series_metrics",
   "topology_change_outbox",
+  "topology_collection_runs",
+  "topology_collection_sources",
+  "topology_config_template_versions",
+  "topology_config_templates",
+  "topology_diagnostic_runs",
+  "topology_diagnostic_steps",
+  "topology_interfaces",
   "topology_layout",
   "topology_layouts",
   "topology_manual_nodes",
+  "topology_monitor_bindings",
+  "topology_monitoring_policies",
   "topology_node_bindings",
   "topology_node_positions",
   "topology_nodes",
+  "topology_observations",
+  "topology_policy_targets",
+  "topology_probe_targets",
+  "topology_relationship_support",
   "topology_relationships",
   "topology_site_state",
+  "topology_site_template_bindings",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

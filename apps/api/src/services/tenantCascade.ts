@@ -559,6 +559,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // rule / automation rows and to every config_policy_monitors attachment, all
   // of which are listed earlier or reached by FK, so alphabetical order is also
   // a safe delete order here (asserted by tenantCascade.integration.test.ts).
+  // W05c1 conversion ledger. outputs → conversions (ON DELETE CASCADE) and
+  // conversions.policy_id → configuration_policies (SET NULL), outputs.monitor_id
+  // → monitor_definitions (SET NULL): alphabetical order is also child-before-
+  // parent here.
+  'monitor_conversion_outputs',
+  'monitor_conversions',
   'monitor_definitions',
   // #5290 — device-scoped operational rows. Both FK to monitor_definitions with
   // ON DELETE CASCADE, and monitor_device_state.current_episode_id FKs to
@@ -799,14 +805,28 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tool_source_tools',
   'tool_sources',
   'topology_change_outbox',
+  'topology_collection_runs',
+  'topology_collection_sources',
+  'topology_config_template_versions',
+  'topology_config_templates',
+  'topology_diagnostic_runs',
+  'topology_diagnostic_steps',
+  'topology_interfaces',
   'topology_layout',
   'topology_layouts',
   'topology_manual_nodes',
+  'topology_monitor_bindings',
+  'topology_monitoring_policies',
   'topology_node_bindings',
   'topology_node_positions',
   'topology_nodes',
+  'topology_observations',
+  'topology_policy_targets',
+  'topology_probe_targets',
+  'topology_relationship_support',
   'topology_relationships',
   'topology_site_state',
+  'topology_site_template_bindings',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',
