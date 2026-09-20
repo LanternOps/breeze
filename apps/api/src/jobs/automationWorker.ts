@@ -495,7 +495,7 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   const [automation] = await db
     .select()
     .from(automations)
-    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true)))
+    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true), isNull(automations.retiredAt)))
     .limit(1);
 
   if (!automation) {
@@ -846,7 +846,7 @@ async function processTriggerConfigPolicySchedule(
   const [cpAutomation] = await db
     .select()
     .from(configPolicyAutomations)
-    .where(and(eq(configPolicyAutomations.id, data.configPolicyAutomationId), eq(configPolicyAutomations.enabled, true)))
+    .where(and(eq(configPolicyAutomations.id, data.configPolicyAutomationId), eq(configPolicyAutomations.enabled, true), isNull(configPolicyAutomations.retiredAt)))
     .limit(1);
 
   if (!cpAutomation) {
@@ -1171,7 +1171,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   const candidates = await db
     .select()
     .from(automations)
-    .where(and(ownershipCondition, eq(automations.enabled, true)));
+    .where(and(ownershipCondition, eq(automations.enabled, true), isNull(automations.retiredAt)));
 
   const payload = normalizePayload(event.payload);
 
@@ -1226,7 +1226,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
       const { configPolicyId: cpAssignedPolicyId, automations: cpAutomations } = resolved;
 
       for (const cpAutomation of cpAutomations) {
-        if (!cpAutomation.enabled) continue;
+        if (!cpAutomation.enabled || cpAutomation.retiredAt) continue;
         if (cpAutomation.triggerType !== 'event') continue;
         if (cpAutomation.eventType !== event.type) continue;
 

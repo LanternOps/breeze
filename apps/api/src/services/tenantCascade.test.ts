@@ -204,6 +204,8 @@ describe('getOrgCascadeDeleteOrder()', () => {
       'audit_logs',
       'agent_logs',
       'ml_feedback_events',
+      'monitor_conversion_outputs',
+      'monitor_conversions',
       'organizations',
     ]) {
       expect(set.has(required), `missing required table ${required}`).toBe(true);

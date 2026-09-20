@@ -75,11 +75,49 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'topologyReconcileWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyReconcileWorker');
+      return { init: m.initializeTopologyReconcileWorker, shutdown: m.shutdownTopologyReconcileWorker };
+    },
+  },
+  {
+    name: 'topologyCollectionRetentionWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyCollectionRetentionWorker');
+      return { init: m.initializeTopologyCollectionRetentionWorker, shutdown: m.shutdownTopologyCollectionRetentionWorker };
+    },
+  },
+  {
     name: 'topologyOutboxWorker',
     placement: 'global',
     load: async () => {
       const m = await import('../jobs/topologyOutboxWorker');
       return { init: m.initializeTopologyOutboxWorker, shutdown: m.shutdownTopologyOutboxWorker };
+    },
+  },
+  {
+    name: 'topologyTemplateApplyWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyTemplateApplyWorker');
+      return { init: m.initializeTopologyTemplateApplyWorker, shutdown: m.shutdownTopologyTemplateApplyWorker };
+    },
+  },
+  {
+    name: 'topologyDiagnosticWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/topologyDiagnosticWorker');
+      return { init: m.initializeTopologyDiagnosticWorker, shutdown: m.shutdownTopologyDiagnosticWorker };
+    },
+  },
+  {
+    name: 'topologyDiagnosticSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyDiagnosticSweeper');
+      return { init: m.initializeTopologyDiagnosticSweeper, shutdown: m.shutdownTopologyDiagnosticSweeper };
     },
   },
   {

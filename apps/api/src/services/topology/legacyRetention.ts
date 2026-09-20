@@ -13,6 +13,13 @@ export async function pruneDeliveredTopologyOutbox(scope: TopologyScope, now = n
     SELECT o.id FROM topology_change_outbox o
     WHERE o.org_id=${scope.orgId}::uuid AND o.site_id=${scope.siteId}::uuid
       AND o.delivered_at IS NOT NULL AND o.delivered_at<${cutoff}::timestamptz
+      -- Application journals are deliberately excluded from graph replay.
+      -- Their pending execution remains durable even after the retention floor.
+      AND (o.event_kind NOT LIKE 'template.application.%'
+        OR (o.event_kind='template.application.preview' AND (o.payload->>'expiresAt')::timestamptz < now())
+        OR (o.event_kind='template.application.intent'
+          AND o.payload->'outcome'->>'state' IN ('applied','conflict','failed')
+          AND o.updated_at < now()-interval '30 days'))
       AND (o.event_kind<>'relationship.delete' OR EXISTS (
         SELECT 1 FROM topology_relationships r WHERE r.org_id=o.org_id AND r.site_id=o.site_id
           AND r.legacy_source_type=o.payload->>'sourceTable' AND r.legacy_source_id=o.aggregate_id AND r.legacy_source_revision>=o.source_revision))

@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, timestamp, bigint, integer, boolean, jsonb, doublePrecision, primaryKey, uniqueIndex, index, foreignKey, check } from 'drizzle-orm/pg-core';
 import type { NodeKind, RelationshipKind, Lifecycle, Directness, Confidence, EvidenceClass, TopologyView } from '@breeze/shared';
 import { sites } from './orgs';
+import { topologyInterfaces } from './topologyCollections';
 import { devices } from './devices';
 import { discoveredAssets, topologyManualNodes } from './discovery';
 
@@ -13,7 +14,7 @@ export interface TopologyIdentityMaterial {
   sourceKey: string;
 }
 export interface TopologyNodeAttributes { label?: string; notes?: string; prefix?: string; addressFamily?: 4 | 6; }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy'; createdBy?: string; }
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context'; createdBy?: string; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.
@@ -117,6 +118,8 @@ export const topologyRelationships = pgTable('topology_relationships', {
   kind: varchar('kind', { length: 24 }).$type<RelationshipKind>().notNull(),
   sourceNodeId: uuid('source_node_id').notNull(),
   targetNodeId: uuid('target_node_id').notNull(),
+  sourceInterfaceId: uuid('source_interface_id'),
+  targetInterfaceId: uuid('target_interface_id'),
   logicalContext: jsonb('logical_context').$type<Record<string, unknown>>().notNull().default({}),
   directness: varchar('directness', { length: 24 }).$type<Directness>().notNull().default("unknown"),
   confidence: varchar('confidence', { length: 16 }).$type<Confidence>().notNull().default("asserted"),
@@ -135,6 +138,8 @@ export const topologyRelationships = pgTable('topology_relationships', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  foreignKey({ name: 'topology_relationships_source_interface_fk', columns: [table.sourceInterfaceId, table.sourceNodeId, table.orgId, table.siteId], foreignColumns: [topologyInterfaces.id, topologyInterfaces.ownerNodeId, topologyInterfaces.orgId, topologyInterfaces.siteId] }),
+  foreignKey({ name: 'topology_relationships_target_interface_fk', columns: [table.targetInterfaceId, table.targetNodeId, table.orgId, table.siteId], foreignColumns: [topologyInterfaces.id, topologyInterfaces.ownerNodeId, topologyInterfaces.orgId, topologyInterfaces.siteId] }),
   primaryKey({ name: 'topology_relationships_pkey', columns: [table.id] }),
   check('topology_relationships_kind_chk', sql`kind IN ('network_member','default_route','egress_path','physical_link','attachment')`),
   check('topology_relationships_directness_chk', sql`directness IN ('direct','via_unmanaged','unknown')`),

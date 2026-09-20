@@ -4,13 +4,14 @@
 // on its own.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import TopologyEntry from '../topology/TopologyEntry';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ApprovalBanner } from './networkDevice/ApprovalBanner';
 import { resolveAssetTimezone } from './networkDevice/reachabilityCopy';
 import { useNetworkAssetMutations } from './networkDevice/settings/useNetworkAssetMutations';
 import { useHashState } from '@/lib/useHashState';
-import { Activity, LayoutGrid } from 'lucide-react';
+import { Activity, LayoutGrid, Network } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -178,6 +179,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const tabDefs: OverflowTab[] = [
     { id: 'overview', label: t('networkDeviceDetailPage.tabs.overview'), icon: <LayoutGrid aria-hidden="true" className="h-4 w-4" /> },
     { id: 'monitoring', label: t('networkDeviceDetailPage.tabs.monitoring'), icon: <Activity aria-hidden="true" className="h-4 w-4" /> },
+    // The map is site-scoped; an asset without a site has nothing to anchor it.
+    ...(extras.siteId ? [{ id: 'topology', label: t('topology:title'), icon: <Network aria-hidden="true" className="h-4 w-4" /> }] : []),
   ];
   // Must match the `testIdPrefix` passed to OverflowTabs below — it's the
   // same string OverflowTabs uses internally (via `overflowPanelId`) to build
@@ -367,6 +370,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
             timezone={timezone}
             onOpenMonitoringSettings={() => openSettings('monitoring')}
           />
+        </div>
+      )}
+
+      {activeTab === 'topology' && extras.siteId && (
+        <div
+          data-testid="network-detail-topology"
+          role="tabpanel"
+          id={overflowPanelId('topology', TAB_ID_PREFIX)}
+          aria-labelledby={overflowTabId('topology', TAB_ID_PREFIX)}
+        >
+          <TopologyEntry siteId={extras.siteId} assetId={asset.id} />
         </div>
       )}
 

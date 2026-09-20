@@ -18,7 +18,7 @@ import {
   partners,
   configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, ne, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, ne, inArray, isNull, type SQL } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -244,19 +244,24 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   let monitorId: string | null = alert.monitorId ?? null;
   let legacyOverride: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null = null;
 
+  // PR 3 open-alert carry-over must re-key open alerts to their monitor in
+  // the conversion transaction. Without that dependency, a job queued before
+  // retirement whose alert still has no monitorId reaches default delivery
+  // with legacyOverride null and loses the retired source's escalation.
+  // This applies to both legacy lookup branches below.
   if (alert.ruleId) {
     const [rule] = await db
       .select({ overrideSettings: alertRules.overrideSettings, managedByMonitorId: alertRules.managedByMonitorId })
       .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
+      .where(and(eq(alertRules.id, alert.ruleId), isNull(alertRules.retiredAt)))
       .limit(1);
     if (rule) {
       monitorId = monitorId ?? rule.managedByMonitorId ?? null;
       if (!rule.managedByMonitorId) {
         // Transitional (spec §Delivery resolution "Transitional", W05b → W05d):
         // an UNMANAGED legacy rule keeps its own channel/escalation overrides
-        // until it is converted. W05c adds `retired_at IS NULL` to this lookup;
-        // W05c1 Task 8 covers BOTH legacy lookups with a queued-dispatch regression.
+        // until it is converted. Retired sources are excluded; queued alerts
+        // depend on the transactional carry-over described above.
         // W05d deletes the branch. A MANAGED (monitor-compiled) rule is never
         // read for delivery — the monitor definition is the source of truth.
         const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
@@ -269,15 +274,15 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   } else if (alert.configPolicyId) {
     // Config-policy inline rule (#5289 Task 9): `configPolicyId` holds the
     // config_policy_alert_rules row id (historical column name). Same
-    // transitional treatment as an unmanaged alert_rules row. W05c1 Task 8 adds
-    // isNull(configPolicyAlertRules.retiredAt) here, alongside alertRules.retiredAt above.
+    // transitional treatment as an unmanaged alert_rules row, with retired
+    // sources excluded even for jobs queued before conversion.
     const [cpRule] = await db
       .select({
         escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
         notificationChannelIds: configPolicyAlertRules.notificationChannelIds
       })
       .from(configPolicyAlertRules)
-      .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
+      .where(and(eq(configPolicyAlertRules.id, alert.configPolicyId), isNull(configPolicyAlertRules.retiredAt)))
       .limit(1);
     if (cpRule) {
       legacyOverride = { channelIds: cpRule.notificationChannelIds ?? null, escalationPolicyId: cpRule.escalationPolicyId ?? null };

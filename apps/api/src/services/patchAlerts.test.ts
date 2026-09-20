@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // AI patch agent W04 (#5750) — server-side patch alert sources. Both emitters
 // MUST write through createAlert (the shared cooldown/dedupe/publish path),
@@ -24,6 +26,7 @@ vi.mock('../db/schema', () => ({
     createdAt: 'created_at',
   },
   alertRules: {
+    retiredAt: 'retired_at',
     id: 'id',
     orgId: 'org_id',
     name: 'name',
@@ -78,6 +81,8 @@ import { captureException } from './sentry';
 import {
   PATCH_ALERT_CATEGORY,
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS,
+  ensurePatchJobFailureRule,
+  ensureRebootPendingRule,
   emitPatchJobFailureAlert,
   emitRebootPendingAlert,
   rebootPendingSince,
@@ -119,6 +124,7 @@ function primeInserts(rowsByTable: Map<unknown, Record<string, unknown>>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(db.select).mockReset();
   insertCalls = [];
   vi.mocked(createAlert).mockResolvedValue('alert-1');
   vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
@@ -137,6 +143,30 @@ beforeEach(() => {
 describe('PATCH_ALERT_CATEGORY', () => {
   it('re-exports the shared category spelling', () => {
     expect(PATCH_ALERT_CATEGORY).toBe('patching');
+  });
+});
+
+describe.each([ensurePatchJobFailureRule, ensureRebootPendingRule])('patch rule provisioning: %s', (ensureRule) => {
+  it.each([false, true])('only reuses live rules (existing retired: %s)', async (retired) => {
+    const existing = { id: 'existing-rule', retiredAt: retired ? new Date() : null };
+    let lookup: ReturnType<PgDialect['sqlToQuery']> | undefined;
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn((condition: SQL) => {
+          lookup = new PgDialect().sqlToQuery(condition);
+          const retiredParameter = lookup.params.indexOf('retired_at') + 1;
+          const excludesRetired = lookup.sql.includes(`$${retiredParameter} is null`);
+          return { limit: vi.fn().mockResolvedValue(retired && excludesRetired ? [] : [existing]) };
+        }),
+      }),
+    } as any);
+    if (retired) mockSelectOnce([{ id: 'template-1' }]);
+    primeInserts(new Map([[alertRules, { id: 'fresh-rule' }]]));
+
+    expect(await ensureRule(ORG_ID)).toBe(retired ? 'fresh-rule' : 'existing-rule');
+    expect(lookup?.params).toContain(ORG_ID);
+    expect(lookup?.params).toContain('retired_at');
+    expect(insertCalls.filter((call) => call.table === alertRules)).toHaveLength(retired ? 1 : 0);
   });
 });
 

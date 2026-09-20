@@ -210,6 +210,22 @@ describe('processTriggerConfigPolicySchedule — ownership clamp keys on the ASS
     vi.mocked(resolveAutomationsForDeviceWithPolicy).mockReset();
   });
 
+  it('does not schedule the shadowed parent when the converted child has no legacy executables', async () => {
+    const deviceChain: any = {
+      from: () => deviceChain, innerJoin: () => deviceChain,
+      where: async () => [{ id: 'dev-1' }],
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(automationChain())
+      .mockReturnValueOnce(chain([{ orgId: 'org-a', partnerId: null, status: 'active' }]))
+      .mockReturnValueOnce(chain([{ id: 'fl-parent' }]))
+      .mockReturnValueOnce(deviceChain);
+    vi.mocked(resolveAutomationsForDeviceWithPolicy).mockResolvedValue({ configPolicyId: 'converted-child', automations: [] });
+    expect(await processTriggerConfigPolicySchedule({ ...jobData, configPolicyId: 'parent', policyId: 'parent' }))
+      .toEqual({ skipped: 'no_winning_devices' });
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
   it('reads ownership from configuration_policies by the assigned id, never via the link', async () => {
     const ownerChain = chain([{ orgId: 'org-a', partnerId: null, status: 'active' }]);
     const effectiveChain = chain([{ id: 'fl-parent' }]);

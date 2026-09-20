@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NetworkDeviceDetailPage from './NetworkDeviceDetailPage';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from '../topology/topologyFixtures';
 
 // Keep legacy discovery/action queues separate from the new parallel reads.
 const { fetchWithAuthMock, monitoringFetchMock } = vi.hoisted(() => ({
   fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(),
 }));
 vi.mock('../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: (url: string, init?: RequestInit) =>
     url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
       ? monitoringFetchMock(url, init) : init === undefined ? fetchWithAuthMock(url) : fetchWithAuthMock(url, init),
@@ -26,6 +28,8 @@ vi.mock('@/lib/navigation', () => ({
 vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
+
+vi.mock('../topology/TopologyCanvas', () => ({ default: () => <div data-testid="topology-canvas" /> }));
 
 const showToastMock = vi.mocked(showToast);
 
@@ -1815,5 +1819,29 @@ describe('NetworkDeviceDetailPage', () => {
         vi.useRealTimers();
       }
     });
+  });
+
+  it('opens #topology with passive reads and resolves the canonical inventory binding', async () => {
+    window.location.hash = '#topology';
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === `/discovery/assets/${ASSET_ID}`) return makeJsonResponse({ data: { ...baseAsset, siteId: SITE } });
+      if (url.endsWith('/settings')) return makeJsonResponse(topologySettingsFixture());
+      if (url.includes('/nodes?')) return makeJsonResponse({ siteId: SITE, graphRevision: '1', total: 1, nodes: topologyGraphFixture().nodes, cursor: null });
+      if (url.includes('/graph?')) return makeJsonResponse(topologyGraphFixture());
+      return makeJsonResponse({ data: [] });
+    });
+    const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    try {
+      expect(await screen.findByTestId('topology-explorer')).toBeVisible();
+      expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
+      expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes(`focusNodeId=${NODE}`))).toBe(true);
+      // Opening the map is passive: nothing but GETs leaves the page.
+      expect(fetchWithAuthMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    } finally {
+      unmount();
+      vi.unstubAllGlobals();
+      window.location.hash = '';
+    }
   });
 });

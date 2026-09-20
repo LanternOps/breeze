@@ -761,7 +761,8 @@ function rejectMalformedCriticalResult(
 
 function normalizeCriticalResultIfNeeded(
   commandType: string,
-  result: AgentCommandResult
+  result: AgentCommandResult,
+  commandPayload?: unknown
 ): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -781,7 +782,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: result.durationMs,
       error: result.error,
       result: result.result,
-    });
+    }, { commandPayload });
     if (!validated) {
       return {
         normalizedResult: result,
@@ -2076,7 +2077,7 @@ async function processCommandResult(
       normalizedResult: rawNormalizedResult,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, result);
+    } = normalizeCriticalResultIfNeeded(command.type, result, command.payload);
 
     // #3409 PR4a — exact-value redaction against the secrets THIS command
     // carried, before either the device_commands.result write below or (via
@@ -2307,6 +2308,24 @@ async function processCommandResult(
         await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        // No org wrap: the topology result path establishes its own bounded
+        // system context, and the producer identity comes from this connection.
+        const { ingestTopologyDiagnosticCommandResult } = await import('../services/topology/diagnosticResults');
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: resolvedDeviceId!,
+          agentId,
+          commandId: result.commandId,
+          result: normalizedResult.result,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology diagnostic result ${result.commandId}:`, err);
         captureException(err);
       }
     }

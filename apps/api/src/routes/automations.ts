@@ -674,7 +674,7 @@ automationRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const conditions: SQL<unknown>[] = [];
+    const conditions: SQL<unknown>[] = [isNull(automations.retiredAt)];
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {

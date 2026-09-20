@@ -132,3 +132,6 @@ docker-compose.override.pam.yml
 
 # Git LFS hooks regenerated per-workspace (core.hooksPath=.githooks)
 .githooks/
+
+# Measured acceptance/soak artifacts (topology fleet gates, ad-hoc harness runs)
+test-results/
