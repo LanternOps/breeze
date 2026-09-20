@@ -228,7 +228,9 @@
       "logFailed": "Falha ao registrar tempo",
       "logged": "Tempo registrado",
       "logFailedSentence": "Falha ao registrar tempo."
-    }
+    },
+    "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
+    "includedMinutes": "{{hours}} h incluídas no contrato"
   },
   "inboundReviewQueue": {
     "title": "Fila de revisão",

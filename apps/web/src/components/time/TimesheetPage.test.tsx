@@ -266,3 +266,42 @@ it('preserves an overridden outcome when the work type changes', async () => {
   expect(screen.getByTestId('timesheet-edit-outcome-te-1')).toHaveTextContent('€100.00/h');
   expect(screen.getByTestId('timesheet-edit-outcome-te-1')).not.toHaveTextContent('recalculated');
 });
+
+describe('worked vs billed hours on the timesheet (#4628 W03)', () => {
+  const withEntry = (over: Record<string, unknown>) => ({
+    ...week,
+    days: [
+      { date: '2026-06-08', totalMinutes: 30, billableMinutes: 30, entries: [{ ...entry, ...over }] },
+      ...['09', '10', '11', '12', '13', '14'].map((d) => ({ date: `2026-06-${d}`, totalMinutes: 0, billableMinutes: 0, entries: [] })),
+    ],
+    totals: { totalMinutes: 30, billableMinutes: 30, billableAmounts: [{ currencyCode: 'USD', amount: '225.00' }] },
+  });
+  const serve = (sheet: unknown) => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [] }) } as Response;
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes(sheet);
+      if (url.startsWith('/users')) return jsonRes([{ id: 'u-1', name: 'Todd', email: 't@x' }]);
+      return jsonRes({});
+    });
+  };
+
+  it('shows billed vs worked on an entry row', async () => {
+    serve(withEntry({ durationMinutes: 30, billableMinutes: 60 }));
+    render(<TimesheetPage />);
+    expect(await screen.findByText('0.50 h worked · 1.00 h billed')).toBeInTheDocument();
+  });
+
+  it('day totals still report ACTUAL minutes, not the billed quantity (§3.5)', async () => {
+    serve(withEntry({ durationMinutes: 30, billableMinutes: 60 }));
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('timesheet-day-2026-06-08')).textContent).toContain('30m');
+    expect(screen.getByTestId('timesheet-day-2026-06-08').textContent).not.toContain('1h 0m');
+  });
+
+  it('adds no line when the billed quantity equals the worked time', async () => {
+    serve(withEntry({ durationMinutes: 60, billableMinutes: 60 }));
+    render(<TimesheetPage />);
+    await screen.findByTestId('timesheet-entry-te-1');
+    expect(screen.queryByText(/h worked ·/)).toBeNull();
+  });
+});

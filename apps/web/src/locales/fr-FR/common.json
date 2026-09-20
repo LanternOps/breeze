@@ -1712,7 +1712,8 @@
         "running": "En cours",
         "editEntry": "Modifier l’entrée {{id}}",
         "total": "Total : {{duration}}",
-        "billableTotal": "Facturable : {{duration}}"
+        "billableTotal": "Facturable : {{duration}}",
+        "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées"
       },
       "sourceBadge": {
         "timer": "Minuteur",

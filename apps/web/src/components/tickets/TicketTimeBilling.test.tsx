@@ -410,3 +410,63 @@ it('updates the quick-add outcome for a manager rate and billable override', asy
   fireEvent.click(screen.getByTestId('ticket-billing-quick-add-billable'));
   expect(screen.getByTestId('ticket-billing-quick-add-outcome')).toHaveTextContent('Non-billable');
 });
+
+describe('worked vs billed hours (#4628 W03)', () => {
+  const routeWith = (over: { entries?: unknown[]; summary?: unknown }) => async (url: string) => {
+    if (url === '/billing-profiles/work-types') {
+      return { ok: true, json: async () => ({ workTypes: [] }) } as Response;
+    }
+    if (url.startsWith('/tickets/tk-1/billing-summary')) {
+      return { ok: true, status: 200, json: async () => ({ data: over.summary ?? summary }) } as Response;
+    }
+    if (url.startsWith('/tickets/tk-1/time-entries')) {
+      return { ok: true, status: 200, json: async () => ({ data: over.entries ?? [], total: (over.entries ?? []).length }) } as Response;
+    }
+    return { ok: true, status: 200, json: async () => ({ data: {} }) } as Response;
+  };
+
+  it('shows worked vs billed when a minimum or rounding moved the quantity, straight off the API payload', async () => {
+    fetchWithAuth.mockImplementation(routeWith({
+      entries: [{ ...entries[0], id: 'te-min', durationMinutes: 30, billableMinutes: 60 }],
+    }));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect(await screen.findByText('0.50 h worked · 1.00 h billed')).toBeInTheDocument();
+  });
+
+  it('shows no worked/billed line when they are the same', async () => {
+    fetchWithAuth.mockImplementation(routeWith({
+      entries: [{ ...entries[0], id: 'te-same', durationMinutes: 60, billableMinutes: 60 }],
+    }));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-total');
+    expect(screen.queryByText(/h worked ·/)).toBeNull();
+  });
+
+  it('a pre-feature entry (no billableMinutes) shows no worked/billed line', async () => {
+    fetchWithAuth.mockImplementation(routeWith({
+      entries: [{ ...entries[0], id: 'te-old', durationMinutes: 30 }],
+    }));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-total');
+    expect(screen.queryByText(/h worked ·/)).toBeNull();
+  });
+
+  it('shows contract-included hours in the summary', async () => {
+    fetchWithAuth.mockImplementation(routeWith({
+      summary: { time: { totalMinutes: 45, billableMinutes: 0, includedMinutes: 45, billableAmounts: [] },
+        parts: { partsCount: 0, billableTotals: [] } },
+    }));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect(await screen.findByText('0.75 h included in contract')).toBeInTheDocument();
+  });
+
+  it('shows no included line when nothing is contract-covered', async () => {
+    fetchWithAuth.mockImplementation(routeWith({
+      summary: { time: { totalMinutes: 45, billableMinutes: 45, includedMinutes: 0, billableAmounts: [] },
+        parts: { partsCount: 0, billableTotals: [] } },
+    }));
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-time-total');
+    expect(screen.queryByText(/included in contract/)).toBeNull();
+  });
+});

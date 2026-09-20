@@ -228,7 +228,9 @@
       "logFailed": "Impossible d’enregistrer le temps",
       "logged": "Temps enregistré",
       "logFailedSentence": "Impossible de noter le temps."
-    }
+    },
+    "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
+    "includedMinutes": "{{hours}} h incluses au contrat"
   },
   "inboundReviewQueue": {
     "title": "File d’attente pour les révisions",

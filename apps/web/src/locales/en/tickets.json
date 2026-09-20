@@ -228,7 +228,9 @@
       "logFailed": "Failed to log time",
       "logged": "Time logged",
       "logFailedSentence": "Failed to log time."
-    }
+    },
+    "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
+    "includedMinutes": "{{hours}} h included in contract"
   },
   "inboundReviewQueue": {
     "title": "Review queue",

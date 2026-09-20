@@ -1712,7 +1712,8 @@
         "running": "running",
         "editEntry": "Edit entry {{id}}",
         "total": "Total: {{duration}}",
-        "billableTotal": "Billable: {{duration}}"
+        "billableTotal": "Billable: {{duration}}",
+        "billedVsWorked": "{{worked}} h worked · {{billed}} h billed"
       },
       "sourceBadge": {
         "timer": "Timer",

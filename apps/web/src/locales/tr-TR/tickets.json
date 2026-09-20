@@ -228,7 +228,9 @@
       "logFailed": "Zaman kaydedilemedi",
       "logged": "Kaydedilen zaman",
       "logFailedSentence": "Zaman kaydedilemedi."
-    }
+    },
+    "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı",
+    "includedMinutes": "{{hours}} sa sözleşmeye dahil"
   },
   "inboundReviewQueue": {
     "title": "İnceleme kuyruğu",
