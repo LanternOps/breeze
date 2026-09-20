@@ -24,6 +24,7 @@ import {
   backupSnapshotSummarySchema,
 } from '../jobs/queueSchemas';
 import {
+  backupCommandResultSchema,
   backupSnapshotFileResultSchema,
   backupSnapshotResultSchema,
 } from './backup/resultSchemas';
@@ -161,6 +162,25 @@ describe('backup result schema parity: route ingress ⊆ strict queue schema (#5
       `jobs/queueSchemas.ts's backupSnapshotFileSchema is missing ${missing.join(', ')} — ` +
         'the strict queue schema will reject every result carrying those fields and the ' +
         'backup job will hang in `running` forever (#5413).'
+    ).toEqual([]);
+  });
+
+  // The TOP-LEVEL pair. This is the one that actually gates `warning`,
+  // `errorCount`, `vssMetadata`, `metadata`, the manifests — i.e. most of the
+  // fields a new backup feature adds. A key added to the route schema and
+  // missed here reproduces #5413 exactly.
+  it('every TOP-LEVEL result key the route schema accepts is declared on the queue schema', () => {
+    const routeKeys = objectKeys(backupCommandResultSchema);
+    const queueKeys = objectKeys(backupProcessResultSchema);
+    expect(routeKeys).toContain('vssMetadata');
+    expect(queueKeys).toContain('snapshotId');
+
+    const missing = routeKeys.filter((key) => !queueKeys.includes(key));
+    expect(
+      missing,
+      `jobs/queueSchemas.ts's backupProcessResultSchema is missing ${missing.join(', ')} — ` +
+        'the strict queue schema will reject (or, if the agentWs literal also omits it, ' +
+        'silently drop) every result carrying those fields (#5413).'
     ).toEqual([]);
   });
 

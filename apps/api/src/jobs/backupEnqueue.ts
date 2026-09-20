@@ -98,6 +98,8 @@ export interface ProcessResultsResult {
   referencedBytes?: number;
   // system_image (system-state) backups carry these; the WS handler must
   // forward them or the snapshot loses its type label + BMR restore manifest.
+  // Free-form agent job metadata — see backupProcessResultSchema (#5413).
+  metadata?: Record<string, unknown>;
   backupType?: 'file' | 'system_image' | 'database' | 'application';
   systemStateManifest?: Record<string, unknown> | null;
   // Bare-metal recovery (W01): disk layout + guard verdict, same forwarding

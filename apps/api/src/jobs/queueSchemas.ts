@@ -71,6 +71,11 @@ export const backupProcessResultSchema = z.object({
   // open z.record (arbitrary keys allowed) so an unmodeled field never fails
   // the job. NOTE: this schema itself is .strict(), so new *top-level* fields
   // still must be declared here or the whole job fails validation.
+  // Free-form job metadata the agent attaches (#5413). Persistence reads it
+  // (normalizeMetadata in backupResultPersistence.ts) and the Redis-DOWN inline
+  // branch already carried it by spread — declaring it here is what lets the
+  // queued path carry it too. Open record for the same reason as the manifests.
+  metadata: z.record(z.string(), z.unknown()).optional(),
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
   // Bare-metal recovery (W01): disk layout + guard verdict, forwarded the same
