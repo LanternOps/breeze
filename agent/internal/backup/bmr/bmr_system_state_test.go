@@ -1197,3 +1197,48 @@ func TestRunRecoveryContext_NotCompleted_NeverHasEmptyError(t *testing.T) {
 		t.Fatalf("status %q must carry a terminal error; warnings: %v", result.Status, result.Warnings)
 	}
 }
+
+// TestRunRecoveryContext_FirstFailureWins_AcrossFailureKinds proves the
+// "first cause wins" guarantee that #5479's terminal error rests on, across
+// two DIFFERENT failure kinds: artifact one is rejected outright (a
+// traversing path, never downloaded) and artifact two fails integrity
+// verification. The terminal error must lead with the rejection — the
+// earlier cause — while the later failure survives in the warnings.
+func TestRunRecoveryContext_FirstFailureWins_AcrossFailureKinds(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-5479-first-failure-wins"
+	buildOrdinaryManifestFixture(t, provider, snapshotID)
+
+	content := []byte("second artifact bytes")
+	uploadSystemStateArtifact(t, provider, snapshotID, "config/second.txt", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+		Artifacts: []systemstate.Artifact{
+			{Name: "traversing-artifact", Category: "config", Path: "../escape.txt", SizeBytes: 1},
+			{Name: "corrupt-artifact", Category: "config", Path: "config/second.txt", SizeBytes: int64(len(content)) + 100},
+		},
+	})
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+
+	result, err := RunRecoveryContext(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if err != nil {
+		t.Fatalf("RunRecoveryContext failed: %v", err)
+	}
+	if !strings.Contains(result.Error, "traversing-artifact") {
+		t.Fatalf("error = %q, want it to lead with the FIRST failure (traversing-artifact)", result.Error)
+	}
+	if strings.Contains(result.Error, "corrupt-artifact") {
+		t.Fatalf("error = %q, want only the first failure promoted, not the later one", result.Error)
+	}
+	var sawSecond bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "corrupt-artifact") {
+			sawSecond = true
+		}
+	}
+	if !sawSecond {
+		t.Fatalf("the later failure must still be warned about, warnings: %v", result.Warnings)
+	}
+}

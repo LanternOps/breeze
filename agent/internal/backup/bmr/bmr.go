@@ -210,11 +210,17 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		result.Status = "failed"
 	}
 
-	// A run that did not reach "completed" must always carry SOME terminal
-	// reason. If nothing above produced one, fall back to the first
-	// validation failure — otherwise the server persists a failed/partial
-	// restore with an empty error and the console is back to showing bare
-	// "failed" (#5479). Deliberately gated on status: a "completed" run
+	// Backstop for the #5479 invariant: a run that did not reach
+	// "completed" must always carry SOME terminal reason, or the server
+	// persists a failed/partial restore with an empty error and the console
+	// is back to showing bare "failed". Today this is unreachable by
+	// construction — each of the three conditions that keeps the switch
+	// above off "completed" (filesErr, stateErr, stateBlocksCompletion)
+	// already set an error earlier — and it is kept deliberately so a
+	// future phase that introduces a fourth way to miss "completed" cannot
+	// silently reintroduce the empty-error bug. The invariant itself is
+	// asserted by TestRunRecoveryContext_NotCompleted_NeverHasEmptyError.
+	// Deliberately gated on status: a "completed" run
 	// whose validation merely flagged something (e.g. a network probe that
 	// cannot succeed on an isolated recovery network) keeps that in
 	// Warnings and must NOT be presented as a failure reason.

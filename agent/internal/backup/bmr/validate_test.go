@@ -354,7 +354,7 @@ func simpleInactiveProbe(t *testing.T, props map[string]string) func(string, ...
 			if out, ok := props[unit]; ok {
 				return []byte(out), nil
 			}
-			return []byte("Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=yes\n"), nil
+			return []byte("Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n"), nil
 		default:
 			t.Fatalf("unexpected command: %s %v", name, args)
 			return nil, nil
@@ -396,9 +396,9 @@ func TestCheckServicesLinux_SkipsTemplateUnits(t *testing.T) {
 func TestCheckServicesLinux_OneshotExitedIsHealthy(t *testing.T) {
 	withGOOS(t, "linux")
 	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
-		"grub-common.service":    "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\n",
-		"e2scrub_reap.service":   "Type=oneshot\nActiveState=active\nSubState=exited\nConditionResult=yes\n",
-		"broken-oneshot.service": "Type=oneshot\nActiveState=failed\nSubState=failed\nConditionResult=yes\n",
+		"grub-common.service":    "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n",
+		"e2scrub_reap.service":   "Type=oneshot\nActiveState=active\nSubState=exited\nConditionResult=yes\nUnitFileState=enabled\n",
+		"broken-oneshot.service": "Type=oneshot\nActiveState=failed\nSubState=failed\nConditionResult=yes\nUnitFileState=enabled\n",
 	}))
 
 	ok, inactive := checkServices([]string{"grub-common.service", "e2scrub_reap.service", "broken-oneshot.service"})
@@ -416,7 +416,7 @@ func TestCheckServicesLinux_OneshotExitedIsHealthy(t *testing.T) {
 func TestCheckServicesLinux_ConditionNotMetIsHealthy(t *testing.T) {
 	withGOOS(t, "linux")
 	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
-		"dmesg.service": "Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=no\n",
+		"dmesg.service": "Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=no\nUnitFileState=enabled\n",
 	}))
 
 	ok, inactive := checkServices([]string{"dmesg.service"})
@@ -456,5 +456,39 @@ func TestParseSystemctlShow_ValueContainingEquals(t *testing.T) {
 	}
 	if _, ok := props["notaproperty"]; ok {
 		t.Fatal("line without = must be ignored")
+	}
+}
+
+// TestCheckServicesLinux_DisabledOrMissingUnitStaysAFinding proves the
+// oneshot / condition-not-met exemptions do NOT extend to a unit the
+// restore left disabled, masked, or gone entirely: the snapshot listed
+// these units as enabled, so losing that enablement is precisely the
+// regression the probe exists to catch (#5479).
+func TestCheckServicesLinux_DisabledOrMissingUnitStaysAFinding(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, simpleInactiveProbe(t, map[string]string{
+		// A oneshot that would otherwise be excused, but is now disabled.
+		"disabled-oneshot.service": "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=disabled\n",
+		// A condition-skipped unit that has been masked.
+		"masked.service": "Type=simple\nActiveState=inactive\nSubState=dead\nConditionResult=no\nUnitFileState=masked\n",
+		// A unit that no longer exists: `systemctl show` on an unknown name
+		// answers with empty properties rather than failing.
+		"vanished.service": "Type=\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=\n",
+		// The control: still enabled and a resting oneshot, so still excused.
+		"healthy-oneshot.service": "Type=oneshot\nActiveState=inactive\nSubState=dead\nConditionResult=yes\nUnitFileState=enabled\n",
+	}))
+
+	ok, inactive := checkServices([]string{"disabled-oneshot.service", "masked.service", "vanished.service", "healthy-oneshot.service"})
+	if ok {
+		t.Fatal("expected the disabled/masked/missing units to fail the probe")
+	}
+	want := []string{"disabled-oneshot.service", "masked.service", "vanished.service"}
+	if len(inactive) != len(want) {
+		t.Fatalf("inactive = %v, want %v", inactive, want)
+	}
+	for i, unit := range want {
+		if inactive[i] != unit {
+			t.Fatalf("inactive = %v, want %v", inactive, want)
+		}
 	}
 }

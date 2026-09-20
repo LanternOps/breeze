@@ -264,27 +264,50 @@ func isTemplateUnit(name string) bool {
 // unitProbeProperties are the systemd properties inactiveUnitIsHealthy
 // inspects for a unit that `is-active` did not report as "active". Kept as
 // one ordered slice so the command and the parse stay in step.
-var unitProbeProperties = []string{"Type", "ActiveState", "SubState", "ConditionResult"}
+var unitProbeProperties = []string{"Type", "ActiveState", "SubState", "ConditionResult", "UnitFileState"}
+
+// healthyUnitFileStates are the `systemctl show -p UnitFileState` values
+// that mean a unit is still installed and wanted after the restore. A unit
+// that is "disabled", "masked", "bad" or absent entirely (UnitFileState
+// empty / not-found) is NOT healthy no matter why it is inactive: the
+// snapshot listed it as enabled, so losing that enablement is exactly the
+// regression this probe exists to catch. "static"/"indirect"/"generated"
+// units have no enablement of their own to lose.
+var healthyUnitFileStates = map[string]bool{
+	"enabled":         true,
+	"enabled-runtime": true,
+	"static":          true,
+	"indirect":        true,
+	"generated":       true,
+	"transient":       true,
+	"alias":           true,
+}
 
 // inactiveUnitIsHealthy decides whether a unit that `systemctl is-active`
 // did not call "active" is nonetheless in an expected state for a healthy
 // system, and returns a short reason when it is (#5479). Two cases:
 //
-//   - a oneshot unit that ran to completion: `Type=oneshot` with
-//     ActiveState inactive/active and SubState anything but "failed".
-//     Without RemainAfterExit, systemd drops such a unit back to
-//     "inactive" the moment its command exits successfully — the normal
-//     resting state of e2scrub_reap.service, dmesg.service,
-//     grub-common.service and friends.
+//   - a oneshot unit at rest: `Type=oneshot` with ActiveState
+//     inactive/active and SubState anything but "failed". Without
+//     RemainAfterExit, systemd drops such a unit back to "inactive" the
+//     moment its command exits successfully — the normal resting state of
+//     e2scrub_reap.service, dmesg.service, grub-common.service and
+//     friends. Note this deliberately does NOT try to distinguish "ran and
+//     exited 0" from "has not run yet": the probe runs straight after a
+//     restore, typically before the machine has had a boot for its oneshots
+//     to run in, so "has not run yet" is the expected state there rather
+//     than a regression. The axis that DOES carry signal for a oneshot is
+//     enablement, which is why both branches below require a healthy
+//     UnitFileState — a oneshot the restore left disabled, masked or
+//     missing is still reported.
 //   - a unit systemd deliberately skipped because its Condition*= checks
 //     did not hold (`ConditionResult=no`) — e.g. a unit gated on hardware
-//     or a file the recovered machine does not have.
+//     or a file the recovered machine does not have. Also gated on a
+//     healthy UnitFileState.
 //
-// Anything else — a failed unit, an activating/deactivating one, or a
-// `systemctl show` that errors out — stays a genuine finding. A unit that
-// no longer exists at all (LoadState=not-found) also stays a finding: the
-// snapshot said it was enabled, so its absence after a restore is exactly
-// the kind of regression this probe exists to catch.
+// Anything else — a failed unit, an activating/deactivating one, a unit
+// left disabled/masked/missing by the restore, or a `systemctl show` that
+// errors out — stays a genuine finding.
 func inactiveUnitIsHealthy(unit string) (bool, string) {
 	args := []string{"show"}
 	for _, prop := range unitProbeProperties {
@@ -297,12 +320,15 @@ func inactiveUnitIsHealthy(unit string) (bool, string) {
 		return false, ""
 	}
 	props := parseSystemctlShow(out)
+	if !healthyUnitFileStates[props["UnitFileState"]] {
+		return false, ""
+	}
 	if props["ConditionResult"] == "no" {
 		return true, "condition not met"
 	}
 	if props["Type"] == "oneshot" && props["SubState"] != "failed" &&
 		(props["ActiveState"] == "inactive" || props["ActiveState"] == "active") {
-		return true, "oneshot completed"
+		return true, "oneshot at rest"
 	}
 	return false, ""
 }
