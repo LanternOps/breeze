@@ -10,6 +10,7 @@ import { db } from '../db';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
   bareMetalRecoveries,
+  backupJobs,
   backupSnapshots,
   recoveryTokens,
   type BareMetalRecoveryStatus,
@@ -34,6 +35,7 @@ export type BareMetalRecoverySource = 'route' | 'dr' | 'vm_restore';
 export type BareMetalRecoveryErrorCode =
   | 'snapshot_not_found'
   | 'snapshot_not_bare_metal_restorable'
+  | 'snapshot_has_external_references'
   | 'recovery_in_progress'
   | 'recovery_not_found'
   | 'invalid_state';
@@ -109,8 +111,10 @@ export async function createBareMetalRecovery(input: {
       deviceId: backupSnapshots.deviceId,
       bareMetalRestorable: backupSnapshots.bareMetalRestorable,
       bareMetalReasons: backupSnapshots.bareMetalReasons,
+      referencedFiles: backupJobs.referencedFiles,
     })
     .from(backupSnapshots)
+    .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
     .where(and(eq(backupSnapshots.id, input.snapshotId), eq(backupSnapshots.orgId, input.orgId)))
     .limit(1);
   if (!snapshot) {
@@ -119,6 +123,35 @@ export async function createBareMetalRecovery(input: {
   if (snapshot.bareMetalRestorable !== true) {
     throw new BareMetalRecoveryError('snapshot_not_bare_metal_restorable', 409, {
       reasons: snapshot.bareMetalReasons ?? ['snapshot was not assessed for bare-metal restore'],
+    });
+  }
+
+  // #6403 interim guard. An incremental backup satisfies unchanged files by
+  // REFERENCING the object an older snapshot uploaded, so its manifest carries
+  // `snapshots/<older-id>/files/...` paths — while token-mode recovery confines
+  // downloads to this snapshot's own prefix. Every referenced file is refused,
+  // and because that happens per file during the restore phase, the target has
+  // already been partitioned and formatted by then (proven in the #5498 lab
+  // run: 98,411 of 105,953 files refused, after provisioning). Refuse here
+  // instead, before any disk is touched or token minted.
+  //
+  // `referenced_files` is an exact predicate, not a heuristic: the agent
+  // derives it with the same `isReferenceEntry` rule ("backupPath is not under
+  // this snapshot's own prefix") that the download check enforces from the
+  // other side. NULL and 0 both mean self-contained — the agent's
+  // `referencedFiles,omitempty` drops a zero and the API only writes the column
+  // when the field is present, so NULL is the NORMAL state for a full backup
+  // and must not be refused. Remove this guard when W09 (#6464) teaches
+  // token-mode recovery to follow references.
+  if (typeof snapshot.referencedFiles === 'number' && snapshot.referencedFiles > 0) {
+    throw new BareMetalRecoveryError('snapshot_has_external_references', 409, {
+      referencedFiles: snapshot.referencedFiles,
+      snapshotId: snapshot.id,
+      // `reasons` reuses the shape the non-restorable refusal already uses, so
+      // the existing UI renders this explanation instead of a bare code.
+      reasons: [
+        `This backup stores ${snapshot.referencedFiles.toLocaleString('en-US')} file(s) as references to earlier snapshots, and recovery media cannot read files outside the snapshot it was given. Choose a snapshot that contains all of its own data (a full backup).`,
+      ],
     });
   }
 

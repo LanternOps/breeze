@@ -11,7 +11,7 @@ const TOKEN_ID = '99999999-9999-4999-8999-999999999999';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'offset', 'leftJoin', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -61,7 +61,7 @@ function recoveryRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const restorableSnapshot = { id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [] };
+const restorableSnapshot = { id: SNAPSHOT_ID, deviceId: DEVICE_ID, orgId: ORG_ID, bareMetalRestorable: true, bareMetalReasons: [], referencedFiles: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,6 +79,35 @@ async function expectRecoveryError(promise: Promise<unknown>, code: string, stat
 }
 
 describe('createBareMetalRecovery', () => {
+  // #6403 interim guard: an incremental snapshot's manifest references objects
+  // under an OLDER snapshot's prefix, and token-mode recovery is confined to
+  // one prefix — so the restore fails AFTER the target has been partitioned
+  // and formatted. Refuse at creation instead, before any disk is touched.
+  it('refuses a snapshot whose backup referenced objects from older snapshots (409), before any write', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles: 98411 }]));
+    const err = await expectRecoveryError(
+      createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'dr' }),
+      'snapshot_has_external_references', 409,
+    );
+    expect(err.details).toMatchObject({ referencedFiles: 98411, snapshotId: SNAPSHOT_ID });
+    // The existing UI renders `reasons`; without it the operator sees only a code.
+    expect((err.details as { reasons: string[] }).reasons[0]).toContain('98,411');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  // referenced_files is NULL for every self-contained snapshot: the agent's
+  // `referencedFiles,omitempty` drops a zero, and the API only writes the
+  // column when the field is present. Refusing NULL would refuse every full
+  // backup, so NULL and 0 must both be allowed.
+  it.each([[null], [0]])('allows a self-contained snapshot (referencedFiles=%s)', async (referencedFiles) => {
+    selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, referencedFiles }]));
+    selectMock.mockReturnValueOnce(chainMock([]));
+    insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+    const { row } = await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
+    expect(row.id).toBe(RECOVERY_ID);
+    expect(insertMock).toHaveBeenCalled();
+  });
+
   it('refuses a snapshot the guard marked non-restorable (409) naming the reasons', async () => {
     selectMock.mockReturnValueOnce(chainMock([{ ...restorableSnapshot, bareMetalRestorable: false, bareMetalReasons: ['LVM volumes are not supported'] }]));
     const err = await expectRecoveryError(
