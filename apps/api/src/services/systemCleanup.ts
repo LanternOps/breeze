@@ -15,6 +15,7 @@ import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './comm
 import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS, systemCleanupRunBodySchema, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+import type { AiOriginRef } from '@breeze/shared';
 
 /**
  * The agent release that introduced system_cleanup_list / system_cleanup_run.
@@ -167,6 +168,14 @@ export function parseAgentJson<T>(schema: z.ZodType<T>, stdout: string | null | 
 export interface QueueSystemCleanupListArgs {
   device: { id: string; orgId: string; agentVersion: string | null; status: string };
   requestedBy: string | null;
+  /**
+   * #5022 W01 — who DECIDED this command, when an AI surface did. Absent on
+   * the human route path; REQUIRED on the AI path, where
+   * `requireAiOrigin(auth, 'system_cleanup')` throws rather than letting an
+   * unattributed device command through. This module sits outside
+   * `aiDispatch.contract.test.ts`'s AI_FILE scan, so nothing else enforces it.
+   */
+  aiOrigin?: AiOriginRef;
 }
 export interface StartSystemCleanupRunArgs extends QueueSystemCleanupListArgs {
   actionIds: string[];
@@ -193,7 +202,11 @@ async function queueSystemCleanupListOutsideContext(
     args.device.id,
     CommandTypes.SYSTEM_CLEANUP_LIST,
     {},
-    { userId: args.requestedBy ?? undefined, expectedOrgId: args.device.orgId },
+    {
+      userId: args.requestedBy ?? undefined,
+      expectedOrgId: args.device.orgId,
+      ...(args.aiOrigin ? { aiOrigin: args.aiOrigin } : {}),
+    },
   );
   if (!queued.command) {
     return { ok: false, status: 503, error: queued.error || 'Failed to queue the cleanup catalog request' };
@@ -301,7 +314,11 @@ async function startSystemCleanupRunOutsideContext(
     args.device.id,
     CommandTypes.SYSTEM_CLEANUP_RUN,
     { runId, actionIds: args.actionIds, params: args.params ?? {} },
-    { userId: args.requestedBy ?? undefined, expectedOrgId: args.device.orgId },
+    {
+      userId: args.requestedBy ?? undefined,
+      expectedOrgId: args.device.orgId,
+      ...(args.aiOrigin ? { aiOrigin: args.aiOrigin } : {}),
+    },
   ).catch((error: unknown) => ({ error: error instanceof Error ? error.message : 'Failed to queue the cleanup run', command: undefined }));
 
   // Finalise in a SEPARATE short transaction, either way.
@@ -413,4 +430,61 @@ export function queueSystemCleanupList(args: QueueSystemCleanupListArgs): Promis
 
 export function startSystemCleanupRun(args: StartSystemCleanupRunArgs): Promise<SystemCleanupStartResult> {
   return runOutsideDbContext(() => startSystemCleanupRunOutsideContext(args));
+}
+
+/**
+ * The AI lane needs a RESULT, not a 202. The routes stay async (the web panel
+ * polls W04's own `GET /devices/:id/filesystem/system-cleanup/list/:commandId`
+ * and `.../run/:cleanupRunId`); this helper is the one place that waits, so
+ * list/run themselves are still implemented exactly once.
+ *
+ * Polls the command row rather than holding a socket waiter: a DISM run can
+ * take 90 minutes and the run ceiling is hours, far beyond any in-memory
+ * waiter's lifetime across an API restart. Each poll is its own short
+ * org-scoped context — never the caller's request transaction, which a
+ * two-hour wait would otherwise pin (#1105).
+ *
+ * `result` is the agent's stdout JSON, decoded but NOT schema-validated here:
+ * the caller knows whether it asked for a catalog or a run and applies the
+ * matching Zod shape. An unreadable payload is a failure, never `{}` — an
+ * empty catalog is indistinguishable from the truth (spec defect 5).
+ */
+export async function awaitSystemCleanupResult(
+  commandId: string,
+  orgId: string,
+  timeoutMs: number,
+  intervalMs = 5_000,
+): Promise<{ status: 'completed' | 'failed' | 'timeout'; result?: unknown; error?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [row] = await runOutsideDbContext(() =>
+      withDbAccessContext(dbContextFor({ orgId }), () =>
+        db
+          .select({ status: deviceCommands.status, result: deviceCommands.result })
+          .from(deviceCommands)
+          .where(eq(deviceCommands.id, commandId))
+          .limit(1),
+      ),
+    );
+    if (row && row.status !== 'pending' && row.status !== 'sent' && row.status !== 'running') {
+      const payload = (row.result && typeof row.result === 'object' ? row.result : {}) as Record<string, unknown>;
+      const error = typeof payload.error === 'string' ? payload.error : undefined;
+      // Defensive fallback from spec §5.3: an agent that does not know the
+      // command type answers with this exact prefix, which must resolve to the
+      // same 409 the version gate produces rather than an opaque failure.
+      if (isUnknownCommandTypeError(error)) {
+        return { status: 'failed', error: AGENT_UPDATE_REQUIRED_ERROR };
+      }
+      if (row.status !== 'completed') {
+        return { status: 'failed', error: error ?? `command ${row.status}` };
+      }
+      const result = parseAgentJson(z.unknown(), typeof payload.stdout === 'string' ? payload.stdout : undefined);
+      if (result === null || result === undefined) {
+        return { status: 'failed', error: 'The agent returned an unreadable cleanup payload' };
+      }
+      return { status: 'completed', result, error };
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { status: 'timeout', error: 'timed out' };
 }
