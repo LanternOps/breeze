@@ -1,24 +1,11 @@
+import { type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
   db: { select: vi.fn(), update: vi.fn() },
 }));
 
-vi.mock('../db/schema', () => ({
-  deviceFilesystemCleanupRuns: {
-    id: 'id',
-    deviceId: 'device_id',
-    kind: 'kind',
-    status: 'status',
-    scanPath: 'scan_path',
-    requestedAt: 'requested_at',
-    approvedAt: 'approved_at',
-    bytesReclaimed: 'bytes_reclaimed',
-    error: 'error',
-    plan: 'plan',
-    executedActions: 'executed_actions',
-  },
-}));
 
 import { db } from '../db';
 import {
@@ -72,6 +59,12 @@ describe('cleanup-run cursor codec', () => {
     });
   });
 
+  it('preserves PostgreSQL microseconds in the cursor', () => {
+    const requestedAt = '2026-09-19T10:00:00.123456Z';
+    expect(decodeCleanupRunCursor(encodeCleanupRunCursor({ requestedAt, id: RUN_A })))
+      .toEqual({ requestedAt, id: RUN_A });
+  });
+
   it('accepts an ISO string as well as a Date', () => {
     const token = encodeCleanupRunCursor({ requestedAt: '2026-09-19T10:00:00.000Z', id: RUN_A });
     expect(token).toBe(`2026-09-19T10:00:00.000Z|${RUN_A}`);
@@ -82,6 +75,7 @@ describe('cleanup-run cursor codec', () => {
     // silent "page 1 again" — which is how a paginated list loops forever.
     expect(decodeCleanupRunCursor('')).toBeNull();
     expect(decodeCleanupRunCursor('nonsense')).toBeNull();
+    expect(decodeCleanupRunCursor(`1|${RUN_A}`)).toBeNull();
     expect(decodeCleanupRunCursor(`not-a-date|${RUN_A}`)).toBeNull();
     expect(decodeCleanupRunCursor('2026-09-19T10:00:00.000Z|not-a-uuid')).toBeNull();
     expect(decodeCleanupRunCursor(`2026-09-19T10:00:00.000Z|${RUN_A}|extra`)).toBeNull();
@@ -102,6 +96,23 @@ describe('listCleanupRuns', () => {
     expect(result.runs).toHaveLength(1);
     expect(result.runs[0]!.id).toBe(RUN_A);
     expect(result.nextCursor).toBe(`2026-09-19T10:00:00.000Z|${RUN_A}`);
+  });
+
+  it('selects and compares full database precision with the column timestamp type', async () => {
+    const where = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+    const requestedAt = '2026-09-19T10:00:00.123456Z';
+    await listCleanupRuns(DEVICE, { limit: 1, cursor: `${requestedAt}|${RUN_A}` });
+    const dialect = new PgDialect();
+    const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, SQL>;
+    expect(dialect.sqlToQuery(projection.requestedAt!).sql)
+      .toBe(`to_char("device_filesystem_cleanup_runs"."requested_at", 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`);
+    const condition = dialect.sqlToQuery(where.mock.calls[0]![0]);
+    expect(condition.params).toEqual([DEVICE, requestedAt, requestedAt, RUN_A]);
+    expect(condition.sql.match(/::timestamp\b/g)).toHaveLength(2);
+    expect(condition.sql).not.toContain('::timestamptz');
   });
 
   it('returns a null nextCursor on a short page', async () => {
@@ -220,6 +231,7 @@ describe('cancelCleanupRunForCommand', () => {
     });
 
     expect(cancelled).toBe(true);
+    expect(new PgDialect().sqlToQuery(whereMock.mock.calls[0]![0]).params).toEqual([RUN_A, 'running', 'files']);
     expect(setMock.mock.calls[0]![0]).toMatchObject({
       status: 'failed',
       error: 'cancelled: device moved',
@@ -242,55 +254,40 @@ describe('cancelCleanupRunForCommand', () => {
 describe('recordLateCleanupResult', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('ignores a result for a run that is still running — the route owns that finalise', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ status: 'running', executedActions: [] }]),
-        }),
-      }),
-    } as never);
-
-    expect(await recordLateCleanupResult({
-      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
-      status: 'completed', completedAt: new Date(),
-    })).toBe('ignored');
-    expect(db.update).not.toHaveBeenCalled();
-  });
-
-  it.each(['array', 'envelope'])('appends a lateResult to a finalised %s WITHOUT changing its status', async (shape) => {
-    const original = [{ path: '/tmp/a', category: 'temp_files', sizeBytes: 1, status: 'skipped_budget' }];
-    const executedActions = shape === 'array' ? original : { partial: true, budgetMs: 240_000, actions: original };
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{
-            status: 'executed',
-            executedActions,
-          }]),
-        }),
-      }),
-    } as never);
-    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
-
+  it('atomically appends to the current array or envelope without reading stale actions or writing status', async () => {
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: RUN_A }]) });
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
     expect(await recordLateCleanupResult({
       cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
       status: 'completed', completedAt: new Date('2026-09-19T11:00:00.000Z'),
     })).toBe('recorded');
-
-    const written = setMock.mock.calls[0]![0] as { executedActions: Array<Record<string, unknown>>; status?: unknown };
-    // The original action row is untouched; the late one is additive and tagged.
-    const actions = shape === 'array' ? written.executedActions
-      : (written.executedActions as unknown as { actions: Array<Record<string, unknown>> }).actions;
-    if (shape === 'envelope') expect(written.executedActions).toMatchObject({ partial: true, budgetMs: 240_000 });
-    expect(actions).toHaveLength(2);
-    expect(actions[0]).toEqual(original[0]);
-    expect(actions[1]).toMatchObject({
-      path: '/tmp/a', status: 'completed', lateResult: true, commandId: 'cmd-1',
-    });
-    // Status must NOT be in the update set at all — a late `completed` cannot
-    // turn a `failed` run into a success after the operator has read it.
+    expect(db.select).not.toHaveBeenCalled();
+    const written = set.mock.calls[0]![0];
     expect(written).not.toHaveProperty('status');
+    const dialect = new PgDialect();
+    const append = dialect.sqlToQuery(written.executedActions);
+    const column = '"device_filesystem_cleanup_runs"."executed_actions"';
+    expect(append.sql).toContain(`jsonb_typeof(${column}) = 'object'`);
+    expect(append.sql).toContain(`jsonb_set(${column}, '{actions}'`);
+    expect(append.sql).toContain(`${column} -> 'actions'`);
+    expect(append.sql).toContain(`jsonb_typeof(${column}) = 'array'`);
+    expect(append.sql.match(/\|\|/g)).toHaveLength(2);
+    expect(append.params.map(value => JSON.parse(value as string))).toEqual([
+      [{ path: '/tmp/a', status: 'completed', commandId: 'cmd-1', lateResult: true, receivedAt: '2026-09-19T11:00:00.000Z' }],
+      [{ path: '/tmp/a', status: 'completed', commandId: 'cmd-1', lateResult: true, receivedAt: '2026-09-19T11:00:00.000Z' }],
+    ]);
+    expect(dialect.sqlToQuery(where.mock.calls[0]![0]).params)
+      .toEqual([RUN_A, 'files', 'running', 'executed', 'failed']);
+  });
+
+  it('ignores absent, previewed, or system runs when the conditional update finds no row', async () => {
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) } as never);
+    expect(await recordLateCleanupResult({
+      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a', status: 'failed',
+      error: 'device refused', completedAt: new Date(),
+    })).toBe('ignored');
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

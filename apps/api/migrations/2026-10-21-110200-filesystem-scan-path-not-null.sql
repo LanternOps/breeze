@@ -34,6 +34,25 @@ DO $$
 DECLARE n bigint;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
+  -- NULL paths are distinct in W02's unique index. Reconcile them WITH any
+  -- existing OS-root row before relabelling, keeping the newest observation.
+  -- Prefer the attributed root on equal timestamps; ctid breaks NULL ties.
+  WITH ranked AS (
+    SELECT st.ctid, row_number() OVER (
+      PARTITION BY st.device_id
+      ORDER BY st.updated_at DESC, st.scan_path NULLS LAST, st.ctid DESC
+    ) AS position
+    FROM device_filesystem_scan_state st
+    JOIN devices d ON d.id = st.device_id
+    WHERE st.scan_path IS NULL
+       OR st.scan_path = CASE WHEN d.os_type = 'windows' THEN 'C:\' ELSE '/' END
+  )
+  DELETE FROM device_filesystem_scan_state st
+    USING ranked r
+    WHERE st.ctid = r.ctid AND r.position > 1;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE WARNING 'filesystem scan_path contraction: discarded % duplicate root candidates', n;
+
   -- Scan state carries no raw payload to recover a path from, and relabelling
   -- a row as the OS root can resume a D:\ checkpoint into C:\ (spec §13 #8).
   -- W02 owns the correct backfill; anything still NULL here is a row W02 could

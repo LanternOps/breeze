@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { type SQL } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { upsertJobSchedulerMock, attachMock, recordRetentionRunMock, pruneMock, warnMock, executeMock } = vi.hoisted(() => ({
@@ -50,9 +52,9 @@ import {
   runFilesystemCleanupRunRetention,
 } from './filesystemCleanupRunRetention';
 
-/** Flatten a drizzle sql template into readable text for assertions. */
+/** Render the actual PostgreSQL query, including placeholders and identifiers. */
 function sqlText(fragment: { queryChunks?: unknown[] } | unknown): string {
-  return JSON.stringify(fragment);
+  return new PgDialect().sqlToQuery(fragment as SQL).sql;
 }
 
 describe('filesystem cleanup-run retention', () => {
@@ -73,7 +75,9 @@ describe('filesystem cleanup-run retention', () => {
     expect(args.table).toBe('device_filesystem_cleanup_runs');
     // Status guard and cutoff both present: an executed run must never be
     // deleted by the 7-day sweep, only trimmed by the 90-day one.
-    expect(sqlText(args.where)).toContain('previewed');
+    const predicate = new PgDialect().sqlToQuery(args.where);
+    expect(predicate.sql).toBe("status = 'previewed' AND requested_at < $1");
+    expect(Date.parse(predicate.params[0] as string)).toBeCloseTo(Date.now() - 7 * 86_400_000, -3);
     expect(args.batchSize).toBe(__testOnly.BATCH_SIZE);
     expect(args.maxBatches).toBe(__testOnly.MAX_BATCHES);
   });
@@ -107,7 +111,29 @@ describe('filesystem cleanup-run retention', () => {
     expect(stuck).toBeDefined();
     // Scoped to file runs: W04's system runs legitimately sit in `running`
     // for up to their two-hour timeout and own their own terminal transition.
-    expect(stuck).toContain('files');
+    expect(stuck).toMatch(/WHERE kind = 'files'\s+AND status = 'running'/);
+    expect(stuck).toContain('approved_at IS NOT NULL');
+    expect(stuck).toMatch(/approved_at < \$1/);
+    expect(stuck).not.toContain('requested_at');
+    expect(stuck).toContain('LIMIT $2');
+    const query = new PgDialect().sqlToQuery(executeMock.mock.calls[1]![0]);
+    expect(query.params[1]).toBe(__testOnly.BATCH_SIZE);
+    expect(Date.parse(query.params[0] as string)).toBeCloseTo(Date.now() - 24 * 3_600_000, -3);
+  });
+
+  it('bounds stuck-run updates and reports their backlog independently of pruning', async () => {
+    executeMock.mockResolvedValueOnce({ count: 0 }) // trim
+      .mockResolvedValue({ count: 2 });
+    const result = await runFilesystemCleanupRunRetention({ batchSize: 2, maxBatches: 2 });
+    expect(result.stuckRunsFailed).toBe(4);
+    expect(result.hasMore).toBe(true);
+    const queries = executeMock.mock.calls.slice(1)
+      .map(([fragment]) => new PgDialect().sqlToQuery(fragment));
+    expect(queries).toHaveLength(2);
+    for (const query of queries) {
+      expect(query.sql).toContain('WHERE ctid IN');
+      expect(query.params[1]).toBe(2);
+    }
   });
 
   it('opens a FRESH system context per batch rather than one around the loop', async () => {

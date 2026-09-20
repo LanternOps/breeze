@@ -753,6 +753,11 @@
     "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
+    "resultPartial": "Partiellement terminé",
+    "resultSkippedLinks": "Liens ignorés : {{count}}",
+    "errorAgentUpdateRequired": "Mettez à jour l’agent vers la version {{minAgentVersion}} ou ultérieure pour lancer le nettoyage.",
+    "errorCleanupRunRequired": "Lancez un aperçu du nettoyage avant de l’exécuter.",
+    "errorVolumeRequired": "Sélectionnez un volume avant de lancer le nettoyage.",
     "volumes": "Volumes de stockage",
     "volumesLoading": "Chargement des volumes...",
     "volumesEmpty": "Aucun volume analysable signalé pour cet appareil.",

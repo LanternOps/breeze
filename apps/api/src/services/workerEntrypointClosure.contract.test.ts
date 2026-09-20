@@ -280,7 +280,7 @@ const EXPECTED_NAMES = [
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
-  'm365SyncRetention',
+  'm365SyncRetention', 'filesystemCleanupRunRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',

@@ -57,14 +57,17 @@ vi.mock('../db', () => ({
   },
 }));
 
-const executeCommand = vi.hoisted(() => vi.fn());
+const executeCommandWithSystemPrecheck = vi.hoisted(() => vi.fn());
 
 vi.mock('./commandQueue', () => ({
-  // aiExecuteCommand delegates straight to executeCommand (aiDispatch.ts:66-76),
+  // The AI system-precheck adapter preserves the origin and tenant binding.
   // so asserting here asserts exactly what reaches the device.
-  executeCommand,
+  executeCommand: vi.fn(),
+  executeCommandWithSystemPrecheck,
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
+
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({})) }));
 
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({
@@ -122,7 +125,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     previewState.candidates = [
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ];
-    executeCommand.mockResolvedValue({
+    executeCommandWithSystemPrecheck.mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
     });
@@ -135,8 +138,8 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     );
     const result = JSON.parse(raw);
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(executeCommand).toHaveBeenCalledWith(
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(
       DEVICE_ID,
       'file_delete',
       {
@@ -168,7 +171,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
       makeAuth(),
     );
 
-    expect(executeCommand).toHaveBeenCalledWith(
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(
       DEVICE_ID,
       'file_delete',
       expect.objectContaining({ contentsOnly: true, permanent: true, cleanupGuard: true }),
@@ -189,7 +192,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     );
     const result = JSON.parse(raw);
 
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     expect(result.rejectedPaths).toEqual([stale]);
     expect(result.error).toContain('No valid cleanup');
   });
@@ -201,7 +204,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     );
     const result = JSON.parse(raw);
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
     expect(result.rejectedPaths).toEqual(['/home/bob/taxes.pdf']);
     expect(result.actions.map((a: { path: string; status: string }) => [a.path, a.status])).toEqual([
       ['/tmp/a.tmp', 'completed'],
@@ -229,7 +232,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
       makeAuth(),
     );
     const result = JSON.parse(raw);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     expect(result.error).toBe('agent_update_required');
     expect(result.minAgentVersion).toBe('0.115.0');
   });
@@ -239,7 +242,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
   // valid candidates" branch BEFORE the run insert — the command had already
   // reached the device with no run row to show for it.
   it('persists a run when every dispatched path came back rejected by the agent guard', async () => {
-    executeCommand.mockResolvedValue({
+    executeCommandWithSystemPrecheck.mockResolvedValue({
       status: 'failed',
       error: 'cleanup guard rejected: a.tmp is a symlink',
     });
@@ -250,7 +253,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     );
     const result = JSON.parse(raw);
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
     // Consistent with runCleanupExecution's own outcome: nothing completed or
     // partial, so the run is `failed`, matching the route's all-failed shape.
     expect(result.status).toBe('failed');

@@ -753,6 +753,11 @@
     "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
+    "resultPartial": "Partially completed",
+    "resultSkippedLinks": "Skipped links: {{count}}",
+    "errorAgentUpdateRequired": "Update the agent to version {{minAgentVersion}} or later to run cleanup.",
+    "errorCleanupRunRequired": "Run Cleanup Preview before executing cleanup.",
+    "errorVolumeRequired": "Select a volume before running cleanup.",
     "volumes": "Volumes",
     "volumesLoading": "Loading volumes...",
     "volumesEmpty": "No scannable volumes reported for this device.",

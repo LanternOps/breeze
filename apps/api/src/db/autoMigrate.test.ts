@@ -1382,6 +1382,15 @@ describe('filesystem scan_path contraction (Disk Cleanup v2 W03)', () => {
     expect(config.indexes).toHaveLength(0);
   });
 
+  it('reconciles duplicate root candidates before converting NULL scan paths', () => {
+    const migration = readFileSync(path.resolve(__dirname, '../../migrations', contraction), 'utf8');
+    expect(migration).toMatch(/row_number\(\) OVER[\s\S]*PARTITION BY st.device_id[\s\S]*ORDER BY st.updated_at DESC/);
+    expect(migration).toMatch(/DELETE FROM device_filesystem_scan_state[\s\S]*position > 1/);
+    expect(migration.indexOf('DELETE FROM device_filesystem_scan_state'))
+      .toBeLessThan(migration.indexOf('UPDATE device_filesystem_scan_state'));
+    expect(migration).toMatch(/RAISE WARNING 'filesystem scan_path contraction: discarded % duplicate root candidates'/);
+  });
+
   it('promotes W02’s actual unique index even though W02 already removed the old primary key', () => {
     const migration = readFileSync(path.resolve(__dirname, '../../migrations', contraction), 'utf8');
     expect(migration).toMatch(/IF NOT EXISTS[\s\S]*contype = 'p'/);

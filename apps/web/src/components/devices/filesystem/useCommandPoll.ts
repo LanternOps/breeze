@@ -52,6 +52,7 @@ export function useCommandPoll(deviceId: string): {
   }, []);
 
   const reset = useCallback(() => {
+    controllerRef.current?.abort();
     setStatus(null);
   }, []);
 
@@ -90,7 +91,10 @@ export function useCommandPoll(deviceId: string): {
         const response = await fetchWithAuth(
           `/devices/${deviceId}/commands/${commandId}`,
           { signal: controller.signal },
-        );
+        ).catch((error: unknown) => {
+          if (controller.signal.aborted) throw new CommandPollAbortedError();
+          throw error;
+        });
         if (controller.signal.aborted) throw new CommandPollAbortedError();
 
         if (!response.ok) {
@@ -109,7 +113,7 @@ export function useCommandPoll(deviceId: string): {
         setStatus(commandStatus);
 
         if (commandStatus === 'completed') return;
-        if (commandStatus === 'failed') {
+        if (['failed', 'cancelled', 'timeout'].includes(commandStatus)) {
           const result = asRecord(command.result);
           throw new Error(
             typeof result?.error === 'string' && result.error

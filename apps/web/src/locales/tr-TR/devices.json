@@ -753,6 +753,11 @@
     "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
+    "resultPartial": "Kısmen tamamlandı",
+    "resultSkippedLinks": "Atlanan bağlantılar: {{count}}",
+    "errorAgentUpdateRequired": "Temizliği çalıştırmak için aracıyı {{minAgentVersion}} veya sonraki bir sürüme güncelleyin.",
+    "errorCleanupRunRequired": "Temizliği çalıştırmadan önce temizlik önizlemesini çalıştırın.",
+    "errorVolumeRequired": "Temizliği çalıştırmadan önce bir birim seçin.",
     "volumes": "Birimler",
     "volumesLoading": "Birimler yükleniyor...",
     "volumesEmpty": "Bu cihaz için taranabilir birim bildirilmedi.",

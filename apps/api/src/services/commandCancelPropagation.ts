@@ -147,7 +147,7 @@ export async function propagateCancelledDeviceCommand(params: {
       // run still claiming to be `running`.
       await cancelCleanupRunForCommand({
         cleanupRunId,
-        reason: 'cancelled: device moved',
+        reason: errorMessage,
         completedAt,
         executor,
       });

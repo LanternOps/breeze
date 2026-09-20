@@ -52,6 +52,7 @@ vi.mock('./helpers', () => ({
 
 vi.mock('../../services/commandQueue', () => ({
   executeCommand: vi.fn(),
+  executeCommandWithSystemPrecheck: vi.fn(),
   queueCommandForExecution: vi.fn(),
   CommandTypes: {
     FILESYSTEM_ANALYSIS: 'filesystem_analysis',
@@ -82,6 +83,9 @@ vi.mock('../../services/filesystemCleanupRuns', () => ({
   getCleanupRun: vi.fn(),
 }));
 
+vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
+import { captureException } from '../../services/sentry';
+
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -103,7 +107,7 @@ import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { filesystemRoutes } from './filesystem';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
-import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { executeCommand, executeCommandWithSystemPrecheck, queueCommandForExecution } from '../../services/commandQueue';
 import {
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
@@ -171,7 +175,7 @@ describe('device filesystem routes', () => {
     expect(res.status).toBe(400);
     expect(db.update).not.toHaveBeenCalled();
     expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('rejects unpinned cleanup even with an explicit volume', async () => {
@@ -365,7 +369,41 @@ describe('device filesystem routes', () => {
     // find the run it belonged to (Task 17).
     const [args] = vi.mocked(runCleanupExecution).mock.calls[0]!;
     await args.dispatch('/tmp/a.tmp', { path: '/tmp/a.tmp', permanent: true, cleanupGuard: true } as never);
-    expect(executeCommand).toHaveBeenCalledWith(deviceId, 'file_delete', expect.objectContaining({ cleanupRunId: runId, permanent: true, cleanupGuard: true }), expect.anything());
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(deviceId, 'file_delete', expect.objectContaining({ cleanupRunId: runId, permanent: true, cleanupGuard: true }), expect.objectContaining({ expectedOrgId: 'org-123' }));
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('records the first deletion when dispatch throws on path two', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    const set = mockClaim();
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue(['/tmp/a.tmp', '/tmp/b.tmp'].map(path => ({ path, category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED })));
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValueOnce({ status: 'completed' } as never).mockRejectedValueOnce(new Error('insert failed'));
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cleanupRunId: '22222222-2222-2222-2222-222222222222', paths: ['/tmp/a.tmp', '/tmp/b.tmp'] }) });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe('cleanup_dispatch_failed');
+    expect(body.data.actions).toHaveLength(1);
+    expect(set.mock.calls[1]![0]).toMatchObject({ status: 'failed', error: 'dispatch_failed: insert failed', executedActions: { actions: [expect.objectContaining({ path: '/tmp/a.tmp' })] } });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('does not overwrite a cancellation during dispatch', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', osType: 'linux', agentVersion: '0.115.0' } as never);
+    const set = mockClaim();
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+    set.mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ status: 'failed', error: 'cancelled', executedActions: [{ path: '/tmp/late.tmp', lateResult: true }] }]) }) }) } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([{ path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true }]);
+    vi.mocked(runCleanupExecution).mockResolvedValue(executionOutcome([{ path: '/tmp/a.tmp', status: 'completed', sizeBytes: 4096 }]) as never);
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cleanupRunId: '22222222-2222-2222-2222-222222222222', paths: ['/tmp/a.tmp'] }) });
+    const body = await res.json();
+    expect(body.data.status).toBe('failed');
+    expect(body.data.actions).toEqual([{ path: '/tmp/late.tmp', lateResult: true }]);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    expect(new PgDialect().sqlToQuery(where.mock.calls[0]![0]).params).toEqual(['id', '22222222-2222-2222-2222-222222222222', 'status', 'running']);
+    expect(captureException).toHaveBeenCalled();
   });
 
   it('answers 409 run_not_previewed and deletes nothing when the claim matches no row', async () => {
@@ -475,6 +513,7 @@ describe('device filesystem routes', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toBe('cleanup_finalize_failed');
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'connection reset' }));
     expect(setMock.mock.calls.some(([value]) => value.status === 'previewed')).toBe(false);
   });
 
@@ -509,7 +548,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{ id: 'run-9' }]),
@@ -575,7 +614,7 @@ describe('device filesystem routes', () => {
     });
 
     expect(res.status).toBe(400);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('returns a distinct 400 when the pinned run has no previewable candidates', async () => {
@@ -595,7 +634,7 @@ describe('device filesystem routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Pinned cleanup run has no previewable candidates');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('denies filesystem read when site scope excludes the device', async () => {
@@ -651,7 +690,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
     } as never);
@@ -675,7 +714,7 @@ describe('device filesystem routes', () => {
     expect(body.data.bytesReclaimed).toBe(4096);
     expect(body.data.partial).toBe(false);
     expect(body.data.budgetMs).toBe(240_000);
-    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
     const statuses = body.data.actions.map((a: { path: string; status: string }) => [a.path, a.status]);
     expect(statuses).toEqual([['/tmp/a.tmp', 'completed'], ['/home/bob/taxes.pdf', 'rejected']]);
   });
@@ -702,7 +741,7 @@ describe('device filesystem routes', () => {
     expect(body.success).toBe(false);
     expect(body.error).toBe('agent_update_required');
     expect(body.data.minAgentVersion).toBe('0.115.0');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('dispatches previewedAt so the agent can refuse a file touched since the preview', async () => {
@@ -714,7 +753,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
     } as never);
@@ -728,7 +767,7 @@ describe('device filesystem routes', () => {
       body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
     });
 
-    expect(executeCommand).toHaveBeenCalledWith(
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(
       deviceId,
       'file_delete',
       expect.objectContaining({
@@ -749,7 +788,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'failed', error: 'device offline' } as never);
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({ status: 'failed', error: 'device offline' } as never);
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-12' }]) }),
     } as never);
@@ -778,7 +817,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({
       status: 'failed',
       error: 'cleanup guard rejected: a.tmp is a symlink',
     } as never);
@@ -790,7 +829,7 @@ describe('device filesystem routes', () => {
       body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
     });
 
-    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledTimes(1);
     // Consistent with runCleanupExecution's own outcome: nothing completed or
     // partial, so the run is `failed` and takes the existing all-failed shape.
     expect(res.status).toBe(500);
@@ -818,7 +857,7 @@ describe('device filesystem routes', () => {
     });
 
     expect(res.status).toBe(400);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -829,7 +868,7 @@ describe('device filesystem routes', () => {
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
     } as never);
@@ -1189,7 +1228,7 @@ describe('device filesystem routes', () => {
       vi.mocked(readPlanPreviewCandidates).mockReturnValue([
         { path: 'D:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
       ] as never);
-      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
 
       const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
         method: 'POST',
@@ -1218,7 +1257,7 @@ describe('device filesystem routes', () => {
       vi.mocked(readPlanPreviewCandidates).mockReturnValue([
         { path: 'D:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
       ] as never);
-      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
 
       const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
         method: 'POST',
@@ -1245,7 +1284,7 @@ describe('device filesystem routes', () => {
         snapshotId: 'snap-c', estimatedBytes: 4096, candidateCount: 1,
         categories: [], candidates: [{ path: 'C:\\Windows\\Temp\\a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED }],
       } as never);
-      vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
+      vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }) } as never);
 
       const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
         method: 'POST',
@@ -1255,7 +1294,7 @@ describe('device filesystem routes', () => {
 
       expect(res.status).toBe(400);
       expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
-      expect(executeCommand).not.toHaveBeenCalled();
+      expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     });
   });
   it('lists cleanup runs with the default limit and returns the nextCursor', async () => {

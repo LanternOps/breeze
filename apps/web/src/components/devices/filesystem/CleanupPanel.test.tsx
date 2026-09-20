@@ -221,4 +221,34 @@ describe('CleanupPanel', () => {
     );
     expect(screen.getByTestId('cleanup-execute')).toBeDisabled();
   });
+  it.each(['partial', 'failed', 'cleanup_dispatch_failed', 'cleanup_finalize_failed'])('renders terminal %s outcomes without success feedback', async (outcome) => {
+    const data = { cleanupRunId: RUN_ID, status: outcome === 'partial' ? 'executed' : 'failed', bytesReclaimed: 0,
+      actions: [{ path: '/bin', status: outcome === 'partial' ? 'partial' : 'completed', failedChildren: ['/bin/locked child'], skippedLinkCount: 2 }] };
+    const terminalError = outcome.startsWith('cleanup_');
+    fetchMock.mockResolvedValue(json({ success: !terminalError, error: terminalError ? outcome : undefined, data }, terminalError ? 500 : 200));
+    const onExecuted = vi.fn();
+    render(<CleanupPanel deviceId="dev-1" volumeLabel="C:" preview={preview()} onExecuted={onExecuted} />);
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+    await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
+    expect(await screen.findByTestId('cleanup-result')).toBeInTheDocument();
+    expect(onExecuted).toHaveBeenCalled();
+    expect(screen.getByTestId('cleanup-execute')).toBeDisabled();
+    expect(showToastMock.mock.calls.some(([toast]) => toast.type === 'success')).toBe(false);
+    if (outcome === 'partial') {
+      expect(screen.getByTestId('cleanup-count-partial')).toHaveTextContent('1');
+      expect(screen.getByTestId('cleanup-failures')).toHaveTextContent('locked child');
+      expect(screen.getByTestId('cleanup-failures')).toHaveTextContent('2');
+    } else expect(screen.getByTestId('cleanup-result')).toHaveTextContent('Cleanup failed');
+  });
+  it.each(['agent_update_required', 'cleanup_run_required', 'volume_required'])('translates %s', async (error) => {
+    fetchMock.mockResolvedValue(json({ error, minAgentVersion: '2.4.0' }, 409));
+    render(<CleanupPanel deviceId="dev-1" volumeLabel="C:" preview={preview()} onExecuted={vi.fn()} />);
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+    await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
+    expect(showToastMock.mock.calls[0][0].message).not.toBe(error);
+    if (error === 'agent_update_required') expect(showToastMock.mock.calls[0][0].message).toContain('2.4.0');
+  });
+
 });

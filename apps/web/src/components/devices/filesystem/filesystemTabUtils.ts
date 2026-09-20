@@ -62,6 +62,7 @@ export type FilesystemCleanupPreview = {
 /** Per-path outcomes the execute route reports (spec §5.2). */
 export type CleanupActionStatus =
   | 'completed'
+  | 'partial'
   | 'failed'
   | 'skipped_locked'
   | 'rejected'
@@ -73,6 +74,8 @@ export type CleanupAction = {
   sizeBytes: number;
   status: CleanupActionStatus;
   error?: string;
+  failedChildren?: string[];
+  skippedLinkCount?: number;
 };
 
 export type CleanupExecuteResult = {
@@ -106,6 +109,7 @@ export type ThresholdEvent = { id: string; status: string; createdAt: string; pa
 export const CLEANUP_ACTION_STATUSES: readonly CleanupActionStatus[] = [
   'completed',
   'failed',
+  'partial',
   'skipped_locked',
   'rejected',
   'skipped_budget',
@@ -255,6 +259,7 @@ export function summariseActionStatuses(
   const counts = {
     completed: 0,
     failed: 0,
+    partial: 0,
     skipped_locked: 0,
     rejected: 0,
     skipped_budget: 0,

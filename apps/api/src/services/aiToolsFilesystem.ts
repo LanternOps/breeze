@@ -14,6 +14,8 @@ import { randomUUID } from 'node:crypto';
 import { normalizeScanPath, osRootScanPath, toCleanupOs } from '@breeze/shared';
 import {
   CLEANUP_EXECUTE_BUDGET_MS,
+  CleanupDispatchError,
+  type CleanupExecutionOutcome,
   MIN_AGENT_VERSION_CLEANUP_GUARD,
   agentSupportsCleanupGuard,
   runCleanupExecution,
@@ -35,12 +37,14 @@ import {
   safeCleanupCategories,
   readPlanPreviewCandidates,
 } from './filesystemAnalysis';
-import { aiExecuteCommand } from './aiDispatch';
+import { aiExecuteCommand, aiExecuteCommandWithSystemPrecheck } from './aiDispatch';
+import { captureException } from './sentry';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
-/** Bounded hints keyed by user + device; the run row remains authoritative. */
+/** Bounded hints keyed by conversation + user + device; the run row remains authoritative. */
 const MAX_PINNED_CLEANUP_RUNS = 500;
 const pinnedCleanupRuns = new Map<string, string>();
 
@@ -339,6 +343,10 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
       const action = input.action as 'preview' | 'execute';
+      // Assistant origin is minted by the session manager; caller arguments
+      // cannot choose another conversation's pin. Autonomous runs use explicit IDs.
+      const sessionKey = auth.aiOrigin?.kind === 'ai_assistant'
+        ? `${auth.aiOrigin.sessionId}:${auth.user.id}:${deviceId}` : undefined;
 
       const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
       if ('error' in access) return JSON.stringify({ error: access.error });
@@ -402,7 +410,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           })
           .returning());
 
-        if (cleanupRun?.id) rememberCleanupRun(`${auth.user.id}:${deviceId}`, cleanupRun.id);
+        if (cleanupRun?.id && sessionKey) rememberCleanupRun(sessionKey, cleanupRun.id);
 
         return JSON.stringify({
           cleanupRunId: cleanupRun?.id ?? null,
@@ -420,9 +428,9 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const runId = typeof input.cleanupRunId === 'string' && input.cleanupRunId
         ? input.cleanupRunId
-        : pinnedCleanupRunFor(`${auth.user.id}:${deviceId}`);
+        : sessionKey ? pinnedCleanupRunFor(sessionKey) : undefined;
       if (!runId) {
-        return JSON.stringify({ error: 'cleanupRunId is required for execute — run disk_cleanup with action "preview" first' });
+        return JSON.stringify({ error: 'cleanup_run_required', message: 'Run disk_cleanup preview in this conversation or provide cleanupRunId.' });
       }
 
       const requestedPaths = Array.isArray(input.paths)
@@ -464,7 +472,13 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           scanPath: deviceFilesystemCleanupRuns.scanPath,
           requestedAt: deviceFilesystemCleanupRuns.requestedAt,
         }));
-      if (!claimed) return JSON.stringify({ error: 'run_not_previewed', cleanupRunId: runId });
+      if (!claimed) {
+        const [existing] = await inCleanupContext(async () => db.select().from(deviceFilesystemCleanupRuns)
+          .where(and(eq(deviceFilesystemCleanupRuns.id, runId), eq(deviceFilesystemCleanupRuns.deviceId, deviceId))).limit(1));
+        const error = !existing || existing.orgId !== access.device.orgId ? 'cleanup_run_not_found'
+          : existing.kind !== 'files' ? 'cleanup_run_kind_mismatch' : 'run_not_previewed';
+        return JSON.stringify({ error, cleanupRunId: runId, status: existing?.status, httpStatus: error === 'cleanup_run_not_found' ? 404 : 409 });
+      }
 
       const releaseClaim = () => inCleanupContext(async () => {
         await db.update(deviceFilesystemCleanupRuns)
@@ -484,23 +498,31 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         ? claimed.plan as Record<string, unknown> : {};
       const scanPath = claimed.scanPath ?? osRootScanPath(access.device.osType);
 
-      const outcome = await runCleanupExecution({
-        os: toCleanupOs(access.device.osType),
-        requestedPaths,
-        candidates: pinnedCandidates,
-        previewedAt: requestedAt,
-        // The payload already carries the path; the first argument is only the
-        // key the service iterates on.
-        dispatch: (_path, payload) => runOutsideDbContext(() => aiExecuteCommand(
-          auth,
-          'disk_cleanup',
-          deviceId,
-          'file_delete',
-          { ...payload, cleanupRunId: runId },
-          { userId: auth.user.id, timeoutMs: 30_000 },
-        )),
-        budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
-      });
+      let outcome: CleanupExecutionOutcome;
+      let dispatchError: string | null = null;
+      try {
+        outcome = await runCleanupExecution({
+          os: toCleanupOs(access.device.osType),
+          requestedPaths,
+          candidates: pinnedCandidates,
+          previewedAt: requestedAt,
+          // The payload already carries the path; the first argument is only the
+          // key the service iterates on.
+          dispatch: (_path, payload) => runOutsideDbContext(() => aiExecuteCommandWithSystemPrecheck(
+            auth,
+            'disk_cleanup',
+            deviceId,
+            'file_delete',
+            { ...payload, cleanupRunId: runId },
+            { userId: auth.user.id, timeoutMs: 30_000, expectedOrgId: access.device.orgId },
+          )),
+          budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
+        });
+      } catch (error) {
+        captureException(error);
+        dispatchError = `dispatch_failed: ${error instanceof Error ? error.message : String(error)}`;
+        outcome = error instanceof CleanupDispatchError ? error.outcome : { actions: [], rejectedPaths: [], bytesReclaimed: 0, partial: true, budgetMs: CLEANUP_EXECUTE_BUDGET_MS };
+      }
 
       const counts = {
         completed: outcome.actions.filter((action) => action.status === 'completed').length,
@@ -514,7 +536,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         .filter(wasDispatched)
         .map((action) => action.path);
 
-      if (dispatchedPaths.length === 0) {
+      if (dispatchedPaths.length === 0 && !dispatchError) {
         await releaseClaim();
         // NOTHING left the API. An agent-guard rejection means the command DID
         // reach the device, so it falls through to finalisation below rather
@@ -529,30 +551,54 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
-      const runError = runStatus === 'failed'
+      const runStatus = !dispatchError && counts.completed + counts.partial > 0 ? 'executed' : 'failed';
+      const runError = dispatchError ?? (runStatus === 'failed'
         ? 'all cleanup actions failed'
         : counts.failed > 0
           ? `${counts.failed} cleanup action(s) failed`
-          : null;
+          : null);
 
-      await inCleanupContext(async () => {
-        await db.update(deviceFilesystemCleanupRuns)
-          .set({
-            executedActions: {
-              partial: outcome.partial,
-              budgetMs: outcome.budgetMs,
-              actions: outcome.actions,
-            },
-            bytesReclaimed: outcome.bytesReclaimed,
-            status: runStatus,
-            error: runError,
-            updatedAt: new Date(),
-          })
-          .where(and(runScope, eq(deviceFilesystemCleanupRuns.status, 'running')));
+      let terminalRow: typeof deviceFilesystemCleanupRuns.$inferSelect | undefined;
+      let finalizeFailed = false;
+      try {
+        await inCleanupContext(async () => {
+          const updated = await db.update(deviceFilesystemCleanupRuns)
+            .set({
+              executedActions: {
+                partial: outcome.partial,
+                budgetMs: outcome.budgetMs,
+                actions: outcome.actions,
+              },
+              bytesReclaimed: outcome.bytesReclaimed,
+              status: runStatus,
+              error: runError,
+              updatedAt: new Date(),
+            })
+            .where(and(runScope, eq(deviceFilesystemCleanupRuns.status, 'running')))
+            .returning({ id: deviceFilesystemCleanupRuns.id });
+          if (updated.length === 0) {
+            const error = new Error(`Cleanup run ${runId} changed state before finalisation`);
+            console.error('[filesystem] AI cleanup finalisation lost running claim', { cleanupRunId: runId });
+            captureException(error);
+            [terminalRow] = await db.select().from(deviceFilesystemCleanupRuns).where(runScope).limit(1);
+            if (!terminalRow) throw error;
+          }
+        });
+      } catch (error) {
+        captureException(error);
+        finalizeFailed = true;
+      }
+
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: access.device.orgId, actorId: auth.user.id, actorEmail: auth.user.email,
+        action: 'device.filesystem.cleanup.execute', resourceType: 'device', resourceId: deviceId,
+        resourceName: access.device.hostname, initiatedBy: 'ai',
+        result: runStatus === 'executed' && !finalizeFailed && !terminalRow ? 'success' : 'failure',
+        details: { cleanupRunId: runId, scanPath, selectedCount: dispatchedPaths.length,
+          bytesReclaimed: outcome.bytesReclaimed, actions: outcome.actions },
       });
 
-      return JSON.stringify({
+      const responseData = {
         cleanupRunId: runId,
         scanPath,
         snapshotId: plan.snapshotId,
@@ -565,7 +611,17 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         partial: outcome.partial,
         budgetMs: outcome.budgetMs,
         actions: outcome.actions,
-      });
+      };
+      if (terminalRow) {
+        const recorded = terminalRow.executedActions as { actions?: unknown[] } | unknown[] | null;
+        return JSON.stringify({ ...responseData, status: terminalRow.status, error: terminalRow.error,
+          bytesReclaimed: Number(terminalRow.bytesReclaimed ?? 0), actions: Array.isArray(recorded) ? recorded : recorded?.actions ?? [] });
+      }
+      if (finalizeFailed || dispatchError) {
+        return JSON.stringify({ error: finalizeFailed ? 'cleanup_finalize_failed' : 'cleanup_dispatch_failed',
+          httpStatus: 500, data: { ...responseData, status: finalizeFailed ? 'running' : 'failed' } });
+      }
+      return JSON.stringify(responseData);
     }
   });
 }

@@ -1,5 +1,5 @@
 import userEvent from '@testing-library/user-event';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceFilesystemTab from './DeviceFilesystemTab';
@@ -73,7 +73,7 @@ describe('DeviceFilesystemTab', () => {
     });
 
     render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
-    fireEvent.click(await screen.findByTestId('filesystem-analyze'));
+    fireEvent.click(await screen.findByTestId('filesystem-analyze-button'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'agent offline' }));
@@ -90,8 +90,8 @@ describe('DeviceFilesystemTab', () => {
     });
 
     render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
-    await waitFor(() => expect(screen.getByTestId('filesystem-cleanup-preview')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('filesystem-cleanup-preview'));
+    await waitFor(() => expect(screen.getByTestId('filesystem-preview-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('filesystem-preview-button'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'no snapshot' }));
@@ -109,7 +109,7 @@ describe('DeviceFilesystemTab', () => {
     });
 
     const { unmount } = render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
-    fireEvent.click(await screen.findByTestId('filesystem-analyze'));
+    fireEvent.click(await screen.findByTestId('filesystem-analyze-button'));
 
     const banner = await screen.findByTestId('filesystem-scan-banner');
     expect(banner).toHaveAttribute('role', 'status');
@@ -134,7 +134,7 @@ describe('DeviceFilesystemTab', () => {
     });
 
     render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
-    await screen.findByTestId('filesystem-analyze');
+    await screen.findByTestId('filesystem-analyze-button');
 
     const keyWarnings = errorSpy.mock.calls.filter((call) => String(call[0]).includes('key'));
     expect(keyWarnings).toEqual([]);
@@ -233,7 +233,7 @@ describe('DeviceFilesystemTab (composition)', () => {
     render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
     await screen.findByTestId('filesystem-snapshot-panels');
 
-    await userEvent.click(screen.getByTestId('filesystem-cleanup-preview'));
+    await userEvent.click(screen.getByTestId('filesystem-preview-button'));
 
     // The candidate table replaced the "run a preview" prompt.
     const panel = await screen.findByTestId('cleanup-panel');
@@ -265,7 +265,7 @@ describe('DeviceFilesystemTab (composition)', () => {
     await screen.findByTestId('filesystem-snapshot-panels');
 
     fetchMock.mockImplementationOnce(() => Promise.resolve(json({ success: false, error: 'agent offline' }, 500)));
-    await userEvent.click(screen.getByTestId('filesystem-analyze'));
+    await userEvent.click(screen.getByTestId('filesystem-analyze-button'));
 
     const banner = await screen.findByRole('alert');
     expect(banner).toHaveTextContent('agent offline');
@@ -315,12 +315,55 @@ describe('DeviceFilesystemTab (composition)', () => {
     });
     render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
     await screen.findByTestId('filesystem-snapshot-panels');
-    await userEvent.click(screen.getByTestId('filesystem-cleanup-preview'));
+    await userEvent.click(screen.getByTestId('filesystem-preview-button'));
     await userEvent.click(await screen.findByTestId('cleanup-category-select-all-temp_files'));
     await userEvent.click(screen.getByTestId('cleanup-execute'));
     await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
     expect(await screen.findByTestId('cleanup-result')).toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/filesystem/cleanup-runs')).length).toBeGreaterThan(2);
+  });
+
+  it('clears the pinned preview and selection when changing volumes', async () => {
+    windowsFixture();
+    render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
+    await screen.findByTestId('filesystem-snapshot-panels');
+    await userEvent.click(screen.getByTestId('filesystem-preview-button'));
+    await userEvent.click(await screen.findByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getAllByTestId('volume-chip')[1]);
+    expect(screen.queryByTestId('cleanup-execute')).not.toBeInTheDocument();
+  });
+
+  it.each(['switch', 'unmount'])('ignores a scan submission completing after %s', async (mode) => {
+    windowsFixture();
+    const fixture = fetchMock.getMockImplementation()!;
+    let finish!: (value: Response) => void;
+    fetchMock.mockImplementation((url, init) => String(url).endsWith('/filesystem/scan')
+      ? new Promise(resolve => { finish = resolve; }) : fixture(url, init));
+    const view = render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
+    await screen.findByTestId('filesystem-snapshot-panels');
+    await userEvent.click(screen.getByTestId('filesystem-analyze-button'));
+    if (mode === 'switch') await userEvent.click(screen.getAllByTestId('volume-chip')[1]);
+    else view.unmount();
+    await act(async () => { finish(json({ data: { commandId: 'stale-scan' } })); });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/commands/stale-scan'))).toBe(false);
+  });
+
+  it('does not toast when navigating away aborts an active scan poll', async () => {
+    windowsFixture();
+    const fixture = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, init) => {
+      if (String(url).endsWith('/filesystem/scan')) return Promise.resolve(json({ data: { commandId: 'active-scan' } }));
+      if (String(url).endsWith('/commands/active-scan')) return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      });
+      return fixture(url, init);
+    });
+    const view = render(<DeviceFilesystemTab deviceId="dev-1" osType="windows" />);
+    await screen.findByTestId('filesystem-snapshot-panels');
+    await userEvent.click(screen.getByTestId('filesystem-analyze-button'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/commands/active-scan'))).toBe(true));
+    await act(async () => { view.unmount(); });
+    expect(showToast).not.toHaveBeenCalled();
   });
 
 });

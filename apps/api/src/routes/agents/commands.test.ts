@@ -140,12 +140,14 @@ vi.mock('../../services/auditBaselineService', () => ({
 // purpose: it is one of the thirteen keys this route DOES handle inline, so its
 // mock existing proves the route skips the registry by intent rather than
 // because the handler happened to be missing.
+const fileDeleteRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const pamRegistryHandlerMock = vi.fn().mockResolvedValue({ kind: 'pam', classification: 'applied' });
 const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
+    file_delete: (...args: unknown[]) => fileDeleteRegistryHandlerMock(...(args as [])),
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
     peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
     pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
@@ -538,6 +540,24 @@ describe('agent commands routes', () => {
     await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
     expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
     expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+
+  it.each(['cancelled', 'completed', 'failed'])('records supplemental cleanup evidence for a %s command without rewriting it', async (status) => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId, deviceId: 'device-1', type: 'file_delete', status, targetRole: 'agent',
+      payload: { cleanupRunId: 'run-from-stored-command', path: '/tmp/a' }, result: { status },
+    }]));
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'failed', error: 'password=secret-value' }),
+    });
+    expect(res.status).toBe(200);
+    expect(fileDeleteRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command: expect.objectContaining({ payload: { cleanupRunId: 'run-from-stored-command', path: '/tmp/a' } }),
+      result: expect.objectContaining({ status: 'failed', error: expect.not.stringContaining('secret-value') }),
+    }));
     expect(updateMock).not.toHaveBeenCalled();
   });
 

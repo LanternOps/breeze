@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, FolderOpen, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { osRootScanPath } from '@breeze/shared';
@@ -10,7 +10,7 @@ import type { OSType } from './DeviceList';
 import VolumePicker from './filesystem/VolumePicker';
 import { useFilesystemVolumes } from './filesystem/useFilesystemVolumes';
 import { useFilesystemSnapshot } from './filesystem/useFilesystemSnapshot';
-import { useCommandPoll } from './filesystem/useCommandPoll';
+import { CommandPollAbortedError, useCommandPoll } from './filesystem/useCommandPoll';
 import SnapshotPanels from './filesystem/SnapshotPanels';
 import CleanupPanel from './filesystem/CleanupPanel';
 import CleanupRunHistory from './filesystem/CleanupRunHistory';
@@ -59,9 +59,21 @@ export default function DeviceFilesystemTab({
   const [actionError, setActionError] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilesystemCleanupPreview | null>(null);
   const [historyToken, setHistoryToken] = useState(0);
+  // A unique scope also rejects C: → D: → C: continuations from the first scan.
+  const scopeRef = useRef<object | null>(null);
+  useEffect(() => {
+    scopeRef.current = {};
+    setPreview(null);
+    setBusy(null);
+    setActionError(null);
+    scanPoll.reset();
+    return () => { scopeRef.current = null; scanPoll.reset(); };
+  }, [deviceId, scanPath, scanPoll.reset]);
 
   const runAnalyze = useCallback(async () => {
     if (!scanPath) return;
+    const scope = scopeRef.current;
+    const isCurrent = () => scope !== null && scopeRef.current === scope;
     setBusy('scan');
     setActionError(null);
     scanPoll.reset();
@@ -87,12 +99,17 @@ export default function DeviceFilesystemTab({
         },
       });
 
+      if (!isCurrent()) return;
       await scanPoll.poll(commandId, Math.max(120_000, (SCAN_TIMEOUT_SECONDS + 90) * 1000));
+      if (!isCurrent()) return;
       setPreview(null);
       await snapshotState.reload({ silent: true });
+      if (!isCurrent()) return;
       await volumes.reload();
+      if (!isCurrent()) return;
       scanPoll.reset();
     } catch (err) {
+      if (!isCurrent() || err instanceof CommandPollAbortedError) return;
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         const message = err instanceof Error ? err.message : t('deviceFilesystemTab.filesystemScanFailed');
@@ -103,12 +120,14 @@ export default function DeviceFilesystemTab({
       }
       scanPoll.reset();
     } finally {
-      setBusy(null);
+      if (isCurrent()) setBusy(null);
     }
   }, [deviceId, scanPath, scanPoll, snapshotState, t, volumes]);
 
   const runCleanupPreview = useCallback(async () => {
     if (!scanPath) return;
+    const scope = scopeRef.current;
+    const isCurrent = () => scope !== null && scopeRef.current === scope;
     setBusy('preview');
     setActionError(null);
     try {
@@ -120,9 +139,11 @@ export default function DeviceFilesystemTab({
         errorFallback: t('deviceFilesystemTab.cleanupPreviewFailed'),
         parseSuccess: (body) => (body as { data: FilesystemCleanupPreview }).data,
       });
+      if (!isCurrent()) return;
       setPreview(data);
       setHistoryToken((value) => value + 1);
     } catch (err) {
+      if (!isCurrent()) return;
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('deviceFilesystemTab.cleanupPreviewFailed') });
@@ -131,7 +152,7 @@ export default function DeviceFilesystemTab({
         err instanceof Error ? err.message : t('deviceFilesystemTab.cleanupPreviewFailed'),
       );
     } finally {
-      setBusy(null);
+      if (isCurrent()) setBusy(null);
     }
   }, [deviceId, scanPath, t]);
 
@@ -163,7 +184,7 @@ export default function DeviceFilesystemTab({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              data-testid="filesystem-analyze"
+              data-testid="filesystem-analyze-button"
               onClick={() => { void runAnalyze(); }}
               disabled={busy !== null || !scanPath}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
@@ -173,7 +194,7 @@ export default function DeviceFilesystemTab({
             </button>
             <button
               type="button"
-              data-testid="filesystem-cleanup-preview"
+              data-testid="filesystem-preview-button"
               onClick={() => { void runCleanupPreview(); }}
               disabled={busy !== null || !snapshotState.snapshot}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
@@ -210,7 +231,7 @@ export default function DeviceFilesystemTab({
             volumes={volumes.volumes}
             selectedScanPath={selectedScanPath}
             onSelect={setSelectedScanPath}
-            loading={volumes.loading}
+            loading={volumes.loading && volumes.volumes.length === 0}
             error={volumes.error}
           />
         </div>

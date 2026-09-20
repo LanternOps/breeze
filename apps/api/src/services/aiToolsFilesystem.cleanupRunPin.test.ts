@@ -14,6 +14,8 @@ const dbMockState = vi.hoisted(() => ({
   claimedRows: [] as Record<string, unknown>[],
   updates: [] as Record<string, unknown>[],
   predicates: [] as SQL[],
+  terminalRows: null as Record<string, unknown>[] | null,
+  existingRows: [] as Record<string, unknown>[],
 }));
 
 vi.mock('../db', () => ({
@@ -25,7 +27,7 @@ vi.mock('../db', () => ({
         dbMockState.updates.push(row);
         return { where: vi.fn((predicate: SQL) => {
           dbMockState.predicates.push(predicate);
-          return { returning: vi.fn(async () => dbMockState.claimedRows) };
+          return { returning: vi.fn(async () => row.status === 'running' ? dbMockState.claimedRows : (dbMockState.terminalRows ?? [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }])) };
         }) };
       }),
     })),
@@ -35,7 +37,7 @@ vi.mock('../db', () => ({
         const tableName = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
         chain.where = vi.fn(() => chain);
         chain.limit = vi.fn(() =>
-          Promise.resolve(tableName === 'users' ? dbMockState.userRows : dbMockState.deviceRows));
+          Promise.resolve(tableName === 'users' ? dbMockState.userRows : tableName === 'device_filesystem_cleanup_runs' ? dbMockState.existingRows : dbMockState.deviceRows));
         return chain;
       }),
     })),
@@ -52,9 +54,15 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
+  executeCommand: vi.fn(),
+  executeCommandWithSystemPrecheck: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
+
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({})) }));
+import { captureException } from './sentry';
+import { writeAuditEvent } from './auditEvents';
 
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({
@@ -75,7 +83,7 @@ import { db } from '../db';
 import { toolInputSchemas } from './aiToolSchemas';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { executeCommand } from './commandQueue';
+import { executeCommand, executeCommandWithSystemPrecheck } from './commandQueue';
 import { readPlanPreviewCandidates, getLatestFilesystemCleanupSnapshot } from './filesystemAnalysis';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -121,6 +129,8 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     testNumber++;
+    dbMockState.terminalRows = null;
+    dbMockState.existingRows = [{ status: 'running', orgId: ORG_ID, kind: 'files' }];
     dbMockState.userRows = [];
     dbMockState.deviceRows = [{ id: DEVICE_ID, orgId: ORG_ID, siteId: null,
       hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' }];
@@ -132,8 +142,8 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
 
   it('rejects execute with neither an explicit cleanupRunId nor a pinned one', async () => {
     const out = JSON.parse(await callTool({ action: 'execute', paths: ['/tmp/junk.log'] }));
-    expect(out.error).toContain('cleanupRunId');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(out.error).toBe('cleanup_run_required');
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('remembers the run id from its own preview and uses it on the next execute', async () => {
@@ -144,9 +154,10 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
     expect(out.cleanupRunId).toBe(RUN_ID);
     expect(readPlanPreviewCandidates).toHaveBeenCalledWith(dbMockState.claimedRows[0]!.plan);
     expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
-    expect(executeCommand).toHaveBeenCalledWith(DEVICE_ID, 'file_delete',
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(DEVICE_ID, 'file_delete',
       expect.objectContaining({ cleanupRunId: RUN_ID, recursive: false, permanent: true, cleanupGuard: true }),
-      expect.anything());
+      expect.objectContaining({ expectedOrgId: ORG_ID, aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' } }));
+    expect(executeCommand).not.toHaveBeenCalled();
   });
 
   it('honours an explicit cleanupRunId over the pinned one', async () => {
@@ -160,7 +171,7 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
     claimReturnsRun({ requestedAt: new Date(Date.now() - 25 * 3_600_000) });
     const out = JSON.parse(await callTool({ action: 'execute', paths: ['/tmp/junk.log'], cleanupRunId: RUN_ID }));
     expect(out.error).toBe('preview_expired');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     expect(dbMockState.updates.at(-1)).toMatchObject({ status: 'previewed', approvedAt: null });
   });
 
@@ -177,13 +188,13 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
     dbMockState.claimedRows = [];
     const out = JSON.parse(await callTool({ action: 'execute', paths: ['/tmp/junk.log'], cleanupRunId: RUN_ID }));
     expect(out.error).toBe('run_not_previewed');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('releases an undispatched claim when paths are outside the pinned plan', async () => {
     const out = JSON.parse(await callTool({ action: 'execute', paths: ['/tmp/not-previewed'], cleanupRunId: RUN_ID }));
     expect(out.rejectedPaths).toEqual(['/tmp/not-previewed']);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
     expect(dbMockState.updates.at(-1)).toMatchObject({ status: 'previewed' });
   });
 
@@ -191,8 +202,8 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
     await callTool({ action: 'preview' });
     testNumber++;
     const out = JSON.parse(await callTool({ action: 'execute', paths: ['/tmp/junk.log'] }));
-    expect(out.error).toContain('cleanupRunId');
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(out.error).toBe('cleanup_run_required');
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('scopes the claim to the run, device, organization, kind and previewed state', async () => {
@@ -202,6 +213,46 @@ describe('disk_cleanup run pinning (spec §13 #16)', () => {
     for (const column of ['id', 'device_id', 'org_id', 'kind', 'status']) {
       expect(query.sql).toContain(`"device_filesystem_cleanup_runs"."${column}" =`);
     }
+  });
+
+  it('does not reuse a preview from a different conversation', async () => {
+    await callTool({ action: 'preview' });
+    const auth = makeAgentAuth();
+    auth.aiOrigin = { kind: 'ai_assistant', sessionId: 'other-session' };
+    const out = JSON.parse(await tool.handler({ deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/junk.log'] }, auth));
+    expect(out.error).toBe('cleanup_run_required');
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
+  });
+
+  it('records completed actions and audits a dispatch exception', async () => {
+    const row = dbMockState.claimedRows[0]!;
+    const candidates = (row.plan as any).preview.candidates;
+    candidates.push({ ...candidates[0], path: '/tmp/second.log' });
+    vi.mocked(executeCommandWithSystemPrecheck).mockResolvedValueOnce({ status: 'completed' } as never).mockRejectedValueOnce(new Error('insert failed'));
+    const out = JSON.parse(await callTool({ action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/junk.log', '/tmp/second.log'] }));
+    expect(out.error).toBe('cleanup_dispatch_failed');
+    expect(out.data.actions).toHaveLength(1);
+    expect(dbMockState.updates.at(-1)).toMatchObject({ status: 'failed', error: 'dispatch_failed: insert failed', executedActions: { actions: [expect.objectContaining({ path: '/tmp/junk.log' })] } });
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('returns the cancelled terminal state when finalisation loses its conditional update', async () => {
+    dbMockState.terminalRows = [];
+    dbMockState.existingRows = [{ status: 'failed', error: 'cancelled', executedActions: [{ path: '/tmp/late.tmp', lateResult: true }] }];
+    const out = JSON.parse(await callTool({ action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/junk.log'] }));
+    expect(out.status).toBe('failed');
+    expect(out.error).toBe('cancelled');
+    expect(out.actions).toEqual([{ path: '/tmp/late.tmp', lateResult: true }]);
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('distinguishes a missing or wrong-kind run from an already used run', async () => {
+    dbMockState.claimedRows = [];
+    dbMockState.existingRows = [];
+    expect(JSON.parse(await callTool({ action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/junk.log'] })).error).toBe('cleanup_run_not_found');
+    dbMockState.existingRows = [{ status: 'previewed', orgId: ORG_ID, kind: 'system' }];
+    expect(JSON.parse(await callTool({ action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/junk.log'] })).error).toBe('cleanup_run_kind_mismatch');
   });
 
   it('validates explicit UUIDs while allowing the handler to resolve a remembered pin', () => {

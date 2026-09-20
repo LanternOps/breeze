@@ -16,7 +16,7 @@
  * previews from one click of a bulk action genuinely can collide.
  */
 
-import { and, desc, eq, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceFilesystemCleanupRuns } from '../db/schema';
 
@@ -72,9 +72,12 @@ export function decodeCleanupRunCursor(token: string): CleanupRunCursor | null {
   const [rawDate, id] = parts;
   if (rawDate === undefined || id === undefined) return null;
   if (!UUID_RE.test(id)) return null;
+  // Accept the UTC ISO shape emitted by this codec, not Date's permissive
+  // inputs such as "1" that PostgreSQL cannot compare as a timestamp.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(rawDate)) return null;
   const parsed = new Date(rawDate);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return { requestedAt: parsed.toISOString(), id };
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 19) !== rawDate.slice(0, 19)) return null;
+  return { requestedAt: rawDate, id };
 }
 
 function clampLimit(limit: number): number {
@@ -140,7 +143,9 @@ export async function listCleanupRuns(
       kind: deviceFilesystemCleanupRuns.kind,
       status: deviceFilesystemCleanupRuns.status,
       scanPath: deviceFilesystemCleanupRuns.scanPath,
-      requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+      // requested_at is timestamp WITHOUT time zone; avoid the driver's Date
+      // decoder, which truncates PostgreSQL microseconds before keyset paging.
+      requestedAt: sql<string>`to_char(${deviceFilesystemCleanupRuns.requestedAt}, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       approvedAt: deviceFilesystemCleanupRuns.approvedAt,
       bytesReclaimed: deviceFilesystemCleanupRuns.bytesReclaimed,
       error: deviceFilesystemCleanupRuns.error,
@@ -238,6 +243,7 @@ export async function cancelCleanupRunForCommand(params: {
     .where(and(
       eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId),
       eq(deviceFilesystemCleanupRuns.status, 'running'),
+      eq(deviceFilesystemCleanupRuns.kind, 'files'),
     ))
     .returning({ id: deviceFilesystemCleanupRuns.id });
   return Boolean(row);
@@ -260,44 +266,36 @@ export async function recordLateCleanupResult(params: {
   error?: string | null;
   completedAt: Date;
 }): Promise<'recorded' | 'ignored'> {
-  const [run] = await db
-    .select({
-      status: deviceFilesystemCleanupRuns.status,
-      executedActions: deviceFilesystemCleanupRuns.executedActions,
-    })
-    .from(deviceFilesystemCleanupRuns)
-    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId))
-    .limit(1);
-
-  // `previewed` was never dispatched; `running` is still owned by the route
-  // that claimed it, and that route writes the authoritative action list.
-  if (!run || run.status === 'previewed' || run.status === 'running') return 'ignored';
-
-  // W01 stores an envelope; historical runs use a bare array. Preserve both.
-  const envelope = run.executedActions && typeof run.executedActions === 'object'
-    && !Array.isArray(run.executedActions)
-    ? run.executedActions as Record<string, unknown>
-    : null;
-  const existing = Array.isArray(run.executedActions) ? run.executedActions
-    : envelope && Array.isArray(envelope.actions) ? envelope.actions : [];
-  const actions = [
-    ...existing,
-    {
-      path: params.path,
-      status: params.status,
-      error: params.error ?? undefined,
-      commandId: params.commandId,
-      lateResult: true,
-      receivedAt: params.completedAt.toISOString(),
-    },
-  ];
-  await db
+  const entry = JSON.stringify([{
+    path: params.path,
+    status: params.status,
+    error: params.error ?? undefined,
+    commandId: params.commandId,
+    lateResult: true,
+    receivedAt: params.completedAt.toISOString(),
+  }]);
+  const current = deviceFilesystemCleanupRuns.executedActions;
+  // Append against the row under PostgreSQL's update lock. Reading the list
+  // into JS first would lose simultaneous receipts or overwrite a finaliser's
+  // newer envelope. Preserve envelope metadata and historical bare arrays.
+  const appended = sql`
+    CASE WHEN jsonb_typeof(${current}) = 'object'
+      THEN jsonb_set(${current}, '{actions}',
+        (CASE WHEN jsonb_typeof(${current} -> 'actions') = 'array'
+          THEN ${current} -> 'actions' ELSE '[]'::jsonb END) || ${entry}::jsonb, true)
+      ELSE (CASE WHEN jsonb_typeof(${current}) = 'array'
+        THEN ${current} ELSE '[]'::jsonb END) || ${entry}::jsonb
+    END
+  `;
+  const [updated] = await db
     .update(deviceFilesystemCleanupRuns)
-    .set({
-      executedActions: envelope ? { ...envelope, actions } : actions,
-      updatedAt: params.completedAt,
-    })
-    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId));
+    .set({ executedActions: appended, updatedAt: params.completedAt })
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId),
+      eq(deviceFilesystemCleanupRuns.kind, 'files'),
+      inArray(deviceFilesystemCleanupRuns.status, ['running', 'executed', 'failed']),
+    ))
+    .returning({ id: deviceFilesystemCleanupRuns.id });
 
-  return 'recorded';
+  return updated ? 'recorded' : 'ignored';
 }

@@ -753,6 +753,11 @@
     "noMoreActivity": "No hay más actividad"
   },
   "deviceFilesystemTab": {
+    "resultPartial": "Completado parcialmente",
+    "resultSkippedLinks": "Enlaces omitidos: {{count}}",
+    "errorAgentUpdateRequired": "Actualiza el agente a la versión {{minAgentVersion}} o posterior para ejecutar la limpieza.",
+    "errorCleanupRunRequired": "Ejecuta una vista previa antes de realizar la limpieza.",
+    "errorVolumeRequired": "Selecciona un volumen antes de ejecutar la limpieza.",
     "volumes": "Volúmenes",
     "volumesLoading": "Cargando volúmenes...",
     "volumesEmpty": "No se reportaron volúmenes analizables para este dispositivo.",

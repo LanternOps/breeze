@@ -57,9 +57,12 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
+  executeCommand: vi.fn(),
+  executeCommandWithSystemPrecheck: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
+
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({})) }));
 
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({

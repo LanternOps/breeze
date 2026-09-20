@@ -4,6 +4,8 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { toCleanupOs } from '@breeze/shared';
 import {
   CLEANUP_EXECUTE_BUDGET_MS,
+  CleanupDispatchError,
+  type CleanupExecutionOutcome,
   MIN_AGENT_VERSION_CLEANUP_GUARD,
   agentSupportsCleanupGuard,
   runCleanupExecution,
@@ -17,7 +19,7 @@ import { db } from '../../db';
 import { deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { CommandTypes, executeCommandWithSystemPrecheck, queueCommandForExecution } from '../../services/commandQueue';
 import {
   buildCleanupPreview,
   getFilesystemScanState,
@@ -39,6 +41,7 @@ import {
 } from '../../services/filesystemCleanupRuns';
 
 import { listFilesystemVolumes } from '../../services/filesystemVolumes';
+import { captureException } from '../../services/sentry';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
@@ -493,7 +496,7 @@ filesystemRoutes.post(
       await db
         .update(deviceFilesystemCleanupRuns)
         .set({ status: 'previewed', approvedAt: null, updatedAt: new Date() })
-        .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId));
+        .where(and(eq(deviceFilesystemCleanupRuns.id, cleanupRunId), eq(deviceFilesystemCleanupRuns.status, 'running')));
     });
 
     const requestedAt = claimed.row.requestedAt instanceof Date
@@ -537,21 +540,29 @@ filesystemRoutes.post(
     }
 
     const requested = Array.from(new Set(paths));
-    const outcome = await runCleanupExecution({
-      os: toCleanupOs((device as { osType?: unknown }).osType),
-      requestedPaths: requested,
-      candidates,
-      previewedAt,
-      // The payload already carries the path; the first argument is only the
-      // key the service iterates on.
-      dispatch: (_path, payload) => executeCommand(
-        deviceId,
-        CommandTypes.FILE_DELETE,
-        { ...payload, cleanupRunId },
-        { userId: auth.user.id, timeoutMs: 30_000 },
-      ),
-      budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
-    });
+    let outcome: CleanupExecutionOutcome;
+    let dispatchError: string | null = null;
+    try {
+      outcome = await runCleanupExecution({
+        os: toCleanupOs((device as { osType?: unknown }).osType),
+        requestedPaths: requested,
+        candidates,
+        previewedAt,
+        // The payload already carries the path; the first argument is only the
+        // key the service iterates on.
+        dispatch: (_path, payload) => executeCommandWithSystemPrecheck(
+          deviceId,
+          CommandTypes.FILE_DELETE,
+          { ...payload, cleanupRunId },
+          { userId: auth.user.id, timeoutMs: 30_000, expectedOrgId: device.orgId },
+        ),
+        budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
+      });
+    } catch (error) {
+      captureException(error);
+      dispatchError = `dispatch_failed: ${error instanceof Error ? error.message : String(error)}`;
+      outcome = error instanceof CleanupDispatchError ? error.outcome : { actions: [], rejectedPaths: [], bytesReclaimed: 0, partial: true, budgetMs: CLEANUP_EXECUTE_BUDGET_MS };
+    }
 
     const counts = {
       completed: outcome.actions.filter((action) => action.status === 'completed').length,
@@ -565,7 +576,7 @@ filesystemRoutes.post(
       .filter(wasDispatched)
       .map((action) => action.path);
 
-    if (dispatchedPaths.length === 0) {
+    if (dispatchedPaths.length === 0 && !dispatchError) {
       await releaseClaim();
       // NOTHING left the API — every path failed the plan/rule/denied-root
       // screening. Reporting WHICH and WHY is the point of defect 10's fix: the
@@ -578,12 +589,12 @@ filesystemRoutes.post(
       });
     }
 
-    const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
-    const runError = runStatus === 'failed'
+    const runStatus = !dispatchError && counts.completed + counts.partial > 0 ? 'executed' : 'failed';
+    const runError = dispatchError ?? (runStatus === 'failed'
       ? 'all cleanup actions failed'
       : counts.failed > 0
         ? `${counts.failed} cleanup action(s) failed`
-        : null;
+        : null);
 
     const planRecord =
       claimed.row.plan && typeof claimed.row.plan === 'object' && !Array.isArray(claimed.row.plan)
@@ -594,9 +605,10 @@ filesystemRoutes.post(
     // files are ALREADY gone, so the row must stay `running`: rolling it back
     // to `previewed` would re-offer a candidate set that no longer exists.
     // Retention (Task 4) ages a stuck file run to `failed` after 24h.
+    let terminalRow: typeof deviceFilesystemCleanupRuns.$inferSelect | undefined;
     try {
       await withAuthDbAccessContext(auth, async () => {
-        await db
+        const updated = await db
           .update(deviceFilesystemCleanupRuns)
           .set({
             status: runStatus,
@@ -617,10 +629,19 @@ filesystemRoutes.post(
               rejectedPaths: outcome.rejectedPaths,
             },
           })
-          .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId))
+          .where(and(eq(deviceFilesystemCleanupRuns.id, cleanupRunId), eq(deviceFilesystemCleanupRuns.status, 'running')))
           .returning({ id: deviceFilesystemCleanupRuns.id });
+        if (updated.length === 0) {
+          const error = new Error(`Cleanup run ${cleanupRunId} changed state before finalisation`);
+          console.error('[filesystem] cleanup finalisation lost running claim', { cleanupRunId });
+          captureException(error);
+          [terminalRow] = await db.select().from(deviceFilesystemCleanupRuns)
+            .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId)).limit(1);
+          if (!terminalRow) throw error;
+        }
       });
     } catch (err) {
+      captureException(err);
       console.error('[filesystem] cleanup finalize failed AFTER deletion', {
         deviceId, cleanupRunId, error: err instanceof Error ? err.message : String(err),
       });
@@ -659,7 +680,7 @@ filesystemRoutes.post(
         partial: outcome.partial,
         bytesReclaimed: outcome.bytesReclaimed,
       },
-      result: runStatus === 'executed' ? 'success' : 'failure',
+      result: (terminalRow?.status ?? runStatus) === 'executed' ? 'success' : 'failure',
     });
 
     const responseData = {
@@ -676,8 +697,13 @@ filesystemRoutes.post(
       actions: outcome.actions,
     };
 
+    if (terminalRow) {
+      const recorded = terminalRow.executedActions as { actions?: unknown[] } | unknown[] | null;
+      return okJson(c, { ...responseData, status: terminalRow.status, error: terminalRow.error,
+        bytesReclaimed: Number(terminalRow.bytesReclaimed ?? 0), actions: Array.isArray(recorded) ? recorded : recorded?.actions ?? [] });
+    }
     if (runStatus === 'failed') {
-      return failJson(c, 'all cleanup actions failed', 500, responseData);
+      return failJson(c, dispatchError ? 'cleanup_dispatch_failed' : 'all cleanup actions failed', 500, responseData);
     }
     return okJson(c, responseData);
   }

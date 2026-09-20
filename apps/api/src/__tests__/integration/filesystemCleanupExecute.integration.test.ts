@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { deviceFilesystemCleanupRuns, devices } from '../../db/schema';
+import { runFilesystemCleanupRunRetention } from '../../jobs/filesystemCleanupRunRetention';
+import { listCleanupRuns, recordLateCleanupResult } from '../../services/filesystemCleanupRuns';
 import { CLEANUP_PREVIEW_TTL_HOURS } from '../../routes/devices/filesystem';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
@@ -135,4 +137,78 @@ describe('cleanup-execute claim semantics (real Postgres)', () => {
     // SQL does not enforce preview freshness; the route TTL check is required.
     expect(await readStatus(runId)).toBe('running');
   });
+  // Written, not executed locally: real Postgres is required.
+  it('retention deletes only old previews and fails only file claims approved over 24 hours ago', async () => {
+    const ids = await withSystemDbAccessContext(async () => {
+      const rows = await db.execute<{ id: string }>(sql`
+        INSERT INTO device_filesystem_cleanup_runs
+          (device_id, org_id, status, kind, requested_at, approved_at)
+        VALUES
+          (${tenant.deviceId}, ${tenant.orgId}, 'previewed', 'files', now() - interval '8 days', NULL),
+          (${tenant.deviceId}, ${tenant.orgId}, 'executed', 'files', now() - interval '8 days', now() - interval '8 days'),
+          (${tenant.deviceId}, ${tenant.orgId}, 'running', 'files', now() - interval '8 days', now() - interval '25 hours'),
+          (${tenant.deviceId}, ${tenant.orgId}, 'running', 'system', now() - interval '8 days', now() - interval '25 hours'),
+          (${tenant.deviceId}, ${tenant.orgId}, 'running', 'files', now() - interval '8 days', now() - interval '1 hour'),
+          (${tenant.deviceId}, ${tenant.orgId}, 'running', 'files', now() - interval '8 days', NULL)
+        RETURNING id
+      `);
+      return rows.map((row) => row.id);
+    });
+    const result = await runFilesystemCleanupRunRetention({ batchSize: 1 });
+    expect(result.previewsDeleted).toBe(1);
+    expect(result.stuckRunsFailed).toBe(1);
+    expect(await Promise.all(ids.map(readStatus)))
+      .toEqual([null, 'executed', 'failed', 'running', 'running', 'running']);
+  });
+
+  it('pages every run exactly once when requested_at shares PostgreSQL microseconds', async () => {
+    const ids = await withSystemDbAccessContext(async () => {
+      const rows = await db.execute<{ id: string }>(sql`
+        INSERT INTO device_filesystem_cleanup_runs (device_id, org_id, requested_at)
+        SELECT ${tenant.deviceId}::uuid, ${tenant.orgId}::uuid, '2026-09-19 10:00:00.123456'::timestamp
+        FROM generate_series(1, 3)
+        RETURNING id
+      `);
+      return rows.map((row) => row.id);
+    });
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 4; page++) {
+      const result = await withSystemDbAccessContext(() => listCleanupRuns(tenant.deviceId, { limit: 1, cursor }));
+      expect(result.runs).toHaveLength(1);
+      seen.push(result.runs[0]!.id);
+      expect(result.runs[0]!.requestedAt).toBe('2026-09-19T10:00:00.123456Z');
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen)).toEqual(new Set(ids));
+  });
+
+  it.each(['running', 'executed', 'failed'] as const)('preserves concurrent late receipts and the %s status', async (status) => {
+    for (const shape of ['array', 'envelope']) {
+      const runId = await insertPreviewedRun();
+      const original = [{ path: '/tmp/original', status: 'completed' }];
+      await withSystemDbAccessContext(() => db.update(deviceFilesystemCleanupRuns).set({
+        status,
+        executedActions: shape === 'array' ? original : { partial: true, budgetMs: 240_000, actions: original },
+      }).where(eq(deviceFilesystemCleanupRuns.id, runId)));
+      const commands = [randomUUID(), randomUUID()];
+      expect(await Promise.all(commands.map(commandId => withSystemDbAccessContext(() => recordLateCleanupResult({
+        cleanupRunId: runId, commandId, path: `/tmp/${commandId}`,
+        status: 'completed', completedAt: new Date(),
+      }))))).toEqual(['recorded', 'recorded']);
+      const [row] = await withSystemDbAccessContext(() => db.select()
+        .from(deviceFilesystemCleanupRuns).where(eq(deviceFilesystemCleanupRuns.id, runId)));
+      expect(row!.status).toBe(status);
+      const envelope = row!.executedActions as { partial: boolean; budgetMs: number; actions: Array<Record<string, unknown>> };
+      const actions = shape === 'array' ? row!.executedActions as Array<Record<string, unknown>> : envelope.actions;
+      if (shape === 'envelope') expect(envelope).toMatchObject({ partial: true, budgetMs: 240_000 });
+      expect(actions).toHaveLength(3);
+      expect(actions[0]).toEqual(original[0]);
+      expect(new Set(actions.slice(1).map(action => action.commandId))).toEqual(new Set(commands));
+      expect(actions.slice(1).every(action => action.lateResult === true)).toBe(true);
+    }
+  });
+
 });

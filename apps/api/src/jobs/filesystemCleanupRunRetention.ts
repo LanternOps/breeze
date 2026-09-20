@@ -142,20 +142,31 @@ export async function runFilesystemCleanupRunRetention(
   }
 
   // ---- 3. stuck claims --------------------------------------------------
-  const stuckResult = await inFreshSystemContext('filesystemCleanupRunRetention.failStuck', () => db.execute(sql`
-    UPDATE device_filesystem_cleanup_runs
-    SET status = 'failed',
-        error = 'interrupted',
-        updated_at = now()
-    WHERE kind = 'files'
-      AND status = 'running'
-      AND requested_at < ${stuckCutoff}
-  `));
-  const stuckRunsFailed = extractRowCount(stuckResult);
+  let stuckRunsFailed = 0;
+  let stuckBatches = 0;
+  let lastFailed = 0;
+  while (stuckBatches < maxBatches) {
+    const stuckResult = await inFreshSystemContext('filesystemCleanupRunRetention.failStuck', () => db.execute(sql`
+      UPDATE device_filesystem_cleanup_runs
+      SET status = 'failed', error = 'interrupted', updated_at = now()
+      WHERE ctid IN (
+        SELECT ctid FROM device_filesystem_cleanup_runs
+        WHERE kind = 'files'
+          AND status = 'running'
+          AND approved_at IS NOT NULL
+          AND approved_at < ${stuckCutoff}
+        LIMIT ${batchSize}
+      )
+    `));
+    lastFailed = extractRowCount(stuckResult);
+    stuckRunsFailed += lastFailed;
+    stuckBatches += 1;
+    if (lastFailed < batchSize) break;
+  }
 
   const durationMs = Date.now() - startedAt;
   const trimHasMore = trimBatches >= maxBatches && lastTrimmed >= batchSize;
-  const hasMore = prune.hasMore || trimHasMore;
+  const hasMore = prune.hasMore || trimHasMore || (stuckBatches >= maxBatches && lastFailed >= batchSize);
 
   console.log(
     `${LOG_PREFIX} Deleted ${prune.deleted} abandoned previews (>${previewDays}d), ` +
@@ -163,7 +174,7 @@ export async function runFilesystemCleanupRunRetention(
   );
   warnOnRetentionBacklog(LOG_PREFIX, TABLE, {
     deleted: prune.deleted + plansTrimmed,
-    batches: prune.batches + trimBatches,
+    batches: prune.batches + trimBatches + stuckBatches,
     hasMore,
   });
   recordRetentionRun('filesystem_cleanup_run_retention', {
@@ -175,7 +186,7 @@ export async function runFilesystemCleanupRunRetention(
     previewsDeleted: prune.deleted,
     plansTrimmed,
     stuckRunsFailed,
-    batches: prune.batches + trimBatches,
+    batches: prune.batches + trimBatches + stuckBatches,
     hasMore,
     durationMs,
   };

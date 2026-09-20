@@ -139,6 +139,14 @@ export interface CleanupExecutionOutcome {
   budgetMs: number;
 }
 
+/** Carries durable progress to either caller when dispatch itself fails. */
+export class CleanupDispatchError extends Error {
+  constructor(cause: unknown, readonly outcome: CleanupExecutionOutcome) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'CleanupDispatchError';
+  }
+}
+
 export function buildFileDeletePayload(params: {
   path: string;
   granularity: CleanupGranularity;
@@ -324,13 +332,21 @@ export async function runCleanupExecution(params: {
       continue;
     }
 
-    const result = await params.dispatch(path, buildFileDeletePayload({
-      path,
-      granularity: screened.granularity,
-      // `screen` already refused a null os, so this narrowing is total.
-      volumeRoot: cleanupVolumeRoot(params.os as CleanupOs, path),
-      previewedAt: params.previewedAt.toISOString(),
-    }));
+    let result: FileDeleteDispatchResult;
+    try {
+      result = await params.dispatch(path, buildFileDeletePayload({
+        path,
+        granularity: screened.granularity,
+        // `screen` already refused a null os, so this narrowing is total.
+        volumeRoot: cleanupVolumeRoot(params.os as CleanupOs, path),
+        previewedAt: params.previewedAt.toISOString(),
+      }));
+    } catch (error) {
+      throw new CleanupDispatchError(error, {
+        actions, bytesReclaimed, budgetMs, partial: true,
+        rejectedPaths: actions.filter(action => action.status === 'rejected').map(action => action.path),
+      });
+    }
     const parsed = parseFileDeleteResult(result.stdout);
     const status = mapFileDeleteStatus(result, parsed);
     const bytesFreed = parsed

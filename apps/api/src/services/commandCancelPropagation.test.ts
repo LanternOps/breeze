@@ -207,7 +207,7 @@ describe('propagateCancelledDeviceCommand (#5128 §G)', () => {
 
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({
       cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      reason: 'cancelled: device moved',
+      reason: 'Cancelled before the device received it',
       executor: executorStub,
     }));
   });

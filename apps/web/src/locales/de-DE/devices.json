@@ -753,6 +753,11 @@
     "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
+    "resultPartial": "Teilweise abgeschlossen",
+    "resultSkippedLinks": "Übersprungene Links: {{count}}",
+    "errorAgentUpdateRequired": "Aktualisieren Sie den Agenten auf Version {{minAgentVersion}} oder neuer, um die Bereinigung auszuführen.",
+    "errorCleanupRunRequired": "Führen Sie vor der Bereinigung eine Bereinigungsvorschau aus.",
+    "errorVolumeRequired": "Wählen Sie vor der Bereinigung ein Volume aus.",
     "volumes": "Datenträger",
     "volumesLoading": "Datenträger werden geladen...",
     "volumesEmpty": "Für dieses Gerät wurden keine scanbaren Datenträger gemeldet.",

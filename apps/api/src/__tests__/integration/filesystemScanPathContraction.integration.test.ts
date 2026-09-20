@@ -16,7 +16,10 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 describe('filesystem scan_path contraction replay', () => {
-  it.each(['linux', 'windows'] as const)('contracts and replays for %s', async (osType) => {
+  // Written, not executed locally: requires Postgres.
+  it.each([
+    ['linux', false], ['linux', true], ['windows', false], ['windows', true],
+  ] as const)('contracts and replays for %s (existing root: %s)', async (osType, existingRoot) => {
     const db = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -50,10 +53,19 @@ describe('filesystem scan_path contraction replay', () => {
         `);
         await tx.execute(sql`
           INSERT INTO device_filesystem_scan_state
-            (device_id, org_id, checkpoint, aggregate, hot_directories)
+            (device_id, org_id, checkpoint, aggregate, hot_directories, updated_at)
           VALUES (${deviceId}, ${org.id}, '{"cursor":"unknown-volume"}',
-                  '{"bytes":100}', '["unknown-volume"]');
+                  '{"bytes":100}', '["unknown-volume"]', '2026-09-17 00:00:00'),
+                 (${deviceId}, ${org.id}, '{"cursor":"newer-unknown"}',
+                  '{"bytes":200}', '["newer-unknown"]', '2026-09-18 00:00:00');
         `);
+        if (existingRoot) {
+          await tx.insert(deviceFilesystemScanState).values({
+            deviceId, orgId: org.id, scanPath: root,
+            checkpoint: { cursor: 'root-newest' }, aggregate: { bytes: 300 }, hotDirectories: [root],
+            updatedAt: new Date('2026-09-19T00:00:00Z'),
+          });
+        }
         await tx.insert(deviceFilesystemScanState).values({
           deviceId, orgId: org.id, scanPath: otherPath,
           checkpoint: { cursor: 'keep' }, aggregate: { bytes: 42 }, hotDirectories: [otherPath],
@@ -66,8 +78,12 @@ describe('filesystem scan_path contraction replay', () => {
         const states = await tx.select().from(deviceFilesystemScanState)
           .where(eq(deviceFilesystemScanState.deviceId, deviceId));
         expect(states).toHaveLength(2);
-        expect(states.find((row) => row.scanPath === root)).toMatchObject({
+        expect(states.find((row) => row.scanPath === root)).toMatchObject(existingRoot ? {
+          checkpoint: { cursor: 'root-newest' }, aggregate: { bytes: 300 }, hotDirectories: [root],
+          updatedAt: new Date('2026-09-19T00:00:00Z'),
+        } : {
           checkpoint: {}, aggregate: {}, hotDirectories: [],
+          updatedAt: new Date('2026-09-18T00:00:00Z'),
         });
         expect(states.find((row) => row.scanPath === otherPath)).toMatchObject({
           checkpoint: { cursor: 'keep' }, aggregate: { bytes: 42 }, hotDirectories: [otherPath],

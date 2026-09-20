@@ -122,4 +122,14 @@ describe('useCommandPoll', () => {
     act(() => { result.current.reset(); });
     expect(result.current.status).toBeNull();
   });
+  it.each(['cancelled', 'timeout'])('stops immediately for %s', async (status) => {
+    fetchMock.mockResolvedValue(commandResponse(status, { error: status }));
+    const { result } = renderHook(() => useCommandPoll('dev-1'));
+    let rejection: unknown;
+    act(() => { void result.current.poll('cmd-1', 60_000).catch(e => { rejection = e; }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(rejection).toBeInstanceOf(Error);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
 });

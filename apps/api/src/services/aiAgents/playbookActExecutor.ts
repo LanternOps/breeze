@@ -630,7 +630,7 @@ interface RunStepsOutcome {
  * contract. Exported for direct unit coverage without needing to go through
  * `executeBuiltInPlaybookForRun`'s DB read/write wrapper.
  */
-export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Promise<RunStepsOutcome> {
+export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx, variables: Record<string, unknown> = {}): Promise<RunStepsOutcome> {
   const results: PlaybookStepResult[] = [];
   // Only completed steps can contribute variables to subsequent steps.
   const producedVariables: Record<string, unknown> = {};
@@ -642,9 +642,11 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
   let stop = false;
 
   for (let i = 0; i < steps.length && !stop; i++) {
-    const step = Object.keys(producedVariables).length > 0
-      ? resolveStepLate(steps[i]!, producedVariables, ctx.run.deviceId)
-      : steps[i]!;
+    // Resolve the original template each time: caller substitutions must not
+    // erase tokens before the preview produces its authoritative run id.
+    const step = resolvePlaybookSteps(
+      [steps[i]!], { ...variables, ...producedVariables }, ctx.run.deviceId,
+    )[0]!;
     const startedAt = new Date();
 
     if (Date.now() >= ctx.deadlineMs) {
@@ -845,10 +847,9 @@ export async function executeBuiltInPlaybookForRun(args: PlaybookExecutorArgs): 
   const { row } = reloaded;
 
   const executionId = await insertPlaybookExecutionRow(run, agentAuth.user.id, row.id, variables);
-  const resolvedSteps = resolvePlaybookSteps(row.steps, variables, run.deviceId);
   const stepCtx: StepCtx = { run, agentAuth, deps, reserved, deadlineMs };
 
-  const outcome = await runPlaybookSteps(resolvedSteps, stepCtx);
+  const outcome = await runPlaybookSteps(row.steps, stepCtx, variables);
 
   await finalizePlaybookExecutionRow(
     executionId,

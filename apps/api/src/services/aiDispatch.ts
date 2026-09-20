@@ -17,6 +17,7 @@
  */
 import {
   executeCommand,
+  executeCommandWithSystemPrecheck,
   queueCommand,
   queueCommandForExecution,
   insertQueuedCommandInTransaction,
@@ -73,6 +74,20 @@ export async function aiExecuteCommand(
 ): Promise<CommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
   return executeCommand(deviceId, type, payload, { ...options, aiOrigin });
+}
+
+/** Context-free dispatch with a short, tenant-bound device precheck. */
+export async function aiExecuteCommandWithSystemPrecheck(
+  auth: AiAuth,
+  toolName: string,
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload,
+  options: Omit<Parameters<typeof executeCommandWithSystemPrecheck>[3], 'aiOrigin'>,
+): Promise<CommandResult> {
+  return executeCommandWithSystemPrecheck(deviceId, type, payload, {
+    ...options, aiOrigin: requireAiOrigin(auth, toolName),
+  });
 }
 
 export async function aiQueueCommandForExecution(

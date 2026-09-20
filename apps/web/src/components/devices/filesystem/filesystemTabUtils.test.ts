@@ -126,7 +126,7 @@ describe('summariseActionStatuses', () => {
       { path: '/d', category: 'trash', sizeBytes: 1, status: 'failed', error: 'boom' },
     ];
     expect(summariseActionStatuses(actions)).toEqual({
-      completed: 2, failed: 1, skipped_locked: 1, rejected: 0, skipped_budget: 0,
+      completed: 2, partial: 0, failed: 1, skipped_locked: 1, rejected: 0, skipped_budget: 0,
     });
   });
 });

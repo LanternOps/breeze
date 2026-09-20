@@ -8,7 +8,7 @@
  * whenever that run changes, so a click can only ever delete paths from the
  * candidate set the operator actually looked at.
  *
- * The result panel reports all five outcome buckets even at zero and renders
+ * The result panel reports all outcome buckets even at zero and renders
  * failures amber. A partial failure in a green box (the old File Manager
  * behaviour) reads as success at a glance.
  */
@@ -37,6 +37,7 @@ const CONFIRM_PATH_PREVIEW_LIMIT = 10;
 const RESULT_LABEL_KEYS: Record<(typeof CLEANUP_ACTION_STATUSES)[number], string> = {
   completed: 'deviceFilesystemTab.resultCompleted',
   failed: 'deviceFilesystemTab.resultFailures',
+  partial: 'deviceFilesystemTab.resultPartial',
   skipped_locked: 'deviceFilesystemTab.resultSkippedLocked',
   rejected: 'deviceFilesystemTab.resultRejected',
   skipped_budget: 'deviceFilesystemTab.resultSkippedBudget',
@@ -66,6 +67,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
   useEffect(() => {
     setSelected(new Set());
     setResult(null);
+    setConfirmOpen(false);
   }, [pinnedRunId]);
 
   const sortedCandidates = useMemo<CleanupCandidate[]>(
@@ -121,15 +123,21 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
         errorFallback: t('deviceFilesystemTab.cleanupFailed'),
         // The API answers 409 with a machine token in `error` and no `code`,
         // so without this the operator is shown "preview_expired" verbatim.
-        friendly: (code) => {
+        friendly: (code, _message, body) => {
+          if (code === 'agent_update_required') return t('deviceFilesystemTab.errorAgentUpdateRequired', { minAgentVersion: (body as { minAgentVersion?: string })?.minAgentVersion ?? '—' });
+          if (code === 'cleanup_run_required') return t('deviceFilesystemTab.errorCleanupRunRequired');
+          if (code === 'volume_required') return t('deviceFilesystemTab.errorVolumeRequired');
+          if (code === 'cleanup_dispatch_failed' || code === 'cleanup_finalize_failed') return t('deviceFilesystemTab.cleanupFailed');
           if (code === 'preview_expired') return t('deviceFilesystemTab.errorPreviewExpired');
           if (code === 'run_not_previewed') return t('deviceFilesystemTab.errorRunNotPreviewed');
           return undefined;
         },
         parseSuccess: (body) => (body as { data: CleanupExecuteResult }).data,
-        successMessage: (value) =>
-          t('deviceFilesystemTab.cleanupFinished', { size: formatBytes(value.bytesReclaimed) }),
       });
+      const hasFailures = data.status === 'failed' || data.actions.some(a => a.status !== 'completed');
+      showToast({ type: hasFailures ? 'error' : 'success', message: hasFailures
+        ? t('deviceFilesystemTab.cleanupFailed')
+        : t('deviceFilesystemTab.cleanupFinished', { size: formatBytes(data.bytesReclaimed) }) });
       setConfirmOpen(false);
       setResult(data);
       setSelected(new Set());
@@ -139,7 +147,15 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('deviceFilesystemTab.cleanupFailed') });
       }
-      // Close the dialog on failure; keep the selection so the action is retryable.
+      if (err instanceof ActionError) {
+        const body = err.body as { error?: string; code?: string; data?: CleanupExecuteResult } | undefined;
+        if (['cleanup_dispatch_failed', 'cleanup_finalize_failed'].includes(body?.code ?? body?.error ?? '') && body?.data) {
+          setResult({ ...body.data, status: 'failed' });
+          setSelected(new Set());
+          onExecuted();
+        }
+      }
+      // A nonterminal request failure can still be retried.
       setConfirmOpen(false);
     } finally {
       setExecuting(false);
@@ -158,7 +174,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
   }
 
   const counts = result ? summariseActionStatuses(result.actions) : null;
-  const failures = result?.actions.filter((a) => a.status === 'failed') ?? [];
+  const failures = result?.actions.filter((a) => a.status === 'failed' || a.status === 'partial') ?? [];
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cleanup-panel">
@@ -250,7 +266,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       {result && counts && (
         <div className="mt-4 rounded-md border p-3" data-testid="cleanup-result">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t('deviceFilesystemTab.resultTitle')}
+            {t(result.status === 'failed' ? 'deviceFilesystemTab.cleanupFailed' : 'deviceFilesystemTab.resultTitle')}
           </p>
           <p className="mt-1 text-sm font-medium">
             {t('deviceFilesystemTab.resultReclaimed')}: {formatBytes(result.bytesReclaimed)}
@@ -279,6 +295,8 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
                   <li key={action.path} className="truncate">
                     {action.path}
                     {action.error ? ` — ${action.error}` : ''}
+                    {action.failedChildren?.map((child) => <div key={child}>{child}</div>)}
+                    {!!action.skippedLinkCount && <div>{t('deviceFilesystemTab.resultSkippedLinks', { count: action.skippedLinkCount })}</div>}
                   </li>
                 ))}
               </ul>

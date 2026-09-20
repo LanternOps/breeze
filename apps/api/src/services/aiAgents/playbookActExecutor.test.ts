@@ -725,7 +725,7 @@ describe('executeBuiltInPlaybookForRun — late step variables', () => {
     const executeToolFn = vi.fn()
       .mockResolvedValueOnce(JSON.stringify({ cleanupRunId, candidates: [] }))
       .mockResolvedValueOnce(JSON.stringify({ status: 'executed' }));
-    const outcome = await runSteps([preview, execute], { cleanupPaths: ['/tmp/a'] }, executeToolFn);
+    const outcome = await runSteps([preview, execute], { cleanupPaths: ['/tmp/a'], cleanupRunId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, executeToolFn);
     expect(outcome.execution).toBe('succeeded');
     const executeInput = executeToolFn.mock.calls[1]![1] as Record<string, unknown>;
     expect(executeInput.cleanupRunId).toBe(cleanupRunId);
