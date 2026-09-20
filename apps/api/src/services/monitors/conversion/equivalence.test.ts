@@ -15,7 +15,7 @@ vi.mock('../../../db', async (original) => ({ ...await original<typeof import('.
   withDbAccessContext: vi.fn(async (_context, fn) => fn()),
 }));
 vi.mock('../monitorResolver', () => ({ resolveMonitorsForDevice: vi.fn() }));
-vi.mock('./loadSources', () => ({ loadPolicySources: vi.fn() }));
+vi.mock('./loadSources', () => ({ loadPolicySources: vi.fn(), OPEN_ALERT_STATUSES: ['active', 'acknowledged', 'suppressed'] }));
 vi.mock('../monitorService', () => ({ createMonitorDefinition: vi.fn() }));
 vi.mock('../../configurationPolicy', () => ({ addFeatureLink: vi.fn(), getConfigPolicy: vi.fn() }));
 vi.mock('./convert', () => ({ ConversionError: class extends Error { constructor(readonly code: string, message: string) { super(message); } } }));
@@ -29,17 +29,19 @@ const route = { id: 'route', orgId: 'org', partnerId: null, enabled: true, isDef
 const channel = { id: 'channel', orgId: 'org', partnerId: null, enabled: true };
 function fixture(results: unknown[][]) {
   const predicates: unknown[] = [];
+  const locks: unknown[] = [];
   const query = () => {
     if (!results.length) throw new Error('Unexpected query');
     const rows = results.shift()!;
     const chain: any = { then: (yes: any, no: any) => Promise.resolve(rows).then(yes, no) };
-    for (const method of ['from', 'where', 'limit', 'orderBy', 'innerJoin', 'leftJoin']) chain[method] = (...args: unknown[]) => {
+    for (const method of ['from', 'where', 'limit', 'orderBy', 'innerJoin', 'leftJoin', 'for']) chain[method] = (...args: unknown[]) => {
       if (method === 'where') predicates.push(args[0]);
+      if (method === 'for') locks.push(args[0]);
       return chain;
     };
     return chain;
   };
-  return { tx: { select: query, selectDistinct: query, insert: vi.fn(), update: vi.fn() } as any, predicates };
+  return { tx: { select: query, selectDistinct: query, insert: vi.fn(), update: vi.fn() } as any, predicates, locks };
 }
 function proposed() {
   const result = mapInlineRule(rule as never);
@@ -147,10 +149,14 @@ it('keeps checking after 200 deltas and reports the exact omitted count', async 
 });
 
 
-it('preserves unrelated attachments and carries open alerts before retiring in the same executor', async () => {
+it.each([false, true])('preserves unrelated attachments and carries open alerts, exact-owner reuse=%s', async (reuse) => {
   const unrelated = { id: 'keep-attachment', monitorId: 'keep-monitor', enabled: false, overrides: { value: 90 }, sortOrder: 5 };
   const originalAlert = { id: 'open-alert', ruleId: null, configPolicyId: 'rule', monitorId: null, orgId: 'device-org', context: { retained: true } };
-  const { tx } = fixture([[], [], [unrelated], [originalAlert]]);
+  const candidate = { ...proposed(), id: 'new-monitor', compiledAlertRuleId: 'compiled-rule', orgId: 'org', partnerId: null,
+    autoResolveConditions: null, aiAgentId: null, recurrenceThreshold: null, recurrenceWindowHours: null, recurrenceActions: [], pauseResponsesOnEscalation: true };
+  // A visible partner definition appears first but cannot be reused by this org policy.
+  const partnerCandidate = { ...candidate, id: 'partner-monitor', orgId: null, partnerId: 'partner' };
+  const { tx, locks } = fixture([[partnerCandidate, ...(reuse ? [candidate] : [])], [], [unrelated], [originalAlert]]);
   const writes: Array<{ table: unknown; values: any }> = [];
   tx.insert.mockImplementation((table: unknown) => ({ values: (values: unknown) => {
     writes.push({ table, values });
@@ -169,20 +175,23 @@ it('preserves unrelated attachments and carries open alerts before retiring in t
     inlineRules: [rule], watches: [], standaloneAutomations: [], policyAutomations: [] } as never);
   vi.mocked(createMonitorDefinition).mockResolvedValue({ ...proposed(), id: 'new-monitor', compiledAlertRuleId: 'compiled-rule', orgId: 'org', partnerId: null } as never);
   const result = await applyProposalInTx(tx, { policy: { id: 'policy', orgId: 'org', partnerId: null } as never,
-    inheritanceMode: 'replace', bySource: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'rule', monitors: [proposed()] }] },
+    inheritanceMode: 'replace', previewHash: 'authorized-freshness-hash', bySource: [{ sourceTable: 'config_policy_alert_rules', sourceId: 'rule', monitors: [proposed()] }] },
     { scope: 'organization', user: { id: 'actor' }, canAccessOrg: () => true } as never);
-  expect(result).toEqual({ conversionIds: ['conversion'], retired: 1, monitorsCreated: 1 });
-  expect(createMonitorDefinition).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'organization', orgId: 'org' }), expect.anything(), {}, tx);
+  expect(result).toEqual({ conversionIds: ['conversion'], retired: 1, monitorsCreated: reuse ? 0 : 1 });
+  if (reuse) expect(createMonitorDefinition).not.toHaveBeenCalled();
+  else expect(createMonitorDefinition).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'organization', orgId: 'org' }), expect.anything(), {}, tx);
   expect(writes.find((w) => w.table === configPolicyFeatureLinks)?.values.inlineSettings.items).toEqual([
     { monitorId: 'keep-monitor', enabled: false, overrides: { value: 90 }, sortOrder: 5 },
     { monitorId: 'new-monitor', enabled: true, overrides: null, sortOrder: 6 },
   ]);
   expect(writes.find((w) => w.table === monitorConversionOutputs)?.values).toMatchObject({
-    orgId: 'org', partnerId: null, conversionId: 'conversion', attachmentId: 'new-attachment', reusedMonitor: false,
+    orgId: 'org', partnerId: null, conversionId: 'conversion', attachmentId: 'new-attachment', reusedMonitor: reuse,
     movedAlertIds: ['open-alert'], movedAlertRefs: [{ id: 'open-alert', ruleId: null, configPolicyId: 'rule', monitorId: null, context: { retained: true } }],
   });
   const alertWrite = writes.findIndex((w) => w.table === alerts);
-  expect(writes[alertWrite]!.values).toMatchObject({ monitorId: 'new-monitor', ruleId: 'compiled-rule' });
+  expect(writes[alertWrite]!.values).toMatchObject({ monitorId: 'new-monitor', ruleId: 'compiled-rule', configPolicyId: null });
+  expect(locks).toContain('update');
+  expect(writes.find((w) => w.table === monitorConversions)?.values.previewHash).toBe('authorized-freshness-hash');
   expect(writes[alertWrite]!.values).not.toHaveProperty('orgId');
   expect(alertWrite).toBeLessThan(writes.findIndex((w) => w.table === configPolicyAlertRules));
 });

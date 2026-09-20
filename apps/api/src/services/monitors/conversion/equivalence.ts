@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { monitorDeliveryModeSchema } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, withDbAccessContext } from '../../../db';
-import { alerts, automations, configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks,
+import { automations, configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks,
   configPolicyMonitoringWatches, configPolicyMonitors, devices, monitorConversions, monitorConversionOutputs, monitorDefinitions } from '../../../db/schema';
 import type { AuthContext } from '../../../middleware/auth';
 import { addFeatureLink } from '../../configurationPolicy';
@@ -17,9 +17,11 @@ import { canonical, sha, mapInlineRule, mapWatch, mapAutomationResponses, mergeR
 import type { ConversionPreviewItem, ConversionSourceTable, EquivalenceDelta, ProposedMonitor } from './types';
 import { ConversionError } from './convert';
 import { rehomePolicyWorkflow } from './workflows';
+import { carryOpenAlerts } from './history';
 
 export { resolveDeviceIdsForPolicy } from './legacyBaseline';
 export interface EquivalenceProposal {
+  previewHash?: string;
   policy: PolicySources['policy'];
   inheritanceMode: 'cumulative' | 'replace';
   bySource: Array<{ sourceTable: ConversionSourceTable; sourceId: string; monitors: ProposedMonitor[];
@@ -137,7 +139,7 @@ export async function applyProposalInTx(tx: DbExecutor, proposal: EquivalencePro
   const previousLink = link ? structuredClone(link) : null;
   let monitorsCreated = 0;
   const conversionIds: string[] = [];
-  const targets = new Map<string, { conversionId: string; monitorId: string }>();
+  const targets = new Map<string, { conversionId: string; monitorId: string; reusedMonitor: boolean }>();
   // Response sources refer to the ledger/primary output of their already-merged target.
   sourceRows.sort((a, b) => Number(!!a.item.responseTargetSourceId) - Number(!!b.item.responseTargetSourceId));
   for (const { item, row } of sourceRows) {
@@ -155,11 +157,12 @@ export async function applyProposalInTx(tx: DbExecutor, proposal: EquivalencePro
     if (item.responseTargetSourceId && !target) throw new ConversionError('blocked', 'Response target must be converted with its source');
     if (target) {
       sourceState.targetConversionId = target.conversionId;
+      sourceState.targetReusedMonitor = target.reusedMonitor;
       sourceState.addedActions = mapAutomationResponses(row as typeof automations.$inferSelect).actions;
     }
     const [ledger] = await tx.insert(monitorConversions).values({ ...owner, sourceTable: item.sourceTable,
       sourceId: item.sourceId, policyId: policy.id, convertedBy: auth.scope === 'system' ? null : auth.user.id,
-      previewHash: sha(canonical(proposal)), sourceState,
+      previewHash: proposal.previewHash ?? sha(canonical(proposal)), sourceState,
     }).onConflictDoNothing().returning();
     if (!ledger) throw new ConversionError('already_converted', 'Source already converted');
     conversionIds.push(ledger.id);
@@ -190,23 +193,16 @@ export async function applyProposalInTx(tx: DbExecutor, proposal: EquivalencePro
       await tx.update(configPolicyFeatureLinks).set({ inlineSettings: { inheritance: proposal.inheritanceMode,
         items: [...existing, ...inserted].map((r) => ({ monitorId: r.monitorId, enabled: r.enabled, overrides: r.overrides, sortOrder: r.sortOrder })) },
         updatedAt: new Date() }).where(eq(configPolicyFeatureLinks.id, link.id));
-      const movedAlertRefs: Array<{ id: string; ruleId: string | null; configPolicyId: string | null; monitorId: string | null; context: Record<string, unknown> | null }> = [];
+      let movedAlertRefs: Awaited<ReturnType<typeof carryOpenAlerts>> = [];
       if (item.sourceTable === 'config_policy_alert_rules' && proposed.role === 'primary') {
-        const open = await tx.select().from(alerts).where(and(eq(alerts.configPolicyId, item.sourceId), inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])));
-        for (const alert of open) {
-          if (alert.context !== null && (typeof alert.context !== 'object' || Array.isArray(alert.context))) {
-            throw new ConversionError('blocked', 'Alert context cannot be preserved by the conversion ledger');
-          }
-          const context = alert.context as Record<string, unknown> | null;
-          movedAlertRefs.push({ id: alert.id, ruleId: alert.ruleId, configPolicyId: alert.configPolicyId, monitorId: alert.monitorId, context });
-          await tx.update(alerts).set({ monitorId: monitor.id, ruleId: monitor.compiledAlertRuleId,
-            context: { ...context, convertedFrom: { configPolicyId: item.sourceId, conversionId: ledger.id } } }).where(eq(alerts.id, alert.id));
-        }
+        if (!monitor.compiledAlertRuleId) throw new ConversionError('blocked', 'Converted monitor has no compiled alert rule');
+        movedAlertRefs = await carryOpenAlerts(tx, { sourceTable: item.sourceTable, sourceId: item.sourceId,
+          compiledRuleId: monitor.compiledAlertRuleId, monitorId: monitor.id });
       }
       await tx.insert(monitorConversionOutputs).values({ ...owner, conversionId: ledger.id, monitorId: monitor.id,
         role: proposed.role, policyId: policy.id, attachmentId: inserted[0]?.id ?? null, reusedMonitor,
         movedAlertIds: movedAlertRefs.map((a) => a.id), movedAlertRefs });
-      if (proposed.role === 'primary') { primaryId = monitor.id; targets.set(item.sourceId, { conversionId: ledger.id, monitorId: monitor.id }); }
+      if (proposed.role === 'primary') { primaryId = monitor.id; targets.set(item.sourceId, { conversionId: ledger.id, monitorId: monitor.id, reusedMonitor }); }
     }
     if (target) await tx.insert(monitorConversionOutputs).values({ ...owner, conversionId: ledger.id,
       monitorId: target.monitorId, role: 'response', policyId: policy.id, attachmentId: null, reusedMonitor: true });

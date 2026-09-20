@@ -642,12 +642,12 @@ function reportHeldContextIfNeeded(input: {
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>,
-  options?: { isolationLevel: 'repeatable read' }
+  options?: { isolationLevel: 'repeatable read' | 'serializable' }
 ): Promise<T> {
   // An explicit isolation level requires a new top-level transaction: Drizzle
   // savepoints ignore isolation options, and our GUC SELECTs already took a
   // snapshot. Keep the ambient caller's permissions even on this new connection.
-  // This transaction is independent of any outer writes; use for dry-run reads.
+  // This transaction is independent of any outer writes; callers must pass all writes through it.
   if (options) context = dbContextMetaStorage.getStore() ?? context;
   if (dbContextStorage.getStore() && !options) {
     return fn();

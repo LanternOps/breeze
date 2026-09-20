@@ -227,9 +227,10 @@ export async function listMonitorDefinitions(
 export async function getMonitorDefinition(
   id: string,
   auth: AuthContext,
+  executor: DbExecutor = db,
 ): Promise<MonitorDefinitionRow | null> {
   const read = monitorReadCondition(auth);
-  const [row] = await db
+  const [row] = await executor
     .select()
     .from(monitorDefinitions)
     .where(read ? and(eq(monitorDefinitions.id, id), read) : eq(monitorDefinitions.id, id))
@@ -390,14 +391,14 @@ export async function updateMonitorDefinition(
   });
 }
 
-export async function deleteMonitorDefinition(id: string, auth: AuthContext): Promise<void> {
-  const existing = await getMonitorDefinition(id, auth);
+export async function deleteMonitorDefinition(id: string, auth: AuthContext, executor: DbExecutor = db): Promise<void> {
+  const existing = await getMonitorDefinition(id, auth, executor);
   if (!existing) throw new MonitorNotFoundError(id);
   assertCanWrite(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
   // The compiled template/rule/automation rows and every policy attachment go
   // with it through ON DELETE CASCADE; alerts keep their history with
   // monitor_id set to NULL.
-  await db.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+  await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
 }
 
 /** Count of policy attachments per monitor, for the list view. */
