@@ -600,7 +600,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Other payload keys: start_service/stop_service/restart_service { serviceName } (same key manage_services takes; `name` also works — either key reaches the agent as `name`, which is what it actually reads); kill_process { processName, pid }; file_read { path }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
+      description: "Execute a system command on a device. list_processes, file_list, event_logs_list skip durable approval in auto-execute modes (audit logged); per-step mode requires inline confirmation. All other command types, including file_read, require full user approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -615,7 +615,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             ],
             description: 'The type of command to execute'
           },
-          payload: { type: 'object', description: 'Command-specific parameters' }
+          payload: { type: 'object', description: 'Command-specific parameters: serviceName (name alias) for service control; processName/pid for kill_process; path for file_read/file_list.' }
         },
         required: ['deviceId', 'commandType']
       }
@@ -669,7 +669,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: 'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both. A device inside a maintenance window that suppresses scripts is skipped, not failed: that device\'s result carries status "suppressed" with a message — report it as deferred and do not retry it now.',
+      description: "Run a saved scriptId or reviewed proposalId from propose_script on devices; never both. Maintenance-window suppression is deferred, not failure: report it and do not retry now. Approval is required; the approver sees the run context.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -850,7 +850,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
           processName: {
             type: 'string',
-            description: 'The name of the process being killed, from a prior list_processes/manage_services:list read (e.g. "notepad.exe"). Recommended alongside processId for kill: a bare PID gets reused by the OS the instant a process exits, so including the name lets a reviewer verify what a kill call actually targets. This is used for verification/filtering, not a same-process guarantee — it is not re-checked against the live process list at dispatch time.'
+            description: "Process name from a prior read, recommended with PID for reviewer verification. Not rechecked live; PID reuse means no same-process guarantee."
           },
           search: { type: 'string', description: 'Filter process list by name' },
           sortBy: {
@@ -1223,7 +1223,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'single script execution by ID, current status, exit code, output and timing',
     definition: {
       name: 'get_script_execution',
-      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this for runs started OUTSIDE the current tool call — e.g. the user clicked Test Run in the script editor, or you have an execution id from get_script_execution_history. Also use it in exactly one other case: when run_script returned status "timeout" for a device, that means the 60s wait expired, NOT that the script failed — the device is still running it, and its real exit code and output land on the executionId run_script returned. Re-check that executionId before concluding anything about the script; do not "fix" a script on the strength of a timeout alone. For any other run_script outcome, the returned result is final — do not re-check it.',
+      description: "Get execution status, exit code, stdout/stderr and timing. Use for external runs or run_script timeouts: timeout means the 60s wait expired, not script failure. Recheck that executionId before changing the script; other run_script outcomes are final.",
       input_schema: {
         type: 'object' as const,
         properties: {

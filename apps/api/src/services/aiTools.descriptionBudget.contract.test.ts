@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { aiTools } from './aiToolNames';
-import './aiTools';
+import { getToolDomain } from './aiTools';
 import { z } from 'zod';
 import { buildBreezeSdkTools } from './aiAgentSdkTools';
 import { m365ToolTiers } from './aiToolsM365';
@@ -27,26 +27,20 @@ const WORKFLOW_PROSE = [/\b(step \d|first call|then call|after that|workflow:)\b
  * Never add or increase an entry; later diet tasks must delete fixed entries.
  */
 const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; params?: number }> = new Map([
-  ['analyze_fleet_metrics', { description: 375 }],
   ['apply_configuration_policy', { description: 389, params: 181 }],
   ['capture_agent_pprof', { description: 405 }],
   ['delete_tenant', { description: 398 }],
-  ['execute_command', { description: 1177 }],
   ['export_dataset', { description: 342 }],
   ['get_contract', { description: 387 }],
-  ['get_device_vulnerabilities', { description: 316 }],
   ['get_invite_funnel', { description: 574 }],
   ['get_invoice', { description: 441 }],
   ['get_network_asset_reachability', { description: 369 }],
   ['get_quote', { description: 711 }],
-  ['get_script_execution', { description: 749 }],
   ['get_security_posture', { description: 391 }],
-  ['get_vulnerability_report', { description: 527 }],
   ['list_contracts', { description: 403 }],
   ['list_deliverable_templates', { description: 492 }],
   ['list_deliverables', { description: 317 }],
   ['list_invoices', { description: 479 }],
-  ['list_organizations', { description: 346 }],
   ['list_quotes', { description: 388 }],
   ['lookup_distributor_product', { description: 433 }],
   ['manage_ai_agents', { description: 641, params: 300 }],
@@ -63,16 +57,9 @@ const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; p
   ['manage_notification_channels', { params: 250 }],
   ['manage_org_documents', { description: 420, params: 180 }],
   ['manage_organizations', { description: 823 }],
-  ['manage_patches', { description: 975, params: 315 }],
-  ['manage_processes', { params: 438 }],
   ['manage_quotes', { description: 891, params: 1419 }],
-  ['manage_software_policies', { params: 248 }],
-  ['manage_software_policy', { params: 281 }],
   ['manage_tickets', { description: 971, params: 282 }],
-  ['manage_update_rings', { description: 310, params: 654 }],
-  ['remediate_vulnerability', { description: 477 }],
   ['restore_as_vm', { description: 347 }],
-  ['run_script', { description: 367, params: 429 }],
   ['search_catalog', { description: 375 }],
   ['trigger_agent_restart', { description: 340 }],
 ]);
@@ -165,6 +152,12 @@ describe('AI tool description budget (A-W03)', () => {
       } },
     } })).toEqual({ tool: 'fixture', params: 161, missingActions: ['delete'] });
     expect(offenceForDescriptor({ name: 'fixture', description: 'First call another tool.', input_schema: {} })?.prose).toBeTruthy();
+  });
+
+  it('Task 4a domains fit the budget across registry and emitted schemas', () => {
+    const taskDomains = new Set(['devices', 'scripts', 'patching', 'core']);
+    const remaining = offences.filter(o => taskDomains.has(getToolDomain(o.tool) ?? ''));
+    expect(remaining, JSON.stringify({ registry: registry.length, emitted: emitted.map(d => d.length), offenders: offences.length })).toEqual([]);
   });
 
   it('every tool outside the baseline fits the budget', () => {

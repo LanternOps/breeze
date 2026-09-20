@@ -189,7 +189,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'update rings, patch deferral, deadlines and auto-approval: list, get, create, update',
     definition: {
       name: 'manage_update_rings',
-      description: 'Manage update rings (patch approval policies). Update rings control patch deferral, deadlines, and auto-approval. Create an update ring first, then link it to a configuration policy\'s patch feature via manage_policy_feature_link with featureType "patch" and featurePolicyId. Actions: list, get, create, update.',
+      description: "Manage update rings for patch deferral, deadlines and auto-approval. Use manage_policy_feature_link for policy patch schedules. Actions: list, get, create, update.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -202,7 +202,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          autoApprove: { type: 'object', description: 'Auto-approval rules, e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null }. severities gate OS patches only and must be a subset of ["critical","important","moderate","low"]. thirdPartyApps auto-approves third-party app updates (winget/Chocolatey/Homebrew/custom) — it also requires the linked configuration policy to include third-party patch sources. If enabled is true you MUST set at least one severity OR thirdPartyApps: true. On update, omitting thirdPartyApps/thirdPartyDeferralDays preserves the ring\'s current third-party settings; send explicit values to change them.' },
+          autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -359,13 +359,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['list', 'get', 'create', 'update'], description: 'Action to perform' },
           policyId: { type: 'string', description: 'Software policy UUID (required for get/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by the current org) or "partner" (partner-wide "all orgs" template usable by every org under the partner; requires full partner org access)' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "Create ownership: organization (default, current org) or partner (all-org template; requires full partner org access)." },
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },
           rules: { type: 'object', description: 'Rules definition: { software: [{ name, vendor?, minVersion?, maxVersion?, catalogId?, reason? }], allowUnknown?: false }' },
           enforceMode: { type: 'boolean', description: 'Whether to enforce (block/uninstall) or just alert (default: false)' },
-          remediationOptions: { type: 'object', description: '{ autoUninstall?: false, notifyUser?: true, gracePeriod?: number, cooldownMinutes?: 30, maintenanceWindowOnly?: false }. autoInstall is NOT settable via AI tools — arming software installation requires a human operator with devices.execute and MFA.' },
+          remediationOptions: { type: 'object', description: "Remediation options. autoInstall is forbidden via AI; arming installation requires a human with devices.execute and MFA." },
           isActive: { type: 'boolean', description: 'Active state (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },

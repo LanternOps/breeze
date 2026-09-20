@@ -12,7 +12,8 @@ export interface ToolIndexEntry { name: string; domain: AiToolDomain; searchHint
  * not contain.
  */
 export const DOMAIN_NOTES: Readonly<Partial<Record<AiToolDomain, string>>> = {
-  patching: 'CVE/vulnerability questions use the vulnerability tools; security posture returns control scores, not CVEs; patch management returns the patch/KB inventory, not a vulnerability answer.',
+  patching: 'CVE tools return findings; posture returns control scores; patches return KB inventory. Create an update ring before linking its ID as featurePolicyId on a configuration policy patch feature. Configure schedules and auto-approval through that feature. Third-party auto-approval requires third-party patch sources on the linked policy. Approve patches before installing them.',
+  scripts: 'For compacted command output (stdoutTruncation/_chat), page or narrow filters instead of repeating the call. File listings have no paging: narrow the path. Execution lookup covers external runs (such as editor Test Run or execution history) and expired run waits; a timeout alone does not justify changing a script.',
 };
 
 const MAX_INLINE_ACTIONS = 8;

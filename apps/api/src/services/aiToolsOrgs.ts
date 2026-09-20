@@ -746,10 +746,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_organizations',
       description:
-        'List/search the organizations the caller can access (name substring match), each with id, name, slug, status, and ' +
-        'its sites (id + name). Use this to resolve the orgId and siteId that manage_quotes, manage_contracts, and ' +
-        'manage_invoices require. Partner-scoped callers see all their orgs; organization-scoped callers see only their own. ' +
-        'Read-only.',
+        "List/search accessible organizations with id, name, slug, status and site IDs/names. Resolve orgId/siteId for quotes, contracts and invoices. Partner callers see their organizations; organization callers see only their own. Read-only.",
       input_schema: {
         type: 'object' as const,
         properties: {

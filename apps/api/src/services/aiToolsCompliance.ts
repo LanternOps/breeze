@@ -217,7 +217,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
+        remediationOptions: { type: 'object', description: "Remediation options. autoInstall is forbidden here; arming installation requires a human with devices.execute and MFA." },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],
