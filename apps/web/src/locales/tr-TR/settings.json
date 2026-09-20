@@ -3054,7 +3054,8 @@
         },
         "system_cleanup": {
           "list": "Sistem temizleme eylemlerini listele",
-          "run": "Sistem temizliğini çalıştır"
+          "run": "Sistem temizliğini çalıştır",
+          "status": "Sistem temizliği durumu"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",

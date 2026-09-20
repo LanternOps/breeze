@@ -3054,7 +3054,8 @@
         },
         "system_cleanup": {
           "list": "List system cleanup actions",
-          "run": "Run system cleanup"
+          "run": "Run system cleanup",
+          "status": "System cleanup run status"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",

@@ -254,14 +254,14 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `file_operations` | 2/3 | List directory contents (Tier 2, auto-execute + audit). Read, write, delete, mkdir, rename (Tier 3 — reading file contents requires approval because the agent reads as root/LocalSystem). |
 | `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection, for any fixed volume on the device (`path`). Can trigger fresh scans on online devices. |
 | `disk_cleanup` | 1/3 | Preview cleanup candidates for a volume (Tier 1). Execute cleanup by deleting selected paths from a previewed run (Tier 3). |
-| `system_cleanup` | 1/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 1). Run the selected actions (Tier 3). |
+| `system_cleanup` | 1/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 1). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
 
 <Aside type="caution">
   **Tier 3 actions cannot be executed over MCP at all.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
 
   `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
 
-  A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow.
+  A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow.
 </Aside>
 
 ### Security tools
@@ -446,7 +446,7 @@ Each tool has its own sliding-window rate limit, enforced per user:
 | `manage_services` | 10 | 5 min |
 | `analyze_disk_usage` | 10 | 5 min |
 | `disk_cleanup` | 3 | 10 min |
-| `system_cleanup` | 2 | 60 min |
+| `system_cleanup` | 30 | 60 min |
 | `manage_configuration_policy` | 20 | 5 min |
 | `configuration_policy_compliance` | 30 | 5 min |
 | `manage_deployments` | 10 | 10 min |

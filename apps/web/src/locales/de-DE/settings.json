@@ -3054,7 +3054,8 @@
         },
         "system_cleanup": {
           "list": "Systembereinigungsaktionen auflisten",
-          "run": "Systembereinigung ausführen"
+          "run": "Systembereinigung ausführen",
+          "status": "Status der Systembereinigung"
         }
       },
       "alwaysOnCount_one": "{{count}} schreibgeschütztes Tool",

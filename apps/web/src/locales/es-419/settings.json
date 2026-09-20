@@ -3054,7 +3054,8 @@
         },
         "system_cleanup": {
           "list": "Enumerar acciones de limpieza del sistema",
-          "run": "Ejecutar limpieza del sistema"
+          "run": "Ejecutar limpieza del sistema",
+          "status": "Estado de la limpieza del sistema"
         }
       },
       "alwaysOnCount_one": "{{count}} herramienta de solo lectura",

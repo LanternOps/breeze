@@ -22,8 +22,9 @@ function toolEntries(tier: number): string[] {
 }
 
 describe('tierConfig lists system_cleanup', () => {
-  it('shows list as auto-executing and run as approval-gated', () => {
+  it('shows list and status as auto-executing and run as approval-gated', () => {
     expect(toolEntries(1)).toContain('system_cleanup (list)');
+    expect(toolEntries(1)).toContain('system_cleanup (status)');
     expect(toolEntries(3)).toContain('system_cleanup (run)');
   });
 
@@ -31,7 +32,9 @@ describe('tierConfig lists system_cleanup', () => {
     const row = RATE_LIMIT_CONFIGS.find((c) => c.toolName === 'system_cleanup');
     expect(row).toEqual({
       toolName: 'system_cleanup',
-      limit: 2,
+      // Per TOOL, and `status` polling shares the counter with `run` — the
+      // number mirrors TOOL_RATE_LIMITS.system_cleanup in aiGuardrails.ts.
+      limit: 30,
       windowSeconds: 3600,
       tier: 3,
       permission: 'devices.execute',
@@ -40,12 +43,12 @@ describe('tierConfig lists system_cleanup', () => {
   });
 
   it('maps RBAC per action', () => {
-    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.read', run: 'devices.execute' });
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.read', run: 'devices.execute', status: 'devices.read' });
   });
 });
 
 describe('system_cleanup catalog labels exist in all 8 locales', () => {
-  it.each(LOCALES)('%s carries the tool label and both action labels', (locale) => {
+  it.each(LOCALES)('%s carries the tool label and all three action labels', (locale) => {
     const catalog = JSON.parse(readFileSync(join(localesDir, locale, 'settings.json'), 'utf8'));
     const tools = catalog.aiAgentsPage.catalog.tools;
     const actions = catalog.aiAgentsPage.catalog.actions;
@@ -54,6 +57,7 @@ describe('system_cleanup catalog labels exist in all 8 locales', () => {
     expect(tools.system_cleanup.length).toBeGreaterThan(0);
     expect(typeof actions.system_cleanup?.list).toBe('string');
     expect(typeof actions.system_cleanup?.run).toBe('string');
+    expect(typeof actions.system_cleanup?.status).toBe('string');
 
     if (locale !== 'en') {
       // translationCoverage.test.ts caps exact-English duplicates per namespace
@@ -63,6 +67,7 @@ describe('system_cleanup catalog labels exist in all 8 locales', () => {
       expect(tools.system_cleanup).not.toBe(en.aiAgentsPage.catalog.tools.system_cleanup);
       expect(actions.system_cleanup.list).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.list);
       expect(actions.system_cleanup.run).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.run);
+      expect(actions.system_cleanup.status).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.status);
     }
   });
 });
