@@ -1972,8 +1972,9 @@ func TestRunBackup_FileOnlyRunNeverCollectsLayout(t *testing.T) {
 // therefore printed the same reason twice. The warning is redundant once the
 // same failure is the terminal error, so it must be withdrawn.
 func TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason(t *testing.T) {
+	collectErr := fmt.Errorf(`reg save failed for hive(s) [SYSTEM]: exit status 1`)
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
-		return nil, "", fmt.Errorf(`reg save failed for hive(s) [SYSTEM]: exit status 1`)
+		return nil, "", collectErr
 	})
 
 	mgr := NewBackupManager(BackupConfig{
@@ -1993,6 +1994,19 @@ func TestRunBackup_SystemStateOnlyFailureDoesNotDuplicateReason(t *testing.T) {
 	if job.Warning != "" {
 		t.Errorf("the collection-failure note is already the fatal error; warning must not repeat it, got %q", job.Warning)
 	}
+	// What the server ultimately stores in backup_jobs.error_log: error and
+	// warning joined, exact-string dedup only. The framing must survive, and
+	// the reason must appear exactly once.
+	errorLog := strings.TrimSuffix(job.Error.Error()+"; "+job.Warning, "; ")
+	if !strings.Contains(errorLog, "system state was not collected") {
+		t.Errorf("the operator still needs to be told what the failure cost the backup; errorLog = %q", errorLog)
+	}
+	if n := strings.Count(errorLog, "reg save failed"); n != 1 {
+		t.Errorf("the reason must appear exactly once, appeared %d times; errorLog = %q", n, errorLog)
+	}
+	if !errors.Is(job.Error, collectErr) {
+		t.Errorf("wrapping must preserve the collector's error for errors.Is callers; error = %q", job.Error)
+	}
 }
 
 func TestRemoveWarning(t *testing.T) {
@@ -2008,6 +2022,16 @@ func TestRemoveWarning(t *testing.T) {
 		{"trailing fragment", "a; b", "b", "a"},
 		{"absent fragment", "a; b", "zzz", "a; b"},
 		{"empty fragment is a no-op", "a; b", "", "a; b"},
+		// A fragment may carry the separator itself when a collector joins
+		// several sub-reasons; splitting on "; " would shred it and the
+		// removal would silently no-op (#5415 regressing).
+		{"fragment containing the separator", "a; x; y; b", "x; y", "a; b"},
+		{"separator-bearing fragment at the head", "x; y; b", "x; y", "b"},
+		{"separator-bearing fragment at the tail", "a; x; y", "x; y", "a"},
+		// Boundary-anchored: a fragment that is only a mid-token substring of
+		// a neighbour must not match.
+		{"substring of another fragment is not a match", "xa; b", "a", "xa; b"},
+		{"only the first occurrence is removed", "a; b; a", "a", "b; a"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
