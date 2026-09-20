@@ -1388,20 +1388,35 @@ mod tests {
         );
     }
 
+    /// Serialises the tests that install `TEST_ARGS_OVERRIDE`. It cannot be the
+    /// override mutex itself: `resolve_helper_config_path` locks that one from
+    /// inside `f`, and `std::sync::Mutex` is not reentrant.
+    static TEST_ARGS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_test_args<F, R>(args: Vec<&str>, f: F) -> R
     where
         F: FnOnce() -> R,
     {
-        let mut guard = TEST_ARGS_OVERRIDE.lock().unwrap();
-        *guard = Some(args.into_iter().map(|s| s.to_string()).collect());
-        drop(guard);
+        // Held for the whole of `f` so parallel tests cannot overwrite each
+        // other's args. A panic inside `f` poisons it, so recover the inner
+        // value rather than failing every later test.
+        let _serial = TEST_ARGS_SERIAL
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        set_test_args(Some(args.into_iter().map(|s| s.to_string()).collect()));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        let mut guard = TEST_ARGS_OVERRIDE.lock().unwrap();
-        *guard = None;
+        set_test_args(None);
         match result {
             Ok(res) => res,
             Err(err) => std::panic::resume_unwind(err),
         }
+    }
+
+    fn set_test_args(args: Option<Vec<String>>) {
+        let mut guard = TEST_ARGS_OVERRIDE
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *guard = args;
     }
 
     #[test]
@@ -1448,10 +1463,23 @@ mod tests {
             PathBuf::from("/var/lib/breeze/sessions/s-1/helper_status.yaml")
         );
 
-        let legacy_config = PathBuf::from("C:\\ProgramData\\Breeze\\helper_config.yaml");
+        // Backslashes are only path separators on Windows; on Unix the whole
+        // string is a single component, so `with_file_name` would replace it
+        // outright. Assert the Windows form only where it means anything.
+        #[cfg(windows)]
+        {
+            let legacy_config = PathBuf::from("C:\\ProgramData\\Breeze\\helper_config.yaml");
+            assert_eq!(
+                status_path_from_config_path(&legacy_config),
+                PathBuf::from("C:\\ProgramData\\Breeze\\helper_status.yaml")
+            );
+        }
+
+        // Forward-slash form of the same path works on every platform.
+        let legacy_config = PathBuf::from("C:/ProgramData/Breeze/helper_config.yaml");
         assert_eq!(
             status_path_from_config_path(&legacy_config),
-            PathBuf::from("C:\\ProgramData\\Breeze\\helper_status.yaml")
+            PathBuf::from("C:/ProgramData/Breeze/helper_status.yaml")
         );
     }
 
