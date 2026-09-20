@@ -6,6 +6,7 @@ vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
 import { fetchWithAuth } from '../../../stores/auth';
 import RoutingSection from './RoutingSection';
+import { showToast } from '../../shared/Toast';
 import type { RoutingRule, EditableRoutingRule, EscalationPolicy } from './deliveryActions';
 import type { NotificationChannel } from '../NotificationChannelList';
 
@@ -22,7 +23,7 @@ const rule = (o: Partial<EditableRoutingRule>): EditableRoutingRule => ({ id: 'r
 
 function renderSection(rules: RoutingRule[], opts: { currentOrgId?: string | null; isPartnerScope?: boolean } = {}) {
   const onChanged = vi.fn(async () => {});
-  render(
+  const view = render(
     <RoutingSection
       rules={rules} channels={channels} policies={policies}
       currentOrgId={opts.currentOrgId === undefined ? 'org-1' : opts.currentOrgId}
@@ -31,7 +32,7 @@ function renderSection(rules: RoutingRule[], opts: { currentOrgId?: string | nul
       onChanged={onChanged} onUnauthorized={() => {}}
     />
   );
-  return { onChanged };
+  return { onChanged, ...view };
 }
 
 beforeEach(() => { vi.clearAllMocks(); fetchMock.mockImplementation(async () => json({ data: [] })); });
@@ -71,10 +72,58 @@ describe('RoutingSection (W05b)', () => {
     expect(JSON.parse((put[1] as RequestInit).body as string)).toEqual({ channelIds: ['ch-partner', 'ch-org'], escalationPolicyId: 'ep-1' });
   });
 
-  it('never offers default deletion even when both axes have a row', () => {
-    renderSection([rule({ id: 'd-org', isDefault: true }),
-      rule({ id: 'd-partner', orgId: null, partnerId: 'p-1', isDefault: true })]);
-    expect(screen.queryByTestId('routing-default-remove')).toBeNull();
+  it('confirms restoring the partner default, deletes the org row through runAction and reloads', async () => {
+    const { onChanged } = renderSection([rule({ id: 'd-org', isDefault: true }),
+      rule({ id: 'd-partner', orgId: null, partnerId: 'p-1', isDefault: true, channelIds: ['ch-partner'], escalationPolicyId: 'ep-1' })]);
+    fireEvent.click(screen.getByTestId('routing-default-use-partner'));
+    const dialog = screen.getByTestId('routing-delete-dialog');
+    expect(dialog).toHaveTextContent("This organization will return to the partner's Everything else row");
+    expect(dialog).toHaveTextContent('Partner NOC');
+    expect(dialog).toHaveTextContent('On-call');
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('routing-delete-confirm'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/alerts/routing-rules/d-org', { method: 'DELETE' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('renders the inherited partner row with Customize again after the refreshed org override is gone', async () => {
+    const partner: RoutingRule = { id: 'd-partner', name: 'Everything else', inherited: true, isDefault: true,
+      enabled: true, conditions: {}, priority: 1000000, channelIds: ['ch-partner'], escalationPolicyId: 'ep-1' };
+    const { onChanged, rerender } = renderSection([rule({ id: 'd-org', isDefault: true }), partner]);
+    fireEvent.click(screen.getByTestId('routing-default-use-partner'));
+    fireEvent.click(screen.getByTestId('routing-delete-confirm'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    rerender(<RoutingSection rules={[partner]} channels={channels} policies={policies} currentOrgId="org-1"
+      isPartnerScope={false} defaultOwnerScope="organization" onChanged={onChanged} onUnauthorized={() => {}} />);
+    expect(screen.getByTestId('routing-default-customize')).toBeInTheDocument();
+    expect(screen.queryByTestId('routing-default-use-partner')).toBeNull();
+    expect(screen.queryByTestId('routing-default-edit')).toBeNull();
+    expect(screen.getByTestId('routing-row-default')).toHaveTextContent('Partner NOC');
+  });
+
+  it('explains inbox-only fallback and surfaces the server governance denial', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'Organization-wide governance is required' }, false, 403));
+    const { onChanged } = renderSection([rule({ id: 'd-org', isDefault: true })]);
+    fireEvent.click(screen.getByTestId('routing-default-use-partner'));
+    expect(screen.getByTestId('routing-delete-dialog')).toHaveTextContent('Alerts that match no row will be inbox-only');
+    fireEvent.click(screen.getByTestId('routing-delete-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Organization-wide governance is required' })));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { currentOrgId: null, isPartnerScope: true },
+    { currentOrgId: 'org-1', isPartnerScope: false },
+  ])('never offers removal on a partner row in scope %j', (opts) => {
+    renderSection([rule({ id: 'd-partner', orgId: null, partnerId: 'p-1', isDefault: true })], opts);
+    expect(screen.queryByTestId('routing-default-use-partner')).toBeNull();
+  });
+
+  it('explains that customizing stops following partner changes and can be removed later', () => {
+    renderSection([rule({ id: 'd-partner', orgId: null, partnerId: 'p-1', isDefault: true })]);
+    expect(screen.getByTestId('routing-default-customize-hint')).toHaveTextContent("stops following changes to the partner's default");
+    expect(screen.getByTestId('routing-default-customize-hint')).toHaveTextContent('removed later');
   });
 
   it('no row anywhere: a synthesized Inbox only row whose Edit opens the default drawer', async () => {

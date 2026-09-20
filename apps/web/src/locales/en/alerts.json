@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Leave empty to match all",
       "defaultSaved": "Everything else row saved",
       "failedToSaveDefault": "Failed to save the Everything else row",
-      "deleteConfirm": "Delete routing rule \"{{name}}\"?"
+      "deleteConfirm": "Delete routing rule \"{{name}}\"?",
+      "usePartnerDefault": "Use partner default",
+      "usePartnerDefaultConfirm": "This organization will return to the partner's Everything else row.",
+      "usePartnerDefaultInboxConfirm": "There is no partner default. Alerts that match no row will be inbox-only.",
+      "customizeForOrgHint": "Customizing stops following changes to the partner's default. This organization's override can be removed later.",
+      "sitesLoadFailed": "Could not load sites. Try again."
     },
     "escalation": {
-      "occurrenceLimit": "Escalation policy must have at most 50 total occurrences",
+      "occurrenceLimit": "A policy can send at most 50 notifications.",
       "new": "New escalation policy",
       "edit": "Edit escalation policy",
       "empty": "No escalation policies yet. A policy sends follow-up notifications while an alert stays unacknowledged.",
@@ -678,7 +683,11 @@
       "deleted": "Escalation policy deleted",
       "failedToSave": "Failed to save escalation policy",
       "failedToDelete": "Failed to delete escalation policy",
-      "deleteConfirm": "Delete escalation policy \"{{name}}\"? Monitors and routing rows that reference it will stop escalating."
+      "deleteConfirm": "Delete escalation policy \"{{name}}\"? Monitors and routing rows that reference it will stop escalating.",
+      "legacyRepaired": "The stored policy had steps that did not fit the current format and were adjusted.",
+      "minutesRange": "Enter a whole number from 1–1440 minutes.",
+      "timesRange": "Enter a whole number from 1–10 times.",
+      "targetRequired": "Select at least one channel or user per step."
     }
   },
   "correlatedAlertGroups": {

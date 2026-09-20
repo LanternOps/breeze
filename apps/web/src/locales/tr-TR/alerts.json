@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Tümüyle eşleşmesi için boş bırakın",
       "defaultSaved": "\"Diğer her şey\" satırı kaydedildi",
       "failedToSaveDefault": "\"Diğer her şey\" satırı kaydedilemedi",
-      "deleteConfirm": "\"{{name}}\" yönlendirme kuralı silinsin mi?"
+      "deleteConfirm": "\"{{name}}\" yönlendirme kuralı silinsin mi?",
+      "usePartnerDefault": "İş ortağı varsayılanını kullan",
+      "usePartnerDefaultConfirm": "Bu kuruluş yeniden iş ortağının “Diğer her şey” satırını kullanacak.",
+      "usePartnerDefaultInboxConfirm": "İş ortağı varsayılanı yok. Hiçbir satırla eşleşmeyen uyarılar yalnızca gelen kutusuna gidecek.",
+      "customizeForOrgHint": "Özelleştirme, iş ortağının varsayılanındaki değişiklikleri izlemeyi durdurur. Bu kuruluşa özel ayar daha sonra kaldırılabilir.",
+      "sitesLoadFailed": "Siteler yüklenemedi. Tekrar deneyin."
     },
     "escalation": {
-      "occurrenceLimit": "Üst kademeye bildirim politikası toplamda en fazla 50 kez çalıştırılabilir",
+      "occurrenceLimit": "Bir politika en fazla 50 bildirim gönderebilir.",
       "new": "Yeni yükseltme ilkesi",
       "edit": "Yükseltme ilkesini düzenle",
       "empty": "Henüz yükseltme ilkesi yok. Bir ilke, uyarı onaylanmadığı sürece takip bildirimleri gönderir.",
@@ -678,7 +683,11 @@
       "deleted": "Yükseltme ilkesi silindi",
       "failedToSave": "Yükseltme ilkesi kaydedilemedi",
       "failedToDelete": "Yükseltme ilkesi silinemedi",
-      "deleteConfirm": "\"{{name}}\" yükseltme ilkesi silinsin mi? Buna başvuran monitörler ve yönlendirme satırları yükseltmeyi durduracak."
+      "deleteConfirm": "\"{{name}}\" yükseltme ilkesi silinsin mi? Buna başvuran monitörler ve yönlendirme satırları yükseltmeyi durduracak.",
+      "legacyRepaired": "Kaydedilen politikada mevcut biçime uymayan adımlar vardı ve bu adımlar düzenlendi.",
+      "minutesRange": "1–1440 dakika arasında bir tam sayı girin.",
+      "timesRange": "1–10 tekrar arasında bir tam sayı girin.",
+      "targetRequired": "Her adım için en az bir kanal veya kullanıcı seçin."
     }
   },
   "correlatedAlertGroups": {

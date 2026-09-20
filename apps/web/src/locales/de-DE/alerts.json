@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Leer lassen, um alle zu treffen",
       "defaultSaved": "Zeile „Alles andere“ gespeichert",
       "failedToSaveDefault": "Zeile „Alles andere“ konnte nicht gespeichert werden",
-      "deleteConfirm": "Weiterleitungsregel „{{name}}“ löschen?"
+      "deleteConfirm": "Weiterleitungsregel „{{name}}“ löschen?",
+      "usePartnerDefault": "Partnerstandard verwenden",
+      "usePartnerDefaultConfirm": "Diese Organisation verwendet wieder die Zeile „Alles andere“ des Partners.",
+      "usePartnerDefaultInboxConfirm": "Es gibt keinen Partnerstandard. Warnungen, die keiner Zeile entsprechen, erscheinen nur im Posteingang.",
+      "customizeForOrgHint": "Nach der Anpassung werden Änderungen am Partnerstandard nicht mehr übernommen. Die Überschreibung dieser Organisation kann später entfernt werden.",
+      "sitesLoadFailed": "Standorte konnten nicht geladen werden. Versuchen Sie es erneut."
     },
     "escalation": {
-      "occurrenceLimit": "Die Eskalationsrichtlinie darf insgesamt höchstens 50 Ausführungen umfassen",
+      "occurrenceLimit": "Eine Richtlinie darf höchstens 50 Benachrichtigungen senden.",
       "new": "Neue Eskalationsrichtlinie",
       "edit": "Eskalationsrichtlinie bearbeiten",
       "empty": "Noch keine Eskalationsrichtlinien. Eine Richtlinie sendet Folgebenachrichtigungen, solange eine Warnung unbestätigt bleibt.",
@@ -678,7 +683,11 @@
       "deleted": "Eskalationsrichtlinie gelöscht",
       "failedToSave": "Eskalationsrichtlinie konnte nicht gespeichert werden",
       "failedToDelete": "Eskalationsrichtlinie konnte nicht gelöscht werden",
-      "deleteConfirm": "Eskalationsrichtlinie „{{name}}“ löschen? Monitore und Weiterleitungszeilen, die darauf verweisen, eskalieren nicht mehr."
+      "deleteConfirm": "Eskalationsrichtlinie „{{name}}“ löschen? Monitore und Weiterleitungszeilen, die darauf verweisen, eskalieren nicht mehr.",
+      "legacyRepaired": "Die gespeicherte Richtlinie enthielt Schritte, die nicht dem aktuellen Format entsprachen und angepasst wurden.",
+      "minutesRange": "Geben Sie eine ganze Zahl von 1–1440 Minuten ein.",
+      "timesRange": "Geben Sie eine ganze Zahl von 1–10 Wiederholungen ein.",
+      "targetRequired": "Wählen Sie pro Schritt mindestens einen Kanal oder Benutzer aus."
     }
   },
   "correlatedAlertGroups": {

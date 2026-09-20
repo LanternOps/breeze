@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Laisser vide pour tout faire correspondre",
       "defaultSaved": "Ligne « Tout le reste » enregistrée",
       "failedToSaveDefault": "Échec de l'enregistrement de la ligne « Tout le reste »",
-      "deleteConfirm": "Supprimer la règle de routage « {{name}} » ?"
+      "deleteConfirm": "Supprimer la règle de routage « {{name}} » ?",
+      "usePartnerDefault": "Utiliser la configuration du partenaire",
+      "usePartnerDefaultConfirm": "Cette organisation utilisera de nouveau la ligne « Tout le reste » du partenaire.",
+      "usePartnerDefaultInboxConfirm": "Aucune configuration par défaut du partenaire. Les alertes ne correspondant à aucune ligne iront uniquement dans la boîte de réception.",
+      "customizeForOrgHint": "La personnalisation cesse de suivre les modifications de la configuration par défaut du partenaire. La configuration propre à cette organisation pourra être supprimée ultérieurement.",
+      "sitesLoadFailed": "Impossible de charger les sites. Réessayez."
     },
     "escalation": {
-      "occurrenceLimit": "La politique d’escalade doit comporter au maximum 50 exécutions au total",
+      "occurrenceLimit": "Une politique peut envoyer au maximum 50 notifications.",
       "new": "Nouvelle politique d'escalade",
       "edit": "Modifier la politique d'escalade",
       "empty": "Aucune politique d'escalade pour l'instant. Une politique envoie des notifications de relance tant qu'une alerte reste non acquittée.",
@@ -678,7 +683,11 @@
       "deleted": "Politique d'escalade supprimée",
       "failedToSave": "Échec de l'enregistrement de la politique d'escalade",
       "failedToDelete": "Échec de la suppression de la politique d'escalade",
-      "deleteConfirm": "Supprimer la politique d'escalade « {{name}} » ? Les moniteurs et lignes de routage qui la référencent cesseront d'escalader."
+      "deleteConfirm": "Supprimer la politique d'escalade « {{name}} » ? Les moniteurs et lignes de routage qui la référencent cesseront d'escalader.",
+      "legacyRepaired": "La politique enregistrée contenait des étapes qui ne correspondaient pas au format actuel et qui ont été ajustées.",
+      "minutesRange": "Saisissez un nombre entier de 1 à 1440 minutes.",
+      "timesRange": "Saisissez un nombre entier de 1 à 10 répétitions.",
+      "targetRequired": "Sélectionnez au moins un canal ou un utilisateur par étape."
     }
   },
   "correlatedAlertGroups": {

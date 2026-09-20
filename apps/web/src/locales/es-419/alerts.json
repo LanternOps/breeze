@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Déjalo vacío para coincidir con todo",
       "defaultSaved": "Fila «Todo lo demás» guardada",
       "failedToSaveDefault": "No se pudo guardar la fila «Todo lo demás»",
-      "deleteConfirm": "¿Eliminar la regla de enrutamiento «{{name}}»?"
+      "deleteConfirm": "¿Eliminar la regla de enrutamiento «{{name}}»?",
+      "usePartnerDefault": "Usar el valor predeterminado del socio",
+      "usePartnerDefaultConfirm": "Esta organización volverá a usar la fila «Todo lo demás» del socio.",
+      "usePartnerDefaultInboxConfirm": "No hay un valor predeterminado del socio. Las alertas que no coincidan con ninguna fila irán solo a la bandeja de entrada.",
+      "customizeForOrgHint": "Al personalizar, se dejan de seguir los cambios del valor predeterminado del socio. La configuración propia de esta organización se puede eliminar después.",
+      "sitesLoadFailed": "No se pudieron cargar los sitios. Inténtalo de nuevo."
     },
     "escalation": {
-      "occurrenceLimit": "La política de escalamiento debe tener como máximo 50 ejecuciones en total",
+      "occurrenceLimit": "Una política puede enviar como máximo 50 notificaciones.",
       "new": "Nueva política de escalamiento",
       "edit": "Editar política de escalamiento",
       "empty": "Aún no hay políticas de escalamiento. Una política envía notificaciones de seguimiento mientras una alerta siga sin confirmarse.",
@@ -678,7 +683,11 @@
       "deleted": "Política de escalamiento eliminada",
       "failedToSave": "No se pudo guardar la política de escalamiento",
       "failedToDelete": "No se pudo eliminar la política de escalamiento",
-      "deleteConfirm": "¿Eliminar la política de escalamiento «{{name}}»? Los monitores y filas de enrutamiento que la referencian dejarán de escalar."
+      "deleteConfirm": "¿Eliminar la política de escalamiento «{{name}}»? Los monitores y filas de enrutamiento que la referencian dejarán de escalar.",
+      "legacyRepaired": "La política guardada tenía pasos que no se ajustaban al formato actual y se modificaron.",
+      "minutesRange": "Ingresa un número entero de 1–1440 minutos.",
+      "timesRange": "Ingresa un número entero de 1–10 veces.",
+      "targetRequired": "Selecciona al menos un canal o usuario por paso."
     }
   },
   "correlatedAlertGroups": {

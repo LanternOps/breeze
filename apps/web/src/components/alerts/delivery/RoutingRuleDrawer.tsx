@@ -38,16 +38,23 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
     enabled: rule?.enabled ?? true, ownerScope,
   }));
   const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [sitesError, setSitesError] = useState(false);
+  const [sitesAttempt, setSitesAttempt] = useState(0);
 
   useEffect(() => {
-    if (!open || mode !== 'rule' || values.ownerScope !== 'organization' || !orgId) { setSites([]); return; }
+    setSites([]);
+    setSitesError(false);
+    if (!open || mode !== 'rule' || values.ownerScope !== 'organization' || !orgId) return;
     let cancelled = false;
     fetchWithAuth(`/orgs/sites?organizationId=${orgId}&limit=100`)
-      .then(async (r) => (r.ok ? asList(await r.json(), 'sites') : []))
+      .then(async (r) => {
+        if (!r.ok) throw new Error('Sites request failed');
+        return asList(await r.json(), 'sites');
+      })
       .then((list) => { if (!cancelled) setSites(list as Array<{ id: string; name: string }>); })
-      .catch(() => { if (!cancelled) setSites([]); });
+      .catch(() => { if (!cancelled) setSitesError(true); });
     return () => { cancelled = true; };
-  }, [open, mode, values.ownerScope, orgId]);
+  }, [open, mode, values.ownerScope, orgId, sitesAttempt]);
 
   const toggle = (key: 'severities' | 'monitorKinds' | 'siteIds' | 'channelIds', id: string) =>
     setValues((v) => ({ ...v, [key]: v[key].includes(id) ? v[key].filter((x) => x !== id) : [...v[key], id] }));
@@ -57,7 +64,7 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
 
   return (
     <Drawer open={open} onClose={onCancel} title={title} width="max-w-lg" dataTestId="routing-rule-drawer" closeDisabled={saving}>
-      <div className="space-y-5 p-1">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4" data-testid="routing-rule-drawer-body">
         {mode === 'rule' && !rule && showOwnerScope && (
           <fieldset className="space-y-2 rounded-md border p-3" data-testid="routing-rule-owner">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('notificationChannelsPage.scope')}</legend>
@@ -95,8 +102,14 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
                 </Chip>
               ))}
             </ChipGroup>
-            {values.ownerScope === 'organization' && sites.length > 0 && (
+            {values.ownerScope === 'organization' && (sites.length > 0 || sitesError) && (
               <ChipGroup label={t('deliveryPage.routing.sites')} hint={t('deliveryPage.routing.leaveEmptyForAll')}>
+                {sitesError && (
+                  <div role="alert" data-testid="routing-sites-error" className="flex items-center gap-2 text-xs text-destructive">
+                    {t('deliveryPage.routing.sitesLoadFailed')}
+                    <button type="button" data-testid="routing-sites-retry" onClick={() => setSitesAttempt((attempt) => attempt + 1)} className="rounded-md border px-2 py-1 text-xs">{t('common:actions.retry')}</button>
+                  </div>
+                )}
                 {sites.map((s) => (
                   <Chip key={s.id} active={values.siteIds.includes(s.id)} onClick={() => toggle('siteIds', s.id)} testId={`routing-rule-site-${s.id}`}>{s.name}</Chip>
                 ))}
@@ -130,11 +143,11 @@ export default function RoutingRuleDrawer({ open, mode, rule, initialChannelIds,
             {t('notificationChannelsPage.enabled')}
           </label>
         )}
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onCancel} data-testid="routing-rule-drawer-cancel" disabled={saving} className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground">{t('common:actions.cancel')}</button>
-          <button type="button" onClick={() => onSave(values)} disabled={!canSave || saving} data-testid="routing-rule-drawer-save"
-            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">{t('common:actions.save')}</button>
-        </div>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t px-5 py-4" data-testid="routing-rule-drawer-footer">
+        <button type="button" onClick={onCancel} data-testid="routing-rule-drawer-cancel" disabled={saving} className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground">{t('common:actions.cancel')}</button>
+        <button type="button" onClick={() => onSave(values)} disabled={!canSave || saving} data-testid="routing-rule-drawer-save"
+          className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">{t('common:actions.save')}</button>
       </div>
     </Drawer>
   );

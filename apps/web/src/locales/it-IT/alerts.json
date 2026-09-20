@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Lascia vuoto per corrispondere a tutto",
       "defaultSaved": "Riga «Tutto il resto» salvata",
       "failedToSaveDefault": "Impossibile salvare la riga «Tutto il resto»",
-      "deleteConfirm": "Eliminare la regola di instradamento «{{name}}»?"
+      "deleteConfirm": "Eliminare la regola di instradamento «{{name}}»?",
+      "usePartnerDefault": "Usa le impostazioni predefinite del partner",
+      "usePartnerDefaultConfirm": "Questa organizzazione tornerà a usare la riga «Tutto il resto» del partner.",
+      "usePartnerDefaultInboxConfirm": "Non esiste una configurazione predefinita del partner. Gli avvisi che non corrispondono ad alcuna riga saranno solo nella posta in arrivo.",
+      "customizeForOrgHint": "La personalizzazione smette di seguire le modifiche alle impostazioni predefinite del partner. La configurazione specifica di questa organizzazione può essere rimossa in seguito.",
+      "sitesLoadFailed": "Impossibile caricare i siti. Riprova."
     },
     "escalation": {
-      "occurrenceLimit": "La policy di escalation deve prevedere al massimo 50 esecuzioni totali",
+      "occurrenceLimit": "Una policy può inviare al massimo 50 notifiche.",
       "new": "Nuovo criterio di escalation",
       "edit": "Modifica criterio di escalation",
       "empty": "Nessun criterio di escalation. Un criterio invia notifiche di follow-up finché un avviso resta non riconosciuto.",
@@ -678,7 +683,11 @@
       "deleted": "Criterio di escalation eliminato",
       "failedToSave": "Impossibile salvare il criterio di escalation",
       "failedToDelete": "Impossibile eliminare il criterio di escalation",
-      "deleteConfirm": "Eliminare il criterio di escalation «{{name}}»? I monitor e le righe di instradamento che vi fanno riferimento smetteranno di eseguire l'escalation."
+      "deleteConfirm": "Eliminare il criterio di escalation «{{name}}»? I monitor e le righe di instradamento che vi fanno riferimento smetteranno di eseguire l'escalation.",
+      "legacyRepaired": "La policy salvata conteneva passaggi non conformi al formato attuale, che sono stati adattati.",
+      "minutesRange": "Inserisci un numero intero da 1 a 1440 minuti.",
+      "timesRange": "Inserisci un numero intero da 1 a 10 ripetizioni.",
+      "targetRequired": "Seleziona almeno un canale o un utente per passaggio."
     }
   },
   "correlatedAlertGroups": {

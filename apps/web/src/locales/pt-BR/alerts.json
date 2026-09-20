@@ -655,10 +655,15 @@
       "leaveEmptyForAll": "Deixe vazio para corresponder a todos",
       "defaultSaved": "Linha “Todo o resto” salva",
       "failedToSaveDefault": "Falha ao salvar a linha “Todo o resto”",
-      "deleteConfirm": "Excluir a regra de roteamento “{{name}}”?"
+      "deleteConfirm": "Excluir a regra de roteamento “{{name}}”?",
+      "usePartnerDefault": "Usar o padrão do parceiro",
+      "usePartnerDefaultConfirm": "Esta organização voltará a usar a linha “Todo o resto” do parceiro.",
+      "usePartnerDefaultInboxConfirm": "Não há padrão do parceiro. Alertas que não correspondam a nenhuma linha irão apenas para a caixa de entrada.",
+      "customizeForOrgHint": "Ao personalizar, as alterações no padrão do parceiro deixam de ser seguidas. A configuração própria desta organização pode ser removida depois.",
+      "sitesLoadFailed": "Não foi possível carregar os sites. Tente novamente."
     },
     "escalation": {
-      "occurrenceLimit": "A política de escalonamento deve ter no máximo 50 execuções no total",
+      "occurrenceLimit": "Uma política pode enviar no máximo 50 notificações.",
       "new": "Nova política de escalonamento",
       "edit": "Editar política de escalonamento",
       "empty": "Ainda não há políticas de escalonamento. Uma política envia notificações de acompanhamento enquanto um alerta continua sem confirmação.",
@@ -678,7 +683,11 @@
       "deleted": "Política de escalonamento excluída",
       "failedToSave": "Falha ao salvar a política de escalonamento",
       "failedToDelete": "Falha ao excluir a política de escalonamento",
-      "deleteConfirm": "Excluir a política de escalonamento “{{name}}”? Monitores e linhas de roteamento que a referenciam deixarão de escalonar."
+      "deleteConfirm": "Excluir a política de escalonamento “{{name}}”? Monitores e linhas de roteamento que a referenciam deixarão de escalonar.",
+      "legacyRepaired": "A política salva tinha etapas que não correspondiam ao formato atual e foram ajustadas.",
+      "minutesRange": "Insira um número inteiro de 1 a 1440 minutos.",
+      "timesRange": "Insira um número inteiro de 1 a 10 repetições.",
+      "targetRequired": "Selecione pelo menos um canal ou usuário por etapa."
     }
   },
   "correlatedAlertGroups": {

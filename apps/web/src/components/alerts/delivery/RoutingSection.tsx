@@ -32,7 +32,7 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
   const [error, setError] = useState<string>();
 
   const ordered = useMemo(() => orderRoutingRules(rules.filter((r) => !r.isDefault)), [rules]);
-  const orgDefault = rules.find((r): r is EditableRoutingRule => isEditableRoutingRule(r) && r.isDefault && r.orgId !== null) ?? null;
+  const orgDefault = rules.find((r): r is EditableRoutingRule => isEditableRoutingRule(r) && r.isDefault && r.orgId === currentOrgId && r.orgId !== null) ?? null;
   const partnerDefault = rules.find((r) => r.isDefault && isPartnerRail(r)) ?? null;
   // Org view: the org row shadows the partner row. All-orgs view: the partner row.
   const orgView = currentOrgId !== null;
@@ -143,6 +143,7 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
               {effectiveDefault?.escalationPolicyId && <span>{t('deliveryPage.routing.escalateVia')}: {policyName(effectiveDefault.escalationPolicyId)}</span>}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{t('deliveryPage.routing.everythingElseHint')}</p>
+            {defaultIsPartnerRowInOrgView && <p data-testid="routing-default-customize-hint" className="mt-1 text-xs text-muted-foreground">{t('deliveryPage.routing.customizeForOrgHint')}</p>}
           </div>
           <div className="flex items-center gap-1">
             {defaultIsPartnerRowInOrgView ? (
@@ -150,7 +151,9 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
             ) : (orgView || isPartnerScope) && (
               <button type="button" onClick={openDefaultEditor} data-testid="routing-default-edit" className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted">{t('common:actions.edit')}</button>
             )}
-
+            {orgView && orgDefault && canEditRow(orgDefault) && (
+              <button type="button" onClick={() => setDeleting(orgDefault)} data-testid="routing-default-use-partner" className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted">{t('deliveryPage.routing.usePartnerDefault')}</button>
+            )}
           </div>
         </li>
       </ol>
@@ -172,8 +175,13 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
       <ConfirmDialog
         confirmTestId="routing-delete-confirm" dialogTestId="routing-delete-dialog"
         open={deleting !== null} onClose={() => setDeleting(null)} isLoading={saving} variant="destructive"
-        title={t('common:actions.delete')}
-        message={t('deliveryPage.routing.deleteConfirm', { name: deleting?.name ?? '' })}
+        title={deleting?.isDefault ? t('deliveryPage.routing.usePartnerDefault') : t('common:actions.delete')}
+        confirmLabel={deleting?.isDefault ? t('deliveryPage.routing.usePartnerDefault') : undefined}
+        message={deleting?.isDefault
+          ? partnerDefault
+            ? `${t('deliveryPage.routing.usePartnerDefaultConfirm')} ${t('deliveryPage.routing.sendTo')}: ${partnerDefault.channelIds.length ? partnerDefault.channelIds.map(channelName).join(', ') : t('deliveryPage.routing.inboxOnly')}${partnerDefault.escalationPolicyId ? `. ${t('deliveryPage.routing.escalateVia')}: ${policyName(partnerDefault.escalationPolicyId)}` : ''}`
+            : t('deliveryPage.routing.usePartnerDefaultInboxConfirm')
+          : t('deliveryPage.routing.deleteConfirm', { name: deleting?.name ?? '' })}
         onConfirm={() => {
           if (!deleting) return;
           void run(

@@ -57,8 +57,8 @@ export default function EscalationPoliciesSection({ policies, channels, currentO
                   {isPartnerRail(p) && <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary" data-testid="escalation-partner-wide-badge">{t('notificationChannelsPage.allOrgs')}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {t('deliveryPage.escalation.stepCount', { count: p.inherited === true ? p.stepCount : p.steps.length })}
-                  {p.inherited !== true && p.steps.length ? ` · ${p.steps.map((s) => `${s.delayMinutes}m`).join(' → ')}` : ''}
+                  {t('deliveryPage.escalation.stepCount', { count: p.inherited === true ? p.stepCount : Array.isArray(p.steps) ? p.steps.length : 0 })}
+                  {p.inherited !== true && Array.isArray(p.steps) && p.steps.length ? ` · ${p.steps.map((s) => `${s?.delayMinutes ?? '—'}m`).join(' → ')}` : ''}
                 </p>
               </div>
               {canEdit(p) && (

@@ -94,7 +94,7 @@ describe('escalation validation and read failures', () => {
     fireEvent.click(screen.getByTestId('escalation-row-edit'));
     await screen.findAllByLabelText('Alex');
     expect(screen.getByTestId('escalation-policy-drawer-save')).toBeDisabled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Escalation policy must have at most 50 total occurrences');
+    expect(screen.getByRole('alert')).toHaveTextContent('A policy can send at most 50 notifications.');
     fireEvent.change(screen.getByTestId('escalation-step-0-times'), { target: { value: 5 } });
     expect(screen.getByTestId('escalation-policy-drawer-save')).toBeEnabled();
   });
@@ -115,4 +115,10 @@ describe('escalation validation and read failures', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/alerts/delivery/rails?rail=users&ownerScope=partner'));
     expect(await screen.findByLabelText('Alex')).not.toBeChecked();
   });
+});
+
+it.each([null, { length: 1 }, [null]])('opens malformed legacy steps from the list: %j (G1)', async (steps) => {
+  renderSection([{ id: 'legacy', orgId: 'org-1', partnerId: null, name: 'Legacy', steps } as unknown as EscalationPolicy]);
+  fireEvent.click(screen.getByTestId('escalation-row-edit'));
+  expect(await screen.findByTestId('escalation-legacy-repaired')).toBeInTheDocument();
 });
