@@ -134,3 +134,22 @@ func TestConvert_RefusesWhenDetachFailed(t *testing.T) {
 		t.Fatalf("err = %v, want a refusal because the loop device was not detached", err)
 	}
 }
+
+// The release guard is not VHDX-only: a raw image or a physical disk handed
+// back as "completed" while its root partition is still mounted is the same
+// defect, so validate — the phase that releases the target — must fail.
+func TestValidate_FailsWhenTargetWasNotReleased(t *testing.T) {
+	for _, kind := range []TargetKind{TargetDisk, TargetImage, TargetVHDX} {
+		t.Run(string(kind), func(t *testing.T) {
+			dir := t.TempDir()
+			fs := newFakeSystem(dir, 100*GiB)
+			root := filepath.Join(dir, "mnt")
+			fs.fail["umount "+root] = os.ErrPermission
+			r := &run{opts: Options{Target: Target{Kind: kind}, SkipBoot: true}, sys: fs, staging: root, rootMount: root, result: &Result{Plan: &Plan{}}}
+			err := validate(context.Background(), r)
+			if err == nil || !strings.Contains(err.Error(), "still in use") {
+				t.Fatalf("err = %v, want validate to fail because the target is still in use", err)
+			}
+		})
+	}
+}

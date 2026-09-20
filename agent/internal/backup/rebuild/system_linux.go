@@ -121,6 +121,13 @@ func (s realSystem) BindMount(ctx context.Context, src, dir string) error {
 	if out, err := s.Run(ctx, "mount", "--bind", src, dir); err != nil {
 		return fmt.Errorf("bind mount %s %s: %s: %w", src, dir, strings.TrimSpace(string(out)), err)
 	}
+	// systemd makes / rshared, so the copy joins the host's peer group:
+	// anything the chroot mounts under it (grub-install's efivarfs) would
+	// propagate to the host, and the recursive unmount back again. Private,
+	// as arch-chroot does.
+	if out, err := s.Run(ctx, "mount", "--make-rprivate", dir); err != nil {
+		return fmt.Errorf("make %s private: %s: %w", dir, strings.TrimSpace(string(out)), err)
+	}
 	return nil
 }
 
