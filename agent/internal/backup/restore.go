@@ -289,7 +289,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		installWarnings, err := securefs.InstallFile(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership))
+		installWarnings, err := securefs.InstallFileWithAttrs(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs)
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
@@ -796,6 +796,11 @@ func applyEntryMetadata(targetPath string, entry SnapshotFile, applyOwnership bo
 		if err := os.Chtimes(targetPath, entry.ModTime, entry.ModTime); err != nil {
 			warnings = append(warnings, fmt.Sprintf("could not reapply mtime to %s: %v", entry.SourcePath, err))
 		}
+	}
+	// Windows attributes go LAST (#5407): FILE_ATTRIBUTE_READONLY makes the
+	// chmod/chtimes above fail, so they must already have run.
+	if err := applyWinAttrs(targetPath, entry.WinAttrs); err != nil {
+		warnings = append(warnings, fmt.Sprintf("could not reapply windows attributes to %s: %v", entry.SourcePath, err))
 	}
 	return warnings
 }

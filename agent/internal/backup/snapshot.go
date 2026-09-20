@@ -301,6 +301,14 @@ type SnapshotFile struct {
 	// symlink. Omitted (false) for every manifest written before this field
 	// existed, keeping them byte-identical.
 	Placeholder bool `json:"placeholder,omitempty"`
+	// WinAttrs is the file's preserved Windows file attributes (#5407) —
+	// Hidden, System, ReadOnly, Temporary, NotContentIndexed and SparseFile.
+	// 0 means "unknown" (a non-Windows backup, or any manifest written
+	// before this field existed) → restore leaves whatever the fresh write
+	// produced, so pre-existing manifests stay byte-identical and behave
+	// exactly as before. Archive is deliberately not captured — see
+	// securefs.PreservedWinAttrs.
+	WinAttrs uint32 `json:"winAttrs,omitempty"`
 }
 
 // HasContent reports whether the entry has an uploaded object at BackupPath.
@@ -329,6 +337,7 @@ func contentlessEntry(f backupFile) SnapshotFile {
 		ModeBits:     f.modeBits,
 		Owner:        f.owner,
 		Placeholder:  f.placeholder,
+		WinAttrs:     f.winAttrs,
 	}
 }
 
@@ -1170,6 +1179,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			ModeBits:     file.modeBits,
 			Owner:        file.owner,
 			Volatile:     volatile,
+			WinAttrs:     file.winAttrs,
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += entry.Size

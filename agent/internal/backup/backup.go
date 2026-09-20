@@ -1446,6 +1446,9 @@ type backupFile struct {
 	linkTarget string
 	modeBits   uint32
 	owner      *FileOwner
+	// winAttrs mirrors SnapshotFile.WinAttrs — the preserved Windows file
+	// attributes (#5407); 0 off Windows.
+	winAttrs uint32
 	// placeholder mirrors SnapshotFile.Placeholder — see that field's doc
 	// comment (snapshot.go). Set only via contentlessEntry for a KindDir
 	// entry the walker force-recorded because the directory matched an
@@ -1589,6 +1592,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				mode:         info.Mode(),
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
+				winAttrs:     winFileAttrs(info),
 			})
 			continue
 		}
@@ -1705,7 +1709,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				seen[snapshotPath] = struct{}{}
 				files = append(files, backupFile{
 					sourcePath: path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
-					kind: KindSymlink, linkTarget: target, owner: fileOwner(info),
+					kind: KindSymlink, linkTarget: target, owner: fileOwner(info), winAttrs: winFileAttrs(info),
 				})
 				return nil
 			}
@@ -1721,6 +1725,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				mode:         info.Mode(),
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
+				winAttrs:     winFileAttrs(info),
 			})
 			return nil
 		})
@@ -1759,6 +1764,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			files = append(files, backupFile{
 				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
 				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
+				winAttrs: winFileAttrs(info),
 			})
 		}
 	}
