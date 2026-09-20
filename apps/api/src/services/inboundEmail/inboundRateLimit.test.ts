@@ -98,6 +98,13 @@ describe('evaluateInboundThrottle', () => {
     ]);
   });
 
+  it('fails OPEN (does not throttle) when Redis is unavailable, without calling the limiter', async () => {
+    rateLimiterMock.mockResolvedValue(deny);
+    const v = await evaluateInboundThrottle({ redis: null, from: 'jane@acme.com', partnerId: 'p1', limits });
+    expect(v).toEqual({ throttled: false, bucket: null });
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+  });
+
   it('reports partner bucket when only the partner window trips', async () => {
     rateLimiterMock.mockResolvedValueOnce(allow).mockResolvedValueOnce(allow).mockResolvedValueOnce(deny);
     const v = await evaluateInboundThrottle({ redis: fakeRedis, from: 'jane@acme.com', partnerId: 'p1', limits });

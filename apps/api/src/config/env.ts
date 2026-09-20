@@ -342,10 +342,6 @@ export function inboundMaxPerPartnerPerHour(): number {
 export function inboundQueueMaxPerSec(): number {
   return positiveIntEnv('INBOUND_QUEUE_MAX_PER_SEC', 20, 1, 5_000);
 }
-/** Max messages a single mailbox sweep ingests before deferring to the next sweep. */
-export function inboundMaxPerSweep(): number {
-  return positiveIntEnv('INBOUND_MAX_PER_SWEEP', 200, 1, 10_000);
-}
 
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
 // (client) ID of the multi-tenant add-in app registration. Empty = the whole

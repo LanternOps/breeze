@@ -65,18 +65,15 @@ export interface NormalizedInboundEmail {
    *     ticket or be replied to. Absent (undefined) is NOT a null return path.
    *   - xLoop: RFC-informal X-Loop; presence indicates the sender is guarding
    *     against a mail loop.
-   *   - autoResponseSuppress: Microsoft's X-Auto-Response-Suppress (values like
-   *     All, OOF, AutoReply, DR, RN, NRN) — the sender asks not to be auto-replied
-   *     to; used here as a loop signal for ticket creation too.
-   *   - listId: RFC 2919 List-Id — bulk/mailing-list mail, not a support request.
    * NOTE: `Auto-Submitted: auto-generated` (a device/copier notification) is
    * deliberately NOT a ticket-suppression signal — those are legitimate tickets.
-   * Only `auto-replied` is treated as a loop (see loopPrevention.ts).
+   * Only `auto-replied` is treated as a loop (see loopPrevention.ts). Likewise
+   * X-Auto-Response-Suppress and List-Id are NOT parsed here: they mark "do not
+   * auto-reply" / list mail, which legitimate device and distribution-list
+   * senders set, so suppressing tickets on them would drop real support mail.
    */
   returnPath?: string | null;
   xLoop?: string;
-  autoResponseSuppress?: string;
-  listId?: string;
   /**
    * The value of X-Breeze-Outbound, when the message carries it — i.e. this is
    * our OWN partner-lane mail coming back (spec §8.5).

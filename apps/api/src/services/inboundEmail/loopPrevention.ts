@@ -38,52 +38,44 @@ export function autoresponseSuppressionReason(
   return null;
 }
 
-// X-Auto-Response-Suppress tokens that mean "do not auto-reply to me" (Microsoft).
-// Presence of any of these — or the catch-all `all` — is treated as a loop signal.
-const SUPPRESS_TOKENS = new Set(['all', 'oof', 'autoreply', 'dr', 'rn', 'nrn']);
-
 /**
  * Ingest-level LOOP/BOUNCE suppression (distinct from autoresponse suppression).
  * Returns a reason when this message must NOT create or append to a ticket at
  * all — because it is a mail loop or a bounce, not a support request — or null
  * when it should flow through normally.
  *
- * Deliberately NARROW to avoid false positives against legitimate automated
- * senders that MSPs want as tickets (copiers, monitoring, backup reports). Those
- * arrive as `Auto-Submitted: auto-generated` from `no-reply@`-style addresses and
- * must still create tickets. Only unambiguous loop/bounce signals suppress here:
+ * Deliberately NARROW. Legitimate automated senders that MSPs want as tickets
+ * (copiers, monitoring, backup-failure reports) arrive as `Auto-Submitted:
+ * auto-generated` from `no-reply@` addresses and OFTEN set
+ * `X-Auto-Response-Suppress: All` (it means "do not auto-REPLY to me", not "I am
+ * a loop"). A genuine request can also arrive via a customer distribution list
+ * (`List-Id`). Suppressing on those would silently drop real support mail, so
+ * they are NOT ticket-suppression signals here — they only ever gate our own
+ * auto-REPLY. Only three unambiguous loop/bounce signals suppress creation:
  *
  *   - Auto-Submitted: auto-replied — an automatic REPLY to our mail (RFC 3834).
  *     `auto-generated` (a device notification) is explicitly NOT suppressed.
- *   - a null Return-Path (`<>`) — a bounce / non-delivery report.
- *   - X-Loop present — the sender is guarding against a loop.
- *   - X-Auto-Response-Suppress asking to suppress replies (All/OOF/AutoReply/…).
- *   - List-Id present — bulk/mailing-list mail, not a support request.
+ *   - a null Return-Path (exactly `<>`) — a bounce / non-delivery report.
+ *   - X-Loop present — the sender is explicitly guarding against a mail loop.
  *
  * The broader set (Precedence: bulk, system local-parts, self-domain) stays in
  * `autoresponseSuppressionReason`: it only withholds our auto-REPLY, while still
  * letting the mail become a ticket — correct for device/notification senders.
  */
 export function ticketCreationLoopReason(n: NormalizedInboundEmail): string | null {
-  const autoSubmitted = n.autoSubmitted?.trim().toLowerCase();
+  // RFC 3834 allows optional parameters after the keyword (`auto-replied; foo=bar`),
+  // so match the keyword token, not the whole header value.
+  const autoSubmitted = n.autoSubmitted?.split(';')[0]?.trim().toLowerCase();
   if (autoSubmitted === 'auto-replied') return 'auto-replied';
 
-  // A true null return path is the literal `<>` (optionally whitespace). Absent
-  // (undefined) is NOT a null path — many legit messages omit Return-Path at the
-  // API boundary. Only an explicit empty envelope sender marks a bounce.
-  if (n.returnPath != null) {
-    const rp = n.returnPath.trim();
-    if (rp === '<>' || rp === '') return 'null-return-path';
-  }
+  // A true null return path is EXACTLY `<>` (optionally whitespace) — an empty
+  // envelope sender, i.e. a bounce. Absent (undefined) is not a null path (many
+  // legit messages omit Return-Path at the API boundary), and an empty string is
+  // NOT treated as `<>` — providers surface a real bounce as the literal `<>`,
+  // and treating `''` as a bounce risks a false positive on a stripped header.
+  if (n.returnPath != null && n.returnPath.trim() === '<>') return 'null-return-path';
 
   if (n.xLoop && n.xLoop.trim() !== '') return 'x-loop';
-
-  if (n.autoResponseSuppress) {
-    const tokens = n.autoResponseSuppress.toLowerCase().split(/[,\s]+/).filter(Boolean);
-    if (tokens.some((t) => SUPPRESS_TOKENS.has(t))) return 'auto-response-suppress';
-  }
-
-  if (n.listId && n.listId.trim() !== '') return 'list-mail';
 
   return null;
 }

@@ -23,6 +23,14 @@ interface InboundConfig {
   dropUnverifiedSenders: boolean;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
+  // Flood caps (per-hour ticket-creation limits; null = use the server default,
+  // 0 = unlimited) and reply-content mode. Not yet edited by this card, but
+  // carried through so a save preserves values set via the API (the PATCH route
+  // replaces the inbound sub-object wholesale — an omitted field is destroyed).
+  maxTicketsPerSenderPerHour: number | null;
+  maxTicketsPerDomainPerHour: number | null;
+  maxTicketsPerPartnerPerHour: number | null;
+  fullMessageReply: boolean;
   slug: string;
   domainConfigured: boolean;
   // Connected M365 shared mailboxes (status 'connected'). Absent on an older
@@ -127,6 +135,13 @@ export default function InboundEmailCard() {
         dropUnverifiedSenders: next.dropUnverifiedSenders,
         autoresponseSubject: next.autoresponseSubject,
         autoresponseBody: next.autoresponseBody,
+        // Preserve flood caps + reply mode across a wholesale-replace save, even
+        // though this card does not edit them yet. Omit a null cap so it stays
+        // "inherit the server default" rather than persisting an explicit null.
+        ...(next.maxTicketsPerSenderPerHour != null ? { maxTicketsPerSenderPerHour: next.maxTicketsPerSenderPerHour } : {}),
+        ...(next.maxTicketsPerDomainPerHour != null ? { maxTicketsPerDomainPerHour: next.maxTicketsPerDomainPerHour } : {}),
+        ...(next.maxTicketsPerPartnerPerHour != null ? { maxTicketsPerPartnerPerHour: next.maxTicketsPerPartnerPerHour } : {}),
+        ...(next.fullMessageReply ? { fullMessageReply: true } : {}),
       };
       if (next.addressOverride) inbound.address = next.addressOverride;
       setSaving(true);

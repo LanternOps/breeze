@@ -61,14 +61,12 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
       precedence: parseHeader(b['message-headers'], 'Precedence'),
       outboundMarker: parseHeader(b['message-headers'], BREEZE_OUTBOUND_HEADER),
-      // Loop/bounce signals (ingest-level loop suppression). Mailgun exposes the
-      // envelope sender as the `sender` form field; the Return-Path header, when
-      // present, is the authoritative null-path (`<>`) bounce marker, so prefer it
-      // and fall back to `sender`.
-      returnPath: parseHeader(b['message-headers'], 'Return-Path') ?? (b.sender || undefined),
+      // Loop/bounce signals (ingest-level loop suppression). Only the actual
+      // Return-Path header is trusted for the null-path (`<>`) bounce marker — the
+      // `sender` form field carries a normal address and must NOT be conflated
+      // with a bounce, so there is no fallback to it here.
+      returnPath: parseHeader(b['message-headers'], 'Return-Path'),
       xLoop: parseHeader(b['message-headers'], 'X-Loop'),
-      autoResponseSuppress: parseHeader(b['message-headers'], 'X-Auto-Response-Suppress'),
-      listId: parseHeader(b['message-headers'], 'List-Id'),
       senderAuth: extractSenderAuth(b),
       senderAuthDiagnostic: senderAuthGap(b['message-headers']),
       attachments: [],

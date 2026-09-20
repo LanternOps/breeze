@@ -90,6 +90,16 @@ export async function evaluateInboundThrottle(
   args: EvaluateInboundThrottleArgs,
 ): Promise<InboundThrottleVerdict> {
   const { redis, from, partnerId, limits } = args;
+
+  // Redis unavailable ⇒ do NOT throttle. This is a deliberate fail-OPEN, unlike
+  // rateLimiter's own fail-closed: the inbound worker only runs when BullMQ (also
+  // Redis-backed) is delivering jobs, so a truly absent Redis means the pipeline
+  // is not processing at all — quarantining every ticket on a Redis blip would be
+  // strictly worse than briefly not enforcing the per-sender cap, and the global
+  // BullMQ queue limiter still bounds total throughput. An attacker cannot force
+  // Redis to be null. (Redis present-but-erroring still fails closed via rateLimiter.)
+  if (!redis) return { throttled: false, bucket: null };
+
   const sender = from.trim().toLowerCase();
   const senderDomain = domainOf(from);
 

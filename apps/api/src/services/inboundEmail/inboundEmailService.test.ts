@@ -224,6 +224,15 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 // that a ticket was created + the inbound row logged.
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
+// The flood cap's Redis sliding-window is exercised in inboundRateLimit.test.ts.
+// Here it is mocked to "not throttled" so the create-path assertions are not
+// coupled to Redis; a dedicated test below flips it to throttled and asserts the
+// quarantine outcome.
+const evaluateInboundThrottleMock = vi.fn().mockResolvedValue({ throttled: false, bucket: null });
+vi.mock('./inboundRateLimit', () => ({
+  evaluateInboundThrottle: (...a: unknown[]) => evaluateInboundThrottleMock(...a),
+  resolveInboundCapLimits: () => ({ perSenderPerHour: 30, perDomainPerHour: 200, perPartnerPerHour: 1000 }),
+}));
 
 // Task 4: pipeline calls claimMessageLink() to record link rows after a matched
 // append and after a create. Mocked as a collaborator (like resolveOrg/ticketService
@@ -551,6 +560,27 @@ describe('processInboundEmail', () => {
     expect(gatedPartner).toBe('p-1');
     expect((gatedTicket as { id: string; partnerId: string }).id).toBe('t-created');
     expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
+  });
+
+  it('quarantines (no ticket) when the flood cap is exceeded at the creation choke point', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
+    // Flip the cap verdict to over-limit for this one message.
+    evaluateInboundThrottleMock.mockResolvedValueOnce({ throttled: true, bucket: 'sender' });
+
+    await processInboundEmail(email({ subject: 'flood' }));
+
+    // No ticket is created; the message is quarantined for review (recoverable).
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.ticketId).toBeNull();
+    expect(String(log[0]!.error ?? '')).toContain('rate-limited');
   });
 
   it('does NOT fire the autoresponder on the closed-continuation path (no submittedBy)', async () => {

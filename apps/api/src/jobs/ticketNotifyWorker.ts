@@ -26,7 +26,7 @@
  */
 
 import { Worker, type Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { organizations, partners, tickets, ticketComments } from '../db/schema';
 import { getEmailService } from '../services/email';
@@ -372,17 +372,41 @@ async function collectRequesterEmail(
   // (the worker gates on event.payload.isPublic before calling here).
   let html = composed.html;
   const bits = await loadPartnerMailBits(ticket.partnerId);
-  if (bits.inbound?.fullMessageReply) {
+  // Full message text is appended ONLY on the platform EmailService path (which
+  // sends to the resolved requester address, `ticket.submitterEmail`). On the
+  // connected-M365 path the reply is a Graph createReply against the latest
+  // inbound message, whose recipients can include an external Reply-To/CC we did
+  // not validate; putting the actual comment text there would widen a possible
+  // mis-routed reply from a bare portal notice to real content. Until that
+  // recipient set is validated, M365-mailbox partners keep the notification.
+  if (bits.inbound?.fullMessageReply && !graphMailbox) {
+    // Bound to THIS ticket (never another ticket's comment). deletedAt is SELECTED
+    // (not filtered) so we can tell a soft-deleted comment (row present, deletedAt
+    // set — terminal, skip the body) apart from a not-yet-committed one (no row —
+    // transient, retry).
     const rows = await db
-      .select({ content: ticketComments.content, isPublic: ticketComments.isPublic })
+      .select({
+        content: ticketComments.content,
+        isPublic: ticketComments.isPublic,
+        deletedAt: ticketComments.deletedAt,
+      })
       .from(ticketComments)
-      .where(eq(ticketComments.id, commentId))
+      .where(and(eq(ticketComments.id, commentId), eq(ticketComments.ticketId, ticket.id)))
       .limit(1);
     const comment = rows[0];
-    // Defense in depth: never inline a non-public comment even if one somehow
-    // reached here — the emitter's isPublic gate is the authority, this is a
-    // second check at the point the text would leave the platform.
-    if (comment?.isPublic && comment.content.trim()) {
+    if (!comment) {
+      // Pre-commit emission: the comment row may not be visible yet (the event is
+      // emitted inside the posting transaction). Throw to retry — same contract as
+      // the missing-ticket guard above — so the real reply eventually sends rather
+      // than silently degrading to a portal-only notice for a no-portal partner.
+      throw new Error(`Comment not found (likely uncommitted): ${commentId}`);
+    }
+    // Append the body only for a live, public comment. A soft-deleted comment
+    // (deletedAt set) must NOT be emailed — its text is no longer visible in the
+    // ticket — so fall through to the portal notification without the body.
+    // Defense in depth on isPublic: the emitter's gate is the authority; this is
+    // a second check at the point the text would leave the platform.
+    if (!comment.deletedAt && comment.isPublic && comment.content.trim()) {
       html = appendFullReplyBody(html, comment.content);
     }
   }

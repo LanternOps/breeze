@@ -87,8 +87,6 @@ export function normalizeGraphMessage(
     // Loop/bounce signals (ingest-level loop suppression).
     returnPath: header(msg.internetMessageHeaders, 'Return-Path'),
     xLoop: header(msg.internetMessageHeaders, 'X-Loop'),
-    autoResponseSuppress: header(msg.internetMessageHeaders, 'X-Auto-Response-Suppress'),
-    listId: header(msg.internetMessageHeaders, 'List-Id'),
     senderAuth: buildSenderAuth(trustedAuthResults(msg.internetMessageHeaders, mailboxDomain)),
     // Phase-1 parity: attachment bodies deferred; metadata not fetched yet.
     attachments: [],
