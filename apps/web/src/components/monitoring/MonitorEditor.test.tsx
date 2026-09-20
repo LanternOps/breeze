@@ -1,5 +1,6 @@
 import '@/lib/i18n';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MonitorEditor from './MonitorEditor';
 import { fetchWithAuth } from '../../stores/auth';
@@ -67,6 +68,25 @@ const MONITOR_M1_FIXTURE = {
   partnerId: null,
   attachments: [],
 };
+
+describe('MonitorEditor owner scope hydration (#6391)', () => {
+  it('omits the owner-scope block from the server markup so hydration matches', () => {
+    // `isPartnerScope` is browser-only (it decodes the access token), so the
+    // block must not appear until after hydration — otherwise the client's
+    // <fieldset> lands where the server emitted the next <section> and React
+    // discards the editor subtree.
+    window.history.replaceState(null, '', '/alerts/monitors/new');
+    const html = renderToString(<MonitorEditor />);
+    expect(html).not.toContain('monitor-editor-owner-scope');
+  });
+
+  it('renders the owner-scope block for a partner-scope session in the browser', async () => {
+    window.history.replaceState(null, '', '/alerts/monitors/new');
+    fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
+    render(<MonitorEditor />);
+    expect(await screen.findByTestId('monitor-editor-owner-scope')).toBeTruthy();
+  });
+});
 
 describe('MonitorEditor (#5289)', () => {
   it('creates and attaches to the policy selected in the hash', async () => {
