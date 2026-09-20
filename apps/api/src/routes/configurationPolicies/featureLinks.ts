@@ -8,6 +8,7 @@ import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
   clientSuppliedWarrantyHpCmslConsent,
+  maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -242,6 +243,22 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    // #6312: `maintenance` was the only inline shape with no write-time schema.
+    // The evaluator degrades silently on every bad field (unknown recurrence ->
+    // window never opens, bad timezone -> UTC, unparseable windowStart ->
+    // midnight, non-positive duration -> never active), so a garbage payload
+    // used to return 201 and leave a policy that suppresses nothing.
+    if (data.featureType === 'maintenance' && data.inlineSettings) {
+      const parsed = maintenanceInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid maintenance settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'remote_access' && data.inlineSettings) {
       const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -460,6 +477,17 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid pam settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      // #6312 — same gate on the update site; see the POST branch above.
+      if (existingLink.featureType === 'maintenance') {
+        const parsed = maintenanceInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid maintenance settings', parsed.error),
             400
           );
         }

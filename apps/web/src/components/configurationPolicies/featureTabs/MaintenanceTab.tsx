@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
 import { Wrench } from "lucide-react";
 import type { FeatureTabProps } from "./types";
+import {
+  MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
+  MAINTENANCE_TIME_OF_DAY_PATTERN,
+} from "@breeze/shared/validators";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
@@ -42,14 +47,13 @@ const defaults: MaintenanceSettings = {
 };
 /** Anchor a recurring window inherits when nothing else is stored — matches the API fallback. */
 const DEFAULT_START_TIME = "00:00";
-// These three must stay in lockstep with `parseRecurringWindowAnchor` in
-// apps/api/src/services/featureConfigResolver.ts — if the form and the
-// evaluator disagree on a stored value, the UI shows one time and the window
-// opens at another.
-const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
-const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
-/** A trailing `Z` or `±HH:MM` offset — an instant, not local wall-clock time. */
-const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+// Sourced from @breeze/shared (#6312) rather than re-declared: the form, the
+// write-time schema and `parseRecurringWindowAnchor` in
+// apps/api/src/services/featureConfigResolver.ts all read the same three
+// patterns, so the UI can never show one time while the window opens at another.
+const TIME_OF_DAY_PATTERN = MAINTENANCE_TIME_OF_DAY_PATTERN;
+const DATETIME_TIME_PATTERN = MAINTENANCE_DATETIME_TIME_PATTERN;
+const EXPLICIT_UTC_OFFSET_PATTERN = MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN;
 
 /** Extracts an "HH:MM" time of day from either shape `windowStart` can hold. */
 function toTimeOfDay(windowStart: string): string {
