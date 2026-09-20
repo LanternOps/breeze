@@ -313,3 +313,59 @@ describe('resolveMonitorsForDevice — cumulative resolution (#5289)', () => {
     expect(byRuleTargetId.has(chain.m3.id)).toBe(true);
   });
 });
+
+
+describe('resolveMonitorsForDevice — assignment role/OS filters (#6344)', () => {
+  it.each([
+    { roleFilter: ['server'], osFilter: null, expected: [false, false, true, true] },
+    { roleFilter: null, osFilter: ['linux'], expected: [false, true, false, true] },
+    { roleFilter: ['server'], osFilter: ['linux'], expected: [false, false, false, true] },
+    { roleFilter: null, osFilter: null, expected: [true, true, true, true] },
+    { roleFilter: [], osFilter: null, expected: [false, false, false, false] },
+    { roleFilter: null, osFilter: [], expected: [false, false, false, false] },
+  ])('filters own and inherited attachments with role=$roleFilter OS=$osFilter', async ({ roleFilter, osFilter, expected }) => {
+    const chain = await buildChain();
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(configPolicyAssignments).set({ roleFilter, osFilter })
+        .where(eq(configPolicyAssignments.configPolicyId, chain.childPolicyId)),
+    );
+
+    const deviceTypes = [
+      { deviceRole: 'workstation', osType: 'windows' },
+      { deviceRole: 'workstation', osType: 'linux' },
+      { deviceRole: 'server', osType: 'windows' },
+      { deviceRole: 'server', osType: 'linux' },
+    ] as const;
+    for (const [index, deviceType] of deviceTypes.entries()) {
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.update(devices).set(deviceType).where(eq(devices.id, chain.deviceInOtherSite.id)),
+      );
+      const resolution = await withDbAccessContext(SYSTEM_CTX, () =>
+        resolveMonitorsForDevice(chain.deviceInOtherSite.id),
+      );
+      if (!expected[index]) {
+        expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
+      } else {
+        expect(resolution.kind).toBe('resolved');
+        if (resolution.kind !== 'resolved') throw new Error('unreachable');
+        expect(resolution.monitors).toHaveLength(3);
+        expect(resolution.monitors).toEqual(expect.arrayContaining([
+          expect.objectContaining({ monitorId: chain.m1.id, sourcePolicyId: chain.parentPolicyId, inheritedFromParent: true }),
+          expect.objectContaining({ monitorId: chain.m2.id, sourcePolicyId: chain.childPolicyId, enabled: false }),
+          expect.objectContaining({ monitorId: chain.m3.id, sourcePolicyId: chain.childPolicyId }),
+        ]));
+      }
+    }
+
+    // An excluded org assignment must not remove an independent site attachment.
+    const siteResolution = await withDbAccessContext(SYSTEM_CTX, () =>
+      resolveMonitorsForDevice(chain.deviceInSite.id),
+    );
+    expect(siteResolution.kind).toBe('resolved');
+    if (siteResolution.kind !== 'resolved') throw new Error('unreachable');
+    expect(siteResolution.monitors).toHaveLength(expected[0] ? 3 : 1);
+    expect(siteResolution.monitors).toContainEqual(expect.objectContaining({
+      monitorId: chain.m1.id, sourcePolicyId: chain.sitePolicyId, overrides: { value: 95 },
+    }));
+  });
+});

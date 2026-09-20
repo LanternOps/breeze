@@ -8,6 +8,7 @@ import {
   configurationPolicies,
 } from '../../db/schema/configurationPolicies';
 import { configPolicyMonitors } from '../../db/schema/monitorDefinitions';
+import { buildRoleOsFilterConditions } from '../featureConfigResolver';
 
 /**
  * Monitor resolution for one device (#5287 W02).
@@ -99,7 +100,13 @@ export async function resolveMonitorsForDevice(
   executor: DbExecutor = db,
 ): Promise<MonitorResolution> {
   const [device] = await executor
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -168,7 +175,10 @@ export async function resolveMonitorsForDevice(
           : eq(configurationPolicies.orgId, device.orgId),
       ),
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`);
+    .where(and(
+      sql`(${sql.join(targetConditions, sql` OR `)})`,
+      ...buildRoleOsFilterConditions(device),
+    ));
 
   if (assignments.length === 0) return { kind: 'resolved', monitors: [] };
 
