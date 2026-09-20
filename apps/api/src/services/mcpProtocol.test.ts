@@ -30,6 +30,9 @@ describe('mcpProtocol', () => {
     expect(decodeToolsListCursor(Buffer.from('{"v":2,"offset":1}').toString('base64url'))).toBeNull();
     expect(decodeToolsListCursor(Buffer.from('{"v":1,"offset":-1}').toString('base64url'))).toBeNull();
     expect(decodeToolsListCursor(undefined)).toBeNull();
+    for (const value of [{ v: 1, offset: 1.5 }, { v: 1, offset: '1' }, null, []]) {
+      expect(decodeToolsListCursor(Buffer.from(JSON.stringify(value)).toString('base64url'))).toBeNull();
+    }
   });
   it('reads the page size from env, 0 when unset or invalid', () => {
     expect(mcpToolsListPageSize({})).toBe(0);

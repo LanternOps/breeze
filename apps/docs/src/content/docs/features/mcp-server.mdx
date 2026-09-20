@@ -38,7 +38,7 @@ Breeze speaks both remote MCP transports on the **same path**, `/api/v1/mcp/sse`
 
 `initialize` reports the negotiated `protocolVersion`, `serverInfo.version` (the Breeze API release), and `instructions`. Every tool in `tools/list` carries a `title`, MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) derived from Breeze's guardrail classifications, and `_meta["app.breeze/domain"]`. Annotations are hints for clients; they do not bypass permissions or approval checks.
 
-Successful object results from `tools/call` include `structuredContent` matching the redacted JSON in the `text` block. Arrays, scalars, plain text, and error results do not include `structuredContent`.
+Successful object results from `tools/call` include `structuredContent` matching the redacted JSON in the `text` block. Pure error objects, non-object results (arrays, scalars, and plain text), and summarized results omit `structuredContent`. The `_chat.outputCompacted` marker identifies a shortened list; natively shaped results retain `structuredContent`.
 
 Batch requests are not supported for any negotiated protocol version. Send one JSON-RPC request per POST. `DELETE /api/v1/mcp/sse` currently returns 204 as a no-op; it does not end a session.
 
@@ -133,8 +133,6 @@ This URL is the Streamable HTTP endpoint; the client negotiates the protocol ver
 
 ## Connecting Claude Desktop
 
-This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
-
 <Steps>
 
 1. Open Claude Desktop and go to **Settings > Developer > Edit Config** (or directly edit `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS).
@@ -178,6 +176,8 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
 </TabItem>
 </Tabs>
 
+This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
+
 <Aside>
   Replace `your-breeze-instance.example.com` with your actual Breeze API hostname and `brz_your_api_key_here` with the API key you created.
 </Aside>
@@ -185,8 +185,6 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
 ---
 
 ## Connecting Cursor
-
-This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
 
 <Steps>
 
@@ -212,6 +210,8 @@ This URL is the Streamable HTTP endpoint; the client negotiates the protocol ver
   }
 }
 ```
+
+This URL is the Streamable HTTP endpoint; the client negotiates the protocol version automatically.
 
 ---
 

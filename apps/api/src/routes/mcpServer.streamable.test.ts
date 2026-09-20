@@ -708,20 +708,46 @@ describe('Streamable HTTP transport (POST /sse)', () => {
       const app = appWithMcpRoutes();
       const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
       const res = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'query_devices', arguments: {} } }) });
-      return (await res.json()).result as { content: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean };
+      const body = await res.json();
+      return body as { result: { content: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean } };
     }
     it('mirrors an object result into structuredContent and keeps the text block', async () => {
-      const r = await call(JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }));
+      const { result: r } = await call(JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }));
       expect(r.content[0]).toEqual({ type: 'text', text: JSON.stringify({ devices: [{ id: 'd1' }], showing: 1 }) });
       expect(r.structuredContent).toEqual({ devices: [{ id: 'd1' }], showing: 1 });
     });
+    it.each([{ error: 'device not found' }, { error: 'device not found', _chat: { outputCompacted: true } }])('omits pure returned errors without changing text or isError: %j', async (value) => {
+      const { result: r } = await call(JSON.stringify(value));
+      expect(r.content).toEqual([{ type: 'text', text: JSON.stringify(value) }]);
+      expect(r.isError).toBeUndefined();
+      expect(r.structuredContent).toBeUndefined();
+    });
+    it.each([{ devices: [{ id: 'd1' }], error: null }, { items: [1], error: 'partial' }])('preserves data alongside error: %j', async (value) => {
+      expect((await call(JSON.stringify(value))).result.structuredContent).toEqual(value);
+    });
+    it('omits summarized digests', async () => {
+      const { result: r } = await call(JSON.stringify({ summarized: true, _chat: { outputCompacted: true }, preview: 'slice' }));
+      expect(r.content[0]!.type).toBe('text');
+      expect(r.structuredContent).toBeUndefined();
+    });
+    it('preserves shortened native results', async () => {
+      const value = { devices: [{ id: 'd1' }], _chat: { outputCompacted: true } };
+      expect((await call(JSON.stringify(value))).result.structuredContent).toEqual(value);
+    });
+    it('omits structuredContent for image responses', async () => {
+      const { result: r } = await call(JSON.stringify({ imageBase64: 'aW1hZ2U=', format: 'png' }));
+      expect(r.content[0]).toMatchObject({ type: 'image' });
+      expect(r.structuredContent).toBeUndefined();
+    });
     it('omits structuredContent for non-object results (arrays, scalars, plain text)', async () => {
-      expect((await call('[1,2]')).structuredContent).toBeUndefined();
-      expect((await call('plain text')).structuredContent).toBeUndefined();
-      expect((await call('"str"')).structuredContent).toBeUndefined();
+      expect((await call('[1,2]')).result.structuredContent).toBeUndefined();
+      expect((await call('plain text')).result.structuredContent).toBeUndefined();
+      expect((await call('"str"')).result.structuredContent).toBeUndefined();
     });
     it('builds structuredContent from the redacted text, not the raw result', async () => {
-      const r = await call(JSON.stringify({ apiToken: 'secret-value', ok: true }));
+      const body = await call(JSON.stringify({ apiToken: 'secret-value', ok: true }));
+      expect(JSON.stringify(body)).not.toContain('secret-value');
+      const r = body.result;
       // compactToolResultForChat/redactAiToolOutputText replaces token-shaped values; whatever the text block shows, structuredContent must equal it.
       expect(r.structuredContent).toEqual(JSON.parse(r.content[0]!.text!));
     });

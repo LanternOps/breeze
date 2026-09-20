@@ -8,9 +8,9 @@
  * No vi.mock.
  */
 import { describe, expect, it } from 'vitest';
-import { aiTools } from './aiToolNames';
+import { AI_TOOL_DOMAINS } from '@breeze/shared';
 import './aiTools';
-import { getToolDomain, getToolTier } from './aiTools';
+import { getToolDefinitions, getToolDomain, getToolTier } from './aiTools';
 import { checkGuardrails, isReadOnlyResolution, TOOL_ACTION_INPUT_KEYS } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
 import { buildMcpToolPresentation } from './mcpToolPresentation';
@@ -18,12 +18,17 @@ import { buildMcpToolPresentation } from './mcpToolPresentation';
 describe('MCP annotations vs checkGuardrails (never looser)', () => {
   it('never advertises a looser hint than the guardrails enforce', () => {
     const looser: string[] = [];
-    for (const [name, tool] of aiTools) {
-      const p = buildMcpToolPresentation(tool.definition, getToolTier(name), getToolDomain(name));
+    for (const tool of getToolDefinitions()) {
+      const { name } = tool;
+      const p = buildMcpToolPresentation(tool, getToolTier(name), getToolDomain(name));
       const targets: (string | undefined)[] = toolActionEnum(name) ?? [undefined];
       expect(p.annotations.destructiveHint, name).toBe(!p.annotations.readOnlyHint);
-      expect(p.annotations.openWorldHint, name).toBe(!p.annotations.readOnlyHint || getToolDomain(name) === 'integrations');
+      expect(p.annotations.openWorldHint, name).toBe(!p.annotations.readOnlyHint || getToolDomain(name) === undefined || getToolDomain(name) === 'integrations');
       expect(p.annotations.idempotentHint, name).toBe(p.annotations.readOnlyHint);
+      if (!p.annotations.openWorldHint) {
+        expect(p.annotations.readOnlyHint, name).toBe(true);
+        expect(AI_TOOL_DOMAINS.filter((domain) => domain !== 'integrations'), name).toContain(getToolDomain(name));
+      }
       for (const action of targets) {
         const check = checkGuardrails(name, action ? { [TOOL_ACTION_INPUT_KEYS[name] ?? 'action']: action } : {});
         if (check.tier === 4) continue;                         // blocked tools never list
@@ -36,5 +41,5 @@ describe('MCP annotations vs checkGuardrails (never looser)', () => {
     }
     expect(looser).toEqual([]);
   });
-  it('has a populated registry', () => { expect(aiTools.size).toBeGreaterThan(150); });
+  it('has a populated registry', () => { expect(getToolDefinitions().length).toBeGreaterThan(150); });
 });

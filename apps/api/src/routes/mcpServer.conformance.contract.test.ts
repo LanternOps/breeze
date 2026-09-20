@@ -266,7 +266,7 @@ describe.each([...SUPPORTED_MCP_PROTOCOL_VERSIONS])('MCP conformance for protoco
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sid, 'MCP-Protocol-Version': version },
-      body: JSON.stringify([{ jsonrpc: '2.0', id: 2, method: 'tools/list' }]),
+      body: JSON.stringify([2, 3].map((id) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'query_devices', arguments: {} } }))),
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32600);

@@ -1,3 +1,4 @@
+import { isAiToolDomain } from '@breeze/shared';
 import { toolActionEnum } from './aiToolActions';
 import { TIER1_ACTIONS, TIER2_ACTIONS, TIER2_READONLY_ACTIONS, TIER3_ACTIONS, isReadOnlyResolution } from './aiGuardrails';
 
@@ -28,20 +29,20 @@ export function isActionReadOnly(toolName: string, action: string | undefined, b
   return isReadOnlyResolution(toolName, { tier: tier as 1 | 2 | 3 | 4, readOnly: readOnlyAction });
 }
 
-export function buildMcpToolPresentation(tool: { name: string; input_schema?: unknown }, baseTier: number | undefined, domain: string | undefined): McpToolPresentation {
+export function buildMcpToolPresentation(tool: { name: string; input_schema?: unknown }, baseTier: number | undefined, domain: string | undefined, options: { external?: boolean } = {}): McpToolPresentation {
   const title = mcpToolTitle(tool.name);
   const meta = { 'app.breeze/domain': domain ?? 'unknown' };
   if (baseTier === undefined) {
     return { title, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }, _meta: meta };
   }
-  const actions = toolActionEnum(tool.name) ?? [];
+  const actions = [...new Set([...(toolActionEnum(tool.name) ?? []), ...(TIER2_ACTIONS[tool.name] ?? []), ...(TIER3_ACTIONS[tool.name] ?? [])])];
   const targets: (string | undefined)[] = actions.length > 0 ? actions : [undefined];
   const readOnlyHint = targets.every((a) => isActionReadOnly(tool.name, a, baseTier));
   // Only read-only tools can safely claim additive-only, closed-world behavior.
   const destructiveHint = !readOnlyHint;
   return {
     title,
-    annotations: { readOnlyHint, destructiveHint, idempotentHint: readOnlyHint, openWorldHint: !readOnlyHint || domain === 'integrations' },
+    annotations: { readOnlyHint, destructiveHint, idempotentHint: readOnlyHint, openWorldHint: options.external === true || !readOnlyHint || !isAiToolDomain(domain) || domain === 'integrations' },
     _meta: meta,
   };
 }

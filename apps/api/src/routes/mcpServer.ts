@@ -1215,7 +1215,7 @@ async function handleToolsList(
           (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
       )
       .map((d) => ({
-        ...buildMcpToolPresentation(d.definition, d.tier, 'integrations'),
+        ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
         name: d.definition.name,
         description: d.definition.description,
         inputSchema: d.definition.input_schema,
@@ -1244,9 +1244,12 @@ async function handleToolsList(
 function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(safeText);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const object = parsed as Record<string, unknown>;
+    // Digests and pure returned errors are text, not successful tool data.
+    if (object.summarized === true) return undefined;
+    if (typeof object.error === 'string' && Object.keys(object).every((key) => key === 'error' || key === '_chat')) return undefined;
+    return object;
   } catch {
     return undefined;
   }
