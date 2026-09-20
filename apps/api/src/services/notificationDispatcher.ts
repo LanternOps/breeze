@@ -42,6 +42,8 @@ import { sendSmsNotification, type SmsChannelConfig } from './notificationSender
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
+import { escalationStepSchema } from '../routes/alerts/schemas';
+import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
@@ -90,7 +92,7 @@ interface ProcessAlertJobData {
   alertId: string;
 }
 
-type NotificationJobData = SendNotificationJobData | ProcessAlertJobData;
+type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob;
 
 /**
  * Create the notification worker
@@ -108,6 +110,12 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
           // pooled connection held idle-in-transaction for the full send
           // duration, on every alert notification fleet-wide.
           return await processSendNotification(job.data);
+
+        case 'escalation-user': {
+          // Background entry point establishes the same context as process-alert.
+          const userJob = job.data;
+          return runWithSystemDbAccess(() => processUserEscalation(userJob));
+        }
 
         case 'process-alert': {
           // processAlertNotifications only does DB reads/writes plus fast
@@ -1172,17 +1180,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     return;
   }
 
-  const steps = policy.steps as Array<{
-    delayMinutes: number;
-    channelIds: string[];
-  }>;
-
-  if (!Array.isArray(steps) || steps.length === 0) {
-    console.warn(
-      `[NotificationDispatcher] Escalation policy ${policyId} has no steps for alert ${alertId} — escalation skipped`
-    );
-    return;
-  }
+  const parsed = escalationStepSchema.array().min(1).max(10).safeParse(policy.steps);
+  if (!parsed.success) throw new Error(`Invalid escalation policy ${policy.id}`);
+  const steps = parsed.data;
 
   const queue = getNotificationQueue();
   const requestedChannelIds = [...new Set(
@@ -1203,44 +1203,25 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   const validChannelIdSet = new Set(validChannels.map((channel) => channel.id));
   const validChannelById = new Map(validChannels.map((channel) => [channel.id, channel]));
 
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (!step) continue;
-
-    const delayMs = step.delayMinutes * 60 * 1000;
-
-    const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
-
-    for (const channelId of stepChannelIds) {
+  const requestedUsers = steps.some(step => step.userIds.length > 0);
+  const eligibleUsers = new Set(requestedUsers
+    ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
+  for (const step of escalationOccurrences(steps)) {
+    for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
       const channel = validChannelById.get(channelId)!;
-      const job = await queue.add(
-        'send',
-        {
-          type: 'send',
-          alertId,
-          channelId,
-          escalationStep: i + 1
-        },
-        {
-          delay: delayMs,
-          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`,
-          // Carried from the Task 8 review (#4085): now that a transport
-          // failure in processSendNotification THROWS (so BullMQ's
-          // attempts+backoff can actually retry it), a failing escalation
-          // send with no `attempts`/`removeOnFail` of its own becomes a
-          // permanently-retained failed job hash with ZERO retries — the
-          // stable jobId then stays occupied forever and nothing ever
-          // re-fires that escalation step.
-          attempts: notificationJobAttempts(channel.type, channel.config),
-          backoff: { type: 'exponential', delay: 30_000 },
-          removeOnComplete: true,
-          removeOnFail: { age: 3600 }
-        }
-      );
-      // Same exposure as the baseline sends above: a duplicate add against a
-      // failed escalation-step hash would otherwise silently no-op for the
-      // whole 1-hour removeOnFail window.
-      await retryIfFailedJob(job, `alert ${alertId} escalation step ${i + 1}`);
+      const job = await queue.add('send', { type: 'send', alertId, channelId, escalationStep: step.escalationStep }, {
+        delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-${channelId}`,
+        attempts: notificationJobAttempts(channel.type, channel.config),
+        backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+      });
+      await retryIfFailedJob(job, `alert ${alertId} escalation step ${step.escalationStep}`);
+    }
+    for (const userId of [...new Set(step.userIds)].filter(id => eligibleUsers.has(id))) {
+      const job = await queue.add('escalation-user', { type: 'escalation-user', alertId, userId, escalationStep: step.escalationStep }, {
+        delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-user-${userId}`,
+        attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+      });
+      await retryIfFailedJob(job, `alert ${alertId} user escalation ${step.escalationStep}`);
     }
   }
 
@@ -1256,7 +1237,7 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
 
   let cancelled = 0;
   for (const job of delayed) {
-    if (job.data.type === 'send' &&
+    if ((job.data.type === 'send' || job.data.type === 'escalation-user') &&
         job.data.alertId === alertId &&
         job.data.escalationStep) {
       await job.remove();

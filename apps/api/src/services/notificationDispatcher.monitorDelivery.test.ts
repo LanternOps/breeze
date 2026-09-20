@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** Monitor delivery, default-row routing, and independent escalation through resolveDelivery. */
 
-const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock } = vi.hoisted(() => ({
+const { channelEligibilityMock, selectQueue, queueAddBulkMock, queueAddMock, queueDelayedMock } = vi.hoisted(() => ({
   channelEligibilityMock: vi.fn(),
   selectQueue: [] as unknown[][],
   queueAddBulkMock: vi.fn(),
+  queueDelayedMock: vi.fn(),
   queueAddMock: vi.fn()
 }));
 
@@ -37,7 +38,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = queueAddBulkMock;
     add = queueAddMock;
-    getDelayed = async () => [];
+    getDelayed = queueDelayedMock;
   },
   Worker: class {},
   Job: class {}
@@ -86,7 +87,7 @@ vi.mock('./notificationSenders/smsSender', () => ({
   sendSmsNotification: vi.fn()
 }));
 
-import { processAlertNotifications } from './notificationDispatcher';
+import { processAlertNotifications, cancelAlertEscalations } from './notificationDispatcher';
 
 function makeAlert(overrides: Record<string, unknown> = {}) {
   return {
@@ -122,6 +123,7 @@ function makeJobStub(id: string, state: string = 'waiting') {
 
 beforeEach(() => {
   selectQueue.length = 0;
+  queueDelayedMock.mockReset().mockResolvedValue([]);
   channelEligibilityMock.mockReset().mockResolvedValue(
     ['aaaaaaaa-0000-4000-8000-000000000011', 'aaaaaaaa-0000-4000-8000-000000000012', 'aaaaaaaa-0000-4000-8000-000000000013', 'aaaaaaaa-0000-4000-8000-000000000014']
       .map(id => ({ id, orgId: 'org-1', partnerId: null, enabled: true })),
@@ -269,4 +271,15 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     expect(queueAddBulkMock).not.toHaveBeenCalled();
     expect(queueAddMock).toHaveBeenCalledTimes(1);
   });
+});
+
+it('cancels channel and user repetitions but leaves baseline jobs alone', async () => {
+  const jobs = [
+    { type: 'send', alertId: 'alert-1', channelId: 'c', escalationStep: 11 },
+    { type: 'escalation-user', alertId: 'alert-1', userId: 'u', escalationStep: 21 },
+    { type: 'send', alertId: 'alert-1', channelId: 'c' },
+  ].map(data => ({ data, remove: vi.fn(async () => {}) }));
+  queueDelayedMock.mockResolvedValue(jobs);
+  expect(await cancelAlertEscalations('alert-1')).toBe(2);
+  expect(jobs[2]!.remove).not.toHaveBeenCalled();
 });
