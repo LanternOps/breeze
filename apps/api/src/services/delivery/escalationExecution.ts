@@ -1,22 +1,23 @@
 import { eq, sql } from 'drizzle-orm';
 import { db, assertInTransaction } from '../../db';
 import { alerts, userNotifications } from '../../db/schema';
-import type { EscalationStep } from '../../routes/alerts/schemas';
+import type { EscalationStep } from './escalationSteps';
 import { partnerIdForOrg, type DbExecutor } from './railOwnership';
 import { DeliveryWriteError, type RoutingOwner } from './routingRuleWrites';
 
 export interface UserEscalationJob { type: 'escalation-user'; alertId: string; userId: string; escalationStep: number }
 export function escalationOccurrences(steps: EscalationStep[], originalIndexes?: number[], alertId?: string) {
-  const occurrences: Array<EscalationStep & { escalationStep: number; delayMs: number }> = [];
+  const occurrences: Array<Pick<EscalationStep, 'channelIds' | 'userIds'> & { escalationStep: number; delayMs: number }> = [];
   for (const [index, step] of steps.entries()) {
-    for (let repeat = 0; repeat <= (step.repeat?.maxTimes ?? 0); repeat++) {
+    for (let repeat = 0; repeat <= (step.renotify?.maxTimes ?? 0); repeat++) {
       if (occurrences.length === 50) {
         console.warn(`[NotificationDispatcher] Clamping escalation for alert ${alertId ?? 'unknown'} to 50 occurrences`);
         return occurrences;
       }
       occurrences.push({
-        ...step, escalationStep: repeat * 10 + (originalIndexes?.[index] ?? index) + 1,
-        delayMs: (step.delayMinutes + repeat * (step.repeat?.everyMinutes ?? 0)) * 60000,
+        channelIds: step.channelIds, userIds: step.userIds,
+        escalationStep: repeat * 10 + (originalIndexes?.[index] ?? index) + 1,
+        delayMs: (step.delayMinutes + repeat * (step.renotify?.everyMinutes ?? 0)) * 60000,
       });
     }
   }

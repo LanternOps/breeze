@@ -13,10 +13,10 @@ describe('escalation policy steps schema (W05b)', () => {
     expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], userIds: ['u'] }).success).toBe(false);
   });
   it('accepts user-only steps and bounded repeats; rejects malformed repetition', () => {
-    expect(escalationStepSchema.parse({ delayMinutes: 5, userIds: [CH], repeat: { everyMinutes: 10, maxTimes: 2 } }))
-      .toEqual({ delayMinutes: 5, channelIds: [], userIds: [CH], repeat: { everyMinutes: 10, maxTimes: 2 } });
-    for (const repeat of [{ everyMinutes: 0, maxTimes: 2 }, { everyMinutes: 10, maxTimes: 0 }, { everyMinutes: 10, maxTimes: 101 }]) {
-      expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], repeat }).success).toBe(false);
+    expect(escalationStepSchema.parse({ delayMinutes: 5, userIds: [CH], renotify: { everyMinutes: 10, maxTimes: 2 } }))
+      .toEqual({ delayMinutes: 5, channelIds: [], userIds: [CH], renotify: { everyMinutes: 10, maxTimes: 2 } });
+    for (const renotify of [{ everyMinutes: 0, maxTimes: 2 }, { everyMinutes: 10, maxTimes: 0 }, { everyMinutes: 10, maxTimes: 101 }]) {
+      expect(escalationStepSchema.safeParse({ delayMinutes: 5, channelIds: [CH], renotify }).success).toBe(false);
     }
   });
   it('create requires 1..10 steps; update keeps steps optional', () => {

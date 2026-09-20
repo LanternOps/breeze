@@ -15,7 +15,7 @@ import { escalationOccurrences, listEscalationUsers, processUserEscalation, vali
 beforeEach(() => { state.rows.length = 0; vi.clearAllMocks(); state.execute.mockReset(); });
 afterEach(() => vi.restoreAllMocks());
 it('keeps old step IDs and allocates unique repeat identities at exact delays', () => {
-  expect(escalationOccurrences([{ delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], repeat: { everyMinutes: 10, maxTimes: 2 } }])
+  expect(escalationOccurrences([{ delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], renotify: { everyMinutes: 10, maxTimes: 2 } }])
     .map(o => [o.escalationStep, o.delayMs])).toEqual([[1, 300000], [11, 900000], [21, 1500000]]);
 });
 it.each(['acknowledged', 'resolved', 'suppressed', 'dismissed'])('does not notify after %s, including jobs already active', async status => {
@@ -84,7 +84,7 @@ it('logs users who are no longer eligible with the alert and occurrence', async 
 it('bounds legacy escalation fan-out to the first 50 occurrences and warns with the alert', () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const occurrences = escalationOccurrences([
-    { delayMinutes: 5, channelIds: ['ch'], userIds: [], repeat: { everyMinutes: 1, maxTimes: 100 } },
+    { delayMinutes: 5, channelIds: ['ch'], userIds: [], renotify: { everyMinutes: 1, maxTimes: 100 } },
     { delayMinutes: 10, channelIds: ['ch2'], userIds: [] },
   ], [2, 5], 'alert-clamped');
   expect(occurrences).toHaveLength(50);
@@ -96,7 +96,7 @@ it('bounds legacy escalation fan-out to the first 50 occurrences and warns with 
 it('does not warn when exactly 50 occurrences are scheduled', () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   expect(escalationOccurrences(Array.from({ length: 5 }, () => ({
-    delayMinutes: 5, channelIds: ['ch'], userIds: [], repeat: { everyMinutes: 1, maxTimes: 9 },
+    delayMinutes: 5, channelIds: ['ch'], userIds: [], renotify: { everyMinutes: 1, maxTimes: 9 },
   })))).toHaveLength(50);
   expect(warn).not.toHaveBeenCalled();
 });
@@ -133,4 +133,15 @@ it('offers selected-access partner members in partner-wide policies but rechecks
       expect(state.values).toHaveBeenCalledWith(expect.objectContaining({ userId: selectedUser.id, orgId }));
     }
   }
+});
+
+
+it('keeps policy scheduling metadata out of delivery occurrences', () => {
+  const occurrences = escalationOccurrences([{
+    delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], renotify: { everyMinutes: 10, maxTimes: 1 },
+  }]);
+  expect(occurrences).toEqual([
+    { channelIds: ['ch'], userIds: ['u'], escalationStep: 1, delayMs: 300000 },
+    { channelIds: ['ch'], userIds: ['u'], escalationStep: 11, delayMs: 900000 },
+  ]);
 });

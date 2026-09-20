@@ -23,7 +23,7 @@ vi.mock('../db', () => {
     return chain;
   };
   return {
-    db: { select: vi.fn((fields?: Record<string, unknown>) => {
+    db: { execute: vi.fn(async () => selectQueue.shift() ?? []), select: vi.fn((fields?: Record<string, unknown>) => {
       if (fields && 'enabled' in fields && 'orgId' in fields && 'partnerId' in fields) {
         return { from: () => ({ where: () => channelEligibilityMock() }) };
       }
@@ -315,7 +315,7 @@ describe('legacy escalation policy recovery (F1)', () => {
   });
   it('salvages mixed steps with original occurrence ids', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    queueReviewPolicy([{ delayMinutes: 0 }, { ...REVIEW_STEP, repeat: { everyMinutes: 5, maxTimes: 1 } }]);
+    queueReviewPolicy([{ delayMinutes: 0 }, { ...REVIEW_STEP, renotify: { everyMinutes: 5, maxTimes: 1 } }]);
     try {
       await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
       expect(queueAddMock.mock.calls.map(call => call[1].escalationStep)).toEqual([2, 12]);
@@ -359,4 +359,28 @@ describe('dispatch destination diagnostics', () => {
       expect(log).toHaveBeenCalledWith(expect.stringContaining('alert alert-1 resolved to inbox only'));
     } finally { warn.mockRestore(); log.mockRestore(); }
   });
+});
+
+
+it('enqueues channel and user occurrences as one-shot jobs without domain repeat data', async () => {
+  const userId = 'aaaaaaaa-0000-4000-8000-000000000021';
+  queueReviewPolicy([{ ...REVIEW_STEP, userIds: [userId], renotify: { everyMinutes: 10, maxTimes: 2 } }]);
+  selectQueue.push(ORG_LOOKUP, [{ id: userId, name: 'Alex' }]);
+  await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+  expect(queueAddMock).toHaveBeenCalledTimes(6);
+  expect(queueAddMock.mock.calls.map(([name]) => name)).toEqual([
+    'send', 'escalation-user', 'send', 'escalation-user', 'send', 'escalation-user',
+  ]);
+  expect(queueAddMock.mock.calls.map(([, , options]) => options.delay)).toEqual([
+    300000, 300000, 900000, 900000, 1500000, 1500000,
+  ]);
+  for (const [name, data, options] of queueAddMock.mock.calls) {
+    expect(options).not.toHaveProperty('repeat');
+    expect(data).not.toHaveProperty('repeat');
+    expect(data).not.toHaveProperty('renotify');
+    expect(data).toEqual({
+      type: name, alertId: 'alert-1', escalationStep: expect.any(Number),
+      ...(name === 'send' ? { channelId: REVIEW_CHANNEL } : { userId }),
+    });
+  }
 });

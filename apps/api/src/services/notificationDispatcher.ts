@@ -42,7 +42,7 @@ import { sendSmsNotification, type SmsChannelConfig } from './notificationSender
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
-import { escalationStepSchema, type EscalationStep } from '../routes/alerts/schemas';
+import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
