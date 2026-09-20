@@ -1,3 +1,4 @@
+import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -302,6 +303,9 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
   list_incidents: 1,
+  list_ai_agents: 1,
+  list_ai_agent_runs: 1,
+  get_ai_agent_run: 1,
   list_sites: 1,
   get_site: 1,
   list_org_contacts: 1,
@@ -2656,6 +2660,26 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_ai_agents', registryDescription('list_ai_agents'),
+      { includeDisabled: z.boolean().optional() },
+      makeHandler('list_ai_agents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'list_ai_agent_runs', registryDescription('list_ai_agent_runs'),
+      {
+        agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
+        status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+      makeHandler('list_ai_agent_runs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_ai_agent_run', registryDescription('get_ai_agent_run'),
+      { runId: z.string().guid() },
+      makeHandler('get_ai_agent_run', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

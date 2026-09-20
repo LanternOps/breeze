@@ -336,6 +336,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tenancy (tone: high) ----
   manage_organizations: 'tenancy',
+  list_ai_agents: 'tenancy',
+  list_ai_agent_runs: 'tenancy',
+  get_ai_agent_run: 'tenancy',
   list_sites: 'tenancy',
   get_site: 'tenancy',
   list_org_contacts: 'tenancy',

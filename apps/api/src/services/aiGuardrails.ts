@@ -882,6 +882,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ.
   list_remediation_suggestions: { resource: 'devices', action: 'read' },
   list_incidents: { resource: 'alerts', action: 'read' },
+  list_ai_agents: { resource: 'ai_agents', action: 'read' },
+  list_ai_agent_runs: { resource: 'ai_agents', action: 'read' },
+  get_ai_agent_run: { resource: 'ai_agents', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

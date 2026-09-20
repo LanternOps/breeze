@@ -1,3 +1,4 @@
+import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -419,6 +420,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     offset: z.number().int().min(0).optional(),
   }),
 
+  list_ai_agents: z.object({ includeDisabled: z.boolean().optional() }),
+  list_ai_agent_runs: z.object({
+    agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
+    status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_ai_agent_run: z.object({ runId: z.string().guid() }),
   list_sites: z.object({
     orgId: z.string().guid().optional(),
     search: z.string().max(255).optional(),
