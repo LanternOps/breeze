@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../../db';
+import { db, getCurrentDbAccessContext, withDbAccessContext } from '../../../db';
 import { escalationPolicies, organizations, partners, sites, deviceGroups, devices, deviceGroupMemberships, notificationRoutingRules, notificationChannels, configPolicyAssignments, alerts, alertRules, alertTemplates, automations, configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks, configPolicyMonitoringSettings, configPolicyMonitoringWatches, configPolicyMonitors, configurationPolicies, monitorConversions, monitorConversionOutputs, monitorDefinitions } from '../../../db/schema';
-import type { AuthContext } from '../../../middleware/auth';
+import { dbAccessContextFromAuth, type AuthContext } from '../../../middleware/auth';
 import { getMonitorConversionPreviewQueue, previewJobKey } from '../../../jobs/monitorConversionPreviewWorker';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
@@ -111,15 +111,31 @@ async function buildPolicyPreviewInTx(policyId: string, auth: AuthContext, tx: D
   };
 }
 
+/**
+ * Run pre-transaction reads under the caller's own DB context. The conversion
+ * routes are self-managed (D30) so nothing is ambient, and a contextless read
+ * is denied by RLS rather than bypassing it. Reuses an ambient context when one
+ * exists (a worker or a test that already opened one).
+ */
+async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  if (getCurrentDbAccessContext()) return fn();
+  return withDbAccessContext(dbAccessContextFromAuth(auth), fn);
+}
+
 export async function previewPolicyConversion(policyId: string, auth: AuthContext, opts?: { mode?: 'auto' | 'inline'; }): Promise<PolicyConversionPreview | PolicyConversionPreviewPending | PolicyConversionPreviewFailed> {
-  await authorizePreview(policyId, auth);
-  const ids = await resolveDeviceIdsForPolicy(policyId, db);
+  // These reads happen BEFORE the isolated preview transaction, and this route
+  // is self-managed (D30), so there is no ambient context to inherit — a
+  // contextless read is DENIED, not bypassed. Take a short caller-scoped
+  // transaction for them and let it close before the isolated one opens.
+  const { ids, sourcesHash } = await withCallerContext(auth, async () => {
+    await authorizePreview(policyId, auth);
+    return { ids: await resolveDeviceIdsForPolicy(policyId, db), sourcesHash: await previewFreshness(policyId, db) };
+  });
   if (opts?.mode === 'inline' || ids.length <= EQUIVALENCE_JOB_THRESHOLD) {
     return buildPolicyConversionPreview(policyId, { userId: auth.scope === 'system' ? null : auth.user.id, auth });
   }
   const snapshot = snapshotPreviewAccess(auth);
   const scopeHash = previewScopeHash(snapshot);
-  const sourcesHash = await previewFreshness(policyId, db);
   const key = previewJobKey(policyId, scopeHash, sourcesHash);
   const redis = getRedis();
   if (!redis) throw new Error('Preview requires Redis');
@@ -259,8 +275,12 @@ export async function rekeyCommittedCooldowns(
 }
 
 export async function convertPolicy(policyId: string, expectedHash: string, auth: AuthContext, opts?: { sourceIds?: string[]; }) {
-  const policy = await authorizePreview(policyId, auth);
-  assertOwner(policy, auth);
+  // Self-managed route (D30): no ambient context, so scope this read too.
+  const policy = await withCallerContext(auth, async () => {
+    const found = await authorizePreview(policyId, auth);
+    assertOwner(found, auth);
+    return found;
+  });
   const committed = await inCallerTransaction(auth, async tx => {
     await lockConversion(tx, policy);
     const sources = await lockPolicyInputs(tx, policyId, auth);
