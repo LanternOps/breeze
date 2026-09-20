@@ -16,10 +16,13 @@ vi.mock('../../db', () => ({ db: { select: () => {
   const q: any = { from: () => q, where: () => q, orderBy: () => q, limit: () => q,
     then: (ok: any, bad: any) => Promise.resolve(state.rows.shift() ?? []).then(ok, bad) }; return q;
 } } }));
+vi.mock('../../services/delivery/escalationExecution', () => ({ listEscalationUsers: vi.fn(async () => []) }));
+import { listEscalationUsers } from '../../services/delivery/escalationExecution';
 import { deliveryRailsRoutes } from './deliveryRails';
 const ORG = '10000000-0000-4000-8000-000000000001', PARTNER = '20000000-0000-4000-8000-000000000001';
 const app = new Hono().route('/alerts', deliveryRailsRoutes);
 beforeEach(() => {
+  vi.clearAllMocks();
   state.rows.length = 0; state.authenticated = true; state.read = true;
   state.auth = { scope: 'organization', orgId: ORG, partnerId: PARTNER, canAccessOrg: (id: string) => id === ORG };
 });
@@ -38,4 +41,13 @@ it('returns a safe 500 on a failed rail read', async () => {
   vi.spyOn(db, 'select').mockImplementationOnce(() => { throw new Error('private db detail'); });
   const res = await app.request('/alerts/delivery/rails?rail=routing');
   expect(res.status).toBe(500); expect(await res.text()).not.toContain('private db detail');
+});
+
+it.each(['organization', 'partner', 'system'])('passes caller scope to the users rail for %s tokens', async scope => {
+  state.auth.scope = scope;
+  state.rows.push([{ partnerId: PARTNER }]);
+  const res = await app.request(`/alerts/delivery/rails?rail=users&orgId=${ORG}`);
+  expect(res.status).toBe(200);
+  expect(listEscalationUsers).toHaveBeenCalledWith({ orgId: ORG, partnerId: null }, undefined,
+    { includePartnerUsers: scope !== 'organization' });
 });

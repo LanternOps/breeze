@@ -167,6 +167,32 @@ describe('resolveDelivery precedence', () => {
     });
   });
 
+  it('marks a missing routed channel unavailable and excludes it', async () => {
+    selectQueue.push(orgLookup(), [row({ channelIds: [CH_ORG] })]);
+    channelRows.splice(0, channelRows.length);
+    expect(await resolveDelivery({ orgId: ORG, severity: 'high' })).toMatchObject({
+      channelIds: [], skippedChannelIds: [{ id: CH_ORG, reason: 'unavailable' }],
+    });
+  });
+
+  it('marks a disabled request-org channel disabled and excludes it', async () => {
+    selectQueue.push(orgLookup(), [row({ channelIds: [CH_ORG] })]);
+    channelRows.splice(0, channelRows.length,
+      { id: CH_ORG, orgId: ORG, partnerId: null, enabled: false });
+    expect(await resolveDelivery({ orgId: ORG, severity: 'high' })).toMatchObject({
+      channelIds: [], skippedChannelIds: [{ id: CH_ORG, reason: 'disabled' }],
+    });
+  });
+
+  it('checks ownership before enabled state so a disabled foreign-org channel is unavailable, not disabled', async () => {
+    selectQueue.push(orgLookup(), [row({ channelIds: [CH_ORG] })]);
+    channelRows.splice(0, channelRows.length,
+      { id: CH_ORG, orgId: SITE_A, partnerId: PARTNER, enabled: false });
+    expect(await resolveDelivery({ orgId: ORG, severity: 'high' })).toMatchObject({
+      channelIds: [], skippedChannelIds: [{ id: CH_ORG, reason: 'unavailable' }],
+    });
+  });
+
   it('exposes the legacy-kind to CPU route delta for W05c1 equivalence checks (D6)', async () => {
     const routes = [row({ id: 'cpu-route', conditions: { monitorKinds: ['cpu'] }, channelIds: [CH_ORG], escalationPolicyId: ESC_ROW }),
       row({ id: 'default', isDefault: true, channelIds: [CH_PARTNER], escalationPolicyId: ESC_LEGACY })];

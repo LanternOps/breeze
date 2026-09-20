@@ -33,7 +33,7 @@ deliveryRailsRoutes.get('/delivery/rails', requireScope('organization','partner'
       const axis = (table: typeof notificationRoutingRules | typeof notificationChannels | typeof escalationPolicies) => orgId
         ? eq(table.orgId, orgId)
         : and(isNull(table.orgId), eq(table.partnerId, partnerId!));
-      if (query.rail === 'users') return c.json({ data: await listEscalationUsers(owner) });
+      if (query.rail === 'users') return c.json({ data: await listEscalationUsers(owner, undefined, { includePartnerUsers: auth.scope !== 'organization' }) });
       const inherited = () => orgId && partnerId
         ? readInheritedRails(query.rail as 'channels' | 'routing' | 'escalation', { orgId, partnerId, allowedSiteIds: auth.allowedSiteIds }, db)
         : Promise.resolve([]);
