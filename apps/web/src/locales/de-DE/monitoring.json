@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitoransichten",
+      "all": "Alle Monitore",
+      "needsConversion": "Konvertierung erforderlich"
+    },
     "title": "Monitore",
     "description": "Überwachen Sie eine Bedingung, reagieren Sie auf dem Gerät, benachrichtigen Sie und eskalieren Sie, wenn sie wiederholt auftritt.",
     "new": "Neuer Monitor",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{rows}} Altregeln in {{policies}} Richtlinien wurden noch nicht in Monitore konvertiert.",
+      "review": "Prüfen",
+      "convertEverything": "Alles konvertieren…",
+      "confirmTitle": "Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren?",
+      "confirmBody": "{{rows}} Altregeln in {{policies}} Richtlinien des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still.",
+      "confirmRun": "Alles konvertieren",
+      "convertedAll": "{{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar.",
+      "errors": {
+        "convertAll": "Konvertierung aller Einträge fehlgeschlagen"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Richtlinien mit Altregeln",
+      "loading": "Richtlinien werden geladen…",
+      "empty": "Keine Richtlinie enthält Inline-Alarmregeln, Überwachungen oder alarmausgelöste Automatisierungen."
+    },
     "title": "Konvertierung erforderlich",
     "description": "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht.",
     "checking": "Geräte werden geprüft…",

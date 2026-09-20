@@ -8,6 +8,11 @@
     "monitorLabel": "Monitör"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitör görünümleri",
+      "all": "Tüm monitörler",
+      "needsConversion": "Dönüştürme gerekiyor"
+    },
     "title": "Monitörler",
     "description": "Bir koşulu izleyin, cihazda yanıt verin, bildirin ve tekrarlamaya devam ederse yükseltin.",
     "new": "Yeni monitör",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{policies}} ilkedeki {{rows}} eski kural henüz monitöre dönüştürülmedi.",
+      "review": "İncele",
+      "convertEverything": "Tümünü dönüştür…",
+      "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
+      "confirmBody": "İş ortağının tümünde {{policies}} ilkede {{rows}} eski kural. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
+      "confirmRun": "Tümünü dönüştür",
+      "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
+      "errors": {
+        "convertAll": "Tümü dönüştürülemedi"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Eski kuralları olan ilkeler",
+      "loading": "İlkeler yükleniyor…",
+      "empty": "Hiçbir ilke satır içi uyarı kuralı, izleme veya uyarıyla tetiklenen otomasyon taşımıyor."
+    },
     "title": "Dönüştürme gerekiyor",
     "description": "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez.",
     "checking": "Cihazlar kontrol ediliyor…",

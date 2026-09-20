@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitor views",
+      "all": "All monitors",
+      "needsConversion": "Needs conversion"
+    },
     "title": "Monitors",
     "description": "Watch a condition, respond on the device, notify, and escalate when it keeps happening.",
     "new": "New monitor",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{rows}} legacy rules across {{policies}} policies have not been converted to monitors.",
+      "review": "Review",
+      "convertEverything": "Convert everything…",
+      "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
+      "confirmBody": "{{rows}} legacy rules in {{policies}} policies across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
+      "confirmRun": "Convert everything",
+      "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
+      "errors": {
+        "convertAll": "Failed to convert everything"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Policies with legacy rules",
+      "loading": "Loading policies…",
+      "empty": "No policy carries inline alert rules, watches or alert-triggered automations."
+    },
     "title": "Needs conversion",
     "description": "Inline alert rules, service/process watches and alert-triggered automations on this policy have not been converted to monitors yet. Converting retires the source row in place; nothing is deleted.",
     "checking": "Checking devices…",

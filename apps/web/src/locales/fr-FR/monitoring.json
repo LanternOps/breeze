@@ -8,6 +8,11 @@
     "monitorLabel": "Moniteur"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Vues des moniteurs",
+      "all": "Tous les moniteurs",
+      "needsConversion": "Conversion requise"
+    },
     "title": "Moniteurs",
     "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
     "new": "Nouveau moniteur",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{rows}} règles héritées dans {{policies}} politiques n'ont pas encore été converties en moniteurs.",
+      "review": "Examiner",
+      "convertEverything": "Tout convertir…",
+      "confirmTitle": "Convertir toutes les règles héritées, surveillances et automatisations déclenchées par alerte de toutes vos politiques ?",
+      "confirmBody": "{{rows}} règles héritées dans {{policies}} politiques de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles.",
+      "confirmRun": "Tout convertir",
+      "convertedAll": "{{converted}} lignes converties dans {{policies}} politiques ; {{unconvertible}} n'ont pas pu l'être.",
+      "errors": {
+        "convertAll": "Échec de la conversion globale"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Politiques avec règles héritées",
+      "loading": "Chargement des politiques…",
+      "empty": "Aucune politique ne porte de règles d'alerte intégrées, de surveillances ou d'automatisations déclenchées par alerte."
+    },
     "title": "Conversion requise",
     "description": "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé.",
     "checking": "Vérification des appareils…",

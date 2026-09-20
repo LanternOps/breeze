@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Viste dei monitor",
+      "all": "Tutti i monitor",
+      "needsConversion": "Conversione necessaria"
+    },
     "title": "Monitor",
     "description": "Osserva una condizione, rispondi sul dispositivo, notifica ed esegui l'escalation quando continua a verificarsi.",
     "new": "Nuovo monitor",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{rows}} regole legacy in {{policies}} policy non sono ancora state convertite in monitor.",
+      "review": "Esamina",
+      "convertEverything": "Converti tutto…",
+      "confirmTitle": "Convertire tutte le regole legacy, i controlli e le automazioni attivate da avvisi in tutte le policy?",
+      "confirmBody": "{{rows}} regole legacy in {{policies}} policy dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano da esaminare o ritirare manualmente in W05c; W05d converte le rimanenti e ritira quelle non convertibili.",
+      "confirmRun": "Converti tutto",
+      "convertedAll": "Convertite {{converted}} righe in {{policies}} policy; {{unconvertible}} non convertibili.",
+      "errors": {
+        "convertAll": "Conversione completa non riuscita"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Policy con regole legacy",
+      "loading": "Caricamento delle policy…",
+      "empty": "Nessuna policy contiene regole di avviso inline, controlli o automazioni attivate da avvisi."
+    },
     "title": "Conversione necessaria",
     "description": "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato.",
     "checking": "Verifica dei dispositivi…",

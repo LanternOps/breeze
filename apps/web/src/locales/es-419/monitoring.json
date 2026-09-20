@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Vistas de monitores",
+      "all": "Todos los monitores",
+      "needsConversion": "Requiere conversión"
+    },
     "title": "Monitores",
     "description": "Observe una condición, responda en el dispositivo, notifique y escale cuando siga ocurriendo.",
     "new": "Nuevo monitor",
@@ -387,6 +392,23 @@
     }
   },
   "conversion": {
+    "banner": {
+      "text": "{{rows}} reglas heredadas en {{policies}} políticas aún no se convirtieron en monitores.",
+      "review": "Revisar",
+      "convertEverything": "Convertir todo…",
+      "confirmTitle": "¿Convertir todas las reglas heredadas, vigilancias y automatizaciones activadas por alertas de todas sus políticas?",
+      "confirmBody": "{{rows}} reglas heredadas en {{policies}} políticas de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir.",
+      "confirmRun": "Convertir todo",
+      "convertedAll": "Se convirtieron {{converted}} filas en {{policies}} políticas; {{unconvertible}} no se pudieron convertir.",
+      "errors": {
+        "convertAll": "No se pudo convertir todo"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Políticas con reglas heredadas",
+      "loading": "Cargando políticas…",
+      "empty": "Ninguna política tiene reglas de alerta en línea, vigilancias ni automatizaciones activadas por alertas."
+    },
     "title": "Requiere conversión",
     "description": "Las reglas de alerta en línea, las vigilancias de servicios/procesos y las automatizaciones activadas por alertas de esta política aún no se convirtieron en monitores. Convertir retira la fila de origen en su lugar; no se elimina nada.",
     "checking": "Comprobando dispositivos…",
