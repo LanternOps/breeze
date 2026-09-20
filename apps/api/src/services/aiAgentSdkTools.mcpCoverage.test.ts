@@ -40,8 +40,10 @@ function declaredToolNames(): Set<string> {
   return new Set(Array.from(SOURCE.matchAll(/\btool\(\s*'([a-z0-9_]+)'/g), (m) => m[1]!));
 }
 
-/** The description literal passed as the second argument of `tool('<name>', '<description>')`. */
+/** The registry description, falling back to the literal second argument of `tool('<name>', '<description>')`. */
 function declaredDescription(name: string): string {
+  const description = aiTools.get(name)?.definition.description;
+  if (description !== undefined) return description;
   const pattern = new RegExp(
     `\\btool\\(\\s*'${name}',\\s*(?:'((?:[^'\\\\]|\\\\.)*)'|"((?:[^"\\\\]|\\\\.)*)")`,
   );

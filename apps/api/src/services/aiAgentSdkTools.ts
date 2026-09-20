@@ -15,9 +15,8 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
-import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
+import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
-import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -488,22 +487,42 @@ async function safePostToolUse(
 // so the per-handler return type below is now checked against this.
 type SdkToolResult = Awaited<ReturnType<Parameters<typeof tool>[3]>>;
 
-/**
- * Description for a `tool()` declaration, taken from the tool's entry in the
- * `aiTools` registry (its `definition.description`).
- *
- * Most declarations in this file carry a short inline literal, which is fine
- * when the registry description says the same thing in more words. It is NOT
- * fine for the configuration-policy family: `manage_policy_feature_link`'s
- * description IS the authoritative reference for every feature type's
- * `inlineSettings` shape, and the prerequisite tools' descriptions carry the
- * "create the standalone policy, then link it via featurePolicyId" workflow the
- * model has to follow. Copying either into a second literal here creates two
- * copies that drift — the same failure mode as #2605/#2814 one level down.
- *
- * Throws on an unknown name so a rename surfaces at server construction rather
- * than as a silently empty description sent to the model.
- */
+/** Canonical descriptions for tools whose execution requires an active session. */
+export const SESSION_TOOL_DESCRIPTIONS = {
+  m365_lookup_user: 'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
+  m365_recent_signins: "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
+  m365_list_group_memberships: 'List the groups in the customer tenant selected for this session.',
+  m365_disable_user: 'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
+  m365_reset_password: 'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+  google_lookup_user: "Look up a Google Workspace user (profile, suspended/admin status, 2-step enrollment, last login, OU, aliases) for this organization's connected Workspace domain.",
+  google_reset_password: 'Reset a Google Workspace user\'s password (forces change at next sign-in). Returns a temporary password. Requires approval.',
+  google_suspend_user: 'Suspend (block sign-in for) a Google Workspace user. Requires approval.',
+  google_restore_user: 'Restore (un-suspend) a Google Workspace user. Requires approval.',
+  google_signout: 'Sign a Google Workspace user out of all sessions (the supported substitute for "turn off login challenge", which has no API). Useful for lockout/offboarding. Requires approval.',
+  google_list_user_groups: "List the Google Workspace groups a user belongs to (email, name, id) in this organization's connected domain.",
+  google_add_to_group: 'Add a Google Workspace user to a group. role is one of MEMBER, MANAGER, OWNER (default MEMBER). Requires approval.',
+  google_remove_from_group: 'Remove a Google Workspace user from a group. Requires approval.',
+  google_move_ou: 'Move a Google Workspace user into a different organizational unit (orgUnitPath, e.g. "/Sales" or "/"). Requires approval.',
+  google_rename_user: 'Rename a Google Workspace user by changing their primary email (the old address is retained as an alias). Requires approval.',
+  google_list_licenses: 'List Google Workspace license assignments for a product (e.g. productId "Google-Apps") in this organization. Returns who holds which SKU.',
+  google_assign_license: 'Assign a Google Workspace license (productId + skuId) to a user. Requires approval.',
+  google_remove_license: 'Remove a Google Workspace license (productId + skuId) from a user. Requires approval.',
+  google_reset_2sv: 'Turn off 2-step verification for a Google Workspace user so they can re-enroll (use when a user lost their second factor / is locked out). Requires approval.',
+  google_add_mail_delegate: "Grant another user delegated access to a Google Workspace mailbox (read/send/manage). Requires approval.",
+  google_remove_mail_delegate: 'Remove a delegate from a Google Workspace mailbox. Requires approval.',
+  google_set_forwarding: 'Enable Gmail forwarding from one user to another, optionally keeping a copy in the original mailbox. Requires approval.',
+  google_disable_forwarding: "Turn OFF Gmail auto-forwarding for a user's mailbox. Optionally also remove the forwarding address (pass removeAddress=true and the forwardTo address). Requires approval.",
+  google_set_vacation: 'Set or clear a Google Workspace user\'s out-of-office / vacation responder. Requires approval.',
+  google_update_user: 'Update a Google Workspace user\'s profile (given/family name, recovery email/phone) and/or add or remove an email alias. Requires approval.',
+  google_share_calendar: "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
+  google_offboard_user: 'Offboard a Google Workspace user: optional out-of-office, forwarding (no copy kept), revoke OAuth tokens, remove all groups, selective mobile account wipe (corporate data only, never full device wipe), sign-out, suspend. Steps are independent and reported; best-effort. Requires approval.',
+  google_wipe_mobile_device: 'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+  google_security_drift: 'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
+  google_email_report: "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
+  propose_action_plan: 'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
+} as const satisfies Readonly<Record<string, string>>;
+
+/** Read the registry description; unknown names fail at server construction. */
 function registryDescription(toolName: string): string {
   const description = aiTools.get(toolName)?.definition.description;
   if (!description) {
@@ -944,7 +963,7 @@ export function scriptProposalToolDefinitions(
   return [
     tool(
       'propose_script',
-      'Author a script as an immutable proposal for independent review. Nothing runs until it is reviewed and approved through run_script with the returned proposalId. Use this only when no library script fits.',
+      registryDescription('propose_script'),
       {
         language: z.enum(['powershell', 'bash', 'python', 'cmd']),
         content: z.string().min(1).max(65536),
@@ -961,7 +980,7 @@ export function scriptProposalToolDefinitions(
     ),
     tool(
       'get_script_proposal',
-      'Read a script proposal: status, static scan, review verdict, decision, executions and verification.',
+      registryDescription('get_script_proposal'),
       { proposalId: uuid },
       makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
     ),
@@ -981,31 +1000,31 @@ export function m365ToolDefinitions(
   return [
     tool(
       'm365_lookup_user',
-      'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
+      SESSION_TOOL_DESCRIPTIONS.m365_lookup_user,
       { userIdentifier: z.string() },
       makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'm365_recent_signins',
-      "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
+      SESSION_TOOL_DESCRIPTIONS.m365_recent_signins,
       { userIdentifier: z.string() },
       makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'm365_list_group_memberships',
-      'List the groups in the customer tenant selected for this session.',
+      SESSION_TOOL_DESCRIPTIONS.m365_list_group_memberships,
       {},
       makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'm365_disable_user',
-      'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.m365_disable_user,
       { userIdentifier: z.string(), reason: z.string() },
       makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'm365_reset_password',
-      'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.m365_reset_password,
       { userIdentifier: z.string(), reason: z.string() },
       makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
     ),
@@ -1031,121 +1050,121 @@ export function googleToolDefinitions(
   return [
     tool(
       'google_lookup_user',
-      "Look up a Google Workspace user (profile, suspended/admin status, 2-step enrollment, last login, OU, aliases) for this organization's connected Workspace domain.",
+      SESSION_TOOL_DESCRIPTIONS.google_lookup_user,
       { userEmail: z.string() },
       makeSessionAwareHandler('google_lookup_user', getAuth, getActiveSession, googleLookupUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_reset_password',
-      'Reset a Google Workspace user\'s password (forces change at next sign-in). Returns a temporary password. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_reset_password,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_reset_password', getAuth, getActiveSession, googleResetPasswordHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_suspend_user',
-      'Suspend (block sign-in for) a Google Workspace user. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_suspend_user,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_suspend_user', getAuth, getActiveSession, googleSuspendUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_restore_user',
-      'Restore (un-suspend) a Google Workspace user. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_restore_user,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_restore_user', getAuth, getActiveSession, googleRestoreUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_signout',
-      'Sign a Google Workspace user out of all sessions (the supported substitute for "turn off login challenge", which has no API). Useful for lockout/offboarding. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_signout,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_signout', getAuth, getActiveSession, googleSignOutHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_list_user_groups',
-      "List the Google Workspace groups a user belongs to (email, name, id) in this organization's connected domain.",
+      SESSION_TOOL_DESCRIPTIONS.google_list_user_groups,
       { userEmail: z.string() },
       makeSessionAwareHandler('google_list_user_groups', getAuth, getActiveSession, googleListUserGroupsHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_add_to_group',
-      'Add a Google Workspace user to a group. role is one of MEMBER, MANAGER, OWNER (default MEMBER). Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_add_to_group,
       { userEmail: z.string(), groupEmail: z.string(), role: z.enum(['MEMBER', 'MANAGER', 'OWNER']).optional(), reason: z.string() },
       makeSessionAwareHandler('google_add_to_group', getAuth, getActiveSession, googleAddToGroupHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_remove_from_group',
-      'Remove a Google Workspace user from a group. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_remove_from_group,
       { userEmail: z.string(), groupEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_remove_from_group', getAuth, getActiveSession, googleRemoveFromGroupHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_move_ou',
-      'Move a Google Workspace user into a different organizational unit (orgUnitPath, e.g. "/Sales" or "/"). Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_move_ou,
       { userEmail: z.string(), orgUnitPath: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_move_ou', getAuth, getActiveSession, googleMoveOuHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_rename_user',
-      'Rename a Google Workspace user by changing their primary email (the old address is retained as an alias). Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_rename_user,
       { userEmail: z.string(), newPrimaryEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_rename_user', getAuth, getActiveSession, googleRenameUserHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_list_licenses',
-      'List Google Workspace license assignments for a product (e.g. productId "Google-Apps") in this organization. Returns who holds which SKU.',
+      SESSION_TOOL_DESCRIPTIONS.google_list_licenses,
       { productId: z.string() },
       makeSessionAwareHandler('google_list_licenses', getAuth, getActiveSession, googleListLicensesHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_assign_license',
-      'Assign a Google Workspace license (productId + skuId) to a user. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_assign_license,
       { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_assign_license', getAuth, getActiveSession, googleAssignLicenseHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_remove_license',
-      'Remove a Google Workspace license (productId + skuId) from a user. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_remove_license,
       { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_remove_license', getAuth, getActiveSession, googleRemoveLicenseHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_reset_2sv',
-      'Turn off 2-step verification for a Google Workspace user so they can re-enroll (use when a user lost their second factor / is locked out). Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_reset_2sv,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_reset_2sv', getAuth, getActiveSession, googleResetTwoSvHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_add_mail_delegate',
-      "Grant another user delegated access to a Google Workspace mailbox (read/send/manage). Requires approval.",
+      SESSION_TOOL_DESCRIPTIONS.google_add_mail_delegate,
       { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_add_mail_delegate', getAuth, getActiveSession, googleAddMailDelegateHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_remove_mail_delegate',
-      'Remove a delegate from a Google Workspace mailbox. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_remove_mail_delegate,
       { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_remove_mail_delegate', getAuth, getActiveSession, googleRemoveMailDelegateHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_set_forwarding',
-      'Enable Gmail forwarding from one user to another, optionally keeping a copy in the original mailbox. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_set_forwarding,
       { userEmail: z.string(), forwardTo: z.string(), keepCopy: z.boolean().optional(), reason: z.string() },
       makeSessionAwareHandler('google_set_forwarding', getAuth, getActiveSession, googleSetForwardingHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_disable_forwarding',
-      "Turn OFF Gmail auto-forwarding for a user's mailbox. Optionally also remove the forwarding address (pass removeAddress=true and the forwardTo address). Requires approval.",
+      SESSION_TOOL_DESCRIPTIONS.google_disable_forwarding,
       { userEmail: z.string(), forwardTo: z.string().optional(), removeAddress: z.boolean().optional(), reason: z.string() },
       makeSessionAwareHandler('google_disable_forwarding', getAuth, getActiveSession, googleDisableForwardingHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_set_vacation',
-      'Set or clear a Google Workspace user\'s out-of-office / vacation responder. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_set_vacation,
       { userEmail: z.string(), enable: z.boolean().optional(), subject: z.string().optional(), message: z.string().optional(), reason: z.string() },
       makeSessionAwareHandler('google_set_vacation', getAuth, getActiveSession, googleSetVacationHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_update_user',
-      'Update a Google Workspace user\'s profile (given/family name, recovery email/phone) and/or add or remove an email alias. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_update_user,
       {
         userEmail: z.string(),
         givenName: z.string().optional(),
@@ -1160,7 +1179,7 @@ export function googleToolDefinitions(
     ),
     tool(
       'google_share_calendar',
-      "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
+      SESSION_TOOL_DESCRIPTIONS.google_share_calendar,
       {
         ownerEmail: z.string(),
         shareWithEmail: z.string(),
@@ -1172,7 +1191,7 @@ export function googleToolDefinitions(
     ),
     tool(
       'google_offboard_user',
-      'Guided offboard of a departing Google Workspace user: best-effort sequence of optional out-of-office, mail forwarding to a manager (no copy kept), OAuth-token revoke, remove-from-all-groups, a SELECTIVE mobile account wipe (corporate data only, BYOD-safe — never a full device wipe), sign-out, then suspend. Each step is independent and reported. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_offboard_user,
       {
         userEmail: z.string(),
         forwardTo: z.string().optional(),
@@ -1187,19 +1206,19 @@ export function googleToolDefinitions(
     ),
     tool(
       'google_wipe_mobile_device',
-      'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+      SESSION_TOOL_DESCRIPTIONS.google_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_security_drift',
-      'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
+      SESSION_TOOL_DESCRIPTIONS.google_security_drift,
       { staleDays: z.number().int().min(1).max(3650).optional() },
       makeSessionAwareHandler('google_security_drift', getAuth, getActiveSession, googleSecurityDriftHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_email_report',
-      "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
+      SESSION_TOOL_DESCRIPTIONS.google_email_report,
       { staleDays: z.number().int().min(1).max(3650).optional() },
       makeSessionAwareHandler('google_email_report', getAuth, getActiveSession, googleEmailReportHandler, onPreToolUse, onPostToolUse)
     ),
@@ -1395,7 +1414,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'query_devices',
-      'Search and filter devices in the organization. Returns a summary list.',
+      registryDescription('query_devices'),
       {
         status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
@@ -1409,14 +1428,14 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_device_details',
-      'Get comprehensive details about a specific device including hardware, network, disk, and metrics.',
+      registryDescription('get_device_details'),
       { deviceId: uuid },
       makeHandler('get_device_details', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'analyze_metrics',
-      'Query and analyze time-series metrics (CPU, RAM, disk, network) for a device.',
+      registryDescription('analyze_metrics'),
       {
         deviceId: uuid,
         metric: z.enum(['cpu', 'ram', 'disk', 'network', 'all']).optional(),
@@ -1428,7 +1447,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_active_users',
-      'Query active user sessions for one device or across the fleet.',
+      registryDescription('get_active_users'),
       {
         deviceId: uuid.optional(),
         limit: z.number().int().min(1).max(200).optional(),
@@ -1439,7 +1458,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_user_experience_metrics',
-      'Summarize login performance and session behavior trends.',
+      registryDescription('get_user_experience_metrics'),
       {
         deviceId: uuid.optional(),
         username: z.string().max(255).optional(),
@@ -1451,14 +1470,14 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_delivery',
-      'resolve delivery or manage routing rules and escalation policies. Channel CRUD remains manage_notification_channels. Actions: list_routing, create_routing, update_routing, delete_routing, set_default, list_escalation, create_escalation, update_escalation, delete_escalation.',
+      registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'manage_alerts',
-      'Query, view, acknowledge, or resolve alerts. Actions: list, get.',
+      registryDescription('manage_alerts'),
       {
         action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
         alertId: uuid.optional(),
@@ -1473,7 +1492,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_dns_security',
-      'Get DNS security statistics: blocked domains, threat categories, and top offending devices. Actions: allowed, redirected.',
+      registryDescription('get_dns_security'),
       {
         timeRange: z.object({
           start: z.string().datetime({ offset: true }),
@@ -1490,7 +1509,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_huntress_status',
-      'Get Huntress integration sync health, agent coverage, and incident summary counts.',
+      registryDescription('get_huntress_status'),
       {
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
@@ -1500,7 +1519,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_huntress_incidents',
-      'Query Huntress incidents with filters for status, severity, and device mapping.',
+      registryDescription('get_huntress_incidents'),
       {
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
@@ -1517,7 +1536,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_dns_policy',
-      'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider. Actions: add_block, remove_block, add_allow, remove_allow.',
+      registryDescription('manage_dns_policy'),
       {
         integrationId: uuid,
         action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),
@@ -1529,7 +1548,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_s1_status',
-      'Get SentinelOne integration health, endpoint coverage, and action backlog.',
+      registryDescription('get_s1_status'),
       {
         orgId: uuid.optional(),
       },
@@ -1538,7 +1557,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_s1_threats',
-      'Query SentinelOne threats with filters for severity, status, and device.',
+      registryDescription('get_s1_threats'),
       {
         orgId: uuid.optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'unknown']).optional(),
@@ -1552,7 +1571,7 @@ export function buildBreezeSdkTools(
 
     tool(
       's1_isolate_device',
-      'Isolate or unisolate one or more devices via SentinelOne. Requires user approval.',
+      registryDescription('s1_isolate_device'),
       {
         orgId: uuid.optional(),
         deviceId: uuid.optional(),
@@ -1564,7 +1583,7 @@ export function buildBreezeSdkTools(
 
     tool(
       's1_threat_action',
-      'Execute SentinelOne threat actions (kill, quarantine, rollback). Requires user approval.',
+      registryDescription('s1_threat_action'),
       {
         orgId: uuid.optional(),
         action: z.enum(['kill', 'quarantine', 'rollback']),
@@ -1575,7 +1594,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'sync_huntress_data',
-      'Trigger a manual Huntress sync for an accessible integration.',
+      registryDescription('sync_huntress_data'),
       {
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
@@ -1585,7 +1604,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'execute_command',
-      'Execute a system command on a device. Requires user approval.',
+      registryDescription('execute_command'),
       {
         deviceId: uuid,
         commandType: z.enum([
@@ -1601,7 +1620,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'run_script',
-      'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both.',
+      registryDescription('run_script'),
       {
         // The tool() form takes a raw zod SHAPE, not a schema, so the XOR
         // refinement can only live in toolInputSchemas.run_script — which
@@ -1619,7 +1638,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'cancel_script_execution',
-      'Stop a running script execution on a device. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      registryDescription('cancel_script_execution'),
       {
         executionId: uuid,
         // Mirrors toolInputSchemas.cancel_script_execution; the 30s ceiling is
@@ -1631,7 +1650,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_script_execution',
-      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the script editor Test Run button, or an execution id from get_script_execution_history), and to re-check a run_script device whose result came back status "timeout" — that means the 60s wait expired, not that the script failed, and the real outcome lands on the executionId run_script returned. Any other run_script outcome is final; do not re-check it.',
+      registryDescription('get_script_execution'),
       {
         executionId: uuid,
       },
@@ -1640,7 +1659,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_services',
-      'list, start, stop, or restart system services on a device.',
+      registryDescription('manage_services'),
       {
         deviceId: uuid,
         action: z.enum(['list', 'start', 'stop', 'restart']),
@@ -1651,7 +1670,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'security_scan',
-      'Run security scans on a device, or manage detected threats. Actions: status, quarantine, remove, restore.',
+      registryDescription('security_scan'),
       {
         deviceId: uuid,
         action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
@@ -1662,7 +1681,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_security_posture',
-      'Get fleet-wide or device-level security posture scores with recommendations. Posture is a scored summary of security CONTROLS (AV, firewall, encryption, patch currency) — it does NOT list CVEs or vulnerability findings. For CVEs, vulnerable software, or vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (one device).',
+      registryDescription('get_security_posture'),
       {
         deviceId: uuid.optional(),
         orgId: uuid.optional(),
@@ -1677,7 +1696,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_cis_compliance',
-      'Retrieve CIS benchmark compliance status across devices, including latest score, failed checks, and baseline metadata.',
+      registryDescription('get_cis_compliance'),
       {
         orgId: uuid.optional(),
         baselineId: uuid.optional(),
@@ -1692,7 +1711,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_cis_device_report',
-      'Get detailed CIS benchmark findings and evidence for a specific device.',
+      registryDescription('get_cis_device_report'),
       {
         deviceId: uuid,
         baselineId: uuid.optional(),
@@ -1703,7 +1722,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'apply_cis_remediation',
-      'Queue approved CIS remediation actions for one device and one or more failed checks. Actions: apply, rollback.',
+      registryDescription('apply_cis_remediation'),
       {
         deviceId: uuid,
         baselineId: uuid.optional(),
@@ -1717,7 +1736,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_fleet_health',
-      'Query fleet reliability scores to identify devices that need attention first.',
+      registryDescription('get_fleet_health'),
       {
         orgId: uuid.optional(),
         siteId: uuid.optional(),
@@ -1736,7 +1755,7 @@ export function buildBreezeSdkTools(
     // defaults.
     tool(
       'get_fleet_findings',
-      'List fleet hygiene findings: deduplicated, aggregate issues detected across the fleet (metric anomaly patterns, log correlations, reliability offenders). Read-only — use manage_deployments/manage_patches/run_script etc. to act on a finding\'s remediation.',
+      registryDescription('get_fleet_findings'),
       {
         kind: z.enum(['metric_anomaly_pattern', 'log_correlation', 'reliability_offenders']).optional(),
         severity: z.enum(['info', 'warning', 'error', 'critical']).optional(),
@@ -1749,7 +1768,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'analyze_fleet_metrics',
-      'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
+      registryDescription('analyze_fleet_metrics'),
       {
         metricName: z.enum(['cpu_percent', 'ram_percent', 'disk_percent']),
         windowHours: z.number().int().min(1).max(168).optional(),
@@ -1761,14 +1780,14 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_invite_funnel',
-      'Deployment-invite funnel only (invites sent/clicked/enrolled). NOT a fleet overview: for device counts or online/offline status use query_devices or get_fleet_health. Returns total invited, clicked, enrolled and online for this tenant plus recent enrollments; a tenant enrolled without invites reports zeros here. Poll during MCP bootstrap to track devices coming online.',
+      registryDescription('get_invite_funnel'),
       {},
       makeHandler('get_invite_funnel', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'delete_tenant',
-      'Soft-delete this tenant with a 30-day restore window. confirmation_phrase must exactly equal "delete <tenant_name> permanently" (lowercase, trimmed). Can ONLY delete the tenant this API key belongs to.',
+      registryDescription('delete_tenant'),
       {
         tenant_id: z.string().guid(),
         confirmation_phrase: z.string().min(1).max(500),
@@ -1778,7 +1797,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'file_operations',
-      'Perform file operations on a device. All actions (read, list, write, delete, mkdir, rename) require approval because the agent reads/writes as root/LocalSystem.',
+      registryDescription('file_operations'),
       {
         deviceId: uuid,
         action: z.enum(['list', 'read', 'write', 'delete', 'mkdir', 'rename']),
@@ -1791,7 +1810,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'analyze_disk_usage',
-      'Analyze filesystem usage for a device. Can run a fresh scan.',
+      registryDescription('analyze_disk_usage'),
       {
         deviceId: uuid,
         refresh: z.boolean().optional(),
@@ -1809,7 +1828,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'disk_cleanup',
-      'preview or execute disk cleanup. Preview is read-only. Execute deletes approved candidates.',
+      registryDescription('disk_cleanup'),
       {
         deviceId: uuid,
         action: z.enum(['preview', 'execute']),
@@ -1822,7 +1841,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'query_audit_log',
-      'Search the audit log for recent actions.',
+      registryDescription('query_audit_log'),
       {
         action: z.string().max(100).optional(),
         resourceType: z.string().max(100).optional(),
@@ -1836,7 +1855,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'query_change_log',
-      'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, user account changes, hardware changes (memory/CPU/disk/BIOS/serial), and OS version updates.',
+      registryDescription('query_change_log'),
       {
         deviceId: uuid.optional(),
         startTime: z.string().datetime({ offset: true }).optional(),
@@ -1850,7 +1869,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'network_discovery',
-      'Initiate a network discovery scan from a device.',
+      registryDescription('network_discovery'),
       {
         deviceId: uuid,
         subnet: z.string().max(50).optional(),
@@ -1861,7 +1880,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'take_screenshot',
-      'Capture a screenshot of the device screen for visual analysis.',
+      registryDescription('take_screenshot'),
       {
         deviceId: uuid,
         monitor: z.number().int().min(0).max(10).optional(),
@@ -1871,7 +1890,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'analyze_screen',
-      'Take a screenshot and analyze what is visible on the device screen.',
+      registryDescription('analyze_screen'),
       {
         deviceId: uuid,
         context: z.string().max(500).optional(),
@@ -1882,7 +1901,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'computer_control',
-      'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
+      registryDescription('computer_control'),
       {
         deviceId: uuid,
         action: z.enum(['screenshot', 'left_click', 'right_click', 'middle_click', 'double_click', 'mouse_move', 'scroll', 'key', 'type']),
@@ -1903,7 +1922,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_deployments',
-      'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel. Actions: device_status.',
+      registryDescription('manage_deployments'),
       {
         action: z.enum(['list', 'get', 'device_status', 'create', 'start', 'pause', 'resume', 'cancel']),
         deploymentId: uuid.optional(),
@@ -1922,7 +1941,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope. Actions: bulk_approve, setup_auto_approval.',
+      registryDescription('manage_patches'),
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
@@ -1957,7 +1976,7 @@ export function buildBreezeSdkTools(
     // by tests so the CVE vocabulary cannot drift out of either surface.
     tool(
       'get_vulnerability_report',
-      'THE tool for CVE and vulnerability questions across the fleet: open CVE findings from vulnerability scanning, counts by severity, and the highest-risk CVEs with how many devices each affects (CVSS, known-exploited/CISA KEV). Use this for "vulnerabilities", "vulnerability report", "vulnerability findings", "CVEs", "vulnerable software", "exploitable", or "known exploited" — NOT get_security_posture (control scores) and NOT manage_patches (patch/KB inventory). Optionally filter by finding status (default: open) or severity.',
+      registryDescription('get_vulnerability_report'),
       {
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
@@ -1967,7 +1986,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_device_vulnerabilities',
-      "List one device's CVE / vulnerability findings: CVE id, severity, CVSS, EPSS, risk score, exploited-in-the-wild (CISA KEV) flag and patch availability. Use this for per-device \"which CVEs / vulnerabilities does this device have\" questions instead of get_security_posture or manage_patches. Defaults to open findings.",
+      registryDescription('get_device_vulnerabilities'),
       {
         deviceId: uuid,
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
@@ -1977,7 +1996,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'remediate_vulnerability',
-      'Remediate CVE / vulnerability findings by queueing the approved patch that fixes each CVE on its device. High-risk: requires approval. Takes the finding ids returned by get_vulnerability_report / get_device_vulnerabilities. Only partner-approved patches install; unapproved, unavailable or out-of-site findings come back in "skipped".',
+      registryDescription('remediate_vulnerability'),
       {
         deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
       },
@@ -1986,7 +2005,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_groups',
-      'Manage device groups: list, get with members, preview filters, membership log, create, update, delete, add/remove devices. Actions: membership_log, add_devices, remove_devices.',
+      registryDescription('manage_groups'),
       {
         action: z.enum(['list', 'get', 'preview', 'membership_log', 'create', 'update', 'delete', 'add_devices', 'remove_devices']),
         groupId: uuid.optional(),
@@ -2002,7 +2021,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_maintenance_windows',
-      'Manage maintenance windows: list, get with occurrences, check active now, create, update, delete. Actions: active_now.',
+      registryDescription('manage_maintenance_windows'),
       {
         action: z.enum(['list', 'get', 'active_now', 'create', 'update', 'delete']),
         windowId: uuid.optional(),
@@ -2027,7 +2046,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_automations',
-      'Manage automations: list, get, run history, create, update, delete, enable/disable, manually run.',
+      registryDescription('manage_automations'),
       {
         action: z.enum(['list', 'get', 'history', 'create', 'update', 'delete', 'enable', 'disable', 'run']),
         automationId: uuid.optional(),
@@ -2046,7 +2065,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_alert_rules',
-      'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets. Actions: list_rules, get_rule, update_rule, delete_rule, test_rule, list_channels, alert_summary.',
+      registryDescription('manage_alert_rules'),
       {
         action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
@@ -2065,7 +2084,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_service_monitors',
-      'Manage service and process monitoring watches. List existing monitors, add new service/process watches that alert when stopped or exceed thresholds, or remove monitors. Actions: list.',
+      registryDescription('manage_service_monitors'),
       {
         action: z.enum(['list', 'add', 'remove']),
         configPolicyId: uuid.optional(),
@@ -2086,7 +2105,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'generate_report',
-      'Manage reports: list, generate on-demand, get data, create/update/delete definitions, view history.',
+      registryDescription('generate_report'),
       {
         action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
         reportId: uuid.optional(),
@@ -2104,7 +2123,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_device_context',
-      'Retrieve past AI memory/context about a device. Returns known issues, quirks, follow-ups, and preferences from previous interactions.',
+      registryDescription('get_device_context'),
       {
         deviceId: uuid,
         includeResolved: z.boolean().optional().default(false),
@@ -2114,7 +2133,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'set_device_context',
-      'Record new context/memory about a device for future reference. Use to remember issues, quirks, follow-ups, or preferences.',
+      registryDescription('set_device_context'),
       {
         deviceId: uuid,
         contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
@@ -2127,7 +2146,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'resolve_device_context',
-      'Mark a context entry as resolved/completed. Resolved items are hidden from active context but preserved in history.',
+      registryDescription('resolve_device_context'),
       {
         contextId: uuid,
       },
@@ -2138,7 +2157,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'analyze_boot_performance',
-      'Analyze boot performance and startup items for a device. Returns boot time history, slowest startup items by impact score, and optimization recommendations.',
+      registryDescription('analyze_boot_performance'),
       {
         deviceId: uuid,
         bootsBack: z.number().int().min(1).max(30).optional(),
@@ -2149,7 +2168,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_startup_items',
-      'disable or enable startup items on a device. Device must be online. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+      registryDescription('manage_startup_items'),
       {
         deviceId: uuid,
         itemName: z.string().min(1).max(255),
@@ -2166,7 +2185,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'search_agent_logs',
-      'Search agent diagnostic logs across the fleet. Filter by device, log level, component, time range, or message text.',
+      registryDescription('search_agent_logs'),
       {
         deviceIds: z.array(uuid).max(50).optional(),
         level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -2181,7 +2200,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'set_agent_log_level',
-      "Temporarily increase an agent's log shipping verbosity for debugging. The level will auto-revert after the specified duration.",
+      registryDescription('set_agent_log_level'),
       {
         deviceId: uuid,
         level: z.enum(['debug', 'info', 'warn', 'error']),
@@ -2192,7 +2211,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'capture_agent_pprof',
-      "Capture Go runtime pprof profiles (heap and/or goroutine) from a device's Breeze agent process for memory/goroutine-leak diagnostics. Returns profile metadata only; the raw profiles are stored on the command result for download.",
+      registryDescription('capture_agent_pprof'),
       {
         deviceId: uuid,
         profile: z.enum(['heap', 'goroutine', 'all']).optional(),
@@ -2204,7 +2223,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'search_logs',
-      'Search event logs across devices in the organization. Supports full-text, time range, and filter-based search.',
+      registryDescription('search_logs'),
       {
         query: z.string().max(500).optional(),
         timeRange: z.object({
@@ -2242,35 +2261,35 @@ export function buildBreezeSdkTools(
 
     tool(
       'workspace_stage',
-      WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage,
+      registryDescription('workspace_stage'),
       WORKSPACE_MCP_SHAPES.workspace_stage,
       makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'workspace_run',
-      WORKSPACE_TOOL_DESCRIPTIONS.workspace_run,
+      registryDescription('workspace_run'),
       WORKSPACE_MCP_SHAPES.workspace_run,
       makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'workspace_collect',
-      WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect,
+      registryDescription('workspace_collect'),
       WORKSPACE_MCP_SHAPES.workspace_collect,
       makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'workspace_cancel',
-      WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel,
+      registryDescription('workspace_cancel'),
       WORKSPACE_MCP_SHAPES.workspace_cancel,
       makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'get_log_trends',
-      'Analyze event log trends: level distribution, top sources/devices, error timeline, and spike detection.',
+      registryDescription('get_log_trends'),
       {
         timeRange: z.object({
           start: z.string().datetime({ offset: true }),
@@ -2288,7 +2307,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'detect_log_correlations',
-      'Detect log patterns that appear across multiple devices within a short window.',
+      registryDescription('detect_log_correlations'),
       {
         orgId: uuid.optional(),
         pattern: z.string().min(1).max(1000),
@@ -2304,7 +2323,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_configuration_policies',
-      'List available configuration policies in the organization. Shows policy name, status, and linked feature types.',
+      registryDescription('list_configuration_policies'),
       {
         status: z.enum(['active', 'inactive', 'archived']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -2314,7 +2333,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_effective_configuration',
-      'Resolve the effective configuration for a device by evaluating all configuration policy assignments in the hierarchy (device > group > site > org > partner).',
+      registryDescription('get_effective_configuration'),
       {
         deviceId: uuid,
       },
@@ -2323,7 +2342,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'preview_configuration_change',
-      'Preview how adding or removing configuration policy assignments would change the effective configuration for a device.',
+      registryDescription('preview_configuration_change'),
       {
         deviceId: uuid,
         add: z.array(z.object({
@@ -2339,7 +2358,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'apply_configuration_policy',
-      'Assign a configuration policy to a target (partner, organization, site, device group, or device).',
+      registryDescription('apply_configuration_policy'),
       {
         configPolicyId: uuid,
         level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
@@ -2351,7 +2370,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'remove_configuration_policy_assignment',
-      'Remove a configuration policy assignment, undoing its effect on the target and all devices beneath it in the hierarchy.',
+      registryDescription('remove_configuration_policy_assignment'),
       {
         assignmentId: uuid,
       },
@@ -2360,7 +2379,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_configuration_policy',
-      'Get a single configuration policy by ID with its feature links and assignment count.',
+      registryDescription('get_configuration_policy'),
       {
         policyId: uuid,
       },
@@ -2369,7 +2388,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_configuration_policy',
-      'create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, monitoring, etc.) and are assigned to targets in the hierarchy.',
+      registryDescription('manage_configuration_policy'),
       {
         action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
         policyId: uuid.optional(),
@@ -2383,7 +2402,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'configuration_policy_compliance',
-      'Check compliance status for configuration policies. Use "summary" for org-wide overview, or "status" for per-device compliance for a specific policy.',
+      registryDescription('configuration_policy_compliance'),
       {
         action: z.enum(['summary', 'status']),
         policyId: uuid.optional(),
@@ -2493,7 +2512,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_playbooks',
-      'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
+      registryDescription('list_playbooks'),
       {
         category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
       },
@@ -2502,7 +2521,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'execute_playbook',
-      'Create a playbook execution record for a target device. This is approval-gated and used to start audited execution.',
+      registryDescription('execute_playbook'),
       {
         playbookId: uuid,
         deviceId: uuid,
@@ -2514,7 +2533,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_playbook_history',
-      'Query historical playbook execution runs for auditing and analysis.',
+      registryDescription('get_playbook_history'),
       {
         deviceId: uuid.optional(),
         playbookId: uuid.optional(),
@@ -2528,7 +2547,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'query_monitors',
-      'List network monitors with their current status, uptime, and response time statistics. Filter by status, monitor type, active state, or search by name/target.',
+      registryDescription('query_monitors'),
       {
         status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
         monitorType: z.string().max(50).optional(),
@@ -2566,7 +2585,7 @@ export function buildBreezeSdkTools(
     // uncallable (#2605).
     tool(
       'get_network_asset_reachability',
-      'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, with the SOURCE of the evidence and how old it is. Always state the source and age when answering — "responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has checked the device recently; report it as unverified, not as down.',
+      registryDescription('get_network_asset_reachability'),
       {
         asset_id: uuid,
       },
@@ -2575,7 +2594,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_monitors',
-      'get monitor details with recent check history, or create/update/delete network monitors.',
+      registryDescription('manage_monitors'),
       {
         action: z.enum(['get', 'create', 'update', 'delete']),
         monitorId: uuid.optional(),
@@ -2594,7 +2613,7 @@ export function buildBreezeSdkTools(
     // Monitor definition episode activity / escalation reset (#5290 W03).
     tool(
       'get_monitor_activity',
-      'Get per-device breach state and recent breach episodes for a monitor definition: last evaluated state, open episode, episodes inside the recurrence window, whether the recurrence escalation has latched, and whether automatic responses are paused.',
+      registryDescription('get_monitor_activity'),
       {
         monitorId: uuid,
         deviceId: uuid.optional(),
@@ -2605,7 +2624,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'reset_monitor_escalation',
-      'Clear a monitor recurrence escalation for one device: resumes automatic responses and restarts the recurrence window. Does NOT close the open breach episode and does NOT resolve the requires-human alert.',
+      registryDescription('reset_monitor_escalation'),
       {
         monitorId: uuid,
         deviceId: uuid,
@@ -2615,7 +2634,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_service_monitoring_status',
-      'Query service and process monitoring status for managed devices. Use "status" for a health overview (healthy/degraded/critical), "summary" for latest result per watcher, "results" for check history with filters, or "known_services" to discover service/process names in the org.',
+      registryDescription('get_service_monitoring_status'),
       {
         action: z.enum(['status', 'summary', 'results', 'known_services']),
         deviceId: uuid.optional(),
@@ -2715,7 +2734,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_organizations',
-      'List/search the organizations the caller can access (name substring match), each with id, name, slug, status, and its sites (id + name). Use this to resolve the orgId and siteId that other tools require. Partner-scoped callers see all their orgs; organization-scoped callers see only their own. Read-only.',
+      registryDescription('list_organizations'),
       {
         search: z.string().max(255).optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -2725,7 +2744,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_organizations',
-      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId required; at least one of name/email/phone/mobile required — mirrors contacts_identifiable_chk; optional title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
+      registryDescription('manage_organizations'),
       {
         action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
         orgId: uuid.optional(),
@@ -2745,7 +2764,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_ai_agents',
-      'Govern the autonomous AI agents for the current organization. Action: authorize_supervised_key — grant the organization\'s agent of the given kind a pre-authorized action key (opKey, e.g. "manage_services:restart") so future agent runs may execute it without raising an approval. The key must already sit inside the partner baseline ceiling and the agent must have earned it on recent evidence. Requires a SECOND approver (four-eyes). orgId must be the CURRENT organization — it is not a target selector, and naming any other organization is rejected both when the approval is raised and again before it executes.',
+      registryDescription('manage_ai_agents'),
       {
         action: z.enum(['authorize_supervised_key']),
         kind: z.enum(AI_AGENT_KINDS),
@@ -2777,7 +2796,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_invoices',
-      'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Use this for "invoices", "billing", "what do they owe", "unpaid" or "overdue" questions. Read-only.',
+      registryDescription('list_invoices'),
       {
         orgId: uuid.optional(),
         status: z.enum(INVOICE_STATUSES).optional(),
@@ -2788,7 +2807,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_invoice',
-      'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.',
+      registryDescription('get_invoice'),
       {
         invoiceId: uuid,
       },
@@ -2797,7 +2816,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_invoices',
-      'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, delete a draft, assemble from an org or ticket, issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment actions finalize financial state and require approval. Actions: create_draft, add_manual_line, add_catalog_line, add_bundle_line, add_contract_line, update_line, remove_line, update_header, delete_draft, assemble_from_org, assemble_from_ticket, record_payment, void_payment, create_pay_link.',
+      registryDescription('manage_invoices'),
       {
         action: z.enum([
           'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
@@ -2831,7 +2850,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_quotes',
-      'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+      registryDescription('list_quotes'),
       {
         orgId: uuid.optional(),
         status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
@@ -2859,7 +2878,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_contracts',
-      'List recurring contracts for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+      registryDescription('list_contracts'),
       {
         orgId: uuid.optional(),
         status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
@@ -2870,7 +2889,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_contract',
-      'Get the full view of one recurring contract (header, lines, and billing-period history) by id. Read-only.',
+      registryDescription('get_contract'),
       {
         contractId: uuid,
       },
@@ -2879,7 +2898,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_org_documents',
-      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, exports, delivery evidence). Metadata only — never the file bytes. Read-only.',
+      registryDescription('list_org_documents'),
       {
         orgId: uuid,
         category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
@@ -2890,7 +2909,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_org_documents',
-      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here. Actions: update_metadata, set_portal_visibility, supersede.',
+      registryDescription('manage_org_documents'),
       {
         action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
         orgId: uuid,
@@ -2904,7 +2923,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_contracts',
-      'Manage recurring contracts for accessible orgs. Lifecycle changes require approval. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line, activate, pause, resume, cancel.',
+      registryDescription('manage_contracts'),
       {
         action: z.enum([
           'create_draft',
@@ -2929,7 +2948,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_deliverables',
-      LIST_DELIVERABLES_TOOL.definition.description ?? 'List service deliverables for one organization. Read-only.',
+      registryDescription('list_deliverables'),
       {
         orgId: uuid,
         contractId: uuid.optional(),
@@ -2941,14 +2960,14 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_deliverable_templates',
-      LIST_DELIVERABLE_TEMPLATES_TOOL.definition.description ?? 'List deliverable template sets. Read-only.',
+      registryDescription('list_deliverable_templates'),
       { orgId: uuid.optional() },
       makeHandler('list_deliverable_templates', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'manage_deliverables',
-      MANAGE_DELIVERABLES_TOOL.definition.description ?? 'Create and manage service deliverables and their occurrences.',
+      registryDescription('manage_deliverables'),
       {
         action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
         orgId: uuid.optional(),
@@ -2970,7 +2989,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'manage_key_dates',
-      MANAGE_KEY_DATES_TOOL.definition.description ?? 'List, create, update or delete organization key dates.',
+      registryDescription('manage_key_dates'),
       {
         action: z.enum(['list', 'create', 'update', 'delete']),
         orgId: uuid,
@@ -2983,7 +3002,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'search_catalog',
-      'Search the partner product catalog (hardware, software, services, and bundles). The search term matches item name, SKU, and distributor part numbers (manufacturer part number / SYNNEX SKU). Optional filters: item type, bundle flag. Read-only.',
+      registryDescription('search_catalog'),
       {
         search: z.string().optional(),
         itemType: z.enum(['hardware', 'software', 'service']).optional(),
@@ -2995,7 +3014,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'get_catalog_item',
-      'Get full detail for one catalog item by id, including bundle components if it is a bundle. Read-only.',
+      registryDescription('get_catalog_item'),
       {
         catalogItemId: uuid,
       },
@@ -3004,7 +3023,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'lookup_distributor_product',
-      'Live TD SYNNEX (EC Express) price & availability lookup for a SINGLE distributor SKU or manufacturer part number. Returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Read-only, but makes an outbound call to the distributor (partner-scoped). Use this to price a distributor product that is NOT yet in the catalog before adding it to a quote; for items already in the catalog use search_catalog instead.',
+      registryDescription('lookup_distributor_product'),
       {
         query: z.string().min(1).max(40),
       },
@@ -3022,7 +3041,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_users',
-      'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
+      registryDescription('m365_query_users'),
       {
         mode: z.enum(['list', 'get']),
         search: z.string().max(120).optional(),
@@ -3037,7 +3056,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_signins',
-      'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
+      registryDescription('m365_query_signins'),
       {
         userPrincipalName: z.string().min(1).max(320).optional(),
         sinceHours: z.number().int().min(1).max(168).optional(),
@@ -3049,7 +3068,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_intune_devices',
-      'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
+      registryDescription('m365_query_intune_devices'),
       {
         mode: z.enum(['list', 'get']),
         // Named intuneDeviceId (not deviceId) — this is a foreign Microsoft
@@ -3066,7 +3085,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_groups',
-      'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
+      registryDescription('m365_query_groups'),
       {
         mode: z.enum(['list', 'get', 'members']),
         groupId: z.string().min(1).max(300).optional(),
@@ -3079,7 +3098,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_org',
-      'Get the Microsoft 365 tenant\'s organization profile or its license/SKU inventory. Each call returns a single organization record or the full SKU list (no client-settable limit). Data is read live from the customer\'s Microsoft 365 tenant.',
+      registryDescription('m365_query_org'),
       {
         include: z.enum(['profile', 'licenses']),
         orgId: uuid.optional(),
@@ -3089,7 +3108,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'm365_query_sites',
-      'Query SharePoint sites (search or get one). List mode returns a single page of results with no client-settable limit. Data is read live from the customer\'s Microsoft 365 tenant.',
+      registryDescription('m365_query_sites'),
       {
         mode: z.enum(['list', 'get']),
         search: z.string().max(120).optional(),
@@ -3102,7 +3121,7 @@ export function buildBreezeSdkTools(
     // Action Plan tool (for action_plan and hybrid_plan modes)
     tool(
       'propose_action_plan',
-      'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
+      SESSION_TOOL_DESCRIPTIONS.propose_action_plan,
       {
         title: z.string().min(1).max(255),
         steps: z.array(z.object({
