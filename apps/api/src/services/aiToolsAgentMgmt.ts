@@ -474,7 +474,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'trigger_agent_restart',
       description:
-        'Ask the breeze-watchdog to restart the main agent on a device — recovers a wedged or silent agent (the "Agent silent · watchdog OK" state). Targets the watchdog, not the agent, so it works even when the agent itself is unresponsive. The watchdog acts on this when it is supervising/failing over the agent; a healthy agent is left untouched.',
+        "Request a watchdog restart of a silent or wedged agent, even when the agent is unresponsive. The watchdog acts only when supervising/failing over the agent; healthy agents remain untouched.",
       input_schema: {
         type: 'object' as const,
         properties: {

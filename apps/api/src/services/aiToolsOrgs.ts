@@ -774,14 +774,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_organizations',
       description:
-        'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the ' +
-        'org under the caller\'s partner WITH a default "Main Office" site — partner scope only), update_org (name/status ' +
-        'patch; suspending or churning an org severs its agents), create_site (orgId + name + optional address object), ' +
-        'add_contact (orgId required; at least one of name, email, phone, mobile required — mirrors contacts_identifiable_chk; ' +
-        'optional title, roles, siteId, isPrimary — creates a first-class contact on the organization or one of its sites). ' +
-        'create_org, update_org, create_site, and add_contact ' +
-        'require approval: update_org needs a second approver only when it includes a status change (suspend/churn/' +
-        'reactivate); a plain name edit or add_contact can be self-approved by the requester.',
+        "Manage orgs, sites, contacts. Actions: create_org, update_org, create_site, add_contact. Approval required; status changes need a second approver. Name edits/add_contact allow self-approval. create_org is partner-only; suspend/churn severs agents.",
       input_schema: {
         type: 'object' as const,
         properties: {

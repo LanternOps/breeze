@@ -249,7 +249,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'search_catalog',
       description:
-        'Search the partner product catalog (hardware, software, services, and bundles). The search term matches item name, SKU, and distributor part numbers (manufacturer part number / SYNNEX SKU). Optional filters: item type, bundle flag, currency. Each item lists `prices` per currency (no conversion); an item with no price in a document\'s currency needs a manual line. Read-only.',
+        "Search partner catalog hardware, software, services and bundles by name, SKU or distributor part number. Filter by type, bundle flag or currency; returns per-currency prices with no conversion. For products outside the catalog use lookup_distributor_product.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -336,7 +336,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'lookup_distributor_product',
       description:
-        'Live TD SYNNEX (EC Express) price & availability lookup for a SINGLE distributor SKU or manufacturer part number. Returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Read-only, but makes an outbound call to the distributor (partner-scoped). Use this to price a distributor product that is NOT yet in the catalog before adding it to a quote; for items already in the catalog use search_catalog instead.',
+        "Get live TD SYNNEX reseller cost, MSRP, currency, stock and warehouse availability for one SKU or manufacturer part number. Makes a partner-scoped outbound distributor call. For items already in the catalog use search_catalog.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -504,7 +504,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           },
           allocationCurrency: {
             type: 'string',
-            description: 'ISO-4217 currency the component revenueAllocation amounts are authored in (set_bundle_components; required when any component carries a revenueAllocation). Allocations are only used in this currency — never converted.',
+            description: "ISO-4217 currency for component revenueAllocation; required when any allocation is set. Allocations apply only in this currency, never converted.",
           },
         },
         required: ['action'],

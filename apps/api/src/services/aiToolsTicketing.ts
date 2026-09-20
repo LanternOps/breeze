@@ -443,16 +443,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_tickets',
       description:
-        'Search, view, create, comment on, assign, update fields, change status, link/unlink alerts, create from alerts, edit/delete comments, move tickets between orgs with approval, and log time against support tickets. ' +
-        'Use action "list" to search, "get" for full detail, "create" to open a new ticket, ' +
-        '"comment" to add a reply or internal note, "assign" to set the assignee, ' +
-        '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
-        '"list_work_types" to list active work types (id and name), ' +
-        '"log_time_entry" to record a completed time block (requires startedAt + endedAt), ' +
-        '"start_timer" to start a running timer (auto-stops any existing timer), ' +
-        '"stop_timer" to stop the currently running timer, ' +
-        '"link_device" to link a device to a ticket by exact hostname or serial number, ' +
-        '"draft" to store a proposed reply or resolution-note draft for human review. Actions: update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org.',
+        "Manage tickets; move_org needs approval. Actions: list, get, create, comment, assign, update_status, list_work_types, log_time_entry, start_timer, stop_timer, update_fields, link_alert, unlink_alert, create_from_alert, edit_comment, delete_comment, move_org, link_device, draft.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -514,7 +505,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           statusName: {
             type: 'string',
-            description: 'A custom status name configured by the partner (e.g. "Waiting on vendor"); alternative to status for update_status. Mutually exclusive with status — provide only one.'
+            description: "Partner-configured custom status name for update_status (e.g. Waiting on vendor). Mutually exclusive with status."
           },
           resolutionNote: {
             type: 'string',
@@ -544,7 +535,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           kind: {
             type: 'string',
             enum: ['reply', 'resolution_note'],
-            description: 'Which draft kind to store (draft): a customer-facing reply or an internal resolution note'
+            description: 'Draft for human review: customer-facing reply or internal resolution note'
           },
           overrides: {
             type: 'object',
@@ -568,7 +559,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           startedAt: {
             type: 'string',
-            description: 'ISO 8601 datetime — start of the time block (required for log_time_entry; optional for start_timer)'
+            description: 'ISO 8601 start (required: log_time_entry; optional: start_timer). start_timer auto-stops any existing timer.'
           },
           endedAt: {
             type: 'string',
@@ -581,13 +572,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           workType: {
             type: 'string',
             description:
-              'Work type for log_time_entry / start_timer — the NAME (e.g. "On-site", "Remote", "After-hours") or its id. ' +
-              'Says WHAT the work was. Omit it to let the ticket category default apply. ' +
-              'Use list_work_types to see the options. Cannot be changed at stop_timer; edit the time entry instead.',
+              "Work type name or ID (log_time_entry/start_timer); defaults from ticket category. Options: list_work_types. Immutable at stop_timer; editable on the time entry.",
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from the resolved billing profile; overrides require time_entries:manage_billing)'
+            description: "Hourly rate in ticket organization's currency (log_time_entry); defaults from billing profile. Overrides require time_entries:manage_billing."
           }
         },
         required: ['action']

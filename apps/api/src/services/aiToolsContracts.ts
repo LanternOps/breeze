@@ -165,8 +165,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_contracts',
       description:
-        'List recurring contracts for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.' +
-        ' Every contract carries a 3-letter currencyCode; its line unitPrice values, per-period totals and the invoices it generates are all in that currency. NEVER add amounts from contracts with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "List accessible recurring contracts newest first, filtered by org or status. Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -218,8 +217,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_contract',
       description:
-        'Get the full view of one recurring contract (header, lines, and billing-period history) by id. Read-only.' +
-        ' Every contract carries a 3-letter currencyCode; its line unitPrice values, per-period totals and the invoices it generates are all in that currency. NEVER add amounts from contracts with different currencyCode values — group by currencyCode first and report one total per currency.',
+        "Get a recurring contract header, lines and billing-period history. Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -275,52 +273,27 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           patch: {
             type: 'object',
             description:
-              'For action "update": contract header fields. For action "update_line": the line patch. ' +
-              'update_line edits one line in place, keeping its id (and therefore its invoice lineage). ' +
-              'Every field of a line is editable EXCEPT lineType — sending lineType is rejected; to change the ' +
-              'type, remove_line then add_line. catalogItemId is three-valued: leave it out to keep the current ' +
-              'link AND the current stamped price, send a DIFFERENT item id to re-link and re-resolve price and ' +
-              'taxable in the contract\'s currency (any unitPrice/taxable you send is ignored), or send null to ' +
-              'unlink — which requires unitPrice AND taxable in the same call. Sending the item id the line ' +
-              'already has changes nothing; to re-price an unchanged link, send refreshCatalogPrice: true. ' +
-              'siteId accepts null to widen a site-scoped line to the whole org. Lines are only editable on ' +
-              'draft and active contracts. Edits apply to future billing periods; invoices already generated ' +
-              'are unchanged. ' +
-              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
-              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
-              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
-              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
-              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
-              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
-              'result and the billing log for a human to act on. For update_line, the rule applies to the MERGED line: ' +
-              'absent fields are unchanged and null clears a field; to remove an allowance send includedQuantity, overageMode and overageUnitPrice all as null. ' +
-              'The merged line requires includedQuantity and overageMode together, and overageUnitPrice only with "bill".',
+              "Header (update) or line (update_line) patch; lineType immutable. siteId:null widens to org. Future periods only; generated invoices unchanged.",
+            properties: {
+              catalogItemId: { type: ['string', 'null'], description: 'Omit to keep link and price; different UUID re-resolves price/taxable (supplied values ignored); null unlinks and requires unitPrice + taxable.' },
+              refreshCatalogPrice: { type: 'boolean', description: 'True re-prices an unchanged catalog link. Line edits affect future billing periods only; generated invoices are unchanged.' },
+              includedQuantity: { type: ['string', 'null'], description: 'Positive integer allowance: bills every period even when the live count is lower. For update_line, the rule applies to the merged line.' },
+              overageMode: { type: ['string', 'null'], enum: ['bill', 'flag', null], description: 'bill charges excess; flag reports it. Merged line requires includedQuantity and overageMode together; absent fields are unchanged; null clears.' },
+              overageUnitPrice: { type: ['string', 'null'], description: 'Contract currency price, required only with bill. To remove allowance send includedQuantity, overageMode and overageUnitPrice all as null.' },
+            },
           },
           line: {
             type: 'object',
             description:
-              'Contract line input. lineType is one of flat | per_device | per_device_role | per_device_group | per_seat | manual. ' +
-              'per_device counts the org\'s billable devices (optionally one site via siteId). ' +
-              'per_device_role counts only devices whose role is in deviceRoles — a non-empty array of ' +
-              `${BILLABLE_DEVICE_ROLES.join(', ')} ` +
-              '(never unknown: unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
-              'per_device_group counts the members of one device group named by deviceGroupId (a device group UUID in the ' +
-              'contract\'s org). Static groups bill their current members; dynamic groups are evaluated live from their filter at ' +
-              'estimate and invoice time (a filter condition on groupId still reads that other group\'s cached membership). ' +
-              'No siteId on this type — the group\'s own site narrows it. ' +
-              'manual requires manualQuantity. ' +
-              'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
-              'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
-              'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
-              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required. ' +
-              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
-              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
-              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
-              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
-              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
-              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
-              'result and the billing log for a human to act on. For add_line, includedQuantity and overageMode must ' +
-              'be supplied together, and overageUnitPrice is allowed only with "bill".',
+              "Line: flat|per_device|per_device_role|per_device_group|per_seat|manual. Contract currency prices; gaps fail, never converted. Allowances bill a minimum.",
+            properties: {
+              deviceGroupId: { type: 'string', description: "per_device_group: UUID in contract org; dynamic groups evaluated live; a filter condition on groupId still reads that other group's cached membership." },
+              deviceRoles: { type: 'array', items: { type: 'string', enum: [...BILLABLE_DEVICE_ROLES] }, description: 'per_device_role: non-empty billable roles, never unknown; unclassified devices are uncovered. Optional siteId for per_device/per_device_role.' },
+              catalogItemId: { type: 'string', description: 'UUID; resolves contract-currency price/taxable, ignoring supplied values. Missing price: NO_PRICE_FOR_CURRENCY. Without a catalog link, unitPrice required.' },
+              includedQuantity: { type: 'string', description: 'Positive integer allowance: bills every period even when the live count is lower. For add_line, includedQuantity and overageMode must be supplied together.' },
+              overageMode: { type: 'string', enum: ['bill', 'flag'], description: 'bill adds a sibling invoice line for excess units; flag reports excess without billing. Applies to device/role/group/seat lines.' },
+              overageUnitPrice: { type: 'string', description: 'Contract-currency price required only for overageMode bill; allowance bills includedQuantity times unitPrice each period.' },
+            },
           },
         },
         required: ['action'],

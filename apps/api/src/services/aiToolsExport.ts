@@ -54,7 +54,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'export_dataset',
       description:
-        'Export a full dataset to a file artifact for analysis. Unlike the ordinary read tools, this pages the query to completion with no 8000-character compaction and returns a handle you can stage into a workspace with workspace_stage. Datasets: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields.',
+        "Export a complete dataset as a file handle without read-tool compaction. Datasets: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields. Use workspace_stage to stage the handle for analysis.",
       input_schema: {
         type: 'object' as const,
         properties: {

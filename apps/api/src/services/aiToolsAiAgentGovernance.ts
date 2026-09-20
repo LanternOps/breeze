@@ -233,12 +233,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
     definition: {
       name: 'manage_ai_agents',
       description:
-        'Govern the autonomous AI agents for the current organization. Action: authorize_supervised_key — grant the ' +
-        'organization\'s agent of the given kind a pre-authorized action key (`opKey`, e.g. "manage_services:restart") ' +
-        'so future runs may execute it without raising an approval. The key must already be inside the partner ' +
-        'baseline ceiling and the agent must have earned it on recent evidence. Requires a SECOND approver (four-eyes) ' +
-        'and is never available to an AI agent itself. `orgId` must be the CURRENT organization — a request naming any ' +
-        'other organization is rejected outright, both when the approval is raised and again before it executes.',
+        "Grant an earned, partner-baseline action key to the current organization's AI agent. Actions: authorize_supervised_key. Requires a SECOND approver; unavailable to AI agents. orgId must match the current organization at approval and execution; changes to its authorized-key list invalidate approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -257,10 +252,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           },
           orgId: {
             type: 'string',
-            description:
-              'The CURRENT organization\'s id. Not a target selector — it must equal the organization the request is ' +
-              'already authenticated for, and any other value is rejected. It is required because the approval pins ' +
-              'that organization\'s authorized-key list, so a change during the approval window fails the release.',
+            description: 'Current authenticated organization UUID; required. Other organizations are rejected.',
           },
         },
         required: ['action', 'kind', 'opKey', 'orgId'],

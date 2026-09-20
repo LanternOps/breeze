@@ -26,34 +26,7 @@ const WORKFLOW_PROSE = [/\b(step \d|first call|then call|after that|workflow:)\b
  * tools use their actual factory descriptors, with no permanent exemptions.
  * Never add or increase an entry; later diet tasks must delete fixed entries.
  */
-const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; params?: number }> = new Map([
-  ['capture_agent_pprof', { description: 405 }],
-  ['delete_tenant', { description: 398 }],
-  ['export_dataset', { description: 342 }],
-  ['get_contract', { description: 387 }],
-  ['get_invite_funnel', { description: 574 }],
-  ['get_invoice', { description: 441 }],
-  ['get_quote', { description: 711 }],
-  ['list_contracts', { description: 403 }],
-  ['list_deliverable_templates', { description: 492 }],
-  ['list_deliverables', { description: 317 }],
-  ['list_invoices', { description: 479 }],
-  ['list_quotes', { description: 388 }],
-  ['lookup_distributor_product', { description: 433 }],
-  ['manage_ai_agents', { description: 641, params: 300 }],
-  ['manage_catalog', { params: 217 }],
-  ['manage_contracts', { params: 2009 }],
-  ['manage_deliverables', { description: 1017, params: 263 }],
-  ['manage_invoices', { description: 1526, params: 188 }],
-  ['manage_key_dates', { params: 196 }],
-  ['manage_notification_channels', { params: 250 }],
-  ['manage_org_documents', { description: 420, params: 180 }],
-  ['manage_organizations', { description: 823 }],
-  ['manage_quotes', { description: 891, params: 1419 }],
-  ['manage_tickets', { description: 971, params: 282 }],
-  ['search_catalog', { description: 375 }],
-  ['trigger_agent_restart', { description: 340 }],
-]);
+const DESCRIPTION_BUDGET_BASELINE: ReadonlyMap<string, { description?: number; params?: number }> = new Map([]);
 
 interface Offence { tool: string; description?: number; params?: number; prose?: string; missingActions?: string[] }
 
@@ -156,6 +129,12 @@ describe('AI tool description budget (A-W03)', () => {
     const remaining = offences.filter(o => taskDomains.has(getToolDomain(o.tool) ?? ''));
     console.log('Task 4b budget measurement', JSON.stringify({ registry: registry.length, emitted: emitted.map(d => d.length), offenders: offences.length, domainOffenders: remaining.length }));
     expect(remaining).toEqual([]);
+  });
+
+  it('Task 4c leaves no budget offenders or baseline entries on any surface', () => {
+    console.log('Task 4c budget measurement', JSON.stringify({ registry: registry.length, emitted: emitted.map(d => d.length), offenders: offences.length }));
+    expect(offences).toEqual([]);
+    expect(DESCRIPTION_BUDGET_BASELINE.size).toBe(0);
   });
 
   it('every tool outside the baseline fits the budget', () => {
