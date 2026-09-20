@@ -10,7 +10,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import type { FilterConditionGroup } from '@breeze/shared';
+import { fillDevicePlaceholders, type FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
@@ -44,11 +44,16 @@ function hideAiNoiseFromHash(hash: string): boolean | undefined {
 function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
   return rows.map((row) => {
     const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? unknownDevice;
+    const deviceLabel = String(deviceName);
     const contextData = row.contextData ?? row.context;
     const anomalyContext = row.anomalyContext ?? normalizeMetricAnomalyContext(contextData);
+    const title = typeof row.title === 'string' ? fillDevicePlaceholders(row.title, deviceLabel) : row.title;
+    const message = typeof row.message === 'string' ? fillDevicePlaceholders(row.message, deviceLabel) : row.message;
     return {
       ...row,
-      deviceName: String(deviceName),
+      title,
+      message,
+      deviceName: deviceLabel,
       contextData,
       anomalyContext,
       correlationMemberCount: Number(row.correlationMemberCount ?? 0),

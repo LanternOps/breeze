@@ -1,4 +1,5 @@
 import { AlertTriangle, AlertCircle, Info, XCircle, CheckCircle2, ChevronRight, HardDriveDownload } from 'lucide-react';
+import { resolveAlertTitle } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { formatTimeAgo } from '@/lib/formatTime';
@@ -183,7 +184,11 @@ export default function AlertsFeed({
           {rows.map((alert) => {
             const config = severityConfig[alert.severity?.toLowerCase()] ?? severityConfig.low;
             const Icon = config.icon;
-            const title = alert.title || alert.message || t('dashboard.alerts.fallbackTitle');
+            const title = resolveAlertTitle(
+              alert.title || alert.message,
+              alert.deviceHostname,
+              t('dashboard.alerts.fallbackTitle'),
+            );
             const timestamp = alert.triggeredAt || alert.createdAt;
             const inner = (
               <>

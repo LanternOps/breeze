@@ -16,7 +16,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, retiredConditionTypeError } from './index';
+import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 
@@ -230,5 +230,13 @@ describe('retiredConditionTypeError (issue #2948)', () => {
     expect(message).toContain('custom');
     expect(message).toContain('never fire');
     expect(message).toMatch(/remove or replace/i);
+  });
+});
+
+describe('interpolateTemplate', () => {
+  it('fills {{device}} from deviceName so stored titles do not leak the placeholder', () => {
+    expect(interpolateTemplate('{{device}} offline', { deviceName: 'DESKTOP-8UG65K6' })).toBe(
+      'DESKTOP-8UG65K6 offline',
+    );
   });
 });

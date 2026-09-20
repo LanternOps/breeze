@@ -36,3 +36,19 @@ describe('agentCommandResultValidation — large byte totals (v4 .int() 2^53 cap
     expect(restoreStructuredResultSchema.safeParse({ bytesRestored: 1.5 }).success).toBe(false);
   });
 });
+
+describe('agentCommandResultValidation — bare_metal_rebuild terminal statuses (W05a)', () => {
+  // The helper's exec_bare_metal_rebuild posts a REFUSED preflight as a
+  // successful command whose result status is "refused" (the server maps
+  // it). Rejecting it as malformed turns every refusal into a FAILED command
+  // with an unreadable zod dump instead of the refusal reason.
+  it('accepts a refused rebuild result', () => {
+    const parsed = restoreStructuredResultSchema.parse({
+      status: 'refused',
+      phaseReached: 'preflight',
+      refusal: 'not enough free space for raw image plus VHDX: need 3, have 2',
+      target: { kind: 'vhdx', path: '/mnt/rebuild/out.vhdx' },
+    });
+    expect(parsed.status).toBe('refused');
+  });
+});
