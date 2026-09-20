@@ -731,7 +731,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const started = await startSystemCleanupRun({ device, requestedBy, actionIds, params, aiOrigin });
       if (!started.ok) {
         if (started.error === 'agent_update_required') return JSON.stringify(agentUpdateRequired);
-        if (started.error === 'run_in_progress') {
+        if (started.status === 409 && started.error === 'run_in_progress') {
           return JSON.stringify({ error: 'run_in_progress', cleanupRunId: started.cleanupRunId });
         }
         return JSON.stringify({ error: started.error });

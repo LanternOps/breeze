@@ -223,6 +223,12 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_deliverables: ['apply_template'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
+  // OS-native cleaners (Disk Cleanup v2 §7). `list` is a read-only catalog
+  // probe; `run` executes vetted maintenance binaries (cleanmgr, DISM,
+  // apt-get/dnf, journalctl, tmutil, brew) as root/LocalSystem with a 90-minute
+  // ceiling, and some of its handlers cannot be undone (`Previous
+  // Installations` deletes Windows.old, which is the rollback path).
+  system_cleanup: ['run'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
@@ -488,6 +494,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // classified in TIER1_ACTIONS and never reaches tier 3 at all.)
   security_scan: ['quarantine', 'remove', 'restore', 'scan', 'status'],
   disk_cleanup: ['execute'],
+  // Supervised, not four_eyes: the actions are a closed, vetted catalog of
+  // maintenance operations a tech could run by hand on the box, and nothing in
+  // it is externally binding or financial. Its irreversibility (Windows.old)
+  // is a property of the ACTION the tech picked, not of the approval class.
+  system_cleanup: ['run'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
@@ -899,6 +910,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   disk_cleanup: {
     preview: { resource: 'devices', action: 'read' },
     execute: { resource: 'devices', action: 'execute' },
+  },
+  system_cleanup: {
+    list: { resource: 'devices', action: 'read' },
+    run: { resource: 'devices', action: 'execute' },
   },
   file_operations: {
     // SR5-01: read/list require devices.execute (not devices.read). Reading an
@@ -1553,6 +1568,11 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   s1_threat_action: { limit: 5, windowSeconds: 600 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
+  // 2 per hour (spec §9.1). A single run can hold the device for 90 minutes
+  // (DISM) and the reclaimed space does not land until the flagged reboot, so
+  // a tighter window than disk_cleanup's is the honest limit: a second call
+  // inside the hour is almost always the model retrying a still-running job.
+  system_cleanup: { limit: 2, windowSeconds: 3600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
   manage_scheduled_tasks: { limit: 10, windowSeconds: 300 },
   take_screenshot: { limit: 10, windowSeconds: 300 },
