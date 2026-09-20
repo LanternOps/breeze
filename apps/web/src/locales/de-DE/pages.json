@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Konvertierung alter Alarmregeln",
     "notFound": "Seite nicht gefunden",
     "serverError": "Etwas ist schiefgelaufen",
     "acceptInvite": "Einladung annehmen",

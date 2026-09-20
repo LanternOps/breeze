@@ -78,6 +78,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/desktopFinalization.ts': { exempt: 'platform_admin' },
   'admin/exchangeRates.ts': { exempt: 'platform_admin' },
   'admin/llmProviderCatalog.ts': { exempt: 'platform_admin' },
+  'admin/monitorConversion.ts': { exempt: 'platform_admin' },
   'admin/sendingDomains.ts': { exempt: 'platform_admin' },
   'admin/systemConnections.ts': { exempt: 'platform_admin' },
   'admin/tenantErasure.ts': { exempt: 'platform_admin' },

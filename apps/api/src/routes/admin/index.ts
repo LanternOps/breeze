@@ -10,6 +10,7 @@ import { aiKillStateAdminRoutes } from './aiKillState';
 import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
+import { adminMonitorConversionRoutes } from './monitorConversion';
 import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
@@ -54,3 +55,6 @@ adminRoutes.route('/deprecations', deprecationsAdminRoutes);
 // gate above; GET only. Never mount this as api.route('/admin/...') in
 // src/index.ts — that would sit outside platformAdminMiddleware.
 adminRoutes.route('/system', systemConnectionsAdminRoutes);
+
+// Hosted conversion sweep: platform-admin gate here, MFA on POSTs in the router.
+adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);

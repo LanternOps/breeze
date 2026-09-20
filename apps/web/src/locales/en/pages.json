@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Legacy Alert Conversion",
     "notFound": "Page not found",
     "serverError": "Something went wrong",
     "acceptInvite": "Accept Invite",
