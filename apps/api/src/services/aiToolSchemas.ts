@@ -183,6 +183,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).optional(),
   }),
 
+  list_network_assets: z.object({
+    orgId: z.string().guid().optional(),
+    siteId: z.string().guid().optional(),
+    approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+    assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+    linkedDeviceId: z.string().guid().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+  get_network_asset: z.object({ assetId: z.string().guid() }),
   get_network_asset_reachability: z.object({
     asset_id: uuid,
   }),

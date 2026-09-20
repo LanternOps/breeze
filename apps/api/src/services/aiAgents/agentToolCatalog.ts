@@ -263,6 +263,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   configure_network_baseline: 'network',
   get_network_changes: 'network',
   get_ip_history: 'network',
+  list_network_assets: 'network',
+  get_network_asset: 'network',
   get_network_asset_reachability: 'network',
 
   // ---- remote_access ----

@@ -219,6 +219,9 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  // Exact-device scope additionally limits these reads to linked assets.
+  { tool: 'list_network_assets', routeFile: 'discovery.ts', method: 'get', path: '/assets', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
+  { tool: 'get_network_asset', routeFile: 'discovery.ts', method: 'get', path: '/assets/:id', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
   {
     tool: 'list_incidents', routeFile: 'incidents.ts', method: 'get', path: '/',
     toolOnly: { extra: [], reason: 'Site/device-bound callers only see incidents with a reachable affected device; REST list has no site/device gate.' },

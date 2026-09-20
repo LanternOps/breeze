@@ -290,6 +290,8 @@ export const TOOL_TIERS = {
   // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
   // it as "Unknown tool" and the chat tells the user the capability does not
   // exist.
+  list_network_assets: 1,
+  get_network_asset: 1,
   get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
@@ -2528,6 +2530,27 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_network_assets',
+      registryDescription('list_network_assets'),
+      {
+        orgId: z.string().guid().optional(),
+        siteId: z.string().guid().optional(),
+        approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
+        assetType: z.enum(['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown', 'website', 'service']).optional(),
+        linkedDeviceId: z.string().guid().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('list_network_assets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_network_asset',
+      registryDescription('get_network_asset'),
+      { assetId: z.string().guid() },
+      makeHandler('get_network_asset', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // W01 (spec §4.4) — the only read that answers "is this printer/switch up"

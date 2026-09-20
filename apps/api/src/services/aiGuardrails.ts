@@ -1453,6 +1453,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  list_network_assets: { resource: 'devices', action: 'read' },
+  get_network_asset: { resource: 'devices', action: 'read' },
   get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
