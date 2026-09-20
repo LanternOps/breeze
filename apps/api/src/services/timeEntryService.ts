@@ -6,6 +6,7 @@ import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
 import { resolveBillingRule, type BillingRule } from './billingRuleResolver';
 import { getActiveWorkType } from './workTypeService';
+import { computeBillableMinutes, billableMinutesSql } from './billableMinutes';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
@@ -589,6 +590,13 @@ export async function createTimeEntry(
       startedAt: input.startedAt,
       endedAt: input.endedAt,
       durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),
+      // Spec §3.5 — the billed quantity, from the SAME terms this row stamps
+      // (the applied stamp, so a manager's override drives it too).
+      billableMinutes: computeBillableMinutes({
+        durationMinutes: computeDurationMinutes(input.startedAt, input.endedAt),
+        minimumMinutes: stamp.minimumMinutes,
+        roundingIncrementMinutes: stamp.roundingIncrementMinutes,
+      }),
       description: input.description ?? null,
       ...stamp,
       // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
@@ -731,6 +739,8 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         startedAt: new Date(),
         endedAt: null,
         durationMinutes: null,
+        // A running timer has no billed quantity yet; stopRunningEntry lands it.
+        billableMinutes: null,
         description: input.description ?? null,
         ...billing,
         billingOverridden: false,

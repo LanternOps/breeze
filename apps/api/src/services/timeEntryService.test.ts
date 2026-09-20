@@ -2180,3 +2180,60 @@ describe('billing profile stamps and service override gate', () => {
       .rejects.toMatchObject({ status: 409, code: 'ENTRY_BILLED' });
   });
 });
+
+describe('billable_minutes write paths (#4628 W03)', () => {
+  const span = { startedAt: new Date('2026-03-03T09:00:00Z'), endedAt: new Date('2026-03-03T09:20:00Z') };
+  const tech = { ...ACTOR, manageBilling: false };
+  const card = (baseMinimumMinutes: number | null, roundingIncrementMinutes: number | null) => ({
+    id: 'profile-1', currencyCode: 'USD', baseCoverage: 'billable', baseHourlyRate: '225.00',
+    baseMinimumMinutes, roundingIncrementMinutes, rules: [],
+  });
+  const seedLink = (ticketId = 't-1', orgId = 'o-1') => {
+    dbMocks.selectResults.push(
+      [{ id: ticketId, partnerId: 'p-1', orgId, categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultWorkTypeId: null, defaultWorkTypeIsActive: false }],
+      [{ currencyCode: 'USD' }], [{ id: ticketId, orgId }],
+    );
+  };
+  beforeEach(() => { dbMocks.insertResult = [{ id: 'te-1' }]; });
+
+  describe('create and timer start', () => {
+    it('createTimeEntry stamps billable_minutes from the resolved minimum and increment', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(60, 15), partnerDefaultCard: null });
+      seedLink();
+      // 20 worked minutes against a 60-minute minimum bills an hour.
+      await createTimeEntry({ ticketId: 't-1', ...span }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 20, billableMinutes: 60 });
+    });
+
+    it('createTimeEntry rounds up to the card increment when there is no minimum', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(null, 15), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', startedAt: span.startedAt, endedAt: new Date('2026-03-03T09:31:00Z') }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 31, billableMinutes: 45 });
+    });
+
+    it('createTimeEntry with no card terms stamps billable_minutes equal to the duration', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(null, null), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', startedAt: span.startedAt, endedAt: new Date('2026-03-03T09:37:00Z') }, tech);
+      expect(dbMocks.insertedValues[0]).toMatchObject({ durationMinutes: 37, billableMinutes: 37 });
+    });
+
+    it('a manager-overridden minimum drives the stamp, not the card minimum', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(30, null), partnerDefaultCard: null });
+      seedLink();
+      await createTimeEntry({ ticketId: 't-1', ...span, minimumMinutes: 90 }, { ...tech, manageBilling: true });
+      expect(dbMocks.insertedValues[0]).toMatchObject({ minimumMinutes: 90, billableMinutes: 90 });
+    });
+
+    it('startTimer leaves billable_minutes NULL — an unfinished entry has no billable quantity', async () => {
+      cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: card(60, 15), partnerDefaultCard: null });
+      seedLink();
+      await startTimer({ ticketId: 't-1' }, tech);
+      expect(dbMocks.insertedValues[0]!.durationMinutes).toBeNull();
+      expect(dbMocks.insertedValues[0]!.billableMinutes).toBeNull();
+    });
+  });
+});
