@@ -287,7 +287,7 @@ export async function createConfigPolicy(
     status?: 'active' | 'inactive' | 'archived';
     parentPolicyId?: string;
   },
-  userId: string,
+  userId: string | null,
   executor: DbExecutor = db
 ) {
   const values = {
@@ -1978,7 +1978,7 @@ export async function assignPolicy(
   level: ConfigAssignmentLevel,
   targetId: string,
   priority: number = 0,
-  userId: string,
+  userId: string | null,
   roleFilter?: string[],
   osFilter?: string[],
   executor: DbExecutor = db

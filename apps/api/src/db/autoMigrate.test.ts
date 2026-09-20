@@ -1398,3 +1398,8 @@ describe('filesystem scan_path contraction (Disk Cleanup v2 W03)', () => {
     expect(migration).not.toMatch(/\bBEGIN;|\bCOMMIT;/);
   });
 });
+
+it('allows the system sweep to omit actor FKs', () => {
+  const sql = readFileSync(new URL('../../migrations/2026-10-23-120000-legacy-source-retirement-columns.sql', import.meta.url), 'utf8');
+  expect(sql).toContain('ALTER TABLE monitor_definitions ALTER COLUMN created_by DROP NOT NULL');
+});

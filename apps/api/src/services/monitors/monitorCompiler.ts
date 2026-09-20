@@ -30,7 +30,8 @@ import type { RootCondition } from '../alertConditions/types';
  */
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-type DbExecutor = typeof db | DbTx;
+export type DbExecutor = typeof db | DbTx;
+export type CompileOptions = Record<string, never>;
 
 export interface CompiledRefs {
   alertTemplateId: string;
@@ -287,6 +288,7 @@ async function upsertManaged<T extends { id: string }>(
 export async function compileMonitorInTx(
   tx: DbTx,
   def: MonitorDefinitionRow,
+  _options: CompileOptions = {},
 ): Promise<CompiledRefs> {
   const now = new Date();
 

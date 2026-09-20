@@ -64,6 +64,12 @@ export const alertTemplates = pgTable('alert_templates', {
   // severity enum and escalation policies from this file); the FK itself is in
   // the migration and drift detection compares columns, not FK declarations.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   // Fleet Designer W03 (#5653): free-text "why" when a template is created
   // from a design; NULL otherwise.
   rationale: text('rationale'),
@@ -93,6 +99,12 @@ export const alertRules = pgTable('alert_rules', {
   // #5289 — see alertTemplates.managedByMonitorId. A compiled rule uses
   // targetType 'monitor' with targetId = the monitor definition id.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // W05c1 retirement (2026-10-23-120000-legacy-source-retirement-columns.sql):
+  // Converted or operator-retired rows stay for history; readers filter
+  // retired_at IS NULL. FK to monitor_definitions ON DELETE SET NULL in SQL.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
+  convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
