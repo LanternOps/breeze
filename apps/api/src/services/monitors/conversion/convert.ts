@@ -9,6 +9,7 @@ import { compileMonitorInTx } from '../monitorCompiler';
 import { createMonitorDefinition, deleteMonitorDefinition } from '../monitorService';
 import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy, rekeyRuleCooldowns } from '../../alertCooldown';
 import { captureException } from '../../sentry';
+import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { restoreMovedAlertRefs, carryOpenAlerts, canDeleteConversionMonitor } from './history';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
@@ -165,8 +166,8 @@ async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecutor) =>
     } catch (error) {
       // Retry only after the entire transaction has aborted, never inside a
       // poisoned request transaction. The callback reloads visibility and hashes.
-      const failure = error as { code?: string; cause?: { code?: string } };
-      if (failure?.code !== '40001' && failure?.cause?.code !== '40001') throw error;
+      // 40001 = serialization_failure. pgErrorCode unwraps Drizzle's .cause.
+      if (pgErrorCode(error) !== '40001') throw error;
       if (attempt === 1) throw new ConversionError('preview_stale', 'Conversion inputs changed concurrently');
     }
   }
