@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -161,8 +162,9 @@ func trashDirCandidates() []trashDirCandidate {
 // running without $HOME failed every soft delete outright even though the
 // target file was perfectly deletable.
 func getTrashDir() (string, error) {
-	attempts := make([]string, 0, 3)
-	for _, candidate := range trashDirCandidates() {
+	candidates := trashDirCandidates()
+	attempts := make([]string, 0, len(candidates))
+	for i, candidate := range candidates {
 		dir, err := candidate.resolve()
 		if err != nil {
 			attempts = append(attempts, fmt.Sprintf("%s: %v", candidate.label, err))
@@ -172,12 +174,40 @@ func getTrashDir() (string, error) {
 			attempts = append(attempts, fmt.Sprintf("%s (%s): %v", candidate.label, dir, err))
 			continue
 		}
+		// MkdirAll only applies the mode to directories it creates, so a
+		// trash directory that already existed (e.g. under a 0755
+		// installer-created data dir) keeps its old mode. Trashed content is
+		// whatever an operator just deleted, so force owner-only access
+		// regardless of how the directory came to exist.
+		if err := os.Chmod(dir, 0700); err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s (%s): cannot restrict permissions: %v", candidate.label, dir, err))
+			continue
+		}
+		if i > 0 {
+			// A fallback relocates the trash away from the per-user home, so
+			// a later restore looks in a different place. Never let that
+			// happen without a trace (#6413).
+			logTrashFallbackOnce(dir, candidate.label, attempts)
+		}
 		return dir, nil
 	}
-	return "", fmt.Errorf(
+	err := fmt.Errorf(
 		"no usable trash directory (tried %s) — retry with \"permanent\": true to delete without moving to trash",
 		strings.Join(attempts, "; "),
 	)
+	log.Printf("[ERROR] getTrashDir: %v", err)
+	return "", err
+}
+
+// trashFallbackLogged records the fallback trash directories already
+// reported, so a repeated delete does not reprint the same warning.
+var trashFallbackLogged sync.Map
+
+func logTrashFallbackOnce(dir, label string, attempts []string) {
+	if _, loaded := trashFallbackLogged.LoadOrStore(dir, struct{}{}); loaded {
+		return
+	}
+	log.Printf("[WARN] getTrashDir: using fallback trash location %s (%s) — trashed items will NOT appear under the per-user home trash; preceding attempts: %s", dir, label, strings.Join(attempts, "; "))
 }
 
 const trashMaxAgeDays = 30

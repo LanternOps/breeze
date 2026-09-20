@@ -5,6 +5,7 @@ import (
 
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,15 @@ func TestGetTrashDirFallbacks(t *testing.T) {
 		{
 			name:    "skips a home whose directory cannot be created",
 			envHome: func(root string) func() (string, error) { return okHome(filepath.Join(root, "file", "nope")) },
+			passwd:  func(root string) func() (string, error) { return okHome(filepath.Join(root, "passwdhome")) },
+			dataDir: func(root string) func() string { return func() string { return filepath.Join(root, "data") } },
+			wantRel: filepath.Join("passwdhome", ".breeze-trash"),
+		},
+		{
+			// Some container/service managers export HOME="" rather than
+			// leaving it unset, which os.UserHomeDir reports as success.
+			name:    "treats an empty home as unusable and falls through",
+			envHome: func(string) func() (string, error) { return okHome("") },
 			passwd:  func(root string) func() (string, error) { return okHome(filepath.Join(root, "passwdhome")) },
 			dataDir: func(root string) func() string { return func() string { return filepath.Join(root, "data") } },
 			wantRel: filepath.Join("passwdhome", ".breeze-trash"),
@@ -170,5 +180,67 @@ func TestResolveHomeDirFallsBackToPasswd(t *testing.T) {
 		t.Fatal("expected error when neither resolver works")
 	} else if !strings.Contains(err.Error(), "no passwd entry") {
 		t.Fatalf("error should name both attempts, got %v", err)
+	}
+}
+
+// TestGetTrashDirTightensExistingDirPermissions covers the review finding that
+// os.MkdirAll leaves an already-existing directory's mode alone, which would
+// leave trashed content readable by other local users under a 0755
+// installer-created data directory.
+func TestGetTrashDirTightensExistingDirPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	loose := filepath.Join(dataDir, "trash")
+	if err := os.MkdirAll(loose, 0755); err != nil {
+		t.Fatalf("seed loose trash dir: %v", err)
+	}
+	if err := os.Chmod(loose, 0755); err != nil {
+		t.Fatalf("seed mode: %v", err)
+	}
+	stubTrashHomeResolvers(t, errHome("$HOME is not defined"), errHome("no passwd entry"), func() string { return dataDir })
+
+	got, err := getTrashDir()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat trash dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0700 {
+		t.Fatalf("trash dir mode = %04o, want 0700", perm)
+	}
+}
+
+// TestListFilesDefaultsToPasswdHomeWithoutEnvHome proves the second fixed call
+// site resolves its default path through the fallback, not $HOME alone.
+func TestListFilesDefaultsToPasswdHomeWithoutEnvHome(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte("hi"), 0600); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	stubTrashHomeResolvers(t, errHome("$HOME is not defined"), okHome(root), func() string { return "" })
+
+	res := ListFiles(map[string]any{})
+	if res.Status != "completed" {
+		t.Fatalf("list failed: %v", res.Error)
+	}
+	if !strings.Contains(res.Stdout, "marker.txt") {
+		t.Fatalf("expected listing of %s, got %q", root, res.Stdout)
+	}
+}
+
+// TestPasswdHomeDirRealImplementation sanity-checks the un-stubbed resolver so
+// a regression in the os/user path cannot hide behind the test stubs.
+func TestPasswdHomeDirRealImplementation(t *testing.T) {
+	home, err := passwdHomeDir()
+	if err != nil {
+		t.Skipf("user database unavailable in this environment: %v", err)
+	}
+	if home == "" {
+		t.Fatal("passwdHomeDir returned an empty home with no error")
 	}
 }
