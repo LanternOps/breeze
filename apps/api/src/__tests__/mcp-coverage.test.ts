@@ -110,6 +110,7 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'orgAccountReadiness.ts',
   'orgArchive.ts',
   'orgAuditRetentionSettings.ts',
+  'orgBillingProfile.ts',
   'orgMerge.ts',
   'orgPortalSettings.ts',
   'orgPortalUsers.ts',

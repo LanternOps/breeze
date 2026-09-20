@@ -274,6 +274,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgAccountReadiness.ts': { gap: '#6141' },
   'orgArchive.ts': { gap: '#6141' },
   'orgAuditRetentionSettings.ts': { gap: '#6141' },
+  // Per-org billing profile read/write/delete; no AI tool surfaces it yet.
+  'orgBillingProfile.ts': { gap: '#6141' },
   'orgContacts.ts': { tools: ['list_org_contacts', 'manage_organizations'] },
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
